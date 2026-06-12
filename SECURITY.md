@@ -46,6 +46,7 @@ Expected controls:
 - rate limits backed by bounded state
 - replay/audit logs with MCP-aware fields
 - response size caps and secret redaction
+- human confirmation prompts for risky calls that should not be always allowed
 
 Limits:
 
@@ -122,6 +123,8 @@ Limits:
 - Use an external sandbox for untrusted customer-authored code.
 - For public tunnels, use the `tunnel-safe` preset unless an external
   access-control layer sits in front of the tunnel.
+- Use confirmation mode for risky tools that are occasionally necessary but
+  should not run unattended.
 - Keep replay records and audit logs redacted unless exact auth-sensitive replay
   artifacts are required for a short-lived local debugging session.
 - Prefer SQLite state when you want tool-description pins and rate-limit

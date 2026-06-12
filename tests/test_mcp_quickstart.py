@@ -36,6 +36,7 @@ def test_create_mcp_quickstart_writes_policy_config_and_trace_dir(tmp_path):
     assert proxy_config["state"] == "sqlite:policy-state.sqlite3"
     assert proxy_config["decision_console"] is True
     assert proxy_config["redact_records"] is True
+    assert proxy_config["confirm"] is False
     assert proxy_config["response_redact_secrets"] is True
     assert proxy_config["response_block_instructions"] is False
     assert proxy_config["tool_pinning"] is True

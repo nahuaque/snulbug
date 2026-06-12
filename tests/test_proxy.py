@@ -8,7 +8,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from snulbug import create_proxy_application, load_record_log
+from snulbug import ConfirmationBroker, create_proxy_application, load_record_log
 
 
 def test_reverse_proxy_forwards_allowed_request_to_upstream(tmp_path):
@@ -173,6 +173,130 @@ def test_reverse_proxy_writes_live_decision_console_json(tmp_path):
     assert event["mcp"]["target"] == "shell_exec"
     assert event["mcp"]["tool"] == "shell_exec"
     assert event["trace"]["instruction_count"] == 0
+
+
+def test_confirm_action_rejects_closed_without_handler(tmp_path):
+    server, seen = start_upstream()
+    policy = write_confirm_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(f"http://127.0.0.1:{server.server_port}", policy, record_out=record_log)
+
+    try:
+        sent = run_asgi(
+            app,
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shell_exec"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    records = load_record_log(record_log)
+    assert sent[0]["status"] == 403
+    assert sent[1]["body"] == b"confirmation denied"
+    assert seen["count"] == 0
+    assert records[0]["result"]["action"] == "reject"
+    assert records[0]["result"]["decision"]["confirmation"]["approved"] is False
+    assert records[0]["result"]["decision"]["confirmation"]["reason_code"] == "confirm.unavailable"
+
+
+def test_confirm_action_can_allow_once_and_record_audit(tmp_path):
+    server, seen = start_upstream()
+    policy = write_confirm_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+
+    def allow_once(decision, request, scope):
+        assert decision["remember_key"] == "tool:shell_exec"
+        assert request["path"] == "/mcp"
+        assert scope["path"] == "/mcp"
+        return {"approved": True, "mode": "once", "reason_code": "confirm.approved_once"}
+
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        audit_out=audit_log,
+        confirm_handler=allow_once,
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shell_exec"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    records = load_record_log(record_log)
+    audit = json.loads(audit_log.read_text(encoding="utf-8"))
+    assert sent[0]["status"] == 200
+    assert seen["count"] == 1
+    assert records[0]["result"]["action"] == "continue"
+    assert records[0]["result"]["decision"]["confirmation"]["approved"] is True
+    assert records[0]["result"]["decision"]["confirmation"]["mode"] == "once"
+    assert audit["decision"]["allowed"] is True
+    assert audit["decision"]["confirmation"]["reason_code"] == "confirm.approved_once"
+
+
+def test_confirm_broker_can_cache_session_approval(tmp_path):
+    server, seen = start_upstream()
+    policy = write_confirm_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    input_stream = io.StringIO("a\n")
+    output_stream = io.StringIO()
+    broker = ConfirmationBroker(enabled=True, input_stream=input_stream, output_stream=output_stream)
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        confirm_handler=broker,
+    )
+
+    try:
+        run_asgi(app, body=b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shell_exec"}}')
+        run_asgi(app, body=b'{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"shell_exec"}}')
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    records = load_record_log(record_log)
+    assert seen["count"] == 2
+    assert "snulbug confirm required" in output_stream.getvalue()
+    assert records[0]["result"]["decision"]["confirmation"]["mode"] == "session"
+    assert records[1]["result"]["decision"]["confirmation"]["mode"] == "cached_session"
+
+
+def test_confirm_broker_can_deny_prompted_request(tmp_path):
+    server, seen = start_upstream()
+    policy = write_confirm_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    console = io.StringIO()
+    broker = ConfirmationBroker(enabled=True, input_stream=io.StringIO("d\n"), output_stream=io.StringIO())
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        decision_console=console,
+        confirm_handler=broker,
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shell_exec"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    records = load_record_log(record_log)
+    output = console.getvalue()
+    assert sent[0]["status"] == 403
+    assert seen["count"] == 0
+    assert records[0]["result"]["decision"]["confirmation"]["reason_code"] == "confirm.denied"
+    assert "confirm.approved=false" in output
+    assert "confirm.reason_code=confirm.denied" in output
 
 
 def test_mcp_facade_aggregates_tool_lists_with_upstream_prefixes(tmp_path):
@@ -648,6 +772,33 @@ def write_policy(tmp_path, action: str):
         f"""
         return function(request, context, state)
           return {decision}
+        end
+        """,
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_confirm_policy(tmp_path):
+    path = tmp_path / "confirm-policy.lua"
+    path.write_text(
+        """
+        return function(request, context, state)
+          local tool = mcp.tool_name(request)
+          if tool == "shell_exec" then
+            return {
+              action = "confirm",
+              prompt = "Allow shell_exec for this session?",
+              remember_key = "tool:" .. tool,
+              timeout_seconds = 30,
+              status = 403,
+              body = "confirmation denied",
+              reason = "Shell-like tool requires approval",
+              reason_code = "mcp.confirm.risky_tool",
+              context = { method = mcp.method(request), tool = tool }
+            }
+          end
+          return { action = "continue", reason = "request allowed", reason_code = "test.allowed" }
         end
         """,
         encoding="utf-8",

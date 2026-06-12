@@ -4,6 +4,7 @@ import base64
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from inspect import isawaitable
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlencode
@@ -24,6 +25,10 @@ Receive = Callable[[], Awaitable[Message]]
 Send = Callable[[Message], Awaitable[None]]
 ASGIApp = Callable[[Scope, Receive, Send], Awaitable[None]]
 ScriptLoader = Callable[[Scope], CompiledLuaScript]
+ConfirmHandler = Callable[
+    [Mapping[str, Any], Mapping[str, Any], Scope],
+    Awaitable[Mapping[str, Any]] | Mapping[str, Any],
+]
 
 DecisionAction = Literal[
     "continue",
@@ -34,6 +39,7 @@ DecisionAction = Literal[
     "challenge",
     "redirect",
     "rate_limit",
+    "confirm",
 ]
 
 
@@ -64,6 +70,7 @@ class LuaMiddleware:
         state_store: PolicyStateStore | None = None,
         state_limits: StateLimits | None = None,
         state_key_prefix: str = "",
+        confirm_handler: ConfirmHandler | None = None,
     ) -> None:
         self.app = app
         self.config = config or LuaConfig()
@@ -72,6 +79,7 @@ class LuaMiddleware:
         self.state_store = state_store
         self.state_limits = state_limits or StateLimits()
         self.state_key_prefix = state_key_prefix
+        self.confirm_handler = confirm_handler
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http":
@@ -93,7 +101,7 @@ class LuaMiddleware:
         execution = script.decide_with_trace(request, context, policy_state)
         decision = execution.decision
         action = _validate_action(decision)
-        if self.config.trace:
+        if self.config.trace and action != "confirm":
             _attach_trace(child_scope, self.config.trace_scope_key, execution, body_read=self.config.read_body)
         if self._shadow_script is not None:
             _attach_shadow_trace(
@@ -106,6 +114,28 @@ class LuaMiddleware:
                 body_read=self.config.read_body,
                 shadow_state=self._shadow_state_for_request(),
             )
+
+        if action == "confirm":
+            confirmation = await self._confirm(decision, request, child_scope)
+            final_decision = _confirm_final_decision(decision, confirmation)
+            if self.config.trace:
+                _attach_trace_with_decision(
+                    child_scope,
+                    self.config.trace_scope_key,
+                    execution,
+                    final_decision,
+                    body_read=self.config.read_body,
+                    confirmation=confirmation,
+                )
+            if confirmation["approved"]:
+                _merge_context(child_scope, self.config.context_scope_key, final_decision.get("context"))
+                await self.app(child_scope, replay_receive, send)
+                return
+            status = int(final_decision.get("status", 403))
+            body_bytes = _body_bytes(final_decision.get("body", "confirmation denied"))
+            headers = _decision_headers(final_decision.get("headers"))
+            await _send_response(send, status=status, headers=headers, body=body_bytes)
+            return
 
         if action in {"continue", "set_context"}:
             _merge_context(child_scope, self.config.context_scope_key, decision.get("context"))
@@ -163,6 +193,30 @@ class LuaMiddleware:
             return
 
         raise LuaDecisionError(f"Unsupported Lua action: {action!r}")
+
+    async def _confirm(
+        self,
+        decision: Mapping[str, Any],
+        request: Mapping[str, Any],
+        scope: Scope,
+    ) -> dict[str, Any]:
+        if self.confirm_handler is None:
+            return _normalize_confirmation_result(
+                {
+                    "approved": False,
+                    "mode": "denied",
+                    "reason": "confirmation is not enabled",
+                    "reason_code": "confirm.unavailable",
+                    "status": int(decision.get("status", 403)),
+                    "body": decision.get("body", "confirmation denied"),
+                    "prompt": decision.get("prompt"),
+                    "remember_key": decision.get("remember_key"),
+                }
+            )
+        result = self.confirm_handler(decision, request, scope)
+        if isawaitable(result):
+            result = await result
+        return _normalize_confirmation_result(result)
 
     def _coerce_script(self, script: str | Path | CompiledLuaScript | ScriptLoader) -> ScriptLoader:
         if isinstance(script, CompiledLuaScript):
@@ -295,10 +349,20 @@ def _scope_to_request(scope: Scope, body: bytes | None) -> dict[str, Any]:
 
 def _validate_action(decision: Mapping[str, Any]) -> DecisionAction:
     action = decision.get("action", "continue")
-    if action not in {"continue", "set_context", "rewrite", "respond", "reject", "challenge", "redirect", "rate_limit"}:
+    if action not in {
+        "continue",
+        "set_context",
+        "rewrite",
+        "respond",
+        "reject",
+        "challenge",
+        "redirect",
+        "rate_limit",
+        "confirm",
+    }:
         raise LuaDecisionError(
             "Lua action must be one of continue, set_context, rewrite, respond, reject, "
-            f"challenge, redirect, rate_limit; got {action!r}"
+            f"challenge, redirect, rate_limit, confirm; got {action!r}"
         )
     return action  # type: ignore[return-value]
 
@@ -375,6 +439,60 @@ def _trace_payload(trace: LuaDecisionTrace, *, body_read: bool) -> dict[str, Any
         "body_read": body_read,
         **trace.to_dict(),
     }
+
+
+def _attach_trace_with_decision(
+    scope: Scope,
+    key: str,
+    trace: LuaDecisionTrace,
+    decision: Mapping[str, Any],
+    *,
+    body_read: bool,
+    confirmation: Mapping[str, Any] | None = None,
+) -> None:
+    payload = _trace_payload(trace, body_read=body_read)
+    payload["action"] = decision["action"]
+    payload["decision"] = dict(decision)
+    if confirmation is not None:
+        payload["confirmation"] = dict(confirmation)
+    scope[key] = payload
+
+    state = scope.get("state")
+    if isinstance(state, dict):
+        state[key] = payload
+
+
+def _normalize_confirmation_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(result, Mapping):
+        raise LuaDecisionError("confirm handler must return a table/object")
+    confirmation = dict(result)
+    confirmation["approved"] = bool(confirmation.get("approved", False))
+    confirmation["mode"] = str(confirmation.get("mode") or ("approved" if confirmation["approved"] else "denied"))
+    if "reason" in confirmation and confirmation["reason"] is not None:
+        confirmation["reason"] = str(confirmation["reason"])
+    if "reason_code" in confirmation and confirmation["reason_code"] is not None:
+        confirmation["reason_code"] = str(confirmation["reason_code"])
+    if "remember_key" in confirmation and confirmation["remember_key"] is not None:
+        confirmation["remember_key"] = str(confirmation["remember_key"])
+    if "prompt" in confirmation and confirmation["prompt"] is not None:
+        confirmation["prompt"] = str(confirmation["prompt"])
+    return confirmation
+
+
+def _confirm_final_decision(decision: Mapping[str, Any], confirmation: Mapping[str, Any]) -> dict[str, Any]:
+    final = dict(decision)
+    final["confirmation"] = dict(confirmation)
+    if confirmation["approved"]:
+        final["action"] = "continue"
+        final.pop("status", None)
+        final.pop("body", None)
+        final.pop("headers", None)
+        return final
+
+    final["action"] = "reject"
+    final["status"] = int(confirmation.get("status", decision.get("status", 403)))
+    final["body"] = confirmation.get("body", decision.get("body", "confirmation denied"))
+    return final
 
 
 def _apply_rewrite(scope: Scope, decision: Mapping[str, Any]) -> None:

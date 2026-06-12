@@ -116,6 +116,7 @@ audit_out = "traces/audit.jsonl"
 redact_records = true
 decision_console = true
 decision_console_format = "text"
+confirm = false
 max_body_bytes = 65536
 response_max_bytes = 262144
 response_redact_secrets = true
@@ -173,6 +174,16 @@ they reach the client, and `tools/list` descriptions/schemas are pinned on first
 sight so silent upstream tool changes are surfaced. Set
 `response_block_instructions = true` when you want suspicious instruction-like
 tool output to be blocked rather than only recorded in metadata.
+
+If your policy uses `action = "confirm"` for risky calls, run the proxy with
+confirmation enabled:
+
+```bash
+uv run snulbug mcp proxy --config snulbug.toml --confirm
+```
+
+Confirmation prompts support allow once, allow for this proxy session, or deny.
+Without `--confirm`, confirmation decisions reject by default.
 
 After a session, inspect the captured replay and audit logs:
 

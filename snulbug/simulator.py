@@ -11,7 +11,17 @@ from typing import Any
 from .runtime import LuaDecisionError, compile_lua_file
 from .state import BoundedPolicyState, SnapshotStateStore
 
-_ACTIONS = {"continue", "set_context", "rewrite", "respond", "reject", "challenge", "redirect", "rate_limit"}
+_ACTIONS = {
+    "continue",
+    "set_context",
+    "rewrite",
+    "respond",
+    "reject",
+    "challenge",
+    "redirect",
+    "rate_limit",
+    "confirm",
+}
 
 
 def simulate_policy(
@@ -38,7 +48,7 @@ def simulate_policy(
     if action not in _ACTIONS:
         raise LuaDecisionError(
             "Lua action must be one of continue, set_context, rewrite, respond, reject, "
-            f"challenge, redirect, rate_limit; got {action!r}"
+            f"challenge, redirect, rate_limit, confirm; got {action!r}"
         )
     result = {
         "action": action,
@@ -165,6 +175,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=("text", "json"),
         default="text",
         help="live decision console output format",
+    )
+    mcp_quickstart.add_argument(
+        "--confirm",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="prompt before executing Lua confirm decisions",
     )
     mcp_quickstart.add_argument("--max-body-bytes", type=int, default=65536)
     mcp_quickstart.add_argument("--response-max-bytes", type=int, default=262144)
@@ -343,6 +359,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=("text", "json"),
         help="live decision console output format",
     )
+    mcp_proxy.add_argument(
+        "--confirm",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="prompt before executing Lua confirm decisions",
+    )
     mcp_proxy.add_argument("--max-body-bytes", type=int)
     mcp_proxy.add_argument("--response-max-bytes", type=int)
     mcp_proxy.add_argument(
@@ -474,6 +496,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     redact_records=args.redact_records,
                     decision_console=args.decision_console,
                     decision_console_format=args.decision_console_format,
+                    confirm=args.confirm,
                     max_body_bytes=args.max_body_bytes,
                     response_max_bytes=args.response_max_bytes,
                     response_redact_secrets=args.response_redact_secrets,
@@ -644,6 +667,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "redact_records": args.redact_records,
                     "decision_console": args.decision_console,
                     "decision_console_format": args.decision_console_format,
+                    "confirm": args.confirm,
                     "max_body_bytes": args.max_body_bytes,
                     "response_max_bytes": args.response_max_bytes,
                     "response_redact_secrets": args.response_redact_secrets,
@@ -677,6 +701,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     redact_records=proxy_config["redact_records"],
                     decision_console=proxy_config["decision_console"],
                     decision_console_format=proxy_config["decision_console_format"],
+                    confirm=proxy_config["confirm"],
                     response_max_bytes=proxy_config["response_max_bytes"],
                     response_redact_secrets=proxy_config["response_redact_secrets"],
                     response_block_instructions=proxy_config["response_block_instructions"],

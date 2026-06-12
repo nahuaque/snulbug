@@ -105,6 +105,7 @@ audit_out = "traces/audit.jsonl"
 redact_records = true
 decision_console = false
 decision_console_format = "text"
+confirm = false
 max_body_bytes = 65536
 response_max_bytes = 262144
 response_redact_secrets = true
@@ -149,6 +150,42 @@ snulbug mcp proxy --config snulbug.toml --response-max-bytes 131072
 snulbug mcp proxy --config snulbug.toml --response-block-instructions
 snulbug mcp proxy --config snulbug.toml --tool-pinning-action warn
 ```
+
+## Human Confirmation
+
+Policies can return `action = "confirm"` for risky calls that should not be
+always allowed or always blocked. The proxy fails closed unless confirmation is
+explicitly enabled:
+
+```bash
+snulbug mcp proxy --config snulbug.toml --confirm
+```
+
+Example policy fragment:
+
+```lua
+if mcp.tool_name(request) == "shell_exec" then
+  return {
+    action = "confirm",
+    prompt = "Allow shell_exec for this session?",
+    remember_key = "tool:shell_exec",
+    timeout_seconds = 30,
+    status = 403,
+    body = "confirmation denied",
+    reason = "Shell-like tool requires approval",
+    reason_code = "mcp.confirm.risky_tool"
+  }
+end
+```
+
+The interactive prompt supports:
+
+- `o`: allow once
+- `a`: allow for this proxy session when `remember_key` is set
+- `d`: deny
+
+Timeouts, non-interactive stdin, and disabled confirmation all reject the
+request. Replay and audit records include the confirmation result.
 
 ## MCP Facade Mode
 

@@ -24,6 +24,7 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "redact_records": True,
     "decision_console": False,
     "decision_console_format": "text",
+    "confirm": False,
     "max_body_bytes": 65536,
     "response_max_bytes": 262144,
     "response_redact_secrets": True,
@@ -45,6 +46,7 @@ audit_out = "traces/audit.jsonl"
 redact_records = true
 decision_console = false
 decision_console_format = "text"
+confirm = false
 max_body_bytes = 65536
 response_max_bytes = 262144
 response_redact_secrets = true
@@ -117,6 +119,7 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         "trace",
         "redact_records",
         "decision_console",
+        "confirm",
         "response_redact_secrets",
         "response_block_instructions",
         "tool_pinning",

@@ -77,6 +77,7 @@ Response-side policy:
 - maximum MCP response body size
 - optional blocking for instruction-like tool output
 - `tools/list` description and schema pinning to catch silent upstream changes
+- human confirmation for risky calls, with allow-once or session approval
 
 Workflow:
 
@@ -176,6 +177,8 @@ Supported actions:
 - `challenge`: send an authentication challenge with `WWW-Authenticate`.
 - `redirect`: send a typed HTTP redirect with `Location`.
 - `rate_limit`: enforce a fixed-window limit using the configured state store.
+- `confirm`: ask an approval broker before continuing. Proxy mode fails closed
+  unless confirmation is explicitly enabled.
 
 ## Safety model
 

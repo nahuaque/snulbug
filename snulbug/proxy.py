@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, TextIO
 from urllib.parse import SplitResult, urlsplit
 
+from .confirm import ConfirmationBroker
 from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
 from .recorder import append_record, build_request_record, record_audit_event
 from .redaction import append_audit_event
@@ -621,6 +622,8 @@ def create_proxy_application(
     response_block_instructions: bool = False,
     tool_pinning: bool = True,
     tool_pinning_action: str = "block",
+    confirm: bool = False,
+    confirm_handler: Any = None,
 ) -> ASGIApp:
     """Create an ASGI app that applies Lua policy before proxying to an upstream."""
 
@@ -650,6 +653,7 @@ def create_proxy_application(
         ),
         state_store=effective_state_store,
         state_limits=state_limits,
+        confirm_handler=confirm_handler or (ConfirmationBroker(enabled=True) if confirm else None),
     )
     if record_out is None and audit_out is None and not console_enabled:
         return app
@@ -685,6 +689,7 @@ def run_proxy(
     response_block_instructions: bool = False,
     tool_pinning: bool = True,
     tool_pinning_action: str = "block",
+    confirm: bool = False,
 ) -> None:
     """Run the reverse proxy with uvicorn."""
 
@@ -711,6 +716,7 @@ def run_proxy(
         response_block_instructions=response_block_instructions,
         tool_pinning=tool_pinning,
         tool_pinning_action=tool_pinning_action,
+        confirm=confirm,
     )
     uvicorn.run(app, host=host, port=port)
 
@@ -801,6 +807,7 @@ def _format_decision_console_line(event: Mapping[str, Any]) -> str:
     response = event.get("response") if isinstance(event.get("response"), Mapping) else {}
     mcp = event.get("mcp") if isinstance(event.get("mcp"), Mapping) else {}
     trace = event.get("trace") if isinstance(event.get("trace"), Mapping) else {}
+    confirmation = decision.get("confirmation") if isinstance(decision.get("confirmation"), Mapping) else {}
 
     parts = [
         "snulbug",
@@ -814,6 +821,12 @@ def _format_decision_console_line(event: Mapping[str, Any]) -> str:
         parts.append(f"reason_code={decision['reason_code']}")
     if decision.get("reason"):
         parts.append(f"reason={_console_value(decision['reason'])}")
+    if confirmation:
+        parts.append(f"confirm.approved={str(bool(confirmation.get('approved', False))).lower()}")
+        if confirmation.get("mode"):
+            parts.append(f"confirm.mode={confirmation['mode']}")
+        if confirmation.get("reason_code"):
+            parts.append(f"confirm.reason_code={confirmation['reason_code']}")
     if request.get("query_string"):
         parts.append(f"query={request['query_string']}")
     if mcp.get("method"):

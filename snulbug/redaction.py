@@ -76,6 +76,7 @@ def build_audit_event(record: Mapping[str, Any], *, redact: bool = True) -> dict
             "reason": decision.get("reason"),
             "reason_code": decision.get("reason_code"),
             "context": decision.get("context", {}),
+            "confirmation": decision.get("confirmation"),
         },
     }
     if "response" in record:

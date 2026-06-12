@@ -9,7 +9,7 @@ from .runtime import CompiledLuaScript, LuaDecisionError, LuaRuntimeError, compi
 from .simulator import normalize_request
 from .state import BoundedPolicyState, SnapshotStateStore
 
-_ACTIONS = {"continue", "set_context", "rewrite", "respond", "reject", "challenge", "redirect", "rate_limit"}
+_ACTIONS = {"continue", "set_context", "rewrite", "respond", "reject", "challenge", "redirect", "rate_limit", "confirm"}
 _COMPARE_FIELDS = (
     "action",
     "status",
@@ -180,7 +180,7 @@ def _execute_policy(
         if action not in _ACTIONS:
             raise LuaDecisionError(
                 "Lua action must be one of continue, set_context, rewrite, respond, reject, "
-                f"challenge, redirect, rate_limit; got {action!r}"
+                f"challenge, redirect, rate_limit, confirm; got {action!r}"
             )
         result = {
             "ok": True,

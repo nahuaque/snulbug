@@ -96,3 +96,25 @@ return {
   body = "rate limit exceeded"
 }
 ```
+
+## confirm
+
+Ask an approval broker before continuing. In proxy mode, enable prompting with
+`snulbug mcp proxy --config snulbug.toml --confirm`. Without an enabled broker,
+confirmation fails closed and the request is rejected.
+
+```lua
+return {
+  action = "confirm",
+  prompt = "Allow shell_exec for this session?",
+  remember_key = "tool:shell_exec",
+  timeout_seconds = 30,
+  status = 403,
+  body = "confirmation denied",
+  reason = "Shell-like tool requires approval",
+  reason_code = "mcp.confirm.risky_tool"
+}
+```
+
+The interactive broker supports allow once, allow for the current proxy session,
+or deny. Session approval requires `remember_key`.
