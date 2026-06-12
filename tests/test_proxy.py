@@ -56,6 +56,63 @@ def test_reverse_proxy_forwards_allowed_request_to_upstream(tmp_path):
     assert audit["decision"]["reason_code"] == "test.allowed"
 
 
+def test_reverse_proxy_records_provider_aware_tunnel_audit_fields(tmp_path):
+    server, _seen = start_upstream()
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+    console = io.StringIO()
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        audit_out=audit_log,
+        decision_console=console,
+        decision_console_format="json",
+        tunnel_provider="cloudflare",
+        tunnel_public_url="https://mcp.example.com/mcp",
+    )
+
+    try:
+        run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"host", b"mcp.example.com"),
+                (b"authorization", b"Bearer local-dev-secret"),
+                (b"cf-ray", b"abc123-LHR"),
+                (b"cf-connecting-ip", b"203.0.113.10"),
+                (b"cf-ipcountry", b"GB"),
+                (b"cf-visitor", b'{"scheme":"https"}'),
+                (b"cf-access-authenticated-user-email", b"dev@example.com"),
+                (b"x-forwarded-for", b"203.0.113.10, 127.0.0.1"),
+                (b"x-forwarded-proto", b"https"),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    record = load_record_log(record_log)[0]
+    audit = json.loads(audit_log.read_text(encoding="utf-8"))
+    console_event = json.loads(console.getvalue())
+    assert record["metadata"]["tunnel"]["provider"] == "cloudflare"
+    assert record["metadata"]["tunnel"]["public_url"] == "https://mcp.example.com/mcp"
+    assert record["metadata"]["tunnel"]["edge_request_id"] == "abc123-LHR"
+    assert record["metadata"]["tunnel"]["source_ip"] == "203.0.113.10"
+    assert record["metadata"]["tunnel"]["forwarded_for"] == ["203.0.113.10", "127.0.0.1"]
+    assert record["metadata"]["tunnel"]["cloudflare"] == {
+        "access_authenticated_user_email": "dev@example.com",
+        "connecting_ip": "203.0.113.10",
+        "ip_country": "GB",
+        "ray": "abc123-LHR",
+        "visitor": {"scheme": "https"},
+    }
+    assert audit["tunnel"] == record["metadata"]["tunnel"]
+    assert console_event["tunnel"] == audit["tunnel"]
+
+
 def test_reverse_proxy_does_not_call_upstream_when_policy_rejects(tmp_path):
     server, seen = start_upstream()
     policy = write_policy(tmp_path, "reject")

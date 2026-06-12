@@ -283,6 +283,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="x-snulbug-lease",
         help="HTTP header carrying the task lease token",
     )
+    mcp_quickstart.add_argument(
+        "--tunnel-provider",
+        choices=("auto", "generic", "ngrok", "cloudflare", "tailscale"),
+        default="auto",
+        help="provider label for tunnel-aware audit fields",
+    )
+    mcp_quickstart.add_argument("--tunnel-public-url", help="public tunnel URL to include in audit fields")
     mcp_quickstart.add_argument("--timeout", type=float, default=30.0, help="upstream timeout in seconds")
     mcp_quickstart.add_argument("--force", action="store_true", help="overwrite generated policy and config")
     mcp_quickstart.add_argument(
@@ -524,6 +531,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="require a valid task lease for MCP tools/call requests",
     )
     mcp_proxy.add_argument("--lease-header", help="HTTP header carrying the task lease token")
+    mcp_proxy.add_argument(
+        "--tunnel-provider",
+        choices=("auto", "generic", "ngrok", "cloudflare", "tailscale"),
+        help="provider label for tunnel-aware audit fields",
+    )
+    mcp_proxy.add_argument("--tunnel-public-url", help="public tunnel URL to include in audit fields")
     mcp_proxy.add_argument("--timeout", type=float, help="upstream timeout in seconds")
 
     args = parser.parse_args(argv)
@@ -718,6 +731,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     lease_file=args.lease_file,
                     lease_required=args.lease_required,
                     lease_header=args.lease_header,
+                    tunnel_provider=args.tunnel_provider,
+                    tunnel_public_url=args.tunnel_public_url,
                     timeout=args.timeout,
                     force=args.force,
                     validate=args.validate,
@@ -940,6 +955,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "lease_file": args.lease_file,
                     "lease_required": args.lease_required,
                     "lease_header": args.lease_header,
+                    "tunnel_provider": args.tunnel_provider,
+                    "tunnel_public_url": args.tunnel_public_url,
                     "timeout": args.timeout,
                 }
                 if args.config is not None:
@@ -978,6 +995,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     lease_file=proxy_config["lease_file"],
                     lease_required=proxy_config["lease_required"],
                     lease_header=proxy_config["lease_header"],
+                    tunnel_provider=proxy_config["tunnel_provider"],
+                    tunnel_public_url=proxy_config["tunnel_public_url"],
                 )
             except Exception as exc:
                 sys.stderr.write(f"snulbug proxy failed: {exc}\n")

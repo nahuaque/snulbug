@@ -107,6 +107,36 @@ def test_build_audit_event_extracts_initialize_client_metadata(tmp_path):
     assert audit["mcp"]["capabilities"] == ["roots", "sampling"]
 
 
+def test_build_audit_event_promotes_tunnel_metadata(tmp_path):
+    policy = write_policy(tmp_path)
+    request = {
+        "method": "POST",
+        "path": "/mcp",
+        "body": json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+    }
+
+    record = record_policy_request(
+        policy,
+        request,
+        metadata={
+            "source": "proxy",
+            "tunnel": {
+                "provider": "ngrok",
+                "public_url": "https://mcp-dev.ngrok.app/mcp",
+                "edge_request_id": "req_123",
+            },
+        },
+    )
+    audit = build_audit_event(record)
+
+    assert audit["tunnel"] == {
+        "provider": "ngrok",
+        "public_url": "https://mcp-dev.ngrok.app/mcp",
+        "edge_request_id": "req_123",
+    }
+    assert audit["metadata"]["tunnel"] == audit["tunnel"]
+
+
 def test_build_audit_event_marks_batch_and_invalid_mcp_bodies(tmp_path):
     policy = write_policy(tmp_path)
     batch_request = {

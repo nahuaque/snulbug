@@ -186,6 +186,7 @@ Workflow:
 
 - redacted replay logs for deterministic policy testing
 - audit JSONL with MCP-aware fields
+- provider-aware tunnel audit fields for ngrok, Cloudflare, Tailscale, and generic forwarders
 - learned least-privilege bundles from observed traffic
 - candidate amendments for blocked legitimate requests
 - a decision console for live local tunnel traffic

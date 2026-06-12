@@ -68,3 +68,6 @@ snulbug tunnel doctor --url https://YOUR-TUNNEL.example/mcp --token local-dev-se
 The compact JSON output contains `checks`, `summary`, `recommendations`, and the
 raw HTTP `probes` used to make the decision. A failed check means the tunnel
 should not be shared until the recommendation is addressed.
+
+When the proxy handles real traffic, snulbug records provider-aware `tunnel`
+fields in replay metadata, audit JSONL, and JSON decision-console output.

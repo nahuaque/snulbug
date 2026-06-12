@@ -39,6 +39,8 @@ from .state import (
 )
 from .tunnel import (
     TUNNEL_PROVIDERS,
+    TunnelAuditConfig,
+    build_tunnel_audit_metadata,
     doctor_tunnel,
     format_tunnel_doctor_report,
     format_tunnel_init_report,
@@ -70,12 +72,14 @@ __all__ = [
     "SnapshotStateStore",
     "StateLimits",
     "TUNNEL_PROVIDERS",
+    "TunnelAuditConfig",
     "__version__",
     "append_audit_event",
     "append_record",
     "amend_mcp_policy",
     "analyze_mcp_impact",
     "build_audit_event",
+    "build_tunnel_audit_metadata",
     "compare_decisions",
     "copy_builtin_preset",
     "create_lease",

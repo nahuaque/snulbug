@@ -36,6 +36,8 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "lease_file": "leases.json",
     "lease_required": False,
     "lease_header": "x-snulbug-lease",
+    "tunnel_provider": "auto",
+    "tunnel_public_url": None,
     "timeout": 30.0,
 }
 
@@ -63,6 +65,8 @@ schema_validation_action = "block"
 lease_file = "leases.json"
 lease_required = false
 lease_header = "x-snulbug-lease"
+tunnel_provider = "auto"
+tunnel_public_url = ""
 timeout = 30.0
 
 # Optional MCP facade mode:
@@ -119,10 +123,15 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         "tool_pinning_action",
         "schema_validation_action",
         "lease_header",
+        "tunnel_provider",
     ):
         value = normalized.get(field)
         if value is not None and not isinstance(value, str):
             raise ValueError(f"mcp.proxy.{field} must be a string")
+    if normalized.get("tunnel_public_url") is not None and not isinstance(normalized.get("tunnel_public_url"), str):
+        raise ValueError("mcp.proxy.tunnel_public_url must be a string")
+    if normalized.get("tunnel_public_url") == "":
+        normalized["tunnel_public_url"] = None
     for field in ("policy", "record_out", "audit_out", "lease_file"):
         value = normalized.get(field)
         if value is not None and not isinstance(value, str | Path):
@@ -152,6 +161,8 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         raise ValueError("mcp.proxy.tool_pinning_action must be 'warn' or 'block'")
     if normalized["schema_validation_action"] not in {"warn", "block"}:
         raise ValueError("mcp.proxy.schema_validation_action must be 'warn' or 'block'")
+    if normalized["tunnel_provider"] not in {"auto", "generic", "ngrok", "cloudflare", "tailscale"}:
+        raise ValueError("mcp.proxy.tunnel_provider must be 'auto', 'generic', 'ngrok', 'cloudflare', or 'tailscale'")
 
     normalized["upstreams"] = _normalize_upstreams(normalized.get("upstreams", []))
     normalized["policy"] = _resolve_path(base, normalized["policy"])

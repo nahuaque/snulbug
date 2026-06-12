@@ -88,7 +88,8 @@ The text console is optimized for watching local tunnel traffic. The JSON format
 emits redacted audit-shaped events that can be piped into local tools. Audit
 events include MCP-aware fields such as JSON-RPC id, MCP method, operation,
 target tool/resource/prompt, params key names, argument key names, initialize
-client metadata, and policy decision `reason` / `reason_code`.
+client metadata, tunnel provider metadata, and policy decision `reason` /
+`reason_code`.
 
 Replay captured traffic against the same policy or a candidate policy:
 
@@ -141,8 +142,16 @@ schema_validation_action = "block"
 lease_file = "leases.json"
 lease_required = false
 lease_header = "x-snulbug-lease"
+tunnel_provider = "auto"
+tunnel_public_url = ""
 timeout = 30.0
 ```
+
+`tunnel_provider` can be `auto`, `generic`, `ngrok`, `cloudflare`, or
+`tailscale`. With `auto`, snulbug infers the provider from request headers and
+the public host when possible. Set `tunnel_public_url` when you want audit logs
+to record the externally shared MCP URL even if the request reaches snulbug
+through a local reverse proxy.
 
 ## Task-Scoped Leases
 

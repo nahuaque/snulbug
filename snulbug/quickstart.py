@@ -53,6 +53,8 @@ def create_mcp_quickstart(
     lease_file: str | Path = "leases.json",
     lease_required: bool = False,
     lease_header: str = "x-snulbug-lease",
+    tunnel_provider: str = "auto",
+    tunnel_public_url: str | None = None,
     timeout: float = 30.0,
     force: bool = False,
     validate: bool = True,
@@ -111,6 +113,8 @@ def create_mcp_quickstart(
         "lease_file": _config_path(_resolve_output(root, lease_file), config_path.parent),
         "lease_required": lease_required,
         "lease_header": lease_header,
+        "tunnel_provider": tunnel_provider,
+        "tunnel_public_url": tunnel_public_url or "",
         "timeout": timeout,
     }
     _write_mcp_proxy_config(config_path, config_values, force=force)
@@ -165,6 +169,8 @@ def create_mcp_quickstart(
             "lease_file": str(_resolve_output(root, lease_file)),
             "lease_required": lease_required,
             "lease_header": lease_header,
+            "tunnel_provider": tunnel_provider,
+            "tunnel_public_url": tunnel_public_url,
         },
         "validation": validation,
         "tests": bundle_tests,

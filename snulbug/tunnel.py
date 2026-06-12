@@ -46,6 +46,16 @@ class HttpProbe:
         }
 
 
+@dataclass(frozen=True)
+class TunnelAuditConfig:
+    provider: str = "auto"
+    public_url: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.provider not in {"auto", *TUNNEL_PROVIDERS}:
+            raise ValueError("tunnel provider must be 'auto', 'generic', 'ngrok', 'cloudflare', or 'tailscale'")
+
+
 def parse_tunnel_headers(values: Sequence[str] | None, *, token: str | None = None) -> dict[str, str]:
     """Parse repeated CLI-style HTTP headers."""
 
@@ -64,6 +74,59 @@ def parse_tunnel_headers(values: Sequence[str] | None, *, token: str | None = No
             raise ValueError("headers must not contain newlines")
         headers[name] = header_value
     return headers
+
+
+def build_tunnel_audit_metadata(
+    scope: Mapping[str, Any],
+    *,
+    config: TunnelAuditConfig | None = None,
+) -> dict[str, Any]:
+    """Extract provider-aware tunnel audit metadata from an ASGI HTTP scope."""
+
+    config = config or TunnelAuditConfig()
+    headers = _scope_headers(scope)
+    host = headers.get("host")
+    forwarded_host = headers.get("x-forwarded-host") or headers.get("x-original-host")
+    public_url = config.public_url or _public_url_from_headers(scope, headers)
+    provider = config.provider if config.provider != "auto" else _infer_tunnel_provider(headers, public_url)
+
+    metadata: dict[str, Any] = {
+        "provider": provider,
+        "inferred": config.provider == "auto",
+        "public_url": public_url,
+        "public_host": _host_from_url(public_url) or forwarded_host or host,
+        "host": host,
+        "forwarded_host": forwarded_host,
+        "forwarded_proto": headers.get("x-forwarded-proto"),
+        "forwarded_for": _forwarded_chain(headers.get("x-forwarded-for")),
+        "client": _scope_client(scope),
+        "source_ip": _source_ip(headers, scope),
+        "edge_request_id": _edge_request_id(provider, headers),
+    }
+    if provider == "cloudflare":
+        metadata["cloudflare"] = _drop_empty(
+            {
+                "ray": headers.get("cf-ray"),
+                "connecting_ip": headers.get("cf-connecting-ip"),
+                "ip_country": headers.get("cf-ipcountry"),
+                "visitor": _parse_json(headers.get("cf-visitor", "")),
+                "access_authenticated_user_email": headers.get("cf-access-authenticated-user-email"),
+            }
+        )
+    elif provider == "ngrok":
+        metadata["ngrok"] = _drop_empty(
+            {
+                "request_id": headers.get("x-ngrok-request-id") or headers.get("ngrok-request-id"),
+                "trace_id": headers.get("x-ngrok-trace-id") or headers.get("ngrok-trace-id"),
+            }
+        )
+    elif provider == "tailscale":
+        metadata["tailscale"] = _drop_empty(
+            {
+                "tsnet_host": bool((metadata.get("public_host") or "").endswith(".ts.net")),
+            }
+        )
+    return _drop_empty(metadata)
 
 
 def init_tunnel_provider(
@@ -705,6 +768,94 @@ def _normalize_url(value: str | None, path: str) -> str:
     return urlunsplit(parsed._replace(fragment=""))
 
 
+def _scope_headers(scope: Mapping[str, Any]) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for raw_name, raw_value in scope.get("headers", []):
+        name = _decode_header(raw_name).lower()
+        value = _decode_header(raw_value)
+        if name in headers:
+            headers[name] = f"{headers[name]}, {value}"
+        else:
+            headers[name] = value
+    return headers
+
+
+def _decode_header(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("latin-1")
+    return str(value)
+
+
+def _public_url_from_headers(scope: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    host = headers.get("x-forwarded-host") or headers.get("host")
+    if not host:
+        return None
+    proto = headers.get("x-forwarded-proto") or str(scope.get("scheme", "http"))
+    path = str(scope.get("path", "/"))
+    return f"{proto}://{host}{path}"
+
+
+def _host_from_url(value: str | None) -> str | None:
+    if not value:
+        return None
+    parsed = urlsplit(value)
+    return parsed.hostname
+
+
+def _infer_tunnel_provider(headers: Mapping[str, str], public_url: str | None) -> str:
+    host = (_host_from_url(public_url) or headers.get("x-forwarded-host") or headers.get("host") or "").lower()
+    header_blob = " ".join(f"{name}:{value}" for name, value in headers.items()).lower()
+    if "cf-ray" in headers or "cf-connecting-ip" in headers or "cloudflare" in header_blob:
+        return "cloudflare"
+    if "ngrok" in host or "ngrok" in header_blob:
+        return "ngrok"
+    if host.endswith(".ts.net") or ".ts.net" in host:
+        return "tailscale"
+    return "generic"
+
+
+def _forwarded_chain(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _scope_client(scope: Mapping[str, Any]) -> dict[str, Any] | None:
+    client = scope.get("client")
+    if not isinstance(client, Sequence) or isinstance(client, str | bytes | bytearray) or not client:
+        return None
+    result: dict[str, Any] = {"host": client[0]}
+    if len(client) > 1:
+        result["port"] = client[1]
+    return result
+
+
+def _source_ip(headers: Mapping[str, str], scope: Mapping[str, Any]) -> str | None:
+    for header in ("cf-connecting-ip", "true-client-ip", "x-real-ip"):
+        if headers.get(header):
+            return headers[header]
+    forwarded = _forwarded_chain(headers.get("x-forwarded-for"))
+    if forwarded:
+        return forwarded[0]
+    client = _scope_client(scope)
+    if client and client.get("host"):
+        return str(client["host"])
+    return None
+
+
+def _edge_request_id(provider: str, headers: Mapping[str, str]) -> str | None:
+    if provider == "cloudflare":
+        return headers.get("cf-ray")
+    if provider == "ngrok":
+        return headers.get("x-ngrok-request-id") or headers.get("ngrok-request-id")
+    return (
+        headers.get("x-request-id")
+        or headers.get("x-correlation-id")
+        or headers.get("traceparent")
+        or headers.get("cf-ray")
+    )
+
+
 def _normalize_path(path: str) -> str:
     return path if path.startswith("/") else f"/{path}"
 
@@ -726,6 +877,10 @@ def _parse_json(value: str) -> Any:
         return json.loads(value)
     except Exception:
         return None
+
+
+def _drop_empty(value: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: item for key, item in value.items() if item not in (None, "", [], {})}
 
 
 def _is_successful_mcp_probe(probe: HttpProbe) -> bool:

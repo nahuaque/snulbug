@@ -35,6 +35,8 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         lease_file = "leases.json"
         lease_required = true
         lease_header = "x-task-lease"
+        tunnel_provider = "cloudflare"
+        tunnel_public_url = "https://mcp.example.com/mcp"
         timeout = 5.5
         """,
         encoding="utf-8",
@@ -62,6 +64,8 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
     assert result["lease_file"] == tmp_path / "leases.json"
     assert result["lease_required"] is True
     assert result["lease_header"] == "x-task-lease"
+    assert result["tunnel_provider"] == "cloudflare"
+    assert result["tunnel_public_url"] == "https://mcp.example.com/mcp"
 
 
 def test_load_mcp_proxy_config_supports_facade_upstreams(tmp_path):
@@ -213,6 +217,8 @@ def test_mcp_proxy_cli_loads_config_before_running(monkeypatch, tmp_path):
     assert calls[0]["lease_file"] == tmp_path / "leases.json"
     assert calls[0]["lease_required"] is False
     assert calls[0]["lease_header"] == "x-snulbug-lease"
+    assert calls[0]["tunnel_provider"] == "auto"
+    assert calls[0]["tunnel_public_url"] is None
 
 
 def test_mcp_proxy_cli_passes_facade_upstreams_without_config(monkeypatch, tmp_path):
@@ -373,6 +379,33 @@ def test_mcp_proxy_cli_applies_lease_overrides(monkeypatch, tmp_path):
     assert calls[0]["lease_file"] == tmp_path / "task-leases.json"
     assert calls[0]["lease_required"] is True
     assert calls[0]["lease_header"] == "x-task-lease"
+
+
+def test_mcp_proxy_cli_applies_tunnel_audit_overrides(monkeypatch, tmp_path):
+    config = write_config(tmp_path)
+    calls = []
+
+    def fake_run_proxy(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("snulbug.proxy.run_proxy", fake_run_proxy)
+
+    status = simulator_main(
+        [
+            "mcp",
+            "proxy",
+            "--config",
+            str(config),
+            "--tunnel-provider",
+            "ngrok",
+            "--tunnel-public-url",
+            "https://mcp-dev.ngrok.app/mcp",
+        ]
+    )
+
+    assert status == 0
+    assert calls[0]["tunnel_provider"] == "ngrok"
+    assert calls[0]["tunnel_public_url"] == "https://mcp-dev.ngrok.app/mcp"
 
 
 def write_config(tmp_path):

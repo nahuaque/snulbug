@@ -25,6 +25,7 @@ from .schema_policy import (
     observe_mcp_tool_schemas,
 )
 from .state import MemoryStateStore, PolicyStateStore, SQLiteStateStore, StateLimits
+from .tunnel import TunnelAuditConfig, build_tunnel_audit_metadata
 
 HOP_BY_HOP_HEADERS = {
     b"connection",
@@ -682,6 +683,7 @@ class ProxyRecorderMiddleware:
         redact_records: bool = True,
         decision_console: bool | TextIO = False,
         decision_console_format: str = "text",
+        tunnel_audit: TunnelAuditConfig | None = None,
     ) -> None:
         self.app = app
         self.policy = policy
@@ -690,6 +692,7 @@ class ProxyRecorderMiddleware:
         self.redact_records = redact_records
         self.decision_console = _console_stream(decision_console)
         self.decision_console_format = decision_console_format
+        self.tunnel_audit = tunnel_audit or TunnelAuditConfig()
         if self.decision_console_format not in {"text", "json"}:
             raise ValueError("decision_console_format must be 'text' or 'json'")
 
@@ -715,7 +718,7 @@ class ProxyRecorderMiddleware:
             _scope_to_record_request(scope, body),
             _trace_result(scope),
             response=response,
-            metadata=_record_metadata(scope),
+            metadata=_record_metadata(scope, tunnel_audit=self.tunnel_audit),
             redact=self.redact_records,
         )
         if self.record_out is not None:
@@ -761,6 +764,8 @@ def create_proxy_application(
     lease_file: str | Path | None = None,
     lease_required: bool = False,
     lease_header: str = "x-snulbug-lease",
+    tunnel_provider: str = "auto",
+    tunnel_public_url: str | None = None,
     confirm: bool = False,
     confirm_handler: Any = None,
 ) -> ASGIApp:
@@ -816,6 +821,7 @@ def create_proxy_application(
         redact_records=redact_records,
         decision_console=decision_console,
         decision_console_format=decision_console_format,
+        tunnel_audit=TunnelAuditConfig(provider=tunnel_provider, public_url=tunnel_public_url),
     )
 
 
@@ -845,6 +851,8 @@ def run_proxy(
     lease_file: str | Path | None = None,
     lease_required: bool = False,
     lease_header: str = "x-snulbug-lease",
+    tunnel_provider: str = "auto",
+    tunnel_public_url: str | None = None,
     confirm: bool = False,
 ) -> None:
     """Run the reverse proxy with uvicorn."""
@@ -877,6 +885,8 @@ def run_proxy(
         lease_file=lease_file,
         lease_required=lease_required,
         lease_header=lease_header,
+        tunnel_provider=tunnel_provider,
+        tunnel_public_url=tunnel_public_url,
         confirm=confirm,
     )
     uvicorn.run(app, host=host, port=port)
@@ -986,6 +996,7 @@ def _format_decision_console_line(event: Mapping[str, Any]) -> str:
     trace = event.get("trace") if isinstance(event.get("trace"), Mapping) else {}
     metadata = event.get("metadata") if isinstance(event.get("metadata"), Mapping) else {}
     lease = metadata.get("lease") if isinstance(metadata.get("lease"), Mapping) else {}
+    tunnel = event.get("tunnel") if isinstance(event.get("tunnel"), Mapping) else {}
     confirmation = decision.get("confirmation") if isinstance(decision.get("confirmation"), Mapping) else {}
 
     parts = [
@@ -1015,6 +1026,11 @@ def _format_decision_console_line(event: Mapping[str, Any]) -> str:
             parts.append(f"lease.reason_code={lease['reason_code']}")
         if lease.get("allowed") is not None:
             parts.append(f"lease.allowed={str(bool(lease['allowed'])).lower()}")
+    if tunnel:
+        if tunnel.get("provider"):
+            parts.append(f"tunnel.provider={tunnel['provider']}")
+        if tunnel.get("edge_request_id"):
+            parts.append(f"tunnel.edge_request_id={tunnel['edge_request_id']}")
     if request.get("query_string"):
         parts.append(f"query={request['query_string']}")
     if mcp.get("method"):
@@ -1284,12 +1300,15 @@ def _trace_result(scope: Scope) -> dict[str, Any]:
     }
 
 
-def _record_metadata(scope: Scope) -> dict[str, Any]:
+def _record_metadata(scope: Scope, *, tunnel_audit: TunnelAuditConfig) -> dict[str, Any]:
     metadata: dict[str, Any] = {"source": "proxy"}
     state = scope.get("state")
     proxy_metadata = state.get("snulbug_proxy") if isinstance(state, Mapping) else None
     if isinstance(proxy_metadata, Mapping):
         metadata.update(proxy_metadata)
+    tunnel_metadata = build_tunnel_audit_metadata(scope, config=tunnel_audit)
+    if tunnel_metadata:
+        metadata["tunnel"] = tunnel_metadata
     return metadata
 
 

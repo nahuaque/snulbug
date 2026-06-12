@@ -79,3 +79,12 @@ snulbug tunnel init --provider ngrok --hostname YOUR-TUNNEL.ngrok.app --compact
 
 The compact output includes `commands`, `client`, `doctor`, generated `files`,
 and `next_steps`.
+
+For explicit audit labels while proxying, copy the generated public URL into
+`snulbug.toml`:
+
+```toml
+[mcp.proxy]
+tunnel_provider = "ngrok"
+tunnel_public_url = "https://YOUR-TUNNEL.ngrok.app/mcp"
+```

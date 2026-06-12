@@ -100,7 +100,8 @@ uv run snulbug mcp record policy.snulbug/policy.lua request.json \
 
 Audit events are compact JSONL records designed for local-dev visibility. They
 include request method/path/headers, MCP method/tool, decision action, allowed
-status, policy source, and optional response or metadata fields.
+status, policy source, tunnel provider metadata when present, and optional
+response or metadata fields.
 
 Audit logs and CLI-created replay records are redacted by default. The redactor masks likely secret keys such
 as `authorization`, `cookie`, `x-api-key`, `token`, `secret`, and `password`,
