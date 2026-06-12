@@ -48,6 +48,9 @@ tool_pinning = true
 tool_pinning_action = "block"
 schema_validation = true
 schema_validation_action = "block"
+lease_file = "leases.json"
+lease_required = false
+lease_header = "x-snulbug-lease"
 ```
 
 Run the proxy:
@@ -221,6 +224,9 @@ tool_pinning = true
 tool_pinning_action = "block"
 schema_validation = true
 schema_validation_action = "block"
+lease_file = "leases.json"
+lease_required = false
+lease_header = "x-snulbug-lease"
 
 [[mcp.proxy.upstreams]]
 name = "files"

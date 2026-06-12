@@ -42,6 +42,7 @@ Expected controls:
 - bearer authentication and challenges
 - method and tool allowlists
 - JSON-RPC batch rejection
+- task-scoped capability leases for temporary tool/path grants
 - project path constraints for tool arguments
 - `tools/call` argument validation against cached MCP `inputSchema`
 - rate limits backed by bounded state
@@ -56,6 +57,8 @@ Limits:
   it understands.
 - Schema validation starts after a successful `tools/list`; calls for unseen
   schemas pass through unless your Lua policy blocks them separately.
+- Leases are bearer-style capabilities. Store `leases.json` locally, rotate or
+  revoke leases after sharing, and prefer short TTLs for public tunnel use.
 
 ### Malicious or compromised MCP server
 

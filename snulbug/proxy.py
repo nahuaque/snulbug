@@ -13,6 +13,7 @@ from typing import Any, TextIO
 from urllib.parse import SplitResult, urlsplit
 
 from .confirm import ConfirmationBroker
+from .leases import LeasePolicyConfig, enforce_mcp_lease_policy, mcp_lease_error_response
 from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
 from .recorder import append_record, build_request_record, record_audit_event
 from .redaction import append_audit_event
@@ -68,6 +69,7 @@ class ReverseProxyApp:
         tool_pin_store: PolicyStateStore | None = None,
         schema_policy: SchemaPolicyConfig | None = None,
         tool_schema_store: PolicyStateStore | None = None,
+        lease_policy: LeasePolicyConfig | None = None,
     ) -> None:
         parsed = urlsplit(upstream)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -78,6 +80,7 @@ class ReverseProxyApp:
         self.tool_pin_store = tool_pin_store
         self.schema_policy = schema_policy or SchemaPolicyConfig()
         self.tool_schema_store = tool_schema_store
+        self.lease_policy = lease_policy or LeasePolicyConfig()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http":
@@ -86,6 +89,27 @@ class ReverseProxyApp:
 
         body = await _read_body(receive)
         request = _jsonrpc_request(body)
+        lease_allowed, lease_metadata = enforce_mcp_lease_policy(
+            request,
+            scope,
+            config=self.lease_policy,
+        )
+        if not lease_allowed and isinstance(request, Mapping):
+            response = mcp_lease_error_response(request, lease_metadata)
+            _set_proxy_metadata(
+                scope,
+                {
+                    **_mcp_request_metadata(request),
+                    "lease": lease_metadata,
+                },
+            )
+            await _send_response(
+                send,
+                status=response["status"],
+                headers=response["headers"],
+                body=response["body"],
+            )
+            return
         schema_allowed, schema_request_metadata = enforce_mcp_request_schema_policy(
             request,
             config=self.schema_policy,
@@ -134,6 +158,7 @@ class ReverseProxyApp:
             scope,
             {
                 **_mcp_request_metadata(request),
+                "lease": lease_metadata,
                 "schema_validation": _schema_metadata(schema_request_metadata, schema_observe_metadata),
                 "response_policy": response_metadata,
             },
@@ -292,6 +317,7 @@ class McpFacadeProxyApp:
         tool_pin_store: PolicyStateStore | None = None,
         schema_policy: SchemaPolicyConfig | None = None,
         tool_schema_store: PolicyStateStore | None = None,
+        lease_policy: LeasePolicyConfig | None = None,
     ) -> None:
         self.upstreams = [_coerce_facade_upstream(upstream) for upstream in upstreams]
         if not self.upstreams:
@@ -301,6 +327,7 @@ class McpFacadeProxyApp:
         self.tool_pin_store = tool_pin_store
         self.schema_policy = schema_policy or SchemaPolicyConfig()
         self.tool_schema_store = tool_schema_store
+        self.lease_policy = lease_policy or LeasePolicyConfig()
         self._parsed = {
             upstream.name: _parse_upstream(_required_url(upstream))
             for upstream in self.upstreams
@@ -458,6 +485,31 @@ class McpFacadeProxyApp:
             )
             return
 
+        lease_allowed, lease_metadata = enforce_mcp_lease_policy(
+            request,
+            scope,
+            config=self.lease_policy,
+        )
+        if not lease_allowed:
+            response = mcp_lease_error_response(request, lease_metadata)
+            _set_proxy_metadata(
+                scope,
+                {
+                    "facade": True,
+                    "operation": "tools/call",
+                    "upstream": upstream.name,
+                    "tool": tool_name,
+                    "lease": lease_metadata,
+                },
+            )
+            await _send_response(
+                send,
+                status=response["status"],
+                headers=response["headers"],
+                body=response["body"],
+            )
+            return
+
         schema_allowed, schema_request_metadata = enforce_mcp_request_schema_policy(
             request,
             config=self.schema_policy,
@@ -472,6 +524,7 @@ class McpFacadeProxyApp:
                     "operation": "tools/call",
                     "upstream": upstream.name,
                     "tool": tool_name,
+                    "lease": lease_metadata,
                     "schema_validation": schema_request_metadata,
                 },
             )
@@ -508,6 +561,7 @@ class McpFacadeProxyApp:
                 "upstream": upstream.name,
                 "tool": tool_name,
                 "upstream_tool": rewritten_params["name"],
+                "lease": lease_metadata,
                 "schema_validation": schema_request_metadata,
                 "response_policy": response_metadata,
             },
@@ -704,6 +758,9 @@ def create_proxy_application(
     tool_pinning_action: str = "block",
     schema_validation: bool = True,
     schema_validation_action: str = "block",
+    lease_file: str | Path | None = None,
+    lease_required: bool = False,
+    lease_header: str = "x-snulbug-lease",
     confirm: bool = False,
     confirm_handler: Any = None,
 ) -> ASGIApp:
@@ -722,6 +779,11 @@ def create_proxy_application(
         enabled=schema_validation,
         action=schema_validation_action,
     )
+    lease_policy = LeasePolicyConfig(
+        lease_file=Path(lease_file) if lease_file else None,
+        required=lease_required,
+        header=lease_header,
+    )
     proxy = _proxy_app(
         upstream,
         upstreams=upstreams,
@@ -730,6 +792,7 @@ def create_proxy_application(
         tool_pin_store=effective_state_store if tool_pinning else None,
         schema_policy=schema_policy,
         tool_schema_store=effective_state_store if schema_validation else None,
+        lease_policy=lease_policy,
     )
     app = LuaMiddleware(
         proxy,
@@ -779,6 +842,9 @@ def run_proxy(
     tool_pinning_action: str = "block",
     schema_validation: bool = True,
     schema_validation_action: str = "block",
+    lease_file: str | Path | None = None,
+    lease_required: bool = False,
+    lease_header: str = "x-snulbug-lease",
     confirm: bool = False,
 ) -> None:
     """Run the reverse proxy with uvicorn."""
@@ -808,6 +874,9 @@ def run_proxy(
         tool_pinning_action=tool_pinning_action,
         schema_validation=schema_validation,
         schema_validation_action=schema_validation_action,
+        lease_file=lease_file,
+        lease_required=lease_required,
+        lease_header=lease_header,
         confirm=confirm,
     )
     uvicorn.run(app, host=host, port=port)
@@ -822,6 +891,7 @@ def _proxy_app(
     tool_pin_store: PolicyStateStore | None,
     schema_policy: SchemaPolicyConfig,
     tool_schema_store: PolicyStateStore | None,
+    lease_policy: LeasePolicyConfig,
 ) -> ASGIApp:
     if upstreams:
         return McpFacadeProxyApp(
@@ -831,6 +901,7 @@ def _proxy_app(
             tool_pin_store=tool_pin_store,
             schema_policy=schema_policy,
             tool_schema_store=tool_schema_store,
+            lease_policy=lease_policy,
         )
     if upstream is None:
         raise ValueError("upstream is required unless facade upstreams are configured")
@@ -841,6 +912,7 @@ def _proxy_app(
         tool_pin_store=tool_pin_store,
         schema_policy=schema_policy,
         tool_schema_store=tool_schema_store,
+        lease_policy=lease_policy,
     )
 
 
@@ -912,6 +984,8 @@ def _format_decision_console_line(event: Mapping[str, Any]) -> str:
     response = event.get("response") if isinstance(event.get("response"), Mapping) else {}
     mcp = event.get("mcp") if isinstance(event.get("mcp"), Mapping) else {}
     trace = event.get("trace") if isinstance(event.get("trace"), Mapping) else {}
+    metadata = event.get("metadata") if isinstance(event.get("metadata"), Mapping) else {}
+    lease = metadata.get("lease") if isinstance(metadata.get("lease"), Mapping) else {}
     confirmation = decision.get("confirmation") if isinstance(decision.get("confirmation"), Mapping) else {}
 
     parts = [
@@ -932,6 +1006,15 @@ def _format_decision_console_line(event: Mapping[str, Any]) -> str:
             parts.append(f"confirm.mode={confirmation['mode']}")
         if confirmation.get("reason_code"):
             parts.append(f"confirm.reason_code={confirmation['reason_code']}")
+    if lease:
+        if lease.get("id"):
+            parts.append(f"lease.id={lease['id']}")
+        if lease.get("task"):
+            parts.append(f"lease.task={_console_value(lease['task'])}")
+        if lease.get("reason_code"):
+            parts.append(f"lease.reason_code={lease['reason_code']}")
+        if lease.get("allowed") is not None:
+            parts.append(f"lease.allowed={str(bool(lease['allowed'])).lower()}")
     if request.get("query_string"):
         parts.append(f"query={request['query_string']}")
     if mcp.get("method"):

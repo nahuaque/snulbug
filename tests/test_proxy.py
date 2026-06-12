@@ -8,7 +8,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from snulbug import ConfirmationBroker, create_proxy_application, load_record_log
+from snulbug import ConfirmationBroker, create_lease, create_proxy_application, list_leases, load_record_log
 
 
 def test_reverse_proxy_forwards_allowed_request_to_upstream(tmp_path):
@@ -716,6 +716,161 @@ def test_mcp_facade_schema_validation_uses_prefixed_tool_names(tmp_path):
     assert git_seen["calls"] == [{"method": "tools/list", "tool": None}]
     assert records[1]["metadata"]["schema_validation"]["tool"] == "git.status"
     assert records[1]["metadata"]["schema_validation"]["blocked"] is True
+
+
+def test_mcp_task_lease_allows_matching_tool_call_and_records_usage(tmp_path):
+    server, seen = start_mcp_upstream({"read_file": "Read a file"})
+    lease_file = tmp_path / "leases.json"
+    lease = create_lease(
+        lease_file,
+        task="Read README only",
+        allow_tools=["read_file"],
+        allow_paths=["README.md"],
+        ttl="30m",
+        token="sbl_test-token",
+    )
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+        lease_file=lease_file,
+        lease_required=True,
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            headers=[(b"x-snulbug-lease", b"sbl_test-token")],
+            body=(
+                b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call",'
+                b'"params":{"name":"read_file","arguments":{"path":"README.md"}}}'
+            ),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    records = load_record_log(record_log)
+    leases = list_leases(lease_file)
+    assert sent[0]["status"] == 200
+    assert payload["result"]["content"][0]["text"] == "called read_file"
+    assert seen["calls"] == [{"method": "tools/call", "tool": "read_file"}]
+    assert records[0]["request"]["headers"]["x-snulbug-lease"] == "[REDACTED]"
+    assert records[0]["metadata"]["lease"]["id"] == lease["lease"]["id"]
+    assert records[0]["metadata"]["lease"]["allowed"] is True
+    assert leases["leases"][0]["use_count"] == 1
+
+
+def test_mcp_task_lease_required_blocks_missing_token_before_upstream(tmp_path):
+    server, seen = start_mcp_upstream({"read_file": "Read a file"})
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+        lease_file=tmp_path / "leases.json",
+        lease_required=True,
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            body=b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"read_file"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    records = load_record_log(record_log)
+    assert sent[0]["status"] == 200
+    assert payload["error"]["code"] == -32000
+    assert "lease.missing" in payload["error"]["message"]
+    assert seen["calls"] == []
+    assert records[0]["metadata"]["lease"]["blocked"] is True
+    assert records[0]["metadata"]["lease"]["reason_code"] == "lease.missing"
+
+
+def test_mcp_task_lease_blocks_disallowed_path_before_upstream(tmp_path):
+    server, seen = start_mcp_upstream({"read_file": "Read a file"})
+    lease_file = tmp_path / "leases.json"
+    create_lease(
+        lease_file,
+        task="Read README only",
+        allow_tools=["read_file"],
+        allow_paths=["README.md"],
+        ttl="30m",
+        token="sbl_test-token",
+    )
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+        lease_file=lease_file,
+        lease_required=True,
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            headers=[(b"x-snulbug-lease", b"sbl_test-token")],
+            body=(
+                b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call",'
+                b'"params":{"name":"read_file","arguments":{"path":"../secrets.env"}}}'
+            ),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    records = load_record_log(record_log)
+    assert sent[0]["status"] == 200
+    assert payload["error"]["code"] == -32000
+    assert "lease.path_not_allowed" in payload["error"]["message"]
+    assert seen["calls"] == []
+    assert records[0]["metadata"]["lease"]["reason_code"] == "lease.path_not_allowed"
+
+
+def test_mcp_facade_task_lease_uses_prefixed_tool_name(tmp_path):
+    git_server, git_seen = start_mcp_upstream({"status": "Show git status"})
+    lease_file = tmp_path / "leases.json"
+    create_lease(
+        lease_file,
+        task="Inspect git status",
+        allow_tools=["git.status"],
+        ttl="30m",
+        token="sbl_test-token",
+    )
+    policy = write_policy(tmp_path, "continue")
+    app = create_proxy_application(
+        None,
+        policy,
+        upstreams=[{"name": "git", "url": f"http://127.0.0.1:{git_server.server_port}/mcp"}],
+        lease_file=lease_file,
+        lease_required=True,
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            headers=[(b"x-snulbug-lease", b"sbl_test-token")],
+            body=b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"git.status"}}',
+        )
+    finally:
+        git_server.shutdown()
+        git_server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    assert sent[0]["status"] == 200
+    assert payload["result"]["content"][0]["text"] == "called status"
+    assert git_seen["calls"] == [{"method": "tools/call", "tool": "status"}]
 
 
 def start_upstream():

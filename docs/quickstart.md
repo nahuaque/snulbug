@@ -125,6 +125,9 @@ tool_pinning = true
 tool_pinning_action = "block"
 schema_validation = true
 schema_validation_action = "block"
+lease_file = "leases.json"
+lease_required = false
+lease_header = "x-snulbug-lease"
 timeout = 30.0
 ```
 
@@ -181,6 +184,22 @@ Request argument schema checks are enabled too. After the first successful
 `tools/list`, snulbug validates later `tools/call` arguments against each
 tool's MCP `inputSchema` and rejects malformed calls before the upstream server
 sees them.
+
+Task-scoped leases are configured but optional by default. Create one when you
+want to hand an agent a temporary, narrow capability:
+
+```bash
+uv run snulbug mcp lease create \
+  --file leases.json \
+  --task "Read README only" \
+  --allow-tool safe_read_file \
+  --allow-path README.md \
+  --ttl 30m
+```
+
+Send the returned `x-snulbug-lease` header with MCP requests. Set
+`lease_required = true` in `snulbug.toml` when every `tools/call` should require
+an active task lease.
 
 If your policy uses `action = "confirm"` for risky calls, run the proxy with
 confirmation enabled:

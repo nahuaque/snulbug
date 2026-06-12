@@ -70,6 +70,7 @@ Request-side policy:
 - JSON-RPC batch rejection
 - project path constraints for tool arguments
 - schema-aware validation of `tools/call` arguments from MCP `inputSchema`
+- task-scoped capability leases with expiring tool/path grants
 - small stateful policies such as rate limits and idempotency keys
 
 Response-side policy:
@@ -79,6 +80,7 @@ Response-side policy:
 - optional blocking for instruction-like tool output
 - `tools/list` description and schema pinning to catch silent upstream changes
 - human confirmation for risky calls, with allow-once or session approval
+- lease usage metadata for task-scoped MCP sessions
 
 Workflow:
 
@@ -546,6 +548,22 @@ uv run snulbug mcp proxy \
 Then expose `http://127.0.0.1:8080/mcp` with ngrok or another tunnel. Use the
 `tunnel-safe` preset for this flow unless a stronger external control sits in
 front of the tunnel.
+
+Create a task-scoped lease when you want an MCP client or agent to do one
+bounded job:
+
+```bash
+uv run snulbug mcp lease create \
+  --file leases.json \
+  --task "Read project docs only" \
+  --allow-tool safe_read_file \
+  --allow-path README.md \
+  --ttl 30m
+```
+
+Send the returned `x-snulbug-lease` header with MCP requests. Set
+`lease_required = true` in `snulbug.toml` when every `tools/call` must carry an
+active lease.
 
 The reverse proxy can also act as a thin facade for multiple local MCP servers,
 including managed stdio servers. In facade mode, `tools/list` is aggregated

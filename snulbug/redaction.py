@@ -21,7 +21,9 @@ DEFAULT_SECRET_KEYS = {
     "refresh_token",
     "secret",
     "set-cookie",
+    "snulbug-lease",
     "token",
+    "x-snulbug-lease",
     "x-api-key",
 }
 

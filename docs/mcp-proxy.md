@@ -114,8 +114,53 @@ tool_pinning = true
 tool_pinning_action = "block"
 schema_validation = true
 schema_validation_action = "block"
+lease_file = "leases.json"
+lease_required = false
+lease_header = "x-snulbug-lease"
 timeout = 30.0
 ```
+
+## Task-Scoped Leases
+
+Leases give a client temporary MCP capabilities for one named task. A lease can
+allow exact tools, path prefixes, URL hosts, command names, and a maximum number
+of `tools/call` uses. The lease file stores token hashes only; the plaintext
+token is shown once when the lease is created.
+
+Create a lease:
+
+```bash
+snulbug mcp lease create \
+  --file leases.json \
+  --task "Read README before editing docs" \
+  --allow-tool safe_read_file \
+  --allow-path README.md \
+  --ttl 30m \
+  --max-calls 5
+```
+
+Send the returned `x-snulbug-lease` header with MCP requests. The proxy hot-loads
+the JSON file on each call, so new leases and revocations do not require a proxy
+restart.
+
+Require leases for every MCP tool call:
+
+```toml
+[mcp.proxy]
+lease_file = "leases.json"
+lease_required = true
+lease_header = "x-snulbug-lease"
+```
+
+Useful operations:
+
+```bash
+snulbug mcp lease list --file leases.json
+snulbug mcp lease revoke lease_abc123 --file leases.json
+```
+
+In facade mode, leases use the client-facing tool name, such as
+`files.read_file` or `git.status`.
 
 ## Argument Schema Firewall
 

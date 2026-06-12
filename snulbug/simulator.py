@@ -220,6 +220,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="block",
         help="what to do when tools/call arguments violate the cached inputSchema",
     )
+    mcp_quickstart.add_argument("--lease-file", type=Path, default=Path("leases.json"), help="task lease JSON file")
+    mcp_quickstart.add_argument(
+        "--lease-required",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="require a valid task lease for MCP tools/call requests",
+    )
+    mcp_quickstart.add_argument(
+        "--lease-header",
+        default="x-snulbug-lease",
+        help="HTTP header carrying the task lease token",
+    )
     mcp_quickstart.add_argument("--timeout", type=float, default=30.0, help="upstream timeout in seconds")
     mcp_quickstart.add_argument("--force", action="store_true", help="overwrite generated policy and config")
     mcp_quickstart.add_argument(
@@ -248,6 +260,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_config_init.add_argument("--output", type=Path, default=Path("snulbug.toml"), help="config file path")
     mcp_config_init.add_argument("--force", action="store_true", help="overwrite the config file when it exists")
     mcp_config_init.add_argument("--compact", action="store_true", help="emit compact JSON")
+
+    mcp_lease = mcp_subparsers.add_parser("lease", help="create and manage task-scoped MCP capability leases")
+    mcp_lease_subparsers = mcp_lease.add_subparsers(dest="lease_command", required=True)
+
+    mcp_lease_create = mcp_lease_subparsers.add_parser("create", help="create a task-scoped MCP capability lease")
+    mcp_lease_create.add_argument("--file", type=Path, default=Path("leases.json"), help="lease JSON file")
+    mcp_lease_create.add_argument("--task", required=True, help="human-readable task this lease grants")
+    mcp_lease_create.add_argument("--allow-tool", action="append", required=True, help="allowed MCP tool name")
+    mcp_lease_create.add_argument("--allow-path", action="append", default=[], help="allowed path or path prefix")
+    mcp_lease_create.add_argument("--allow-host", action="append", default=[], help="allowed URL host")
+    mcp_lease_create.add_argument("--allow-command", action="append", default=[], help="allowed command name")
+    mcp_lease_create.add_argument("--ttl", default="1h", help="lease TTL, such as 30m, 2h, or 1d")
+    mcp_lease_create.add_argument("--max-calls", type=int, help="maximum number of allowed tools/call uses")
+    mcp_lease_create.add_argument("--compact", action="store_true", help="emit compact JSON")
+
+    mcp_lease_list = mcp_lease_subparsers.add_parser("list", help="list task-scoped MCP capability leases")
+    mcp_lease_list.add_argument("--file", type=Path, default=Path("leases.json"), help="lease JSON file")
+    mcp_lease_list.add_argument("--active-only", action="store_true", help="show only active leases")
+    mcp_lease_list.add_argument("--compact", action="store_true", help="emit compact JSON")
+
+    mcp_lease_revoke = mcp_lease_subparsers.add_parser("revoke", help="revoke a task-scoped MCP capability lease")
+    mcp_lease_revoke.add_argument("lease_id", help="lease id to revoke")
+    mcp_lease_revoke.add_argument("--file", type=Path, default=Path("leases.json"), help="lease JSON file")
+    mcp_lease_revoke.add_argument("--compact", action="store_true", help="emit compact JSON")
 
     mcp_record = mcp_subparsers.add_parser("record", help="record one replayable MCP request decision")
     mcp_record.add_argument("script", type=Path, help="path to a Lua policy file")
@@ -413,6 +449,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=("warn", "block"),
         help="what to do when tools/call arguments violate the cached inputSchema",
     )
+    mcp_proxy.add_argument("--lease-file", type=Path, help="task lease JSON file")
+    mcp_proxy.add_argument(
+        "--lease-required",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="require a valid task lease for MCP tools/call requests",
+    )
+    mcp_proxy.add_argument("--lease-header", help="HTTP header carrying the task lease token")
     mcp_proxy.add_argument("--timeout", type=float, help="upstream timeout in seconds")
 
     args = parser.parse_args(argv)
@@ -487,6 +531,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             write_sample_config,
         )
         from .inspection import format_mcp_inspection_report, inspect_mcp_log
+        from .leases import create_lease, list_leases, revoke_lease
         from .presets import McpPolicyOptions, generate_mcp_preset, list_builtin_presets
         from .recorder import append_record, record_audit_event, record_policy_request, replay_record_log
         from .redaction import append_audit_event
@@ -528,6 +573,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     tool_pinning_action=args.tool_pinning_action,
                     schema_validation=args.schema_validation,
                     schema_validation_action=args.schema_validation_action,
+                    lease_file=args.lease_file,
+                    lease_required=args.lease_required,
+                    lease_header=args.lease_header,
                     timeout=args.timeout,
                     force=args.force,
                     validate=args.validate,
@@ -575,6 +623,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 parser.error(f"unknown mcp config command: {args.config_command}")
                 return 2
+        elif args.mcp_command == "lease":
+            try:
+                if args.lease_command == "create":
+                    result = create_lease(
+                        args.file,
+                        task=args.task,
+                        allow_tools=args.allow_tool,
+                        allow_paths=args.allow_path,
+                        allow_hosts=args.allow_host,
+                        allow_commands=args.allow_command,
+                        ttl=args.ttl,
+                        max_calls=args.max_calls,
+                    )
+                elif args.lease_command == "list":
+                    result = list_leases(args.file, include_inactive=not args.active_only)
+                elif args.lease_command == "revoke":
+                    result = revoke_lease(args.file, args.lease_id)
+                else:
+                    parser.error(f"unknown mcp lease command: {args.lease_command}")
+                    return 2
+                status = 0 if result["ok"] else 1
+            except Exception as exc:
+                result = {"ok": False, "file": str(args.file), "error": str(exc)}
+                status = 1
         elif args.mcp_command == "record":
             memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
             request = _read_json(args.request)
@@ -701,6 +773,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "tool_pinning_action": args.tool_pinning_action,
                     "schema_validation": args.schema_validation,
                     "schema_validation_action": args.schema_validation_action,
+                    "lease_file": args.lease_file,
+                    "lease_required": args.lease_required,
+                    "lease_header": args.lease_header,
                     "timeout": args.timeout,
                 }
                 if args.config is not None:
@@ -736,6 +811,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     tool_pinning_action=proxy_config["tool_pinning_action"],
                     schema_validation=proxy_config["schema_validation"],
                     schema_validation_action=proxy_config["schema_validation_action"],
+                    lease_file=proxy_config["lease_file"],
+                    lease_required=proxy_config["lease_required"],
+                    lease_header=proxy_config["lease_header"],
                 )
             except Exception as exc:
                 sys.stderr.write(f"snulbug proxy failed: {exc}\n")

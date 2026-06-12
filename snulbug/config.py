@@ -33,6 +33,9 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "tool_pinning_action": "block",
     "schema_validation": True,
     "schema_validation_action": "block",
+    "lease_file": "leases.json",
+    "lease_required": False,
+    "lease_header": "x-snulbug-lease",
     "timeout": 30.0,
 }
 
@@ -57,6 +60,9 @@ tool_pinning = true
 tool_pinning_action = "block"
 schema_validation = true
 schema_validation_action = "block"
+lease_file = "leases.json"
+lease_required = false
+lease_header = "x-snulbug-lease"
 timeout = 30.0
 
 # Optional MCP facade mode:
@@ -112,11 +118,12 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         "decision_console_format",
         "tool_pinning_action",
         "schema_validation_action",
+        "lease_header",
     ):
         value = normalized.get(field)
         if value is not None and not isinstance(value, str):
             raise ValueError(f"mcp.proxy.{field} must be a string")
-    for field in ("policy", "record_out", "audit_out"):
+    for field in ("policy", "record_out", "audit_out", "lease_file"):
         value = normalized.get(field)
         if value is not None and not isinstance(value, str | Path):
             raise ValueError(f"mcp.proxy.{field} must be a string path")
@@ -135,6 +142,7 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         "response_block_instructions",
         "tool_pinning",
         "schema_validation",
+        "lease_required",
     ):
         if not isinstance(normalized.get(field), bool):
             raise ValueError(f"mcp.proxy.{field} must be a boolean")
@@ -150,6 +158,8 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
     for field in ("record_out", "audit_out"):
         if normalized.get(field):
             normalized[field] = _resolve_path(base, normalized[field])
+    if normalized.get("lease_file"):
+        normalized["lease_file"] = _resolve_path(base, normalized["lease_file"])
     normalized["timeout"] = float(normalized["timeout"])
     return normalized
 
