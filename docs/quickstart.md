@@ -170,6 +170,16 @@ upstream MCP server:
 ngrok http 8080
 ```
 
+Before sharing the tunnel URL, verify the boundary:
+
+```bash
+uv run snulbug tunnel doctor \
+  --provider ngrok \
+  --url https://YOUR-TUNNEL.ngrok.app/mcp \
+  --config snulbug.toml \
+  --token local-dev-secret
+```
+
 Then point the client at the tunnel URL plus `/mcp` and keep the same bearer
 header.
 
@@ -235,6 +245,8 @@ auth-sensitive replay artifacts for a short-lived local debugging session.
   runs a standalone HTTP MCP upstream behind the generated proxy policy.
 - [MCP CLI guide for agents and harnesses](mcp-guide.md) shows copy-paste and
   compact JSON workflows.
+- [Tunnel doctor](tunnel-doctor.md) checks a local proxy or public tunnel before
+  you share it.
 - [MCP client setup recipes](mcp-client-recipes.md) shows local, tunneled,
   header-authenticated, recording, and managed stdio upstream patterns.
 - [MCP reverse proxy](mcp-proxy.md) documents every proxy flag and config key.

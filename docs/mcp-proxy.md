@@ -49,6 +49,20 @@ Point ngrok, Cloudflare Tunnel, or another tunnel at
 the upstream server. Use `tunnel-safe` unless you have a stronger external
 access-control layer in front of the tunnel.
 
+Before sharing the public URL, verify that the tunnel reaches snulbug and that
+unauthenticated MCP traffic is blocked:
+
+```bash
+snulbug tunnel doctor \
+  --provider ngrok \
+  --url https://YOUR-TUNNEL.ngrok.app/mcp \
+  --config snulbug.toml \
+  --token local-dev-secret
+```
+
+See [Tunnel doctor](tunnel-doctor.md) for Cloudflare Access and Tailscale Funnel
+variants.
+
 `--record-out` writes replayable request records for traffic that passes through
 the proxy. `--audit-out` writes redacted audit events. Rejected/challenged
 requests are recorded too, not only requests forwarded upstream.

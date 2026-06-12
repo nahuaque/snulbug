@@ -90,6 +90,16 @@ Expose the proxy, not the upstream server:
 ngrok http 8080
 ```
 
+Before sharing the tunnel URL, run the doctor:
+
+```bash
+uv run snulbug tunnel doctor \
+  --provider ngrok \
+  --url https://YOUR-TUNNEL.ngrok.app/mcp \
+  --config snulbug.toml \
+  --token local-dev-secret
+```
+
 See the full [local MCP policy gateway quickstart](docs/quickstart.md) for
 client setup, facade mode, recording, replay, inspection, and tunnel notes.
 
@@ -185,6 +195,7 @@ Start with:
 
 - [Quickstart: local MCP policy gateway](docs/quickstart.md)
 - [MCP CLI guide for agents and harnesses](docs/mcp-guide.md)
+- [Tunnel doctor](docs/tunnel-doctor.md)
 - [MCP reverse proxy](docs/mcp-proxy.md)
 - [MCP client setup recipes](docs/mcp-client-recipes.md)
 - [MCP learn and amend mode](docs/mcp-learn.md)

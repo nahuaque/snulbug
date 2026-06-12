@@ -119,6 +119,16 @@ Expose the proxy, not the upstream MCP server:
 ngrok http 8080
 ```
 
+Verify the public tunnel before sharing it:
+
+```bash
+uv run snulbug tunnel doctor \
+  --provider ngrok \
+  --url https://YOUR-TUNNEL.ngrok.app/mcp \
+  --config snulbug.toml \
+  --token local-dev-secret
+```
+
 Point the client at:
 
 ```text

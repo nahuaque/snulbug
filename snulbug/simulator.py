@@ -132,6 +132,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     bundle_pack.add_argument("output", type=Path, help="output tar.gz path")
     bundle_pack.add_argument("--compact", action="store_true", help="emit compact JSON")
 
+    tunnel = subparsers.add_parser("tunnel", help="work with public tunnel interop checks")
+    tunnel_subparsers = tunnel.add_subparsers(dest="tunnel_command", required=True)
+
+    tunnel_doctor = tunnel_subparsers.add_parser("doctor", help="verify tunnel-safe MCP proxy exposure")
+    tunnel_doctor.add_argument(
+        "--provider",
+        choices=("generic", "ngrok", "cloudflare", "tailscale"),
+        default="generic",
+        help="tunnel provider profile",
+    )
+    tunnel_doctor.add_argument("--url", "--public-url", dest="url", help="public tunnel URL to check")
+    tunnel_doctor.add_argument("--local-url", help="local snulbug proxy URL to check")
+    tunnel_doctor.add_argument("--config", type=Path, help="snulbug.toml config file")
+    tunnel_doctor.add_argument(
+        "--header",
+        "--auth-header",
+        action="append",
+        default=[],
+        help="authenticated probe header as 'Name: value'; repeat for multiple headers",
+    )
+    tunnel_doctor.add_argument("--token", help="bearer token for authenticated MCP probes")
+    tunnel_doctor.add_argument("--path", default="/mcp", help="MCP path to append when URLs omit a path")
+    tunnel_doctor.add_argument("--timeout", type=float, default=5.0, help="HTTP probe timeout in seconds")
+    tunnel_doctor.add_argument("--compact", action="store_true", help="emit compact JSON")
+
     mcp = subparsers.add_parser("mcp", help="work with local-dev MCP policy helpers and presets")
     mcp_subparsers = mcp.add_subparsers(dest="mcp_command", required=True)
 
@@ -545,6 +570,36 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         indent = None if args.compact else 2
         sys.stdout.write(json.dumps(result, indent=indent, sort_keys=True))
+        sys.stdout.write("\n")
+        return status
+
+    if args.command == "tunnel":
+        from .tunnel import doctor_tunnel, format_tunnel_doctor_report, parse_tunnel_headers
+
+        if args.tunnel_command == "doctor":
+            try:
+                result = doctor_tunnel(
+                    provider=args.provider,
+                    url=args.url,
+                    local_url=args.local_url,
+                    config=args.config,
+                    headers=parse_tunnel_headers(args.header, token=args.token),
+                    path=args.path,
+                    timeout=args.timeout,
+                )
+                status = 0 if result["ok"] else 1
+            except Exception as exc:
+                result = {"ok": False, "error": str(exc)}
+                status = 1
+        else:
+            parser.error(f"unknown tunnel command: {args.tunnel_command}")
+            return 2
+
+        if args.compact:
+            sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
+        else:
+            output = format_tunnel_doctor_report(result) if "checks" in result else json.dumps(result, indent=2)
+            sys.stdout.write(output)
         sys.stdout.write("\n")
         return status
 

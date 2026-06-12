@@ -138,7 +138,28 @@ def _workflows() -> dict[str, dict[str, Any]]:
                     "requires": ["proxy listening on port 8080"],
                     "produces": ["public tunnel URL"],
                     "success_signals": ["public URL forwards to snulbug, not directly to the MCP server"],
-                    "next": "Use the tunnel URL plus `/mcp` in the MCP client.",
+                    "next": "Run tunnel doctor before sharing the tunnel URL.",
+                },
+                {
+                    "id": "doctor-public-tunnel",
+                    "title": "Verify the public tunnel boundary",
+                    "command": "\n".join(
+                        [
+                            "snulbug tunnel doctor \\",
+                            "  --provider ngrok \\",
+                            "  --url https://YOUR-TUNNEL.ngrok.app/mcp \\",
+                            "  --config snulbug.toml \\",
+                            "  --token local-dev-secret",
+                        ]
+                    ),
+                    "requires": ["public tunnel URL", "snulbug proxy is running"],
+                    "produces": ["tunnel safety report"],
+                    "success_signals": [
+                        "unauthenticated public MCP traffic is blocked",
+                        "authenticated tools/list round trip succeeds",
+                        "record and audit logs grow",
+                    ],
+                    "next": "Use the tunnel URL plus `/mcp` in the MCP client only after doctor passes.",
                 },
             ],
             "stop_conditions": [
