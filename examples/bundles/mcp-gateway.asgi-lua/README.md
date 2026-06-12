@@ -6,7 +6,7 @@ ngrok tunnel.
 It demonstrates:
 
 - bearer challenge for unauthenticated callers
-- allowlisting `tools/call` names
+- `mcp.allow_tools` for JSON-RPC `tools/call` allowlists
 - state-backed request counting
 - rate-limit intent when over quota
 - replay fixtures for CI

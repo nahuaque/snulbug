@@ -19,7 +19,7 @@ Point MCP clients at the ngrok URL plus `/mcp`.
 The policy bundle is in `examples/bundles/mcp-gateway.asgi-lua`. It demonstrates:
 
 - bearer auth challenges
-- MCP tool allowlists
+- `mcp.allow_tools` for JSON-RPC `tools/call` allowlists
 - middleware-owned rate limits
 - trace context for downstream ASGI code
 - replayable request fixtures
@@ -28,4 +28,13 @@ Test the bundle:
 
 ```bash
 uv run asgi-lua bundle test examples/bundles/mcp-gateway.asgi-lua
+```
+
+The core policy shape is:
+
+```lua
+local blocked = mcp.allow_tools(request, { "safe_read_file", "list_project_files" })
+if blocked ~= nil then
+  return blocked
+end
 ```

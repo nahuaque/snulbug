@@ -247,6 +247,293 @@ return function(source, source_name, instruction_limit)
     },
   }
 
+  local json_null = {}
+
+  local function json_error(message)
+    error("invalid JSON body: " .. message, 0)
+  end
+
+  local function json_skip_ws(source, index)
+    while true do
+      local char = string.sub(source, index, index)
+      if char == " " or char == "\n" or char == "\r" or char == "\t" then
+        index = index + 1
+      else
+        return index
+      end
+    end
+  end
+
+  local function json_parse_string(source, index)
+    local result = {}
+    index = index + 1
+    while index <= #source do
+      local char = string.sub(source, index, index)
+      if char == '"' then
+        return table.concat(result), index + 1
+      end
+      if char == "\\" then
+        local escape = string.sub(source, index + 1, index + 1)
+        if escape == '"' or escape == "\\" or escape == "/" then
+          table.insert(result, escape)
+          index = index + 2
+        elseif escape == "b" then
+          table.insert(result, "\b")
+          index = index + 2
+        elseif escape == "f" then
+          table.insert(result, "\f")
+          index = index + 2
+        elseif escape == "n" then
+          table.insert(result, "\n")
+          index = index + 2
+        elseif escape == "r" then
+          table.insert(result, "\r")
+          index = index + 2
+        elseif escape == "t" then
+          table.insert(result, "\t")
+          index = index + 2
+        elseif escape == "u" then
+          local hex = string.sub(source, index + 2, index + 5)
+          if not string.match(hex, "^%x%x%x%x$") then
+            json_error("bad unicode escape")
+          end
+          local codepoint = tonumber(hex, 16)
+          if codepoint < 128 then
+            table.insert(result, string.char(codepoint))
+          else
+            table.insert(result, "?")
+          end
+          index = index + 6
+        else
+          json_error("bad string escape")
+        end
+      else
+        table.insert(result, char)
+        index = index + 1
+      end
+    end
+    json_error("unterminated string")
+  end
+
+  local json_parse_value
+
+  local function json_parse_array(source, index)
+    local result = {}
+    index = json_skip_ws(source, index + 1)
+    if string.sub(source, index, index) == "]" then
+      return result, index + 1
+    end
+    while true do
+      local value
+      value, index = json_parse_value(source, index)
+      table.insert(result, value)
+      index = json_skip_ws(source, index)
+      local char = string.sub(source, index, index)
+      if char == "]" then
+        return result, index + 1
+      end
+      if char ~= "," then
+        json_error("expected ',' or ']' in array")
+      end
+      index = json_skip_ws(source, index + 1)
+    end
+  end
+
+  local function json_parse_object(source, index)
+    local result = {}
+    index = json_skip_ws(source, index + 1)
+    if string.sub(source, index, index) == "}" then
+      return result, index + 1
+    end
+    while true do
+      if string.sub(source, index, index) ~= '"' then
+        json_error("expected object key")
+      end
+      local key
+      key, index = json_parse_string(source, index)
+      index = json_skip_ws(source, index)
+      if string.sub(source, index, index) ~= ":" then
+        json_error("expected ':' after object key")
+      end
+      index = json_skip_ws(source, index + 1)
+      result[key], index = json_parse_value(source, index)
+      index = json_skip_ws(source, index)
+      local char = string.sub(source, index, index)
+      if char == "}" then
+        return result, index + 1
+      end
+      if char ~= "," then
+        json_error("expected ',' or '}' in object")
+      end
+      index = json_skip_ws(source, index + 1)
+    end
+  end
+
+  local function json_parse_number(source, index)
+    local start = index
+    local char = string.sub(source, index, index)
+    if char == "-" then
+      index = index + 1
+    end
+    while string.match(string.sub(source, index, index), "%d") do
+      index = index + 1
+    end
+    if string.sub(source, index, index) == "." then
+      index = index + 1
+      while string.match(string.sub(source, index, index), "%d") do
+        index = index + 1
+      end
+    end
+    char = string.sub(source, index, index)
+    if char == "e" or char == "E" then
+      index = index + 1
+      char = string.sub(source, index, index)
+      if char == "+" or char == "-" then
+        index = index + 1
+      end
+      while string.match(string.sub(source, index, index), "%d") do
+        index = index + 1
+      end
+    end
+    local value = tonumber(string.sub(source, start, index - 1))
+    if value == nil then
+      json_error("bad number")
+    end
+    return value, index
+  end
+
+  function json_parse_value(source, index)
+    index = json_skip_ws(source, index)
+    local char = string.sub(source, index, index)
+    if char == '"' then
+      return json_parse_string(source, index)
+    end
+    if char == "{" then
+      return json_parse_object(source, index)
+    end
+    if char == "[" then
+      return json_parse_array(source, index)
+    end
+    if string.sub(source, index, index + 3) == "true" then
+      return true, index + 4
+    end
+    if string.sub(source, index, index + 4) == "false" then
+      return false, index + 5
+    end
+    if string.sub(source, index, index + 3) == "null" then
+      return json_null, index + 4
+    end
+    return json_parse_number(source, index)
+  end
+
+  local function json_decode(source)
+    if type(source) ~= "string" or source == "" then
+      return nil
+    end
+    local value, index = json_parse_value(source, 1)
+    index = json_skip_ws(source, index)
+    if index <= #source then
+      json_error("trailing content")
+    end
+    return value
+  end
+
+  local mcp = {}
+
+  function mcp.body(request)
+    if request.__mcp_body_cached then
+      return request.__mcp_body
+    end
+    local ok, value = pcall(json_decode, request.body or "")
+    request.__mcp_body_cached = true
+    if not ok or type(value) ~= "table" then
+      return nil
+    end
+    request.__mcp_body = value
+    return value
+  end
+
+  function mcp.method(request)
+    local body = mcp.body(request)
+    if type(body) ~= "table" or type(body.method) ~= "string" then
+      return nil
+    end
+    return body.method
+  end
+
+  function mcp.params(request)
+    local body = mcp.body(request)
+    if type(body) ~= "table" or type(body.params) ~= "table" then
+      return {}
+    end
+    return body.params
+  end
+
+  function mcp.is_method(request, method)
+    return mcp.method(request) == method
+  end
+
+  function mcp.is_tool_call(request)
+    return mcp.is_method(request, "tools/call")
+  end
+
+  function mcp.tool_name(request)
+    if not mcp.is_tool_call(request) then
+      return nil
+    end
+    local params = mcp.params(request)
+    if type(params.name) ~= "string" then
+      return nil
+    end
+    return params.name
+  end
+
+  local function list_contains(values, needle)
+    if type(values) ~= "table" or needle == nil then
+      return false
+    end
+    if values[needle] == true then
+      return true
+    end
+    for _, value in ipairs(values) do
+      if value == needle then
+        return true
+      end
+    end
+    return false
+  end
+
+  function mcp.tool_allowed(request, allowed)
+    local name = mcp.tool_name(request)
+    if name == nil then
+      return true
+    end
+    return list_contains(allowed, name)
+  end
+
+  function mcp.reject_tool(request_or_name, status, body)
+    local name = request_or_name
+    if type(request_or_name) == "table" then
+      name = mcp.tool_name(request_or_name)
+    end
+    return {
+      action = "reject",
+      status = status or 403,
+      body = body or ("MCP tool not allowed: " .. tostring(name)),
+    }
+  end
+
+  function mcp.allow_tools(request, allowed, options)
+    local name = mcp.tool_name(request)
+    if name == nil or list_contains(allowed, name) then
+      return nil
+    end
+    options = options or {}
+    return mcp.reject_tool(name, options.status or 403, options.body)
+  end
+
+  safe_env.mcp = mcp
+
   local loader = loadstring or load
   local chunk, err
   if loadstring then

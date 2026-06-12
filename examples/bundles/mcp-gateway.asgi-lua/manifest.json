@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "entrypoint": "policy.lua",
   "description": "Protect a local MCP JSON-RPC endpoint exposed through ngrok",
-  "required_capabilities": ["body", "state", "rate_limit"],
+  "required_capabilities": ["body", "mcp", "state", "rate_limit"],
   "limits": {
     "max_body_bytes": 16384,
     "max_state_operations": 4,
@@ -17,6 +17,7 @@
       "expect": {
         "action": "rate_limit",
         "decision.context.gateway": "mcp",
+        "decision.context.method": "tools/call",
         "decision.context.tool": "safe_read_file",
         "decision.key": "mcp:token:local-dev-secret",
         "decision.limit": 5

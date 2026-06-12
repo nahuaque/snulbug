@@ -350,6 +350,15 @@ uv run asgi-lua bundle validate examples/bundles/mcp-gateway.asgi-lua
 uv run asgi-lua bundle test examples/bundles/mcp-gateway.asgi-lua
 ```
 
+MCP policies can use the built-in helper table:
+
+```lua
+local blocked = mcp.allow_tools(request, { "safe_read_file", "list_project_files" })
+if blocked ~= nil then
+  return blocked
+end
+```
+
 ## Bounded policy state
 
 Policies can use small state capabilities when the middleware is configured with
