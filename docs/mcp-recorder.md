@@ -36,6 +36,36 @@ uv run asgi-lua mcp replay traces/session.jsonl --script candidate.lua
 The replay command exits with status `1` when any current decision differs from
 the recorded decision.
 
+## Audit logs and redaction
+
+Write a redacted audit log while recording:
+
+```bash
+uv run asgi-lua mcp record policy.asgi-lua/policy.lua request.json \
+  --out traces/session.jsonl \
+  --audit-out traces/audit.jsonl
+```
+
+Audit events are compact JSONL records designed for local-dev visibility. They
+include request method/path/headers, MCP method/tool, decision action, allowed
+status, policy source, and optional response or metadata fields.
+
+Audit logs are redacted by default. The redactor masks likely secret keys such
+as `authorization`, `cookie`, `x-api-key`, `token`, `secret`, and `password`,
+plus common bearer tokens, OpenAI-style `sk-` tokens, GitHub tokens, and AWS
+access key IDs.
+
+Replay records are exact by default so they remain deterministic. To redact the
+record itself:
+
+```bash
+uv run asgi-lua mcp record policy.asgi-lua/policy.lua request.json \
+  --out traces/session.redacted.jsonl \
+  --redact
+```
+
+Redacted replay records may not reproduce auth-sensitive decisions exactly.
+
 ## JSONL record shape
 
 Each line is one JSON object:
@@ -64,3 +94,32 @@ Each line is one JSON object:
 
 When a state snapshot is supplied, the record stores it as `state.input` and
 replay starts from the same state.
+
+Audit events have this shape:
+
+```json
+{
+  "type": "asgi-lua.audit",
+  "version": 1,
+  "time": "2026-06-12T00:00:00+00:00",
+  "policy": {
+    "source": "policy.asgi-lua/policy.lua"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/mcp",
+    "headers": {
+      "authorization": "[REDACTED]"
+    }
+  },
+  "mcp": {
+    "method": "tools/call",
+    "tool": "safe_read_file"
+  },
+  "decision": {
+    "action": "continue",
+    "allowed": true,
+    "status": null
+  }
+}
+```

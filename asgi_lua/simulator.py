@@ -142,6 +142,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_record.add_argument("--state", type=Path, help="optional JSON state snapshot")
     mcp_record.add_argument("--response", type=Path, help="optional JSON response metadata to store with the record")
     mcp_record.add_argument("--metadata", type=Path, help="optional JSON metadata to store with the record")
+    mcp_record.add_argument("--audit-out", type=Path, help="optional redacted audit JSONL path to append to")
+    mcp_record.add_argument("--redact", action="store_true", help="redact secrets in the replay record itself")
     mcp_record.add_argument("--instruction-limit", type=int, default=100_000)
     mcp_record.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
     mcp_record.add_argument("--compact", action="store_true", help="emit compact JSON")
@@ -219,7 +221,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "mcp":
         from .presets import copy_builtin_preset, list_builtin_presets
-        from .recorder import append_record, record_policy_request, replay_record_log
+        from .recorder import append_record, record_audit_event, record_policy_request, replay_record_log
+        from .redaction import append_audit_event
 
         if args.mcp_command == "presets":
             result = {"presets": list_builtin_presets()}
@@ -246,14 +249,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 state_snapshot=_read_json(args.state) if args.state else None,
                 response=_read_json(args.response) if args.response else None,
                 metadata=_read_json(args.metadata) if args.metadata else None,
+                redact=args.redact,
                 instruction_limit=args.instruction_limit,
                 memory_limit_bytes=memory_limit,
             )
             append_record(args.out, result)
+            audit_event = None
+            if args.audit_out is not None:
+                audit_event = record_audit_event(result)
+                append_audit_event(args.audit_out, audit_event)
             result = {
                 "ok": True,
                 "out": str(args.out),
+                "audit_out": str(args.audit_out) if args.audit_out is not None else None,
+                "redacted": bool(args.redact),
                 "action": result["action"] if "action" in result else result["result"]["action"],
+                "audit": audit_event,
                 "record": result,
             }
             status = 0

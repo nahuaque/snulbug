@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .redaction import build_audit_event, redact_secrets
 from .simulator import simulate_policy
 
 RECORD_TYPE = "asgi-lua.request_record"
@@ -21,6 +22,7 @@ def record_policy_request(
     response: Mapping[str, Any] | None = None,
     metadata: Mapping[str, Any] | None = None,
     recorded_at: str | None = None,
+    redact: bool = False,
     instruction_limit: int = 100_000,
     memory_limit_bytes: int | None = 8 * 1024 * 1024,
 ) -> dict[str, Any]:
@@ -50,7 +52,16 @@ def record_policy_request(
         record["response"] = dict(response)
     if metadata is not None:
         record["metadata"] = dict(metadata)
+    if redact:
+        record = redact_secrets(record)
+        record["redacted"] = True
     return record
+
+
+def record_audit_event(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Build a redacted audit event for a request record."""
+
+    return build_audit_event(record, redact=True)
 
 
 def append_record(path: str | Path, record: Mapping[str, Any]) -> None:

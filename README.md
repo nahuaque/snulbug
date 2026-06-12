@@ -381,6 +381,17 @@ uv run asgi-lua mcp replay traces/session.jsonl
 uv run asgi-lua mcp replay traces/session.jsonl --script candidate.lua
 ```
 
+Write a redacted audit log while recording:
+
+```bash
+uv run asgi-lua mcp record policy.asgi-lua/policy.lua request.json \
+  --out traces/session.jsonl \
+  --audit-out traces/audit.jsonl
+```
+
+Replay records are exact by default. Pass `--redact` only when safer artifacts
+matter more than replaying auth-sensitive requests exactly.
+
 ## Bounded policy state
 
 Policies can use small state capabilities when the middleware is configured with
