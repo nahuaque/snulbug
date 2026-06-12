@@ -55,6 +55,18 @@ The inspection report summarizes decisions, MCP methods, tools, targets, reason
 codes, HTTP statuses, invalid JSON, batch requests, upstream errors, and example
 events for notable findings.
 
+Write a Markdown session report:
+
+```bash
+uv run asgi-lua mcp inspect traces/audit.jsonl \
+  --kind audit \
+  --report-out traces/session-report.md
+```
+
+The report is built from the redacted inspection summary. It includes counts,
+top methods/tools/targets, findings, and representative examples without
+copying request bodies, headers, params, or tool arguments into the report.
+
 ## Audit logs and redaction
 
 Write a redacted audit log while recording:

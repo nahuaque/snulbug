@@ -228,6 +228,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_inspect.add_argument("log", type=Path, help="JSONL replay or audit log")
     mcp_inspect.add_argument("--kind", choices=("auto", "record", "audit"), default="auto", help="input log type")
     mcp_inspect.add_argument("--top", type=int, default=10, help="number of top values to include per category")
+    mcp_inspect.add_argument("--report-out", type=Path, help="optional Markdown session report path")
+    mcp_inspect.add_argument(
+        "--report-format",
+        choices=("markdown",),
+        default="markdown",
+        help="session report output format",
+    )
     mcp_inspect.add_argument("--compact", action="store_true", help="emit compact JSON")
 
     mcp_proxy = mcp_subparsers.add_parser("proxy", help="run a local-dev MCP reverse proxy")
@@ -333,7 +340,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             normalize_mcp_proxy_config,
             write_sample_config,
         )
-        from .inspection import inspect_mcp_log
+        from .inspection import format_mcp_inspection_report, inspect_mcp_log
         from .presets import McpPolicyOptions, generate_mcp_preset, list_builtin_presets
         from .recorder import append_record, record_audit_event, record_policy_request, replay_record_log
         from .redaction import append_audit_event
@@ -455,6 +462,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.mcp_command == "inspect":
             try:
                 result = inspect_mcp_log(args.log, kind=args.kind, top=args.top)
+                if args.report_out is not None:
+                    report_text = format_mcp_inspection_report(result, output_format=args.report_format)
+                    args.report_out.parent.mkdir(parents=True, exist_ok=True)
+                    args.report_out.write_text(report_text, encoding="utf-8")
+                    result["report_out"] = str(args.report_out)
+                    result["report_format"] = args.report_format
                 status = 0
             except Exception as exc:
                 result = {"ok": False, "log": str(args.log), "error": str(exc)}

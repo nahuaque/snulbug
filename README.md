@@ -433,6 +433,7 @@ Inspect replay or audit logs offline:
 ```bash
 uv run asgi-lua mcp inspect traces/session.jsonl
 uv run asgi-lua mcp inspect traces/audit.jsonl --kind audit
+uv run asgi-lua mcp inspect traces/audit.jsonl --kind audit --report-out traces/session-report.md
 ```
 
 Write a redacted audit log while recording:

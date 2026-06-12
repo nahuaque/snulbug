@@ -154,6 +154,7 @@ After a session, inspect the captured replay and audit logs:
 ```bash
 uv run asgi-lua mcp inspect traces/session.jsonl
 uv run asgi-lua mcp inspect traces/audit.jsonl --kind audit
+uv run asgi-lua mcp inspect traces/audit.jsonl --kind audit --report-out traces/session-report.md
 ```
 
 Replay records and audit logs are redacted by default. Keep that default for

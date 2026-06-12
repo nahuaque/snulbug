@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import json
 
-from asgi_lua import append_audit_event, append_record, build_audit_event, inspect_mcp_log, record_policy_request
+from asgi_lua import (
+    append_audit_event,
+    append_record,
+    build_audit_event,
+    format_mcp_inspection_report,
+    inspect_mcp_log,
+    record_policy_request,
+)
 from asgi_lua.simulator import main as simulator_main
 
 
@@ -86,6 +93,33 @@ def test_inspect_mcp_record_log_normalizes_to_audit_shape(tmp_path):
     assert report["mcp"]["tools"] == [{"value": "safe_read_file", "count": 1}]
 
 
+def test_format_mcp_inspection_report_outputs_markdown_summary(tmp_path):
+    policy = write_policy(tmp_path)
+    audit_log = tmp_path / "audit.jsonl"
+    append_audit_event(
+        audit_log,
+        build_audit_event(
+            record_policy_request(
+                policy,
+                {
+                    "method": "POST",
+                    "path": "/mcp",
+                    "body": '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shell_exec"}}',
+                },
+                response={"status": 403},
+            )
+        ),
+    )
+
+    report = format_mcp_inspection_report(inspect_mcp_log(audit_log))
+
+    assert report.startswith("# asgi-lua MCP Session Report")
+    assert "| Events | 1 |" in report
+    assert "mcp.tool_not_allowed" in report
+    assert "shell_exec" in report
+    assert "Blocked Decisions" in report
+
+
 def test_mcp_inspect_cli_outputs_compact_report(tmp_path, capsys):
     policy = write_policy(tmp_path)
     record_log = tmp_path / "records.jsonl"
@@ -108,6 +142,36 @@ def test_mcp_inspect_cli_outputs_compact_report(tmp_path, capsys):
     assert output["ok"] is True
     assert output["kind"] == "record"
     assert output["event_count"] == 1
+
+
+def test_mcp_inspect_cli_writes_markdown_session_report(tmp_path, capsys):
+    policy = write_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    report_path = tmp_path / "reports" / "session.md"
+    append_record(
+        record_log,
+        record_policy_request(
+            policy,
+            {
+                "method": "POST",
+                "path": "/mcp",
+                "body": '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shell_exec"}}',
+            },
+            response={"status": 403},
+        ),
+    )
+
+    status = simulator_main(["mcp", "inspect", str(record_log), "--report-out", str(report_path), "--compact"])
+
+    output = json.loads(capsys.readouterr().out)
+    report = report_path.read_text(encoding="utf-8")
+    assert status == 0
+    assert output["ok"] is True
+    assert output["report_out"] == str(report_path)
+    assert output["report_format"] == "markdown"
+    assert "# asgi-lua MCP Session Report" in report
+    assert "mcp.tool_not_allowed" in report
+    assert "shell_exec" in report
 
 
 def test_mcp_inspect_cli_returns_nonzero_for_bad_log(tmp_path, capsys):

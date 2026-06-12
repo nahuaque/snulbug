@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +25,103 @@ def inspect_mcp_log(path: str | Path, *, kind: str = "auto", top: int = 10) -> d
     for event in events:
         inspector.add(event)
     return inspector.report(path, source_kinds={event["source_kind"] for event in events})
+
+
+def format_mcp_inspection_report(report: Mapping[str, Any], *, output_format: str = "markdown") -> str:
+    """Format an MCP inspection result as a human-readable session report."""
+
+    if output_format != "markdown":
+        raise ValueError("output_format must be 'markdown'")
+    if report.get("ok") is not True:
+        raise ValueError("inspection report must be successful")
+
+    lines = [
+        "# asgi-lua MCP Session Report",
+        "",
+        "## Overview",
+        "",
+        _table(
+            ["Field", "Value"],
+            [
+                ["Log", report.get("log")],
+                ["Kind", report.get("kind")],
+                ["Events", report.get("event_count")],
+                ["First event", _mapping(report.get("time_range")).get("first") or "-"],
+                ["Last event", _mapping(report.get("time_range")).get("last") or "-"],
+            ],
+        ),
+        "",
+        "## Decisions",
+        "",
+        _table(
+            ["Metric", "Count"],
+            [
+                ["Allowed", _mapping(report.get("decisions")).get("allowed", 0)],
+                ["Blocked", _mapping(report.get("decisions")).get("blocked", 0)],
+                ["Missing reason code", _mapping(report.get("decisions")).get("missing_reason_code", 0)],
+            ],
+        ),
+        "",
+        "### Actions",
+        "",
+        _counts_table(_mapping(report.get("decisions")).get("actions")),
+        "",
+        "### Reason Codes",
+        "",
+        _counts_table(_mapping(report.get("decisions")).get("reason_codes")),
+        "",
+        "## MCP Traffic",
+        "",
+        "### Methods",
+        "",
+        _counts_table(_mapping(report.get("mcp")).get("methods")),
+        "",
+        "### Tools",
+        "",
+        _counts_table(_mapping(report.get("mcp")).get("tools")),
+        "",
+        "### Targets",
+        "",
+        _counts_table(_mapping(report.get("mcp")).get("targets")),
+        "",
+        _table(
+            ["Metric", "Count"],
+            [
+                ["Batch requests", _mapping(report.get("mcp")).get("batch_requests", 0)],
+                ["Invalid JSON", _mapping(report.get("mcp")).get("invalid_json", 0)],
+            ],
+        ),
+        "",
+        "## HTTP",
+        "",
+        "### Request Paths",
+        "",
+        _counts_table(_mapping(report.get("requests")).get("paths")),
+        "",
+        "### Response Statuses",
+        "",
+        _counts_table(_mapping(report.get("responses")).get("statuses")),
+        "",
+        "## Findings",
+        "",
+        _findings_table(report.get("findings")),
+        "",
+        "## Examples",
+        "",
+        "### Blocked Decisions",
+        "",
+        _examples_table(_mapping(report.get("examples")).get("blocked")),
+        "",
+        "### Invalid JSON",
+        "",
+        _examples_table(_mapping(report.get("examples")).get("invalid_json")),
+        "",
+        "### Upstream Errors",
+        "",
+        _examples_table(_mapping(report.get("examples")).get("upstream_errors")),
+        "",
+    ]
+    return "\n".join(lines)
 
 
 class _Inspector:
@@ -237,3 +334,61 @@ def _status_is_server_error(value: Any) -> bool:
         return int(value) >= 500
     except (TypeError, ValueError):
         return False
+
+
+def _counts_table(values: Any) -> str:
+    rows = []
+    if isinstance(values, Sequence) and not isinstance(values, str | bytes | bytearray):
+        for item in values:
+            if isinstance(item, Mapping):
+                rows.append([item.get("value"), item.get("count")])
+    return _table(["Value", "Count"], rows)
+
+
+def _findings_table(values: Any) -> str:
+    rows = []
+    if isinstance(values, Sequence) and not isinstance(values, str | bytes | bytearray):
+        for item in values:
+            if isinstance(item, Mapping):
+                rows.append([item.get("severity"), item.get("type"), item.get("count")])
+    return _table(["Severity", "Finding", "Count"], rows)
+
+
+def _examples_table(values: Any) -> str:
+    rows = []
+    if isinstance(values, Sequence) and not isinstance(values, str | bytes | bytearray):
+        for item in values:
+            if isinstance(item, Mapping):
+                rows.append(
+                    [
+                        item.get("line"),
+                        item.get("time"),
+                        item.get("status"),
+                        item.get("action"),
+                        item.get("reason_code"),
+                        item.get("mcp_method"),
+                        item.get("tool") or item.get("target"),
+                        item.get("path"),
+                    ]
+                )
+    return _table(["Line", "Time", "Status", "Action", "Reason", "MCP Method", "Target", "Path"], rows)
+
+
+def _table(headers: Sequence[Any], rows: Sequence[Sequence[Any]]) -> str:
+    if not rows:
+        rows = [["-" for _header in headers]]
+    lines = [
+        "| " + " | ".join(_md_cell(header) for header in headers) + " |",
+        "| " + " | ".join("---" for _header in headers) + " |",
+    ]
+    for row in rows:
+        padded = list(row) + [""] * (len(headers) - len(row))
+        lines.append("| " + " | ".join(_md_cell(value) for value in padded[: len(headers)]) + " |")
+    return "\n".join(lines)
+
+
+def _md_cell(value: Any) -> str:
+    if value is None or value == "":
+        return "-"
+    text = str(value)
+    return text.replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ")

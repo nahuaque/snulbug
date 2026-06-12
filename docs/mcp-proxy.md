@@ -76,6 +76,7 @@ Inspect a session after the proxy stops:
 ```bash
 asgi-lua mcp inspect traces/session.jsonl
 asgi-lua mcp inspect traces/audit.jsonl --kind audit
+asgi-lua mcp inspect traces/audit.jsonl --kind audit --report-out traces/session-report.md
 ```
 
 Live replay records are redacted by default. Use `--no-redact-records` only when

@@ -24,6 +24,7 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 - Added a local MCP policy gateway quickstart and `asgi-lua mcp quickstart` generator.
 - Added a runnable end-to-end MCP policy proxy demo.
 - Added MCP risk-profile presets for read-only local development, shell-tool denial, project path allowlists, and tunneled servers.
+- Added Markdown MCP session reports with `asgi-lua mcp inspect --report-out`.
 
 ## [0.1.0] - 2026-06-12
 

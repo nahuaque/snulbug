@@ -43,6 +43,9 @@ Inspect the captured logs:
 ```bash
 uv run asgi-lua mcp inspect examples/mcp_proxy_demo/.run/traces/session.jsonl
 uv run asgi-lua mcp inspect examples/mcp_proxy_demo/.run/traces/audit.jsonl --kind audit
+uv run asgi-lua mcp inspect examples/mcp_proxy_demo/.run/traces/audit.jsonl \
+  --kind audit \
+  --report-out examples/mcp_proxy_demo/.run/traces/session-report.md
 ```
 
 ## Two-terminal HTTP demo

@@ -4,7 +4,7 @@ __version__ = "0.1.0"
 
 from .bundle import pack_bundle, test_bundle, validate_bundle
 from .config import load_mcp_proxy_config, write_sample_config
-from .inspection import inspect_mcp_log
+from .inspection import format_mcp_inspection_report, inspect_mcp_log
 from .middleware import LuaConfig, LuaMiddleware
 from .presets import McpPolicyOptions, copy_builtin_preset, generate_mcp_preset, list_builtin_presets
 from .promotion import compare_decisions, diff_policies
@@ -47,6 +47,7 @@ __all__ = [
     "create_mcp_quickstart",
     "create_proxy_application",
     "diff_policies",
+    "format_mcp_inspection_report",
     "generate_mcp_preset",
     "inspect_mcp_log",
     "load_mcp_proxy_config",
