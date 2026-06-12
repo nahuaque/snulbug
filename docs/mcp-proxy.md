@@ -40,6 +40,9 @@ asgi-lua mcp proxy --config asgi-lua.toml
 For concrete MCP client configuration patterns, see
 [MCP client setup recipes](mcp-client-recipes.md).
 
+For a runnable upstream-plus-proxy walkthrough, see the
+[end-to-end MCP policy proxy demo](../examples/mcp_proxy_demo/README.md).
+
 Point ngrok, Cloudflare Tunnel, or another tunnel at
 `http://127.0.0.1:8080`. The proxy applies the Lua policy before forwarding to
 the upstream server.

@@ -159,6 +159,8 @@ auth-sensitive replay artifacts for a short-lived local debugging session.
 
 ## Next steps
 
+- [End-to-end MCP policy proxy demo](../examples/mcp_proxy_demo/README.md)
+  runs a standalone HTTP MCP upstream behind the generated proxy policy.
 - [MCP client setup recipes](mcp-client-recipes.md) shows local, tunneled,
   header-authenticated, recording, and stdio-only client patterns.
 - [MCP reverse proxy](mcp-proxy.md) documents every proxy flag and config key.

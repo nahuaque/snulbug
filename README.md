@@ -451,6 +451,15 @@ uv run asgi-lua mcp proxy \
 
 Then expose `http://127.0.0.1:8080/mcp` with ngrok or another tunnel.
 
+Run the full end-to-end proxy demo:
+
+```bash
+uv run python examples/mcp_proxy_demo/run_demo.py
+```
+
+See [examples/mcp_proxy_demo](examples/mcp_proxy_demo/README.md) for the
+one-command runner and two-terminal HTTP walkthrough.
+
 Watch live policy decisions while proxying:
 
 ```bash

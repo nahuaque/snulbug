@@ -9,6 +9,7 @@ Start here:
 - [State adapters](state.md)
 - [Policy bundles](bundles.md)
 - [MCP gateway example](mcp-gateway.md)
+- [End-to-end MCP policy proxy demo](../examples/mcp_proxy_demo/README.md)
 - [MCP client setup recipes](mcp-client-recipes.md)
 - [MCP presets](mcp-presets.md)
 - [MCP recorder and replay](mcp-recorder.md)
