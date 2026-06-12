@@ -208,6 +208,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="block",
         help="what to do when a pinned tool description or schema changes",
     )
+    mcp_quickstart.add_argument(
+        "--schema-validation",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="validate tools/call arguments against cached MCP inputSchema definitions",
+    )
+    mcp_quickstart.add_argument(
+        "--schema-validation-action",
+        choices=("warn", "block"),
+        default="block",
+        help="what to do when tools/call arguments violate the cached inputSchema",
+    )
     mcp_quickstart.add_argument("--timeout", type=float, default=30.0, help="upstream timeout in seconds")
     mcp_quickstart.add_argument("--force", action="store_true", help="overwrite generated policy and config")
     mcp_quickstart.add_argument(
@@ -390,6 +402,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=("warn", "block"),
         help="what to do when a pinned tool description or schema changes",
     )
+    mcp_proxy.add_argument(
+        "--schema-validation",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="validate tools/call arguments against cached MCP inputSchema definitions",
+    )
+    mcp_proxy.add_argument(
+        "--schema-validation-action",
+        choices=("warn", "block"),
+        help="what to do when tools/call arguments violate the cached inputSchema",
+    )
     mcp_proxy.add_argument("--timeout", type=float, help="upstream timeout in seconds")
 
     args = parser.parse_args(argv)
@@ -503,6 +526,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     response_block_instructions=args.response_block_instructions,
                     tool_pinning=args.tool_pinning,
                     tool_pinning_action=args.tool_pinning_action,
+                    schema_validation=args.schema_validation,
+                    schema_validation_action=args.schema_validation_action,
                     timeout=args.timeout,
                     force=args.force,
                     validate=args.validate,
@@ -674,6 +699,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "response_block_instructions": args.response_block_instructions,
                     "tool_pinning": args.tool_pinning,
                     "tool_pinning_action": args.tool_pinning_action,
+                    "schema_validation": args.schema_validation,
+                    "schema_validation_action": args.schema_validation_action,
                     "timeout": args.timeout,
                 }
                 if args.config is not None:
@@ -707,6 +734,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     response_block_instructions=proxy_config["response_block_instructions"],
                     tool_pinning=proxy_config["tool_pinning"],
                     tool_pinning_action=proxy_config["tool_pinning_action"],
+                    schema_validation=proxy_config["schema_validation"],
+                    schema_validation_action=proxy_config["schema_validation_action"],
                 )
             except Exception as exc:
                 sys.stderr.write(f"snulbug proxy failed: {exc}\n")

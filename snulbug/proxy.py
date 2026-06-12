@@ -17,6 +17,12 @@ from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
 from .recorder import append_record, build_request_record, record_audit_event
 from .redaction import append_audit_event
 from .response_policy import ResponsePolicyConfig, enforce_mcp_response_policy
+from .schema_policy import (
+    SchemaPolicyConfig,
+    enforce_mcp_request_schema_policy,
+    mcp_schema_error_response,
+    observe_mcp_tool_schemas,
+)
 from .state import MemoryStateStore, PolicyStateStore, SQLiteStateStore, StateLimits
 
 HOP_BY_HOP_HEADERS = {
@@ -60,6 +66,8 @@ class ReverseProxyApp:
         timeout: float = 30.0,
         response_policy: ResponsePolicyConfig | None = None,
         tool_pin_store: PolicyStateStore | None = None,
+        schema_policy: SchemaPolicyConfig | None = None,
+        tool_schema_store: PolicyStateStore | None = None,
     ) -> None:
         parsed = urlsplit(upstream)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -68,6 +76,8 @@ class ReverseProxyApp:
         self._upstream = parsed
         self.response_policy = response_policy or ResponsePolicyConfig()
         self.tool_pin_store = tool_pin_store
+        self.schema_policy = schema_policy or SchemaPolicyConfig()
+        self.tool_schema_store = tool_schema_store
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http":
@@ -76,6 +86,27 @@ class ReverseProxyApp:
 
         body = await _read_body(receive)
         request = _jsonrpc_request(body)
+        schema_allowed, schema_request_metadata = enforce_mcp_request_schema_policy(
+            request,
+            config=self.schema_policy,
+            tool_schema_store=self.tool_schema_store,
+        )
+        if not schema_allowed and isinstance(request, Mapping):
+            response = mcp_schema_error_response(request, schema_request_metadata)
+            _set_proxy_metadata(
+                scope,
+                {
+                    **_mcp_request_metadata(request),
+                    "schema_validation": schema_request_metadata,
+                },
+            )
+            await _send_response(
+                send,
+                status=response["status"],
+                headers=response["headers"],
+                body=response["body"],
+            )
+            return
         try:
             response = await asyncio.to_thread(self._forward, scope, body)
         except Exception as exc:
@@ -93,10 +124,17 @@ class ReverseProxyApp:
             config=self.response_policy,
             tool_pin_store=self.tool_pin_store,
         )
+        schema_observe_metadata = observe_mcp_tool_schemas(
+            response,
+            request=request,
+            config=self.schema_policy,
+            tool_schema_store=self.tool_schema_store,
+        )
         _set_proxy_metadata(
             scope,
             {
                 **_mcp_request_metadata(request),
+                "schema_validation": _schema_metadata(schema_request_metadata, schema_observe_metadata),
                 "response_policy": response_metadata,
             },
         )
@@ -252,6 +290,8 @@ class McpFacadeProxyApp:
         timeout: float = 30.0,
         response_policy: ResponsePolicyConfig | None = None,
         tool_pin_store: PolicyStateStore | None = None,
+        schema_policy: SchemaPolicyConfig | None = None,
+        tool_schema_store: PolicyStateStore | None = None,
     ) -> None:
         self.upstreams = [_coerce_facade_upstream(upstream) for upstream in upstreams]
         if not self.upstreams:
@@ -259,6 +299,8 @@ class McpFacadeProxyApp:
         self.timeout = timeout
         self.response_policy = response_policy or ResponsePolicyConfig()
         self.tool_pin_store = tool_pin_store
+        self.schema_policy = schema_policy or SchemaPolicyConfig()
+        self.tool_schema_store = tool_schema_store
         self._parsed = {
             upstream.name: _parse_upstream(_required_url(upstream))
             for upstream in self.upstreams
@@ -373,7 +415,19 @@ class McpFacadeProxyApp:
             config=self.response_policy,
             tool_pin_store=self.tool_pin_store,
         )
-        _set_proxy_metadata(scope, {"response_policy": response_metadata})
+        schema_observe_metadata = observe_mcp_tool_schemas(
+            response,
+            request=request,
+            config=self.schema_policy,
+            tool_schema_store=self.tool_schema_store,
+        )
+        _set_proxy_metadata(
+            scope,
+            {
+                "schema_validation": schema_observe_metadata,
+                "response_policy": response_metadata,
+            },
+        )
         await _send_response(
             send,
             status=response["status"],
@@ -404,6 +458,31 @@ class McpFacadeProxyApp:
             )
             return
 
+        schema_allowed, schema_request_metadata = enforce_mcp_request_schema_policy(
+            request,
+            config=self.schema_policy,
+            tool_schema_store=self.tool_schema_store,
+        )
+        if not schema_allowed:
+            response = mcp_schema_error_response(request, schema_request_metadata)
+            _set_proxy_metadata(
+                scope,
+                {
+                    "facade": True,
+                    "operation": "tools/call",
+                    "upstream": upstream.name,
+                    "tool": tool_name,
+                    "schema_validation": schema_request_metadata,
+                },
+            )
+            await _send_response(
+                send,
+                status=response["status"],
+                headers=response["headers"],
+                body=response["body"],
+            )
+            return
+
         rewritten = dict(request)
         rewritten_params = dict(params)
         rewritten_params["name"] = tool_name.removeprefix(upstream.tool_prefix)
@@ -429,6 +508,7 @@ class McpFacadeProxyApp:
                 "upstream": upstream.name,
                 "tool": tool_name,
                 "upstream_tool": rewritten_params["name"],
+                "schema_validation": schema_request_metadata,
                 "response_policy": response_metadata,
             },
         )
@@ -622,6 +702,8 @@ def create_proxy_application(
     response_block_instructions: bool = False,
     tool_pinning: bool = True,
     tool_pinning_action: str = "block",
+    schema_validation: bool = True,
+    schema_validation_action: str = "block",
     confirm: bool = False,
     confirm_handler: Any = None,
 ) -> ASGIApp:
@@ -636,12 +718,18 @@ def create_proxy_application(
         tool_pinning=tool_pinning,
         tool_pinning_action=tool_pinning_action,
     )
+    schema_policy = SchemaPolicyConfig(
+        enabled=schema_validation,
+        action=schema_validation_action,
+    )
     proxy = _proxy_app(
         upstream,
         upstreams=upstreams,
         timeout=timeout,
         response_policy=response_policy,
         tool_pin_store=effective_state_store if tool_pinning else None,
+        schema_policy=schema_policy,
+        tool_schema_store=effective_state_store if schema_validation else None,
     )
     app = LuaMiddleware(
         proxy,
@@ -689,6 +777,8 @@ def run_proxy(
     response_block_instructions: bool = False,
     tool_pinning: bool = True,
     tool_pinning_action: str = "block",
+    schema_validation: bool = True,
+    schema_validation_action: str = "block",
     confirm: bool = False,
 ) -> None:
     """Run the reverse proxy with uvicorn."""
@@ -716,6 +806,8 @@ def run_proxy(
         response_block_instructions=response_block_instructions,
         tool_pinning=tool_pinning,
         tool_pinning_action=tool_pinning_action,
+        schema_validation=schema_validation,
+        schema_validation_action=schema_validation_action,
         confirm=confirm,
     )
     uvicorn.run(app, host=host, port=port)
@@ -728,6 +820,8 @@ def _proxy_app(
     timeout: float,
     response_policy: ResponsePolicyConfig,
     tool_pin_store: PolicyStateStore | None,
+    schema_policy: SchemaPolicyConfig,
+    tool_schema_store: PolicyStateStore | None,
 ) -> ASGIApp:
     if upstreams:
         return McpFacadeProxyApp(
@@ -735,6 +829,8 @@ def _proxy_app(
             timeout=timeout,
             response_policy=response_policy,
             tool_pin_store=tool_pin_store,
+            schema_policy=schema_policy,
+            tool_schema_store=tool_schema_store,
         )
     if upstream is None:
         raise ValueError("upstream is required unless facade upstreams are configured")
@@ -743,6 +839,8 @@ def _proxy_app(
         timeout=timeout,
         response_policy=response_policy,
         tool_pin_store=tool_pin_store,
+        schema_policy=schema_policy,
+        tool_schema_store=tool_schema_store,
     )
 
 
@@ -754,6 +852,13 @@ def _state_store(value: str) -> PolicyStateStore | None:
     if value.startswith("sqlite:"):
         return SQLiteStateStore(value.removeprefix("sqlite:"))
     raise ValueError("state must be 'memory', 'none', or 'sqlite:/path/to/state.sqlite3'")
+
+
+def _schema_metadata(request_metadata: Mapping[str, Any], observe_metadata: Mapping[str, Any]) -> dict[str, Any]:
+    merged = dict(request_metadata)
+    if observe_metadata.get("observed") or observe_metadata.get("json_error"):
+        merged["tools_list"] = dict(observe_metadata)
+    return merged
 
 
 def _console_enabled(value: bool | TextIO) -> bool:

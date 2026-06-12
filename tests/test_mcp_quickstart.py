@@ -41,6 +41,8 @@ def test_create_mcp_quickstart_writes_policy_config_and_trace_dir(tmp_path):
     assert proxy_config["response_block_instructions"] is False
     assert proxy_config["tool_pinning"] is True
     assert proxy_config["tool_pinning_action"] == "block"
+    assert proxy_config["schema_validation"] is True
+    assert proxy_config["schema_validation_action"] == "block"
     assert validate_bundle(policy)["ok"] is True
     assert run_bundle_tests(policy)["ok"] is True
     assert 'local token = "dev-secret"' in (policy / "policy.lua").read_text(encoding="utf-8")

@@ -123,6 +123,8 @@ response_redact_secrets = true
 response_block_instructions = false
 tool_pinning = true
 tool_pinning_action = "block"
+schema_validation = true
+schema_validation_action = "block"
 timeout = 30.0
 ```
 
@@ -174,6 +176,11 @@ they reach the client, and `tools/list` descriptions/schemas are pinned on first
 sight so silent upstream tool changes are surfaced. Set
 `response_block_instructions = true` when you want suspicious instruction-like
 tool output to be blocked rather than only recorded in metadata.
+
+Request argument schema checks are enabled too. After the first successful
+`tools/list`, snulbug validates later `tools/call` arguments against each
+tool's MCP `inputSchema` and rejects malformed calls before the upstream server
+sees them.
 
 If your policy uses `action = "confirm"` for risky calls, run the proxy with
 confirmation enabled:

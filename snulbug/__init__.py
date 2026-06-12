@@ -24,6 +24,7 @@ from .recorder import append_record, load_record_log, record_audit_event, record
 from .redaction import RedactionConfig, append_audit_event, build_audit_event, redact_secrets
 from .response_policy import ResponsePolicyConfig
 from .runtime import LuaDecisionError, LuaDecisionTrace, LuaRuntimeError
+from .schema_policy import SchemaPolicyConfig
 from .simulator import simulate_policy
 from .state import (
     BoundedPolicyState,
@@ -51,6 +52,7 @@ __all__ = [
     "RedactionConfig",
     "ResponsePolicyConfig",
     "ReverseProxyApp",
+    "SchemaPolicyConfig",
     "SQLiteStateStore",
     "SnapshotStateStore",
     "StateLimits",

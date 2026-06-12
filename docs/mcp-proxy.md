@@ -112,8 +112,39 @@ response_redact_secrets = true
 response_block_instructions = false
 tool_pinning = true
 tool_pinning_action = "block"
+schema_validation = true
+schema_validation_action = "block"
 timeout = 30.0
 ```
+
+## Argument Schema Firewall
+
+When `schema_validation = true`, snulbug learns each MCP tool's `inputSchema`
+from successful `tools/list` responses and validates later `tools/call`
+`params.arguments` before forwarding the call upstream. This blocks malformed or
+unexpected arguments at the proxy boundary, including missing required fields,
+wrong primitive types, disallowed enum values, invalid string lengths/patterns,
+oversized arrays, and extra properties when the schema sets
+`additionalProperties = false`.
+
+Calls pass through until a schema has been observed, so clients that call a tool
+before listing tools are not broken. In facade mode, schemas are stored under the
+client-facing prefixed tool names such as `files.read_file`.
+
+```toml
+[mcp.proxy]
+schema_validation = true
+schema_validation_action = "block"
+```
+
+Use warn mode while introducing the proxy to an existing workflow:
+
+```bash
+snulbug mcp proxy --config snulbug.toml --schema-validation-action warn
+```
+
+Schema snapshots live in the configured state adapter. Use SQLite if you want
+learned schemas to survive proxy restarts.
 
 ## Response Controls
 

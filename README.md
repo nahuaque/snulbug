@@ -69,6 +69,7 @@ Request-side policy:
 - MCP method and tool allowlists
 - JSON-RPC batch rejection
 - project path constraints for tool arguments
+- schema-aware validation of `tools/call` arguments from MCP `inputSchema`
 - small stateful policies such as rate limits and idempotency keys
 
 Response-side policy:

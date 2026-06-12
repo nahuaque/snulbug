@@ -46,6 +46,8 @@ response_max_bytes = 262144
 response_redact_secrets = true
 tool_pinning = true
 tool_pinning_action = "block"
+schema_validation = true
+schema_validation_action = "block"
 ```
 
 Run the proxy:
@@ -217,6 +219,8 @@ response_max_bytes = 262144
 response_redact_secrets = true
 tool_pinning = true
 tool_pinning_action = "block"
+schema_validation = true
+schema_validation_action = "block"
 
 [[mcp.proxy.upstreams]]
 name = "files"

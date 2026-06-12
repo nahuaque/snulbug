@@ -48,6 +48,8 @@ def create_mcp_quickstart(
     response_block_instructions: bool = False,
     tool_pinning: bool = True,
     tool_pinning_action: str = "block",
+    schema_validation: bool = True,
+    schema_validation_action: str = "block",
     timeout: float = 30.0,
     force: bool = False,
     validate: bool = True,
@@ -101,6 +103,8 @@ def create_mcp_quickstart(
         "response_block_instructions": response_block_instructions,
         "tool_pinning": tool_pinning,
         "tool_pinning_action": tool_pinning_action,
+        "schema_validation": schema_validation,
+        "schema_validation_action": schema_validation_action,
         "timeout": timeout,
     }
     _write_mcp_proxy_config(config_path, config_values, force=force)
@@ -150,6 +154,8 @@ def create_mcp_quickstart(
             "response_block_instructions": response_block_instructions,
             "tool_pinning": tool_pinning,
             "tool_pinning_action": tool_pinning_action,
+            "schema_validation": schema_validation,
+            "schema_validation_action": schema_validation_action,
         },
         "validation": validation,
         "tests": bundle_tests,

@@ -30,6 +30,8 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         response_block_instructions = true
         tool_pinning = true
         tool_pinning_action = "warn"
+        schema_validation = true
+        schema_validation_action = "warn"
         timeout = 5.5
         """,
         encoding="utf-8",
@@ -52,6 +54,8 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
     assert result["response_block_instructions"] is True
     assert result["tool_pinning"] is True
     assert result["tool_pinning_action"] == "warn"
+    assert result["schema_validation"] is True
+    assert result["schema_validation_action"] == "warn"
 
 
 def test_load_mcp_proxy_config_supports_facade_upstreams(tmp_path):
@@ -198,6 +202,8 @@ def test_mcp_proxy_cli_loads_config_before_running(monkeypatch, tmp_path):
     assert calls[0]["response_block_instructions"] is False
     assert calls[0]["tool_pinning"] is True
     assert calls[0]["tool_pinning_action"] == "block"
+    assert calls[0]["schema_validation"] is True
+    assert calls[0]["schema_validation_action"] == "block"
 
 
 def test_mcp_proxy_cli_passes_facade_upstreams_without_config(monkeypatch, tmp_path):
@@ -303,6 +309,32 @@ def test_mcp_proxy_cli_applies_response_policy_overrides(monkeypatch, tmp_path):
     assert calls[0]["response_block_instructions"] is True
     assert calls[0]["tool_pinning"] is False
     assert calls[0]["tool_pinning_action"] == "warn"
+
+
+def test_mcp_proxy_cli_applies_schema_validation_overrides(monkeypatch, tmp_path):
+    config = write_config(tmp_path)
+    calls = []
+
+    def fake_run_proxy(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("snulbug.proxy.run_proxy", fake_run_proxy)
+
+    status = simulator_main(
+        [
+            "mcp",
+            "proxy",
+            "--config",
+            str(config),
+            "--no-schema-validation",
+            "--schema-validation-action",
+            "warn",
+        ]
+    )
+
+    assert status == 0
+    assert calls[0]["schema_validation"] is False
+    assert calls[0]["schema_validation_action"] == "warn"
 
 
 def write_config(tmp_path):

@@ -14,6 +14,7 @@ Use these controls:
 - `state_limits` for bounded state operations
 - Redis or another shared store for multi-node state
 - redacted audit logs for local-dev MCP gateway visibility
+- MCP `tools/call` argument validation against cached `inputSchema`
 - response caps and response secret redaction for MCP tool/resource/prompt
   results
 - `tools/list` description/schema pinning for silent upstream tool changes
@@ -29,7 +30,8 @@ replay artifacts are required.
 
 `snulbug` is most useful against a malicious MCP client or tunnel visitor. It
 can require auth, reject unknown tools, cap request and response sizes, rate
-limit traffic, and leave replayable audit evidence.
+limit traffic, validate tool arguments against observed schemas, and leave
+replayable audit evidence.
 
 It can also reduce risk from a compromised or surprising upstream MCP server by
 redacting likely secrets from results, detecting suspicious instruction-like

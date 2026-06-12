@@ -541,6 +541,183 @@ def test_mcp_tool_description_pinning_can_warn_without_blocking(tmp_path):
     assert "reason_code" not in records[1]["metadata"]["response_policy"]
 
 
+def test_mcp_schema_validation_blocks_invalid_tool_arguments_before_upstream(tmp_path):
+    server, seen = start_mcp_upstream(
+        {"read_file": "Read a file"},
+        schemas={
+            "read_file": {
+                "type": "object",
+                "required": ["path"],
+                "properties": {"path": {"type": "string"}},
+                "additionalProperties": False,
+            }
+        },
+    )
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+    )
+
+    try:
+        run_asgi(app, body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}')
+        sent = run_asgi(
+            app,
+            body=b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"read_file","arguments":{}}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    records = load_record_log(record_log)
+    assert sent[0]["status"] == 200
+    assert payload["error"]["code"] == -32602
+    assert "inputSchema" in payload["error"]["message"]
+    assert seen["calls"] == [{"method": "tools/list", "tool": None}]
+    assert records[1]["metadata"]["schema_validation"]["blocked"] is True
+    assert records[1]["metadata"]["schema_validation"]["tool"] == "read_file"
+    assert records[1]["metadata"]["schema_validation"]["issues"][0]["reason_code"] == "schema.required"
+
+
+def test_mcp_schema_validation_allows_valid_tool_arguments(tmp_path):
+    server, seen = start_mcp_upstream(
+        {"read_file": "Read a file"},
+        schemas={
+            "read_file": {
+                "type": "object",
+                "required": ["path"],
+                "properties": {"path": {"type": "string", "maxLength": 64}},
+                "additionalProperties": False,
+            }
+        },
+    )
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+    )
+
+    try:
+        run_asgi(app, body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}')
+        sent = run_asgi(
+            app,
+            body=(
+                b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call",'
+                b'"params":{"name":"read_file","arguments":{"path":"README.md"}}}'
+            ),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    records = load_record_log(record_log)
+    assert sent[0]["status"] == 200
+    assert payload["result"]["content"][0]["text"] == "called read_file"
+    assert seen["calls"] == [
+        {"method": "tools/list", "tool": None},
+        {"method": "tools/call", "tool": "read_file"},
+    ]
+    assert records[1]["metadata"]["schema_validation"]["valid"] is True
+
+
+def test_mcp_schema_validation_warns_without_blocking(tmp_path):
+    server, seen = start_mcp_upstream(
+        {"read_file": "Read a file"},
+        schemas={
+            "read_file": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "additionalProperties": False,
+            }
+        },
+    )
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+        schema_validation_action="warn",
+    )
+
+    try:
+        run_asgi(app, body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}')
+        sent = run_asgi(
+            app,
+            body=(
+                b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call",'
+                b'"params":{"name":"read_file","arguments":{"path":"README.md","mode":"raw"}}}'
+            ),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    records = load_record_log(record_log)
+    assert sent[0]["status"] == 200
+    assert seen["calls"] == [
+        {"method": "tools/list", "tool": None},
+        {"method": "tools/call", "tool": "read_file"},
+    ]
+    assert records[1]["metadata"]["schema_validation"]["valid"] is False
+    assert records[1]["metadata"]["schema_validation"]["reason_code"] == "request.schema_argument_invalid"
+    assert "blocked" not in records[1]["metadata"]["schema_validation"]
+
+
+def test_mcp_facade_schema_validation_uses_prefixed_tool_names(tmp_path):
+    git_server, git_seen = start_mcp_upstream(
+        {"status": "Show git status"},
+        schemas={
+            "status": {
+                "type": "object",
+                "required": ["branch"],
+                "properties": {"branch": {"type": "string"}},
+                "additionalProperties": False,
+            }
+        },
+    )
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        None,
+        policy,
+        upstreams=[{"name": "git", "url": f"http://127.0.0.1:{git_server.server_port}/mcp"}],
+        record_out=record_log,
+    )
+
+    try:
+        listed, called = run_asgi_sequence(
+            app,
+            [
+                {"body": b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}'},
+                {
+                    "body": (
+                        b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call",'
+                        b'"params":{"name":"git.status","arguments":{}}}'
+                    )
+                },
+            ],
+        )
+    finally:
+        git_server.shutdown()
+        git_server.server_close()
+
+    list_payload = json.loads(listed[1]["body"])
+    call_payload = json.loads(called[1]["body"])
+    records = load_record_log(record_log)
+    assert [tool["name"] for tool in list_payload["result"]["tools"]] == ["git.status"]
+    assert call_payload["error"]["code"] == -32602
+    assert git_seen["calls"] == [{"method": "tools/list", "tool": None}]
+    assert records[1]["metadata"]["schema_validation"]["tool"] == "git.status"
+    assert records[1]["metadata"]["schema_validation"]["blocked"] is True
+
+
 def start_upstream():
     seen = {"count": 0}
 
@@ -611,7 +788,12 @@ for line in sys.stdin:
     return server
 
 
-def start_mcp_upstream(tools: dict[str, str], *, call_text: str | None = None):
+def start_mcp_upstream(
+    tools: dict[str, str],
+    *,
+    call_text: str | None = None,
+    schemas: dict[str, Any] | None = None,
+):
     seen: dict[str, Any] = {"calls": []}
 
     class Handler(BaseHTTPRequestHandler):
@@ -623,7 +805,11 @@ def start_mcp_upstream(tools: dict[str, str], *, call_text: str | None = None):
             if request.get("method") == "tools/list":
                 result = {
                     "tools": [
-                        {"name": name, "description": description, "inputSchema": {"type": "object"}}
+                        {
+                            "name": name,
+                            "description": description,
+                            "inputSchema": (schemas or {}).get(name, {"type": "object"}),
+                        }
                         for name, description in tools.items()
                     ]
                 }

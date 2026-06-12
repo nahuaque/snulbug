@@ -43,6 +43,7 @@ Expected controls:
 - method and tool allowlists
 - JSON-RPC batch rejection
 - project path constraints for tool arguments
+- `tools/call` argument validation against cached MCP `inputSchema`
 - rate limits backed by bounded state
 - replay/audit logs with MCP-aware fields
 - response size caps and secret redaction
@@ -53,8 +54,8 @@ Limits:
 - `snulbug` cannot make an unsafe upstream tool safe. If a permitted tool can
   execute arbitrary shell commands, the proxy can only block or constrain calls
   it understands.
-- Argument validation is policy-driven today. Prefer narrow tool allowlists and
-  explicit path checks for tunnel use.
+- Schema validation starts after a successful `tools/list`; calls for unseen
+  schemas pass through unless your Lua policy blocks them separately.
 
 ### Malicious or compromised MCP server
 
