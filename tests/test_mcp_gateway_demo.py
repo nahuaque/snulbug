@@ -4,11 +4,11 @@ import asyncio
 import json
 from typing import Any
 
-from asgi_lua import test_bundle as run_bundle_tests
-from asgi_lua import validate_bundle
 from examples.mcp_gateway.app import STATE, application
+from snulbug import test_bundle as run_bundle_tests
+from snulbug import validate_bundle
 
-BUNDLE = "examples/bundles/mcp-gateway.asgi-lua"
+BUNDLE = "examples/bundles/mcp-gateway.snulbug"
 
 
 def test_mcp_gateway_bundle_validates_and_tests():

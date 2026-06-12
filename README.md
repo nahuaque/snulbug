@@ -1,9 +1,9 @@
-# asgi-lua
+# snulbug
 
-`asgi-lua` is an ASGI middleware that runs a small Lua policy script before
-your Python app. It is intended for programmable request behavior near the edge:
-header checks, tenant-specific rewrites, normalization, and simple policy
-decisions.
+`snulbug` is a programmable Lua policy layer for local HTTP and MCP traffic. It
+can run as ASGI middleware in front of your Python app, or as a thin local-dev
+reverse proxy for request policy near the edge: header checks, tenant-specific
+rewrites, normalization, and simple policy decisions.
 
 It is not tied to a specific server. It wraps FastAPI, Starlette, or any ASGI
 app and can be served by Uvicorn, Hypercorn, Daphne, or another ASGI server.
@@ -11,19 +11,19 @@ app and can be served by Uvicorn, Hypercorn, Daphne, or another ASGI server.
 ## Install
 
 ```bash
-pip install asgi-lua
+pip install snulbug
 ```
 
 For Redis-backed policy state:
 
 ```bash
-pip install "asgi-lua[redis]"
+pip install "snulbug[redis]"
 ```
 
 For the built-in reverse proxy runner:
 
 ```bash
-pip install "asgi-lua[proxy]"
+pip install "snulbug[proxy]"
 ```
 
 For local development from this repository:
@@ -32,7 +32,7 @@ For local development from this repository:
 uv sync --extra dev
 ```
 
-`asgi-lua` supports Python 3.10 through 3.13.
+`snulbug` supports Python 3.10 through 3.13.
 
 ## Quickstart
 
@@ -44,12 +44,12 @@ and inspecting redacted replay/audit logs.
 The minimal flow is:
 
 ```bash
-uv run asgi-lua mcp quickstart \
+uv run snulbug mcp quickstart \
   --preset tunnel-safe \
   --token local-dev-secret \
   --allow-tool safe_read_file \
   --allow-tool list_project_files
-uv run asgi-lua mcp proxy --config asgi-lua.toml
+uv run snulbug mcp proxy --config snulbug.toml
 ```
 
 Then point the MCP client at `http://127.0.0.1:8080/mcp` with
@@ -58,7 +58,7 @@ Then point the MCP client at `http://127.0.0.1:8080/mcp` with
 ## Minimal app
 
 ```python
-from asgi_lua import LuaMiddleware
+from snulbug import LuaMiddleware
 
 
 async def app(scope, receive, send):
@@ -146,7 +146,7 @@ Use the simulator to replay a JSON request fixture against a policy without
 running an ASGI server:
 
 ```bash
-uv run asgi-lua simulate policy.lua request.json
+uv run snulbug simulate policy.lua request.json
 ```
 
 Example request fixture:
@@ -192,7 +192,7 @@ The downstream app can read `scope["lua_trace"]`.
 Stateful policies can be replayed with an explicit state snapshot:
 
 ```bash
-uv run asgi-lua simulate policy.lua request.json --state state.json
+uv run snulbug simulate policy.lua request.json --state state.json
 ```
 
 Snapshot input:
@@ -255,7 +255,7 @@ return {
 Compare an active policy and a draft policy against replay fixtures:
 
 ```bash
-uv run asgi-lua diff active.lua draft.lua fixtures/
+uv run snulbug diff active.lua draft.lua fixtures/
 ```
 
 The command emits changed decisions and regressions. It exits non-zero when a
@@ -278,7 +278,7 @@ comparison are attached to `scope["lua_shadow_trace"]`.
 For stateful promotion gates, pass a snapshot file or a directory of snapshots:
 
 ```bash
-uv run asgi-lua diff active.lua draft.lua fixtures/ --state-snapshots snapshots/
+uv run snulbug diff active.lua draft.lua fixtures/ --state-snapshots snapshots/
 ```
 
 When `--state-snapshots` points to a directory, the diff command looks for a
@@ -292,7 +292,7 @@ A policy bundle is a portable directory with a manifest, Lua entrypoint,
 fixtures, optional state snapshots, and documentation:
 
 ```text
-policy.asgi-lua/
+policy.snulbug/
   manifest.json
   policy.lua
   fixtures/
@@ -330,9 +330,9 @@ Example manifest:
 Validate, test, and pack bundles:
 
 ```bash
-uv run asgi-lua bundle validate examples/bundles/idempotency.asgi-lua
-uv run asgi-lua bundle test examples/bundles/idempotency.asgi-lua
-uv run asgi-lua bundle pack examples/bundles/idempotency.asgi-lua dist/idempotency.asgi-lua.tar.gz
+uv run snulbug bundle validate examples/bundles/idempotency.snulbug
+uv run snulbug bundle test examples/bundles/idempotency.snulbug
+uv run snulbug bundle pack examples/bundles/idempotency.snulbug dist/idempotency.snulbug.tar.gz
 ```
 
 Bundle expectations can reference common decision fields directly, such as
@@ -342,7 +342,7 @@ use dotted paths like `decision.context.tenant` or
 
 ## MCP gateway example
 
-`asgi-lua` can protect a local MCP-style JSON-RPC endpoint before it is exposed
+`snulbug` can protect a local MCP-style JSON-RPC endpoint before it is exposed
 through an ngrok tunnel. The demo app is at:
 
 ```text
@@ -373,15 +373,15 @@ local, tunneled, header-authenticated, and stdio-only client setup patterns.
 The gateway policy lives as a portable bundle:
 
 ```text
-examples/bundles/mcp-gateway.asgi-lua/
+examples/bundles/mcp-gateway.snulbug/
 ```
 
 It demonstrates bearer challenges, tool allowlists, middleware-owned rate
 limits, state-backed traces, and replayable fixtures:
 
 ```bash
-uv run asgi-lua bundle validate examples/bundles/mcp-gateway.asgi-lua
-uv run asgi-lua bundle test examples/bundles/mcp-gateway.asgi-lua
+uv run snulbug bundle validate examples/bundles/mcp-gateway.snulbug
+uv run snulbug bundle test examples/bundles/mcp-gateway.snulbug
 ```
 
 MCP policies can use the built-in helper table:
@@ -396,17 +396,17 @@ end
 Bundled MCP presets can be copied into a project:
 
 ```bash
-uv run asgi-lua mcp presets
-uv run asgi-lua mcp quickstart --preset tunnel-safe
-uv run asgi-lua mcp init tunnel-safe --output policy.asgi-lua
-uv run asgi-lua bundle test policy.asgi-lua
+uv run snulbug mcp presets
+uv run snulbug mcp quickstart --preset tunnel-safe
+uv run snulbug mcp init tunnel-safe --output policy.snulbug
+uv run snulbug bundle test policy.snulbug
 ```
 
 Generate a tailored preset:
 
 ```bash
-uv run asgi-lua mcp init tunnel-safe \
-  --output policy.asgi-lua \
+uv run snulbug mcp init tunnel-safe \
+  --output policy.snulbug \
   --token local-dev-secret \
   --allow-tool safe_read_file \
   --allow-tool list_project_files \
@@ -427,23 +427,23 @@ Included presets:
 Record and replay MCP request decisions as JSONL:
 
 ```bash
-uv run asgi-lua mcp record policy.asgi-lua/policy.lua request.json --out traces/session.jsonl
-uv run asgi-lua mcp replay traces/session.jsonl
-uv run asgi-lua mcp replay traces/session.jsonl --script candidate.lua
+uv run snulbug mcp record policy.snulbug/policy.lua request.json --out traces/session.jsonl
+uv run snulbug mcp replay traces/session.jsonl
+uv run snulbug mcp replay traces/session.jsonl --script candidate.lua
 ```
 
 Inspect replay or audit logs offline:
 
 ```bash
-uv run asgi-lua mcp inspect traces/session.jsonl
-uv run asgi-lua mcp inspect traces/audit.jsonl --kind audit
-uv run asgi-lua mcp inspect traces/audit.jsonl --kind audit --report-out traces/session-report.md
+uv run snulbug mcp inspect traces/session.jsonl
+uv run snulbug mcp inspect traces/audit.jsonl --kind audit
+uv run snulbug mcp inspect traces/audit.jsonl --kind audit --report-out traces/session-report.md
 ```
 
 Write a redacted audit log while recording:
 
 ```bash
-uv run asgi-lua mcp record policy.asgi-lua/policy.lua request.json \
+uv run snulbug mcp record policy.snulbug/policy.lua request.json \
   --out traces/session.jsonl \
   --audit-out traces/audit.jsonl
 ```
@@ -454,9 +454,9 @@ around. Pass `--no-redact` only when you need exact auth-sensitive replay.
 Run a local-dev reverse proxy in front of an MCP server:
 
 ```bash
-uv run asgi-lua mcp config init
-uv run asgi-lua mcp proxy \
-  --config asgi-lua.toml
+uv run snulbug mcp config init
+uv run snulbug mcp proxy \
+  --config snulbug.toml
 ```
 
 Then expose `http://127.0.0.1:8080/mcp` with ngrok or another tunnel. Use the
@@ -475,7 +475,7 @@ one-command runner and two-terminal HTTP walkthrough.
 Watch live policy decisions while proxying:
 
 ```bash
-uv run asgi-lua mcp proxy --config asgi-lua.toml --decision-console
+uv run snulbug mcp proxy --config snulbug.toml --decision-console
 ```
 
 Redacted audit events include MCP-aware fields such as JSON-RPC id, MCP method,
@@ -514,7 +514,7 @@ end
 Configure SQLite-backed state:
 
 ```python
-from asgi_lua import LuaMiddleware, SQLiteStateStore, StateLimits
+from snulbug import LuaMiddleware, SQLiteStateStore, StateLimits
 
 application = LuaMiddleware(
     app,
@@ -527,13 +527,13 @@ application = LuaMiddleware(
 Configure Redis-backed state:
 
 ```bash
-pip install "asgi-lua[redis]"
+pip install "snulbug[redis]"
 ```
 
 ```python
-from asgi_lua import RedisStateStore
+from snulbug import RedisStateStore
 
-state_store = RedisStateStore("redis://localhost:6379/0", key_prefix="asgi-lua:")
+state_store = RedisStateStore("redis://localhost:6379/0", key_prefix="snulbug:")
 ```
 
 State operations are included in `lua_trace.state_operations`. Shadow policies
@@ -572,8 +572,8 @@ Verify before publishing:
 
 ```bash
 uv run pytest
-uv run asgi-lua --help
-uv run python -m asgi_lua --help
+uv run snulbug --help
+uv run python -m snulbug --help
 ```
 
 Publish when ready:
@@ -582,5 +582,5 @@ Publish when ready:
 uv publish
 ```
 
-`asgi-lua` is currently alpha software. Until 1.0, action schemas and trace
+`snulbug` is currently alpha software. Until 1.0, action schemas and trace
 fields may evolve.

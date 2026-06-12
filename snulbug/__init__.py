@@ -1,4 +1,4 @@
-"""Programmable Lua request middleware for ASGI applications."""
+"""Programmable Lua policy for ASGI apps and local MCP gateways."""
 
 __version__ = "0.1.0"
 

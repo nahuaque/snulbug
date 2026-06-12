@@ -1,14 +1,14 @@
 # MCP client setup recipes
 
-These recipes show how to put `asgi-lua` between an MCP client and a local MCP
+These recipes show how to put `snulbug` between an MCP client and a local MCP
 HTTP server.
 
-`asgi-lua` does not implement MCP and does not translate stdio to HTTP. It is a
+`snulbug` does not implement MCP and does not translate stdio to HTTP. It is a
 policy gateway for HTTP JSON-RPC traffic:
 
 ```text
 MCP client
-  -> asgi-lua reverse proxy
+  -> snulbug reverse proxy
       -> local MCP HTTP server
 ```
 
@@ -19,21 +19,21 @@ Use this when the MCP client runs on the same machine as the local MCP server.
 Create a policy and config:
 
 ```bash
-uv run asgi-lua mcp init local-dev-safe \
-  --output policy.asgi-lua \
+uv run snulbug mcp init local-dev-safe \
+  --output policy.snulbug \
   --token local-dev-secret \
   --allow-tool safe_read_file \
   --allow-tool list_project_files
 
-uv run asgi-lua mcp config init
+uv run snulbug mcp config init
 ```
 
-Edit `asgi-lua.toml` so `upstream` points at the local MCP server:
+Edit `snulbug.toml` so `upstream` points at the local MCP server:
 
 ```toml
 [mcp.proxy]
 upstream = "http://127.0.0.1:9000"
-policy = "policy.asgi-lua/policy.lua"
+policy = "policy.snulbug/policy.lua"
 host = "127.0.0.1"
 port = 8080
 record_out = "traces/session.jsonl"
@@ -44,7 +44,7 @@ redact_records = true
 Run the proxy:
 
 ```bash
-uv run asgi-lua mcp proxy --config asgi-lua.toml --decision-console
+uv run snulbug mcp proxy --config snulbug.toml --decision-console
 ```
 
 Point the client at:
@@ -86,7 +86,7 @@ auth, rejects JSON-RPC batch requests, allows only configured safe tools, and
 rate-limits traffic.
 
 ```bash
-uv run asgi-lua mcp quickstart \
+uv run snulbug mcp quickstart \
   --preset tunnel-safe \
   --upstream http://127.0.0.1:9000 \
   --token local-dev-secret \
@@ -98,7 +98,7 @@ uv run asgi-lua mcp quickstart \
 Run the proxy locally:
 
 ```bash
-uv run asgi-lua mcp proxy --config asgi-lua.toml --decision-console
+uv run snulbug mcp proxy --config snulbug.toml --decision-console
 ```
 
 Expose the proxy, not the upstream MCP server:
@@ -128,7 +128,7 @@ already authenticates callers and rejects abusive traffic.
 Run the proxy with the decision console:
 
 ```bash
-uv run asgi-lua mcp proxy --config asgi-lua.toml --decision-console
+uv run snulbug mcp proxy --config snulbug.toml --decision-console
 ```
 
 The console prints one redacted decision per request, including the MCP method,
@@ -137,15 +137,15 @@ tool or target, JSON-RPC id, action, and reason code.
 After the session, inspect the captured logs:
 
 ```bash
-uv run asgi-lua mcp inspect traces/session.jsonl
-uv run asgi-lua mcp inspect traces/audit.jsonl --kind audit
+uv run snulbug mcp inspect traces/session.jsonl
+uv run snulbug mcp inspect traces/audit.jsonl --kind audit
 ```
 
 Replay records are redacted by default. If you need exact replay for a local
 debug session, opt in explicitly:
 
 ```bash
-uv run asgi-lua mcp proxy --config asgi-lua.toml --no-redact-records
+uv run snulbug mcp proxy --config snulbug.toml --no-redact-records
 ```
 
 Exact replay records can contain bearer tokens, cookies, API keys, and tool
@@ -156,8 +156,8 @@ arguments.
 Start with the tools the client should actually call:
 
 ```bash
-uv run asgi-lua mcp init local-dev-safe \
-  --output policy.asgi-lua \
+uv run snulbug mcp init local-dev-safe \
+  --output policy.snulbug \
   --token local-dev-secret \
   --allow-tool read_repo \
   --allow-tool search_docs \
@@ -169,8 +169,8 @@ uv run asgi-lua mcp init local-dev-safe \
 Validate before proxying:
 
 ```bash
-uv run asgi-lua bundle validate policy.asgi-lua
-uv run asgi-lua bundle test policy.asgi-lua
+uv run snulbug bundle validate policy.snulbug
+uv run snulbug bundle test policy.snulbug
 ```
 
 Denied tool calls return `reason_code = "mcp.tool_not_allowed"` and appear in
@@ -184,8 +184,8 @@ not possible, keep the proxy bound to `127.0.0.1` and avoid public tunnels.
 For a loopback-only workflow, you can use `tool-allowlist`:
 
 ```bash
-uv run asgi-lua mcp init tool-allowlist \
-  --output policy.asgi-lua \
+uv run snulbug mcp init tool-allowlist \
+  --output policy.snulbug \
   --allow-tool safe_read_file \
   --allow-tool list_project_files
 ```
@@ -195,12 +195,12 @@ binding or another trusted access-control layer.
 
 ## 6. Client only supports stdio MCP servers
 
-Some MCP clients only launch stdio servers. `asgi-lua` does not bridge stdio to
+Some MCP clients only launch stdio servers. `snulbug` does not bridge stdio to
 HTTP. Use one of these patterns instead:
 
 - Run an HTTP-capable MCP server upstream and configure the client to use its
-  HTTP transport through `asgi-lua`.
-- Use a separate stdio-to-HTTP bridge, then put `asgi-lua` between the bridge and
+  HTTP transport through `snulbug`.
+- Use a separate stdio-to-HTTP bridge, then put `snulbug` between the bridge and
   the HTTP MCP server.
-- Keep stdio-only tools outside `asgi-lua` and use `asgi-lua` only for HTTP MCP
+- Keep stdio-only tools outside `snulbug` and use `snulbug` only for HTTP MCP
   endpoints that need local policy, audit, replay, and inspection.

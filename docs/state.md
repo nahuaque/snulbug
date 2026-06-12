@@ -20,7 +20,7 @@ Supported stores:
 Configure limits:
 
 ```python
-from asgi_lua import LuaMiddleware, SQLiteStateStore, StateLimits
+from snulbug import LuaMiddleware, SQLiteStateStore, StateLimits
 
 application = LuaMiddleware(
     app,

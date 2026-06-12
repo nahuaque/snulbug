@@ -1,6 +1,6 @@
 # Security model
 
-`asgi-lua` is designed for narrow request policy, not arbitrary untrusted compute.
+`snulbug` is designed for narrow request policy, not arbitrary untrusted compute.
 
 Lua policies run in-process. They receive plain request data, context, and optional bounded state operations. They do not receive raw Python objects, filesystem APIs, network APIs, `os`, `io`, `package`, or database clients.
 
@@ -17,6 +17,6 @@ Use these controls:
 For hostile third-party scripts, add an external isolation boundary. A separate process, container, VM, or WebAssembly runtime is a stronger boundary than the in-process Lua runtime.
 
 CLI-created request replay logs and proxy replay logs are redacted by default.
-Use `asgi-lua mcp record --no-redact ...` or
-`asgi-lua mcp proxy --no-redact-records ...` only when exact auth-sensitive
+Use `snulbug mcp record --no-redact ...` or
+`snulbug mcp proxy --no-redact-records ...` only when exact auth-sensitive
 replay artifacts are required.

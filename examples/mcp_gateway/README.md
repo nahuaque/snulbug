@@ -1,6 +1,6 @@
 # Local MCP Gateway Demo
 
-This demo wraps a small MCP-style JSON-RPC ASGI app with `asgi-lua`.
+This demo wraps a small MCP-style JSON-RPC ASGI app with `snulbug`.
 
 For public tunnel use, prefer the reverse proxy quickstart with
 `--preset tunnel-safe`. This demo shows the direct ASGI middleware integration.
@@ -8,7 +8,7 @@ For public tunnel use, prefer the reverse proxy quickstart with
 The Lua policy is stored as a portable bundle at:
 
 ```text
-examples/bundles/mcp-gateway.asgi-lua/
+examples/bundles/mcp-gateway.snulbug/
 ```
 
 Run locally:
@@ -37,5 +37,5 @@ the local MCP server:
 Validate the policy bundle:
 
 ```bash
-uv run asgi-lua bundle test examples/bundles/mcp-gateway.asgi-lua
+uv run snulbug bundle test examples/bundles/mcp-gateway.snulbug
 ```

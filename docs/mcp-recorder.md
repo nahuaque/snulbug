@@ -1,27 +1,27 @@
 # MCP recorder and replay
 
-`asgi-lua` can store replayable MCP request decisions as JSONL. This is useful
+`snulbug` can store replayable MCP request decisions as JSONL. This is useful
 when developing a local MCP gateway policy because each observed request becomes
 a deterministic regression fixture.
 
 Record one request fixture:
 
 ```bash
-uv run asgi-lua mcp record policy.asgi-lua/policy.lua request.json --out traces/session.jsonl
+uv run snulbug mcp record policy.snulbug/policy.lua request.json --out traces/session.jsonl
 ```
 
 Record live traffic while proxying:
 
 ```bash
-uv run asgi-lua mcp config init
-uv run asgi-lua mcp proxy \
-  --config asgi-lua.toml
+uv run snulbug mcp config init
+uv run snulbug mcp proxy \
+  --config snulbug.toml
 ```
 
 Record with state, context, response metadata, or custom metadata:
 
 ```bash
-uv run asgi-lua mcp record policy.asgi-lua/policy.lua request.json \
+uv run snulbug mcp record policy.snulbug/policy.lua request.json \
   --state state.json \
   --context context.json \
   --response response.json \
@@ -32,13 +32,13 @@ uv run asgi-lua mcp record policy.asgi-lua/policy.lua request.json \
 Replay the log against the recorded policy path:
 
 ```bash
-uv run asgi-lua mcp replay traces/session.jsonl
+uv run snulbug mcp replay traces/session.jsonl
 ```
 
 Replay the same requests against a candidate policy:
 
 ```bash
-uv run asgi-lua mcp replay traces/session.jsonl --script candidate.lua
+uv run snulbug mcp replay traces/session.jsonl --script candidate.lua
 ```
 
 The replay command exits with status `1` when any current decision differs from
@@ -47,8 +47,8 @@ the recorded decision.
 Inspect a captured replay or audit log without a running proxy:
 
 ```bash
-uv run asgi-lua mcp inspect traces/session.jsonl
-uv run asgi-lua mcp inspect traces/audit.jsonl --kind audit
+uv run snulbug mcp inspect traces/session.jsonl
+uv run snulbug mcp inspect traces/audit.jsonl --kind audit
 ```
 
 The inspection report summarizes decisions, MCP methods, tools, targets, reason
@@ -58,7 +58,7 @@ events for notable findings.
 Write a Markdown session report:
 
 ```bash
-uv run asgi-lua mcp inspect traces/audit.jsonl \
+uv run snulbug mcp inspect traces/audit.jsonl \
   --kind audit \
   --report-out traces/session-report.md
 ```
@@ -72,7 +72,7 @@ copying request bodies, headers, params, or tool arguments into the report.
 Write a redacted audit log while recording:
 
 ```bash
-uv run asgi-lua mcp record policy.asgi-lua/policy.lua request.json \
+uv run snulbug mcp record policy.snulbug/policy.lua request.json \
   --out traces/session.jsonl \
   --audit-out traces/audit.jsonl
 ```
@@ -89,7 +89,7 @@ access key IDs.
 To write an exact replay record for local debugging, opt in explicitly:
 
 ```bash
-uv run asgi-lua mcp record policy.asgi-lua/policy.lua request.json \
+uv run snulbug mcp record policy.snulbug/policy.lua request.json \
   --out traces/session.exact.jsonl \
   --no-redact
 ```
@@ -104,11 +104,11 @@ Each line is one JSON object:
 
 ```json
 {
-  "type": "asgi-lua.request_record",
+  "type": "snulbug.request_record",
   "version": 1,
   "recorded_at": "2026-06-12T00:00:00+00:00",
   "policy": {
-    "source": "policy.asgi-lua/policy.lua"
+    "source": "policy.snulbug/policy.lua"
   },
   "request": {
     "method": "POST",
@@ -131,11 +131,11 @@ Audit events have this shape:
 
 ```json
 {
-  "type": "asgi-lua.audit",
+  "type": "snulbug.audit",
   "version": 1,
   "time": "2026-06-12T00:00:00+00:00",
   "policy": {
-    "source": "policy.asgi-lua/policy.lua"
+    "source": "policy.snulbug/policy.lua"
   },
   "request": {
     "method": "POST",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from asgi_lua import (
+from snulbug import (
     append_audit_event,
     append_record,
     build_audit_event,
@@ -10,7 +10,7 @@ from asgi_lua import (
     inspect_mcp_log,
     record_policy_request,
 )
-from asgi_lua.simulator import main as simulator_main
+from snulbug.simulator import main as simulator_main
 
 
 def test_inspect_mcp_audit_log_summarizes_decisions_and_findings(tmp_path):
@@ -113,7 +113,7 @@ def test_format_mcp_inspection_report_outputs_markdown_summary(tmp_path):
 
     report = format_mcp_inspection_report(inspect_mcp_log(audit_log))
 
-    assert report.startswith("# asgi-lua MCP Session Report")
+    assert report.startswith("# snulbug MCP Session Report")
     assert "| Events | 1 |" in report
     assert "mcp.tool_not_allowed" in report
     assert "shell_exec" in report
@@ -169,7 +169,7 @@ def test_mcp_inspect_cli_writes_markdown_session_report(tmp_path, capsys):
     assert output["ok"] is True
     assert output["report_out"] == str(report_path)
     assert output["report_format"] == "markdown"
-    assert "# asgi-lua MCP Session Report" in report
+    assert "# snulbug MCP Session Report" in report
     assert "mcp.tool_not_allowed" in report
     assert "shell_exec" in report
 

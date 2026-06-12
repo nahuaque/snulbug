@@ -9,7 +9,7 @@ from typing import Any
 from .recorder import RECORD_TYPE
 from .redaction import build_audit_event
 
-AUDIT_TYPE = "asgi-lua.audit"
+AUDIT_TYPE = "snulbug.audit"
 
 
 def inspect_mcp_log(path: str | Path, *, kind: str = "auto", top: int = 10) -> dict[str, Any]:
@@ -36,7 +36,7 @@ def format_mcp_inspection_report(report: Mapping[str, Any], *, output_format: st
         raise ValueError("inspection report must be successful")
 
     lines = [
-        "# asgi-lua MCP Session Report",
+        "# snulbug MCP Session Report",
         "",
         "## Overview",
         "",

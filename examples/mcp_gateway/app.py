@@ -4,11 +4,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from asgi_lua import LuaConfig, LuaMiddleware, MemoryStateStore
-from asgi_lua.runtime import compile_lua_file
+from snulbug import LuaConfig, LuaMiddleware, MemoryStateStore
+from snulbug.runtime import compile_lua_file
 
 BASE_DIR = Path(__file__).parent
-POLICY_PATH = BASE_DIR.parent / "bundles" / "mcp-gateway.asgi-lua" / "policy.lua"
+POLICY_PATH = BASE_DIR.parent / "bundles" / "mcp-gateway.snulbug" / "policy.lua"
 
 STATE = MemoryStateStore()
 POLICY = compile_lua_file(POLICY_PATH)

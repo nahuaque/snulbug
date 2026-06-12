@@ -1,17 +1,17 @@
 # Getting started
 
-`asgi-lua` wraps any ASGI app with a Lua policy layer.
+`snulbug` wraps any ASGI app with a Lua policy layer.
 
 Install:
 
 ```bash
-pip install asgi-lua
+pip install snulbug
 ```
 
 Minimal policy:
 
 ```python
-from asgi_lua import LuaMiddleware
+from snulbug import LuaMiddleware
 
 
 async def app(scope, receive, send):

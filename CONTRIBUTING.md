@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for considering a contribution to `asgi-lua`.
+Thanks for considering a contribution to `snulbug`.
 
 ## Development setup
 
@@ -26,4 +26,4 @@ uv build
 
 ## Policy compatibility
 
-Until `1.0`, `asgi-lua` is alpha software. Action schemas and trace fields may still change. When changing a public action or trace field, document the migration path in `CHANGELOG.md`.
+Until `1.0`, `snulbug` is alpha software. Action schemas and trace fields may still change. When changing a public action or trace field, document the migration path in `CHANGELOG.md`.

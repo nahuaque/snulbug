@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from asgi_lua import append_record, load_record_log, record_policy_request, replay_record_log
-from asgi_lua.simulator import main as simulator_main
+from snulbug import append_record, load_record_log, record_policy_request, replay_record_log
+from snulbug.simulator import main as simulator_main
 
 
 def test_record_policy_request_creates_replayable_record(tmp_path):
@@ -17,7 +17,7 @@ def test_record_policy_request_creates_replayable_record(tmp_path):
     records = load_record_log(log)
     replay = replay_record_log(log)
 
-    assert records[0]["type"] == "asgi-lua.request_record"
+    assert records[0]["type"] == "snulbug.request_record"
     assert records[0]["version"] == 1
     assert records[0]["request"] == request
     assert records[0]["result"]["action"] == "continue"

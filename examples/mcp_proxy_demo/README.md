@@ -4,13 +4,13 @@ This demo shows the local-dev MCP wedge end to end:
 
 ```text
 demo MCP client request
-  -> asgi-lua reverse proxy policy
+  -> snulbug reverse proxy policy
       -> standalone HTTP MCP upstream server
 ```
 
 The upstream server intentionally does not enforce auth or tool policy. It lists
 an unsafe `shell_exec` tool and would accept that tool if reached directly. The
-`asgi-lua` proxy adds bearer auth, a safe tool allowlist, live decisions,
+`snulbug` proxy adds bearer auth, a safe tool allowlist, live decisions,
 replayable records, redacted audit logs, and offline inspection.
 
 ## One-command demo
@@ -32,8 +32,8 @@ through the proxy app, and prints the results:
 It leaves generated artifacts here:
 
 ```text
-examples/mcp_proxy_demo/.run/asgi-lua.toml
-examples/mcp_proxy_demo/.run/policy.asgi-lua/
+examples/mcp_proxy_demo/.run/snulbug.toml
+examples/mcp_proxy_demo/.run/policy.snulbug/
 examples/mcp_proxy_demo/.run/traces/session.jsonl
 examples/mcp_proxy_demo/.run/traces/audit.jsonl
 ```
@@ -41,9 +41,9 @@ examples/mcp_proxy_demo/.run/traces/audit.jsonl
 Inspect the captured logs:
 
 ```bash
-uv run asgi-lua mcp inspect examples/mcp_proxy_demo/.run/traces/session.jsonl
-uv run asgi-lua mcp inspect examples/mcp_proxy_demo/.run/traces/audit.jsonl --kind audit
-uv run asgi-lua mcp inspect examples/mcp_proxy_demo/.run/traces/audit.jsonl \
+uv run snulbug mcp inspect examples/mcp_proxy_demo/.run/traces/session.jsonl
+uv run snulbug mcp inspect examples/mcp_proxy_demo/.run/traces/audit.jsonl --kind audit
+uv run snulbug mcp inspect examples/mcp_proxy_demo/.run/traces/audit.jsonl \
   --kind audit \
   --report-out examples/mcp_proxy_demo/.run/traces/session-report.md
 ```
@@ -59,7 +59,7 @@ uv run python examples/mcp_proxy_demo/upstream.py --host 127.0.0.1 --port 9000
 Terminal 2: create policy/config and run the proxy:
 
 ```bash
-uv run asgi-lua mcp quickstart \
+uv run snulbug mcp quickstart \
   --directory examples/mcp_proxy_demo/.run \
   --upstream http://127.0.0.1:9000 \
   --token local-dev-secret \
@@ -67,7 +67,7 @@ uv run asgi-lua mcp quickstart \
   --allow-tool list_project_files \
   --force
 
-uv run asgi-lua mcp proxy --config examples/mcp_proxy_demo/.run/asgi-lua.toml
+uv run snulbug mcp proxy --config examples/mcp_proxy_demo/.run/snulbug.toml
 ```
 
 Send an allowed tool call:

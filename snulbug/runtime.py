@@ -106,7 +106,7 @@ def _normalize_decision(decision: Any) -> dict[str, Any]:
 def compile_lua_script(
     source: str,
     *,
-    source_name: str = "<asgi-lua>",
+    source_name: str = "<snulbug>",
     instruction_limit: int = 100_000,
     memory_limit_bytes: int | None = 8 * 1024 * 1024,
 ) -> CompiledLuaScript:
@@ -128,7 +128,7 @@ def compile_lua_script(
         from lupa import LuaRuntime  # type: ignore[import-not-found]
     except Exception as exc:  # pragma: no cover - exercised only without the optional runtime installed.
         raise LuaRuntimeError(
-            "asgi-lua requires the 'lupa' package to execute Lua scripts. "
+            "snulbug requires the 'lupa' package to execute Lua scripts. "
             "Install this project with its runtime dependencies."
         ) from exc
 

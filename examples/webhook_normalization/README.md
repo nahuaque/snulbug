@@ -20,7 +20,7 @@ uv run uvicorn examples.webhook_normalization.app:application
 Replay a Stripe fixture without starting a server:
 
 ```bash
-uv run asgi-lua simulate \
+uv run snulbug simulate \
   examples/webhook_normalization/policies/stripe.lua \
   examples/webhook_normalization/requests/stripe-invoice.json
 ```

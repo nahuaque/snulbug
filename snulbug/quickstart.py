@@ -22,8 +22,8 @@ def create_mcp_quickstart(
     directory: str | Path = ".",
     *,
     preset: str = "local-dev-safe",
-    policy_output: str | Path = "policy.asgi-lua",
-    config_output: str | Path = "asgi-lua.toml",
+    policy_output: str | Path = "policy.snulbug",
+    config_output: str | Path = "snulbug.toml",
     traces_dir: str | Path = "traces",
     upstream: str = "http://127.0.0.1:9000",
     token: str | None = None,
@@ -136,16 +136,16 @@ def create_mcp_quickstart(
         "validation": validation,
         "tests": bundle_tests,
         "next_steps": [
-            f"uv run asgi-lua mcp proxy --config {config_path}",
+            f"uv run snulbug mcp proxy --config {config_path}",
             f"configure your MCP client URL as {client_url}",
             f"send Authorization: Bearer {effective_token}",
-            f"uv run asgi-lua mcp inspect {_resolve_output(root, record_out)}",
-            f"uv run asgi-lua mcp inspect {_resolve_output(root, audit_out)} --kind audit",
+            f"uv run snulbug mcp inspect {_resolve_output(root, record_out)}",
+            f"uv run snulbug mcp inspect {_resolve_output(root, audit_out)} --kind audit",
         ],
     }
     if not validate:
-        result["next_steps"].insert(0, f"uv run asgi-lua bundle test {policy_dir}")
-        result["next_steps"].insert(0, f"uv run asgi-lua bundle validate {policy_dir}")
+        result["next_steps"].insert(0, f"uv run snulbug bundle test {policy_dir}")
+        result["next_steps"].insert(0, f"uv run snulbug bundle validate {policy_dir}")
     return result
 
 

@@ -1,12 +1,12 @@
 # Quickstart: local MCP policy gateway
 
-This path puts `asgi-lua` in front of a local HTTP MCP server so you can add
+This path puts `snulbug` in front of a local HTTP MCP server so you can add
 bearer auth, tool allowlists, live decisions, replayable records, redacted audit
 logs, and offline inspection without changing the MCP server.
 
 ```text
 MCP client
-  -> asgi-lua reverse proxy
+  -> snulbug reverse proxy
       -> local HTTP MCP server
 ```
 
@@ -15,7 +15,7 @@ MCP client
 For a published install:
 
 ```bash
-pip install "asgi-lua[proxy]"
+pip install "snulbug[proxy]"
 ```
 
 From this repository:
@@ -33,7 +33,7 @@ Generate the policy bundle, proxy config, trace directory, and first-run
 instructions:
 
 ```bash
-uv run asgi-lua mcp quickstart \
+uv run snulbug mcp quickstart \
   --upstream http://127.0.0.1:9000 \
   --preset tunnel-safe \
   --token local-dev-secret \
@@ -44,8 +44,8 @@ uv run asgi-lua mcp quickstart \
 This creates:
 
 ```text
-policy.asgi-lua/
-asgi-lua.toml
+policy.snulbug/
+snulbug.toml
 traces/
 ```
 
@@ -64,8 +64,8 @@ small rate limit.
 To create a similar policy manually:
 
 ```bash
-uv run asgi-lua mcp init tunnel-safe \
-  --output policy.asgi-lua \
+uv run snulbug mcp init tunnel-safe \
+  --output policy.snulbug \
   --token local-dev-secret \
   --allow-tool safe_read_file \
   --allow-tool list_project_files \
@@ -76,25 +76,25 @@ uv run asgi-lua mcp init tunnel-safe \
 Validate it before putting traffic through it:
 
 ```bash
-uv run asgi-lua bundle validate policy.asgi-lua
-uv run asgi-lua bundle test policy.asgi-lua
+uv run snulbug bundle validate policy.snulbug
+uv run snulbug bundle test policy.snulbug
 ```
 
 ## 4. Review proxy config
 
-The quickstart writes `asgi-lua.toml`. To create only the starter config
+The quickstart writes `snulbug.toml`. To create only the starter config
 manually:
 
 ```bash
-uv run asgi-lua mcp config init
+uv run snulbug mcp config init
 ```
 
-Edit `asgi-lua.toml` so `upstream` points at your local HTTP MCP server:
+Edit `snulbug.toml` so `upstream` points at your local HTTP MCP server:
 
 ```toml
 [mcp.proxy]
 upstream = "http://127.0.0.1:9000"
-policy = "policy.asgi-lua/policy.lua"
+policy = "policy.snulbug/policy.lua"
 host = "127.0.0.1"
 port = 8080
 state = "memory"
@@ -119,7 +119,7 @@ state = "sqlite:policy-state.sqlite3"
 Start your MCP server on the configured upstream port, then run:
 
 ```bash
-uv run asgi-lua mcp proxy --config asgi-lua.toml
+uv run snulbug mcp proxy --config snulbug.toml
 ```
 
 Point the MCP client at:
@@ -153,9 +153,9 @@ code.
 After a session, inspect the captured replay and audit logs:
 
 ```bash
-uv run asgi-lua mcp inspect traces/session.jsonl
-uv run asgi-lua mcp inspect traces/audit.jsonl --kind audit
-uv run asgi-lua mcp inspect traces/audit.jsonl --kind audit --report-out traces/session-report.md
+uv run snulbug mcp inspect traces/session.jsonl
+uv run snulbug mcp inspect traces/audit.jsonl --kind audit
+uv run snulbug mcp inspect traces/audit.jsonl --kind audit --report-out traces/session-report.md
 ```
 
 Replay records and audit logs are redacted by default. Keep that default for

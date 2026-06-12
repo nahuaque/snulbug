@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from asgi_lua import build_audit_event, record_policy_request, redact_secrets
-from asgi_lua.simulator import main as simulator_main
+from snulbug import build_audit_event, record_policy_request, redact_secrets
+from snulbug.simulator import main as simulator_main
 
 
 def test_redact_secrets_covers_headers_strings_and_json_body():
@@ -56,7 +56,7 @@ def test_build_audit_event_is_redacted_and_compact(tmp_path):
     record = record_policy_request(policy, request, recorded_at="2026-06-12T00:00:00+00:00")
     audit = build_audit_event(record)
 
-    assert audit["type"] == "asgi-lua.audit"
+    assert audit["type"] == "snulbug.audit"
     assert audit["request"]["headers"]["authorization"] == "[REDACTED]"
     assert audit["mcp"] == {
         "argument_keys": ["path", "token"],

@@ -7,7 +7,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from asgi_lua import create_proxy_application, load_record_log
+from snulbug import create_proxy_application, load_record_log
 
 
 def test_reverse_proxy_forwards_allowed_request_to_upstream(tmp_path):

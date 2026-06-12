@@ -26,7 +26,7 @@ TOOLS = [
 
 
 class DemoMcpHandler(BaseHTTPRequestHandler):
-    server_version = "asgi-lua-demo-mcp/0.1"
+    server_version = "snulbug-demo-mcp/0.1"
 
     def do_POST(self) -> None:  # noqa: N802
         if urlsplit(self.path).path != "/mcp":
@@ -94,7 +94,7 @@ def _tool_result(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     if tool_name == "list_project_files":
         return {
             "tool": tool_name,
-            "content": [{"type": "text", "text": "README.md\npyproject.toml\nasgi_lua/"}],
+            "content": [{"type": "text", "text": "README.md\npyproject.toml\nsnulbug/"}],
         }
     return {
         "tool": tool_name,

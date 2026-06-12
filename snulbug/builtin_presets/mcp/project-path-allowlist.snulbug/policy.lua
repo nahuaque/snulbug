@@ -7,7 +7,7 @@ local allowed_paths = {
   "README.md",
   "docs/",
   "examples/",
-  "asgi_lua/",
+  "snulbug/",
   "tests/",
 }
 

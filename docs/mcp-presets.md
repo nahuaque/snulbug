@@ -1,36 +1,36 @@
 # MCP presets
 
-`asgi-lua` ships MCP policy bundles that can be copied into a project and edited.
+`snulbug` ships MCP policy bundles that can be copied into a project and edited.
 
 List presets:
 
 ```bash
-uv run asgi-lua mcp presets
+uv run snulbug mcp presets
 ```
 
 Copy the default local-dev policy:
 
 ```bash
-uv run asgi-lua mcp init --output policy.asgi-lua
+uv run snulbug mcp init --output policy.snulbug
 ```
 
 Create the full local proxy starter instead:
 
 ```bash
-uv run asgi-lua mcp quickstart
+uv run snulbug mcp quickstart
 ```
 
 Copy a specific preset:
 
 ```bash
-uv run asgi-lua mcp init tool-allowlist --output policy.asgi-lua
+uv run snulbug mcp init tool-allowlist --output policy.snulbug
 ```
 
 Generate a tailored preset:
 
 ```bash
-uv run asgi-lua mcp init local-dev-safe \
-  --output policy.asgi-lua \
+uv run snulbug mcp init local-dev-safe \
+  --output policy.snulbug \
   --token local-dev-secret \
   --allow-tool safe_read_file \
   --allow-tool list_project_files \
@@ -51,23 +51,23 @@ Options:
 Validate and test the copied bundle:
 
 ```bash
-uv run asgi-lua bundle validate policy.asgi-lua
-uv run asgi-lua bundle test policy.asgi-lua
+uv run snulbug bundle validate policy.snulbug
+uv run snulbug bundle test policy.snulbug
 ```
 
 Record and replay decisions while tuning the copied policy:
 
 ```bash
-uv run asgi-lua mcp record policy.asgi-lua/policy.lua request.json --out traces/session.jsonl
-uv run asgi-lua mcp replay traces/session.jsonl
+uv run snulbug mcp record policy.snulbug/policy.lua request.json --out traces/session.jsonl
+uv run snulbug mcp replay traces/session.jsonl
 ```
 
 Run the copied policy as a local reverse proxy:
 
 ```bash
-uv run asgi-lua mcp config init
-uv run asgi-lua mcp proxy \
-  --config asgi-lua.toml
+uv run snulbug mcp config init
+uv run snulbug mcp proxy \
+  --config snulbug.toml
 ```
 
 ## Included presets
@@ -89,7 +89,7 @@ allows only configured safe tools, and rate-limits traffic. Use it when a client
 should inspect local context without making write-like MCP calls.
 
 ```bash
-uv run asgi-lua mcp init read-only-local-dev --output policy.asgi-lua
+uv run snulbug mcp init read-only-local-dev --output policy.snulbug
 ```
 
 `no-shell-tools` requires bearer auth and blocks tool names that look like shell
@@ -97,7 +97,7 @@ or process execution, such as `shell_exec`, `run_command`, `terminal`, `bash`,
 `powershell`, `spawn`, or `system`.
 
 ```bash
-uv run asgi-lua mcp init no-shell-tools --output policy.asgi-lua
+uv run snulbug mcp init no-shell-tools --output policy.snulbug
 ```
 
 `project-path-allowlist` requires bearer auth, applies a tool allowlist, and
@@ -105,8 +105,8 @@ rejects `params.arguments.path` / `params.arguments.paths` outside configured
 project paths.
 
 ```bash
-uv run asgi-lua mcp init project-path-allowlist \
-  --output policy.asgi-lua \
+uv run snulbug mcp init project-path-allowlist \
+  --output policy.snulbug \
   --allow-tool safe_read_file \
   --allow-path README.md \
   --allow-path docs/
@@ -117,7 +117,7 @@ similar public tunnel exposure. It requires bearer auth, rejects JSON-RPC batch
 requests, allows only configured safe tools, and rate-limits traffic.
 
 ```bash
-uv run asgi-lua mcp quickstart \
+uv run snulbug mcp quickstart \
   --preset tunnel-safe \
   --upstream http://127.0.0.1:9000 \
   --token local-dev-secret

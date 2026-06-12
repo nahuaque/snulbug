@@ -9,7 +9,7 @@ from typing import Any
 from .redaction import build_audit_event, redact_secrets
 from .simulator import simulate_policy
 
-RECORD_TYPE = "asgi-lua.request_record"
+RECORD_TYPE = "snulbug.request_record"
 RECORD_VERSION = 1
 
 

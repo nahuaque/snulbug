@@ -8,23 +8,23 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 
 - Added public GitHub project metadata, CI, contribution docs, security docs, issue templates, and reference documentation.
 - Added the basic ASGI middleware example under `examples/basic`.
-- Added bundled MCP policy presets with `asgi-lua mcp presets` and `asgi-lua mcp init`.
-- Added MCP request decision recording and replay with `asgi-lua mcp record` and `asgi-lua mcp replay`.
-- Added secret redaction and redacted MCP audit JSONL logs with `asgi-lua mcp record --audit-out`.
-- Added local-dev MCP reverse proxy mode with `asgi-lua mcp proxy`.
-- Added live proxy request recording and audit logging with `asgi-lua mcp proxy --record-out --audit-out`.
-- Added MCP proxy TOML config files with `asgi-lua mcp config init` and `asgi-lua mcp proxy --config`.
-- Added configurable MCP policy generation options to `asgi-lua mcp init`.
-- Added live proxy decision console output with `asgi-lua mcp proxy --decision-console`.
+- Added bundled MCP policy presets with `snulbug mcp presets` and `snulbug mcp init`.
+- Added MCP request decision recording and replay with `snulbug mcp record` and `snulbug mcp replay`.
+- Added secret redaction and redacted MCP audit JSONL logs with `snulbug mcp record --audit-out`.
+- Added local-dev MCP reverse proxy mode with `snulbug mcp proxy`.
+- Added live proxy request recording and audit logging with `snulbug mcp proxy --record-out --audit-out`.
+- Added MCP proxy TOML config files with `snulbug mcp config init` and `snulbug mcp proxy --config`.
+- Added configurable MCP policy generation options to `snulbug mcp init`.
+- Added live proxy decision console output with `snulbug mcp proxy --decision-console`.
 - Added MCP-aware audit fields for JSON-RPC id, method, operation, targets, key names, batches, and initialize metadata.
 - Added policy decision `reason` and `reason_code` conventions across MCP helpers, presets, audit logs, and live console output.
-- Added offline MCP log inspection with `asgi-lua mcp inspect`.
+- Added offline MCP log inspection with `snulbug mcp inspect`.
 - Changed MCP record/proxy defaults to redact replay artifacts unless exact logging is explicitly requested.
 - Added MCP client setup recipes for local, tunneled, authenticated, recording, and stdio-only workflows.
-- Added a local MCP policy gateway quickstart and `asgi-lua mcp quickstart` generator.
+- Added a local MCP policy gateway quickstart and `snulbug mcp quickstart` generator.
 - Added a runnable end-to-end MCP policy proxy demo.
 - Added MCP risk-profile presets for read-only local development, shell-tool denial, project path allowlists, and tunneled servers.
-- Added Markdown MCP session reports with `asgi-lua mcp inspect --report-out`.
+- Added Markdown MCP session reports with `snulbug mcp inspect --report-out`.
 - Documented `tunnel-safe` as the recommended default for public tunnel use.
 
 ## [0.1.0] - 2026-06-12

@@ -4,8 +4,8 @@ import asyncio
 import json
 from typing import Any
 
-from asgi_lua import LuaConfig, LuaMiddleware, diff_policies
-from asgi_lua.simulator import main as simulator_main
+from snulbug import LuaConfig, LuaMiddleware, diff_policies
+from snulbug.simulator import main as simulator_main
 
 
 def write_policy(path, action: str) -> None:

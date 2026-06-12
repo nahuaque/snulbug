@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from asgi_lua import LuaConfig, LuaMiddleware
-from asgi_lua.runtime import CompiledLuaScript, compile_lua_file
+from snulbug import LuaConfig, LuaMiddleware
+from snulbug.runtime import CompiledLuaScript, compile_lua_file
 
 BASE_DIR = Path(__file__).parent
 POLICY_DIR = BASE_DIR / "policies"

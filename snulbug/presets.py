@@ -8,10 +8,10 @@ from pathlib import Path
 from typing import Any
 
 PRESET_GROUP = "mcp"
-PRESET_SUFFIX = ".asgi-lua"
+PRESET_SUFFIX = ".snulbug"
 DEFAULT_TOKEN = "local-dev-secret"
 DEFAULT_ALLOWED_TOOLS = ["safe_read_file", "list_project_files"]
-DEFAULT_ALLOWED_PATHS = ["README.md", "docs/", "examples/", "asgi_lua/", "tests/"]
+DEFAULT_ALLOWED_PATHS = ["README.md", "docs/", "examples/", "snulbug/", "tests/"]
 DEFAULT_RATE_LIMIT = 60
 DEFAULT_RATE_WINDOW = 60
 
@@ -126,7 +126,7 @@ def generate_mcp_preset(
 
 
 def _preset_root() -> Any:
-    return resources.files("asgi_lua").joinpath("builtin_presets", PRESET_GROUP)
+    return resources.files("snulbug").joinpath("builtin_presets", PRESET_GROUP)
 
 
 def _preset_path(preset: str) -> Any:
@@ -674,8 +674,8 @@ Generated from `{preset}`.
 Validate and test:
 
 ```bash
-uv run asgi-lua bundle validate .
-uv run asgi-lua bundle test .
+uv run snulbug bundle validate .
+uv run snulbug bundle test .
 ```
 """
     (root / "README.md").write_text(body, encoding="utf-8")

@@ -1,6 +1,6 @@
 # Security Policy
 
-`asgi-lua` runs Lua policies in-process with the ASGI app. The runtime exposes a narrow request, context, and state API, and it does not expose raw Python objects, filesystem access, network access, `os`, `io`, `package`, or database clients to Lua scripts.
+`snulbug` runs Lua policies in-process with the ASGI app. The runtime exposes a narrow request, context, and state API, and it does not expose raw Python objects, filesystem access, network access, `os`, `io`, `package`, or database clients to Lua scripts.
 
 This is not a complete isolation boundary for hostile third-party code. Treat Lua policies as trusted or semi-trusted configuration unless you add a stronger external sandbox such as a separate process, container, VM, or another isolation layer.
 

@@ -9,7 +9,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from asgi_lua import create_mcp_quickstart, create_proxy_application, inspect_mcp_log, load_record_log
+from snulbug import create_mcp_quickstart, create_proxy_application, inspect_mcp_log, load_record_log
 
 try:
     from .upstream import create_server
@@ -169,7 +169,7 @@ def _expected_responses(responses: list[dict[str, Any]]) -> bool:
 
 
 def _print_result(result: dict[str, Any]) -> None:
-    print("asgi-lua MCP proxy demo")
+    print("snulbug MCP proxy demo")
     print(f"upstream server: {result['upstream']}")
     print(f"proxy client URL: {result['proxy_client_url']}")
     print(f"client header: Authorization: {result['authorization']}")
@@ -192,7 +192,7 @@ def _print_result(result: dict[str, Any]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run the end-to-end asgi-lua MCP proxy demo")
+    parser = argparse.ArgumentParser(description="Run the end-to-end snulbug MCP proxy demo")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--compact", action="store_true", help="emit compact JSON instead of text")
     args = parser.parse_args(argv)

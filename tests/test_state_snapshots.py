@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 
-from asgi_lua import SnapshotStateStore, simulate_policy
-from asgi_lua.promotion import diff_policies
-from asgi_lua.simulator import main as simulator_main
+from snulbug import SnapshotStateStore, simulate_policy
+from snulbug.promotion import diff_policies
+from snulbug.simulator import main as simulator_main
 
 
 def test_snapshot_state_store_records_initial_operations_and_final_state():

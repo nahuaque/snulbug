@@ -58,7 +58,7 @@ def build_audit_event(record: Mapping[str, Any], *, redact: bool = True) -> dict
     decision = _mapping(result.get("decision"))
     action = str(result.get("action", decision.get("action", "")))
     event: dict[str, Any] = {
-        "type": "asgi-lua.audit",
+        "type": "snulbug.audit",
         "version": 1,
         "time": record.get("recorded_at") or datetime.now(timezone.utc).isoformat(),
         "policy": record.get("policy", {}),

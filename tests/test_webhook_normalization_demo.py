@@ -5,8 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from asgi_lua import simulate_policy
 from examples.webhook_normalization.app import application
+from snulbug import simulate_policy
 
 REQUEST_DIR = Path("examples/webhook_normalization/requests")
 

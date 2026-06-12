@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from asgi_lua.runtime import compile_lua_script
+from snulbug.runtime import compile_lua_script
 
 
 def test_mcp_helpers_read_json_rpc_method_and_tool_name():

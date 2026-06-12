@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import json
 
-from asgi_lua import load_mcp_proxy_config, write_sample_config
-from asgi_lua.config import merge_mcp_proxy_config
-from asgi_lua.simulator import main as simulator_main
+from snulbug import load_mcp_proxy_config, write_sample_config
+from snulbug.config import merge_mcp_proxy_config
+from snulbug.simulator import main as simulator_main
 
 
 def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
-    config = tmp_path / "asgi-lua.toml"
+    config = tmp_path / "snulbug.toml"
     config.write_text(
         """
         [mcp.proxy]
         upstream = "http://127.0.0.1:9000"
-        policy = "policy.asgi-lua/policy.lua"
+        policy = "policy.snulbug/policy.lua"
         host = "127.0.0.1"
         port = 9090
         state = "sqlite:policy-state.sqlite3"
@@ -32,7 +32,7 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
     result = load_mcp_proxy_config(config)
 
     assert result["upstream"] == "http://127.0.0.1:9000"
-    assert result["policy"] == tmp_path / "policy.asgi-lua/policy.lua"
+    assert result["policy"] == tmp_path / "policy.snulbug/policy.lua"
     assert result["record_out"] == tmp_path / "traces/session.jsonl"
     assert result["audit_out"] == tmp_path / "traces/audit.jsonl"
     assert result["port"] == 9090
@@ -54,7 +54,7 @@ def test_merge_mcp_proxy_config_ignores_none_and_applies_overrides(tmp_path):
 
 
 def test_write_sample_config_refuses_to_overwrite(tmp_path):
-    config = tmp_path / "asgi-lua.toml"
+    config = tmp_path / "snulbug.toml"
     write_sample_config(config)
 
     try:
@@ -66,7 +66,7 @@ def test_write_sample_config_refuses_to_overwrite(tmp_path):
 
 
 def test_mcp_config_init_cli_writes_config(tmp_path, capsys):
-    config = tmp_path / "asgi-lua.toml"
+    config = tmp_path / "snulbug.toml"
 
     status = simulator_main(["mcp", "config", "init", "--output", str(config), "--compact"])
 
@@ -74,7 +74,7 @@ def test_mcp_config_init_cli_writes_config(tmp_path, capsys):
     assert status == 0
     assert output["ok"] is True
     assert config.is_file()
-    assert load_mcp_proxy_config(config)["policy"] == tmp_path / "policy.asgi-lua/policy.lua"
+    assert load_mcp_proxy_config(config)["policy"] == tmp_path / "policy.snulbug/policy.lua"
     assert load_mcp_proxy_config(config)["redact_records"] is True
 
 
@@ -93,13 +93,13 @@ def test_mcp_proxy_cli_loads_config_before_running(monkeypatch, tmp_path):
     def fake_run_proxy(**kwargs):
         calls.append(kwargs)
 
-    monkeypatch.setattr("asgi_lua.proxy.run_proxy", fake_run_proxy)
+    monkeypatch.setattr("snulbug.proxy.run_proxy", fake_run_proxy)
 
     status = simulator_main(["mcp", "proxy", "--config", str(config), "--port", "8181", "--no-trace"])
 
     assert status == 0
     assert calls[0]["upstream"] == "http://127.0.0.1:9000"
-    assert calls[0]["policy"] == tmp_path / "policy.asgi-lua/policy.lua"
+    assert calls[0]["policy"] == tmp_path / "policy.snulbug/policy.lua"
     assert calls[0]["port"] == 8181
     assert calls[0]["trace"] is False
     assert calls[0]["record_out"] == tmp_path / "traces/session.jsonl"
@@ -115,7 +115,7 @@ def test_mcp_proxy_cli_can_disable_record_redaction(monkeypatch, tmp_path):
     def fake_run_proxy(**kwargs):
         calls.append(kwargs)
 
-    monkeypatch.setattr("asgi_lua.proxy.run_proxy", fake_run_proxy)
+    monkeypatch.setattr("snulbug.proxy.run_proxy", fake_run_proxy)
 
     status = simulator_main(["mcp", "proxy", "--config", str(config), "--no-redact-records"])
 
@@ -124,12 +124,12 @@ def test_mcp_proxy_cli_can_disable_record_redaction(monkeypatch, tmp_path):
 
 
 def write_config(tmp_path):
-    config = tmp_path / "asgi-lua.toml"
+    config = tmp_path / "snulbug.toml"
     config.write_text(
         """
         [mcp.proxy]
         upstream = "http://127.0.0.1:9000"
-        policy = "policy.asgi-lua/policy.lua"
+        policy = "policy.snulbug/policy.lua"
         record_out = "traces/session.jsonl"
         audit_out = "traces/audit.jsonl"
         decision_console = true

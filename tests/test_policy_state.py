@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from asgi_lua import LuaConfig, LuaDecisionError, LuaMiddleware, MemoryStateStore, SQLiteStateStore, StateLimits
+from snulbug import LuaConfig, LuaDecisionError, LuaMiddleware, MemoryStateStore, SQLiteStateStore, StateLimits
 
 
 async def app(scope, receive, send):

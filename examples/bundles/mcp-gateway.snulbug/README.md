@@ -14,12 +14,12 @@ It demonstrates:
 Validate and test:
 
 ```bash
-uv run asgi-lua bundle validate examples/bundles/mcp-gateway.asgi-lua
-uv run asgi-lua bundle test examples/bundles/mcp-gateway.asgi-lua
+uv run snulbug bundle validate examples/bundles/mcp-gateway.snulbug
+uv run snulbug bundle test examples/bundles/mcp-gateway.snulbug
 ```
 
 Pack for distribution:
 
 ```bash
-uv run asgi-lua bundle pack examples/bundles/mcp-gateway.asgi-lua dist/mcp-gateway.asgi-lua.tar.gz
+uv run snulbug bundle pack examples/bundles/mcp-gateway.snulbug dist/mcp-gateway.snulbug.tar.gz
 ```

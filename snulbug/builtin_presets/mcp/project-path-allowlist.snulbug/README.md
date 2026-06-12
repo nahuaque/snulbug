@@ -12,7 +12,7 @@ Default allowed paths:
 - `README.md`
 - `docs/`
 - `examples/`
-- `asgi_lua/`
+- `snulbug/`
 - `tests/`
 
 Edit `policy.lua` after copying the preset to change the token, tool allowlist,

@@ -22,7 +22,7 @@ Point MCP clients at the ngrok URL plus `/mcp`.
 For local, tunneled, header-authenticated, and stdio-only client patterns, see
 [MCP client setup recipes](mcp-client-recipes.md).
 
-The policy bundle is in `examples/bundles/mcp-gateway.asgi-lua`. It demonstrates:
+The policy bundle is in `examples/bundles/mcp-gateway.snulbug`. It demonstrates:
 
 - bearer auth challenges
 - `mcp.allow_tools` for JSON-RPC `tools/call` allowlists
@@ -33,7 +33,7 @@ The policy bundle is in `examples/bundles/mcp-gateway.asgi-lua`. It demonstrates
 Test the bundle:
 
 ```bash
-uv run asgi-lua bundle test examples/bundles/mcp-gateway.asgi-lua
+uv run snulbug bundle test examples/bundles/mcp-gateway.snulbug
 ```
 
 The core policy shape is:
@@ -48,21 +48,21 @@ end
 For a packaged starter policy, use the bundled presets:
 
 ```bash
-uv run asgi-lua mcp presets
-uv run asgi-lua mcp init tunnel-safe --output policy.asgi-lua
+uv run snulbug mcp presets
+uv run snulbug mcp init tunnel-safe --output policy.snulbug
 ```
 
 Record request decisions and replay them later:
 
 ```bash
-uv run asgi-lua mcp record policy.asgi-lua/policy.lua request.json --out traces/session.jsonl
-uv run asgi-lua mcp replay traces/session.jsonl
+uv run snulbug mcp record policy.snulbug/policy.lua request.json --out traces/session.jsonl
+uv run snulbug mcp replay traces/session.jsonl
 ```
 
 Run the policy as a reverse proxy for a non-ASGI MCP server:
 
 ```bash
-uv run asgi-lua mcp config init
-uv run asgi-lua mcp proxy \
-  --config asgi-lua.toml
+uv run snulbug mcp config init
+uv run snulbug mcp proxy \
+  --config snulbug.toml
 ```

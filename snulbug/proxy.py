@@ -235,7 +235,7 @@ def run_proxy(
     try:
         import uvicorn  # type: ignore[import-not-found]
     except Exception as exc:
-        raise RuntimeError('reverse proxy mode requires uvicorn; install with `pip install "asgi-lua[proxy]"`') from exc
+        raise RuntimeError('reverse proxy mode requires uvicorn; install with `pip install "snulbug[proxy]"`') from exc
 
     app = create_proxy_application(
         upstream,
@@ -316,7 +316,7 @@ def _format_decision_console_line(event: Mapping[str, Any]) -> str:
     trace = event.get("trace") if isinstance(event.get("trace"), Mapping) else {}
 
     parts = [
-        "asgi-lua",
+        "snulbug",
         f"decision={decision.get('action', 'unknown')}",
         f"allowed={str(bool(decision.get('allowed', False))).lower()}",
         f"status={response.get('status', decision.get('status', '-'))}",

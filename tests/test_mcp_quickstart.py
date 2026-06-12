@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 
-from asgi_lua import create_mcp_quickstart, load_mcp_proxy_config, validate_bundle
-from asgi_lua import test_bundle as run_bundle_tests
-from asgi_lua.simulator import main as simulator_main
+from snulbug import create_mcp_quickstart, load_mcp_proxy_config, validate_bundle
+from snulbug import test_bundle as run_bundle_tests
+from snulbug.simulator import main as simulator_main
 
 
 def test_create_mcp_quickstart_writes_policy_config_and_trace_dir(tmp_path):
@@ -17,8 +17,8 @@ def test_create_mcp_quickstart_writes_policy_config_and_trace_dir(tmp_path):
         state="sqlite:policy-state.sqlite3",
     )
 
-    policy = tmp_path / "policy.asgi-lua"
-    config = tmp_path / "asgi-lua.toml"
+    policy = tmp_path / "policy.snulbug"
+    config = tmp_path / "snulbug.toml"
     traces = tmp_path / "traces"
     proxy_config = load_mcp_proxy_config(config)
 
@@ -31,7 +31,7 @@ def test_create_mcp_quickstart_writes_policy_config_and_trace_dir(tmp_path):
     assert config.is_file()
     assert traces.is_dir()
     assert proxy_config["upstream"] == "http://127.0.0.1:9100"
-    assert proxy_config["policy"] == tmp_path / "policy.asgi-lua/policy.lua"
+    assert proxy_config["policy"] == tmp_path / "policy.snulbug/policy.lua"
     assert proxy_config["port"] == 8181
     assert proxy_config["state"] == "sqlite:policy-state.sqlite3"
     assert proxy_config["decision_console"] is True
@@ -64,8 +64,8 @@ def test_mcp_quickstart_cli_writes_compact_result(tmp_path, capsys):
     output = json.loads(capsys.readouterr().out)
     assert status == 0
     assert output["ok"] is True
-    assert output["policy"] == str(tmp_path / "policy.asgi-lua")
-    assert output["config"] == str(tmp_path / "asgi-lua.toml")
+    assert output["policy"] == str(tmp_path / "policy.snulbug")
+    assert output["config"] == str(tmp_path / "snulbug.toml")
     assert output["client"]["url"] == "http://127.0.0.1:8181/mcp"
     assert output["client"]["headers"]["Authorization"] == "Bearer dev-secret"
     assert output["validation"]["ok"] is True
@@ -90,7 +90,7 @@ def test_mcp_quickstart_cli_can_generate_path_profile(tmp_path, capsys):
     )
 
     output = json.loads(capsys.readouterr().out)
-    policy = (tmp_path / "policy.asgi-lua" / "policy.lua").read_text(encoding="utf-8")
+    policy = (tmp_path / "policy.snulbug" / "policy.lua").read_text(encoding="utf-8")
     assert status == 0
     assert output["ok"] is True
     assert output["preset"] == "project-path-allowlist"
@@ -121,4 +121,4 @@ def test_mcp_quickstart_cli_can_skip_validation(tmp_path, capsys):
     assert output["ok"] is True
     assert output["validation"] is None
     assert output["tests"] is None
-    assert output["next_steps"][0].startswith("uv run asgi-lua bundle validate")
+    assert output["next_steps"][0].startswith("uv run snulbug bundle validate")

@@ -9,11 +9,11 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10.
     import tomli as tomllib  # type: ignore[import-not-found]
 
-DEFAULT_CONFIG_PATH = "asgi-lua.toml"
+DEFAULT_CONFIG_PATH = "snulbug.toml"
 
 DEFAULT_MCP_PROXY_CONFIG = {
     "upstream": "http://127.0.0.1:9000",
-    "policy": "policy.asgi-lua/policy.lua",
+    "policy": "policy.snulbug/policy.lua",
     "host": "127.0.0.1",
     "port": 8080,
     "state": "memory",
@@ -29,7 +29,7 @@ DEFAULT_MCP_PROXY_CONFIG = {
 
 SAMPLE_CONFIG = """[mcp.proxy]
 upstream = "http://127.0.0.1:9000"
-policy = "policy.asgi-lua/policy.lua"
+policy = "policy.snulbug/policy.lua"
 host = "127.0.0.1"
 port = 8080
 state = "memory"

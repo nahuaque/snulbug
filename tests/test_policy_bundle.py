@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 import tarfile
 
-from asgi_lua import pack_bundle, validate_bundle
-from asgi_lua import test_bundle as run_bundle_tests
-from asgi_lua.simulator import main as simulator_main
+from snulbug import pack_bundle, validate_bundle
+from snulbug import test_bundle as run_bundle_tests
+from snulbug.simulator import main as simulator_main
 
-BUNDLE = "examples/bundles/idempotency.asgi-lua"
+BUNDLE = "examples/bundles/idempotency.snulbug"
 
 
 def test_validate_bundle_accepts_example_bundle():
@@ -30,15 +30,15 @@ def test_test_bundle_runs_manifest_fixtures():
 
 
 def test_pack_bundle_creates_archive(tmp_path):
-    output = tmp_path / "idempotency.asgi-lua.tar.gz"
+    output = tmp_path / "idempotency.snulbug.tar.gz"
 
     result = pack_bundle(BUNDLE, output)
 
     assert result["ok"] is True
     with tarfile.open(output, "r:gz") as archive:
         names = archive.getnames()
-    assert "idempotency.asgi-lua/manifest.json" in names
-    assert "idempotency.asgi-lua/policy.lua" in names
+    assert "idempotency.snulbug/manifest.json" in names
+    assert "idempotency.snulbug/policy.lua" in names
 
 
 def test_bundle_cli_validate_test_and_pack(tmp_path, capsys):
@@ -61,7 +61,7 @@ def test_bundle_cli_validate_test_and_pack(tmp_path, capsys):
 
 
 def test_validate_bundle_rejects_path_escape(tmp_path):
-    bundle = tmp_path / "bad.asgi-lua"
+    bundle = tmp_path / "bad.snulbug"
     bundle.mkdir()
     (bundle / "manifest.json").write_text(
         json.dumps(

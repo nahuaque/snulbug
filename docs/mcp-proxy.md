@@ -1,26 +1,26 @@
 # MCP reverse proxy
 
-Reverse proxy mode lets `asgi-lua` protect a local MCP HTTP server even when the
+Reverse proxy mode lets `snulbug` protect a local MCP HTTP server even when the
 server is not a Python ASGI app.
 
 Install the proxy runner:
 
 ```bash
-pip install "asgi-lua[proxy]"
+pip install "snulbug[proxy]"
 ```
 
 Copy a starter policy. For public tunnel use, `tunnel-safe` is the recommended
 default:
 
 ```bash
-asgi-lua mcp init tunnel-safe --output policy.asgi-lua
+snulbug mcp init tunnel-safe --output policy.snulbug
 ```
 
 Or generate one with project-specific values:
 
 ```bash
-asgi-lua mcp init tunnel-safe \
-  --output policy.asgi-lua \
+snulbug mcp init tunnel-safe \
+  --output policy.snulbug \
   --token local-dev-secret \
   --allow-tool safe_read_file \
   --allow-tool list_project_files
@@ -29,13 +29,13 @@ asgi-lua mcp init tunnel-safe \
 Write a starter config:
 
 ```bash
-asgi-lua mcp config init
+snulbug mcp config init
 ```
 
 Run the proxy:
 
 ```bash
-asgi-lua mcp proxy --config asgi-lua.toml
+snulbug mcp proxy --config snulbug.toml
 ```
 
 For concrete MCP client configuration patterns, see
@@ -56,8 +56,8 @@ requests are recorded too, not only requests forwarded upstream.
 Print live policy decisions while the proxy is running:
 
 ```bash
-asgi-lua mcp proxy --config asgi-lua.toml --decision-console
-asgi-lua mcp proxy --config asgi-lua.toml --decision-console --decision-console-format json
+snulbug mcp proxy --config snulbug.toml --decision-console
+snulbug mcp proxy --config snulbug.toml --decision-console --decision-console-format json
 ```
 
 The text console is optimized for watching local tunnel traffic. The JSON format
@@ -69,16 +69,16 @@ client metadata, and policy decision `reason` / `reason_code`.
 Replay captured traffic against the same policy or a candidate policy:
 
 ```bash
-asgi-lua mcp replay traces/session.jsonl
-asgi-lua mcp replay traces/session.jsonl --script candidate.lua
+snulbug mcp replay traces/session.jsonl
+snulbug mcp replay traces/session.jsonl --script candidate.lua
 ```
 
 Inspect a session after the proxy stops:
 
 ```bash
-asgi-lua mcp inspect traces/session.jsonl
-asgi-lua mcp inspect traces/audit.jsonl --kind audit
-asgi-lua mcp inspect traces/audit.jsonl --kind audit --report-out traces/session-report.md
+snulbug mcp inspect traces/session.jsonl
+snulbug mcp inspect traces/audit.jsonl --kind audit
+snulbug mcp inspect traces/audit.jsonl --kind audit --report-out traces/session-report.md
 ```
 
 Live replay records are redacted by default. Use `--no-redact-records` only when
@@ -87,7 +87,7 @@ you need exact auth-sensitive replay artifacts.
 CLI flags override config values:
 
 ```bash
-asgi-lua mcp proxy --config asgi-lua.toml --port 8181 --no-trace
+snulbug mcp proxy --config snulbug.toml --port 8181 --no-trace
 ```
 
 Example config:
@@ -95,7 +95,7 @@ Example config:
 ```toml
 [mcp.proxy]
 upstream = "http://127.0.0.1:9000"
-policy = "policy.asgi-lua/policy.lua"
+policy = "policy.snulbug/policy.lua"
 host = "127.0.0.1"
 port = 8080
 state = "memory"
@@ -117,15 +117,15 @@ use `rate_limit`.
 Use SQLite-backed local state:
 
 ```bash
-asgi-lua mcp proxy --config asgi-lua.toml --state sqlite:policy-state.sqlite3
+snulbug mcp proxy --config snulbug.toml --state sqlite:policy-state.sqlite3
 ```
 
 Disable state:
 
 ```bash
-asgi-lua mcp proxy \
+snulbug mcp proxy \
   --upstream http://127.0.0.1:9000 \
-  --policy policy.asgi-lua/policy.lua \
+  --policy policy.snulbug/policy.lua \
   --state none
 ```
 
@@ -136,11 +136,11 @@ Policies using `rate_limit` require state.
 Create the ASGI proxy app directly:
 
 ```python
-from asgi_lua import create_proxy_application
+from snulbug import create_proxy_application
 
 application = create_proxy_application(
     "http://127.0.0.1:9000",
-    "policy.asgi-lua/policy.lua",
+    "policy.snulbug/policy.lua",
 )
 ```
 

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 
-from asgi_lua import McpPolicyOptions, copy_builtin_preset, generate_mcp_preset, list_builtin_presets, validate_bundle
-from asgi_lua import test_bundle as run_bundle_tests
-from asgi_lua.simulator import main as simulator_main
+from snulbug import McpPolicyOptions, copy_builtin_preset, generate_mcp_preset, list_builtin_presets, validate_bundle
+from snulbug import test_bundle as run_bundle_tests
+from snulbug.simulator import main as simulator_main
 
 
 def test_builtin_mcp_presets_are_listed():
@@ -25,7 +25,7 @@ def test_builtin_mcp_presets_are_listed():
 
 def test_builtin_mcp_presets_copy_validate_and_test(tmp_path):
     for preset in list_builtin_presets():
-        output = tmp_path / f"{preset['preset']}.asgi-lua"
+        output = tmp_path / f"{preset['preset']}.snulbug"
 
         result = copy_builtin_preset(str(preset["preset"]), output)
 
@@ -55,7 +55,7 @@ def test_mcp_presets_cli_lists_presets(capsys):
 
 
 def test_mcp_init_cli_copies_default_preset(tmp_path, capsys):
-    output_path = tmp_path / "policy.asgi-lua"
+    output_path = tmp_path / "policy.snulbug"
 
     status = simulator_main(["mcp", "init", "--output", str(output_path), "--compact"])
 
@@ -68,7 +68,7 @@ def test_mcp_init_cli_copies_default_preset(tmp_path, capsys):
 
 
 def test_mcp_init_cli_refuses_to_overwrite(tmp_path, capsys):
-    output_path = tmp_path / "policy.asgi-lua"
+    output_path = tmp_path / "policy.snulbug"
     output_path.mkdir()
 
     status = simulator_main(["mcp", "init", "auth-required", "--output", str(output_path), "--compact"])
@@ -80,7 +80,7 @@ def test_mcp_init_cli_refuses_to_overwrite(tmp_path, capsys):
 
 
 def test_generate_mcp_preset_renders_custom_policy_values(tmp_path):
-    output_path = tmp_path / "policy.asgi-lua"
+    output_path = tmp_path / "policy.snulbug"
 
     result = generate_mcp_preset(
         "local-dev-safe",
@@ -108,7 +108,7 @@ def test_generate_mcp_preset_renders_custom_policy_values(tmp_path):
 
 
 def test_generate_mcp_preset_can_use_context_token_env(tmp_path):
-    output_path = tmp_path / "policy.asgi-lua"
+    output_path = tmp_path / "policy.snulbug"
 
     generate_mcp_preset(
         "auth-required",
@@ -122,7 +122,7 @@ def test_generate_mcp_preset_can_use_context_token_env(tmp_path):
 
 
 def test_generate_project_path_profile_renders_custom_paths(tmp_path):
-    output_path = tmp_path / "policy.asgi-lua"
+    output_path = tmp_path / "policy.snulbug"
 
     result = generate_mcp_preset(
         "project-path-allowlist",
@@ -147,7 +147,7 @@ def test_generate_project_path_profile_renders_custom_paths(tmp_path):
 
 
 def test_mcp_init_cli_generates_custom_policy(tmp_path, capsys):
-    output_path = tmp_path / "policy.asgi-lua"
+    output_path = tmp_path / "policy.snulbug"
 
     status = simulator_main(
         [

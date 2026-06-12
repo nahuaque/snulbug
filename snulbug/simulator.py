@@ -81,7 +81,7 @@ def normalize_request(request: Mapping[str, Any]) -> tuple[dict[str, Any], bool]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="asgi-lua")
+    parser = argparse.ArgumentParser(prog="snulbug")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     simulate = subparsers.add_parser("simulate", help="replay a JSON request against a Lua policy")
@@ -131,10 +131,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_quickstart = mcp_subparsers.add_parser("quickstart", help="create a local MCP policy proxy starter")
     mcp_quickstart.add_argument("--directory", "--dir", type=Path, default=Path("."), help="starter output directory")
     mcp_quickstart.add_argument("--preset", default="local-dev-safe", help="MCP preset to generate")
-    mcp_quickstart.add_argument(
-        "--policy-output", type=Path, default=Path("policy.asgi-lua"), help="policy bundle path"
-    )
-    mcp_quickstart.add_argument("--config-output", type=Path, default=Path("asgi-lua.toml"), help="config file path")
+    mcp_quickstart.add_argument("--policy-output", type=Path, default=Path("policy.snulbug"), help="policy bundle path")
+    mcp_quickstart.add_argument("--config-output", type=Path, default=Path("snulbug.toml"), help="config file path")
     mcp_quickstart.add_argument("--traces-dir", type=Path, default=Path("traces"), help="trace directory path")
     mcp_quickstart.add_argument("--upstream", default="http://127.0.0.1:9000", help="upstream MCP HTTP server URL")
     mcp_quickstart.add_argument("--token", help="bearer token to render into generated policy")
@@ -193,8 +191,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     mcp_config = mcp_subparsers.add_parser("config", help="work with MCP TOML config files")
     mcp_config_subparsers = mcp_config.add_subparsers(dest="config_command", required=True)
-    mcp_config_init = mcp_config_subparsers.add_parser("init", help="write a starter asgi-lua.toml config")
-    mcp_config_init.add_argument("--output", type=Path, default=Path("asgi-lua.toml"), help="config file path")
+    mcp_config_init = mcp_config_subparsers.add_parser("init", help="write a starter snulbug.toml config")
+    mcp_config_init.add_argument("--output", type=Path, default=Path("snulbug.toml"), help="config file path")
     mcp_config_init.add_argument("--force", action="store_true", help="overwrite the config file when it exists")
     mcp_config_init.add_argument("--compact", action="store_true", help="emit compact JSON")
 
@@ -383,7 +381,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result = {"ok": False, "directory": str(args.directory), "error": str(exc)}
                 status = 1
         elif args.mcp_command == "init":
-            output = args.output or Path(f"{args.preset}.asgi-lua")
+            output = args.output or Path(f"{args.preset}.snulbug")
             try:
                 result = generate_mcp_preset(
                     args.preset,
@@ -399,8 +397,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     force=args.force,
                 )
                 result["next_steps"] = [
-                    f"uv run asgi-lua bundle validate {output}",
-                    f"uv run asgi-lua bundle test {output}",
+                    f"uv run snulbug bundle validate {output}",
+                    f"uv run snulbug bundle test {output}",
                 ]
                 status = 0
             except Exception as exc:
@@ -411,8 +409,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 try:
                     result = write_sample_config(args.output, force=args.force)
                     result["next_steps"] = [
-                        "uv run asgi-lua mcp init local-dev-safe --output policy.asgi-lua",
-                        f"uv run asgi-lua mcp proxy --config {args.output}",
+                        "uv run snulbug mcp init local-dev-safe --output policy.snulbug",
+                        f"uv run snulbug mcp proxy --config {args.output}",
                     ]
                     status = 0
                 except Exception as exc:
@@ -496,7 +494,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 else:
                     if args.upstream is None or args.policy is None:
                         sys.stderr.write(
-                            "asgi-lua proxy failed: --upstream and --policy are required without --config\n"
+                            "snulbug proxy failed: --upstream and --policy are required without --config\n"
                         )
                         return 1
                     proxy_config = normalize_mcp_proxy_config(overrides)
@@ -516,7 +514,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     decision_console_format=proxy_config["decision_console_format"],
                 )
             except Exception as exc:
-                sys.stderr.write(f"asgi-lua proxy failed: {exc}\n")
+                sys.stderr.write(f"snulbug proxy failed: {exc}\n")
                 return 1
             return 0
         else:

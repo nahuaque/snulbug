@@ -1,4 +1,4 @@
-from asgi_lua import LuaMiddleware
+from snulbug import LuaMiddleware
 
 
 async def app(scope, receive, send):
