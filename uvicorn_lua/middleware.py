@@ -1,0 +1,296 @@
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Literal
+from urllib.parse import urlencode
+
+from .runtime import CompiledLuaScript, LuaDecisionError, LuaDecisionTrace, LuaRuntimeError, compile_lua_file, compile_lua_script
+
+Scope = dict[str, Any]
+Message = dict[str, Any]
+Receive = Callable[[], Awaitable[Message]]
+Send = Callable[[Message], Awaitable[None]]
+ASGIApp = Callable[[Scope, Receive, Send], Awaitable[None]]
+ScriptLoader = Callable[[Scope], CompiledLuaScript]
+
+DecisionAction = Literal["continue", "set_context", "rewrite", "respond", "reject"]
+
+
+@dataclass(frozen=True)
+class LuaConfig:
+    """Runtime limits for Lua request policies."""
+
+    read_body: bool = False
+    max_body_bytes: int = 64 * 1024
+    instruction_limit: int = 100_000
+    memory_limit_bytes: int | None = 8 * 1024 * 1024
+    context_scope_key: str = "lua"
+    trace: bool = False
+    trace_scope_key: str = "lua_trace"
+
+
+class LuaMiddleware:
+    """ASGI middleware that runs a Lua policy before the downstream app."""
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        script: str | Path | CompiledLuaScript | ScriptLoader,
+        *,
+        config: LuaConfig | None = None,
+    ) -> None:
+        self.app = app
+        self.config = config or LuaConfig()
+        self._script = self._coerce_script(script)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        child_scope = dict(scope)
+        body = b""
+        replay_receive = receive
+        if self.config.read_body:
+            body, replay_receive = await self._read_and_replay_body(receive, send)
+            if replay_receive is None:
+                return
+
+        request = _scope_to_request(child_scope, body if self.config.read_body else None)
+        script = self._script(child_scope)
+        execution = script.decide_with_trace(request, child_scope.get(self.config.context_scope_key, {}))
+        decision = execution.decision
+        action = _validate_action(decision)
+        if self.config.trace:
+            _attach_trace(child_scope, self.config.trace_scope_key, execution, body_read=self.config.read_body)
+
+        if action in {"continue", "set_context"}:
+            _merge_context(child_scope, self.config.context_scope_key, decision.get("context"))
+            await self.app(child_scope, replay_receive, send)
+            return
+
+        if action == "rewrite":
+            _apply_rewrite(child_scope, decision)
+            _merge_context(child_scope, self.config.context_scope_key, decision.get("context"))
+            await self.app(child_scope, replay_receive, send)
+            return
+
+        if action in {"respond", "reject"}:
+            status = int(decision.get("status", 403 if action == "reject" else 200))
+            body_bytes = _body_bytes(decision.get("body", ""))
+            headers = _decision_headers(decision.get("headers"))
+            await _send_response(send, status=status, headers=headers, body=body_bytes)
+            return
+
+        raise LuaDecisionError(f"Unsupported Lua action: {action!r}")
+
+    def _coerce_script(self, script: str | Path | CompiledLuaScript | ScriptLoader) -> ScriptLoader:
+        if isinstance(script, CompiledLuaScript):
+            return lambda scope: script
+        if isinstance(script, Path):
+            compiled = compile_lua_file(
+                script,
+                instruction_limit=self.config.instruction_limit,
+                memory_limit_bytes=self.config.memory_limit_bytes,
+            )
+            return lambda scope: compiled
+        if isinstance(script, str):
+            compiled = compile_lua_script(
+                script,
+                instruction_limit=self.config.instruction_limit,
+                memory_limit_bytes=self.config.memory_limit_bytes,
+            )
+            return lambda scope: compiled
+        return script
+
+    async def _read_and_replay_body(self, receive: Receive, send: Send) -> tuple[bytes, Receive | None]:
+        messages: list[Message] = []
+        chunks: list[bytes] = []
+        total = 0
+
+        while True:
+            message = await receive()
+            messages.append(message)
+            if message["type"] != "http.request":
+                break
+
+            chunk = message.get("body", b"")
+            total += len(chunk)
+            if total > self.config.max_body_bytes:
+                await _send_response(
+                    send,
+                    status=413,
+                    headers=[(b"content-type", b"text/plain; charset=utf-8")],
+                    body=b"request body too large for Lua middleware",
+                )
+                return b"", None
+
+            chunks.append(chunk)
+            if not message.get("more_body", False):
+                break
+
+        index = 0
+
+        async def replay() -> Message:
+            nonlocal index
+            if index < len(messages):
+                message = messages[index]
+                index += 1
+                return message
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        return b"".join(chunks), replay
+
+
+def _scope_to_request(scope: Scope, body: bytes | None) -> dict[str, Any]:
+    headers = _headers_to_mapping(scope.get("headers", []))
+    request: dict[str, Any] = {
+        "method": scope.get("method", ""),
+        "path": scope.get("path", ""),
+        "raw_path": _decode_bytes(scope.get("raw_path", b"")),
+        "query_string": _decode_bytes(scope.get("query_string", b"")),
+        "headers": headers,
+        "client": _sequence_or_none(scope.get("client")),
+        "scheme": scope.get("scheme", "http"),
+    }
+    if body is not None:
+        request["body"] = body.decode("utf-8", errors="replace")
+        request["body_bytes_latin1"] = body.decode("latin-1")
+    return request
+
+
+def _validate_action(decision: Mapping[str, Any]) -> DecisionAction:
+    action = decision.get("action", "continue")
+    if action not in {"continue", "set_context", "rewrite", "respond", "reject"}:
+        raise LuaDecisionError(f"Lua action must be one of continue, set_context, rewrite, respond, reject; got {action!r}")
+    return action  # type: ignore[return-value]
+
+
+def _merge_context(scope: Scope, key: str, context: Any) -> None:
+    if context is None:
+        return
+    if not isinstance(context, Mapping):
+        raise LuaDecisionError("Lua decision field 'context' must be a table/object")
+
+    existing = scope.get(key)
+    merged = dict(existing) if isinstance(existing, Mapping) else {}
+    merged.update(context)
+    scope[key] = merged
+
+    state = scope.get("state")
+    if isinstance(state, dict):
+        state[key] = merged
+
+
+def _attach_trace(scope: Scope, key: str, trace: LuaDecisionTrace, *, body_read: bool) -> None:
+    payload = {
+        "action": trace.decision["action"],
+        "decision": trace.decision,
+        "body_read": body_read,
+        **trace.to_dict(),
+    }
+    scope[key] = payload
+
+    state = scope.get("state")
+    if isinstance(state, dict):
+        state[key] = payload
+
+
+def _apply_rewrite(scope: Scope, decision: Mapping[str, Any]) -> None:
+    path = decision.get("path")
+    if path is not None:
+        if not isinstance(path, str) or not path.startswith("/"):
+            raise LuaDecisionError("Lua rewrite field 'path' must be an absolute path string")
+        scope["path"] = path
+        scope["raw_path"] = path.encode("utf-8")
+
+    query = decision.get("query")
+    query_string = decision.get("query_string")
+    if query is not None and query_string is not None:
+        raise LuaDecisionError("Lua rewrite may set either 'query' or 'query_string', not both")
+    if query is not None:
+        if not isinstance(query, Mapping):
+            raise LuaDecisionError("Lua rewrite field 'query' must be a table/object")
+        query_string = urlencode({str(key): str(value) for key, value in query.items()})
+    if query_string is not None:
+        if not isinstance(query_string, str):
+            raise LuaDecisionError("Lua rewrite field 'query_string' must be a string")
+        scope["query_string"] = query_string.encode("ascii")
+
+    header_updates = decision.get("headers")
+    if header_updates is not None:
+        scope["headers"] = _merge_headers(scope.get("headers", []), _decision_headers(header_updates))
+
+
+def _headers_to_mapping(headers: list[tuple[bytes, bytes]]) -> dict[str, str | list[str]]:
+    result: dict[str, str | list[str]] = {}
+    for raw_name, raw_value in headers:
+        name = raw_name.decode("latin-1").lower()
+        value = raw_value.decode("latin-1")
+        existing = result.get(name)
+        if existing is None:
+            result[name] = value
+        elif isinstance(existing, list):
+            existing.append(value)
+        else:
+            result[name] = [existing, value]
+    return result
+
+
+def _decision_headers(headers: Any) -> list[tuple[bytes, bytes]]:
+    if headers is None:
+        return []
+    if not isinstance(headers, Mapping):
+        raise LuaDecisionError("Lua decision field 'headers' must be a table/object")
+
+    result: list[tuple[bytes, bytes]] = []
+    for name, value in headers.items():
+        raw_name = str(name).lower().encode("ascii")
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            result.append((raw_name, str(item).encode("latin-1")))
+    return result
+
+
+def _merge_headers(existing: list[tuple[bytes, bytes]], updates: list[tuple[bytes, bytes]]) -> list[tuple[bytes, bytes]]:
+    update_names = {name.lower() for name, _ in updates}
+    return [(name, value) for name, value in existing if name.lower() not in update_names] + updates
+
+
+def _body_bytes(body: Any) -> bytes:
+    if isinstance(body, bytes):
+        return body
+    if body is None:
+        return b""
+    return str(body).encode("utf-8")
+
+
+def _decode_bytes(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("latin-1")
+    return str(value)
+
+
+def _sequence_or_none(value: Any) -> list[Any] | None:
+    if value is None:
+        return None
+    return list(value)
+
+
+async def _send_response(send: Send, *, status: int, headers: list[tuple[bytes, bytes]], body: bytes) -> None:
+    await send(
+        {
+            "type": "http.response.start",
+            "status": status,
+            "headers": headers,
+        }
+    )
+    await send(
+        {
+            "type": "http.response.body",
+            "body": body,
+            "more_body": False,
+        }
+    )
