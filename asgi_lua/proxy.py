@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import http.client
+import json
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 from urllib.parse import SplitResult, urlsplit
 
 from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
@@ -103,7 +105,7 @@ class ReverseProxyApp:
 
 
 class ProxyRecorderMiddleware:
-    """Capture live proxy requests as replay records and redacted audit events."""
+    """Capture live proxy requests as replay records, audit events, and console decisions."""
 
     def __init__(
         self,
@@ -113,15 +115,21 @@ class ProxyRecorderMiddleware:
         record_out: str | Path | None = None,
         audit_out: str | Path | None = None,
         redact_records: bool = False,
+        decision_console: bool | TextIO = False,
+        decision_console_format: str = "text",
     ) -> None:
         self.app = app
         self.policy = policy
         self.record_out = Path(record_out) if record_out is not None else None
         self.audit_out = Path(audit_out) if audit_out is not None else None
         self.redact_records = redact_records
+        self.decision_console = _console_stream(decision_console)
+        self.decision_console_format = decision_console_format
+        if self.decision_console_format not in {"text", "json"}:
+            raise ValueError("decision_console_format must be 'text' or 'json'")
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope.get("type") != "http" or (self.record_out is None and self.audit_out is None):
+        if scope.get("type") != "http" or not self._enabled():
             await self.app(scope, receive, send)
             return
 
@@ -147,8 +155,20 @@ class ProxyRecorderMiddleware:
         )
         if self.record_out is not None:
             append_record(self.record_out, record)
+        audit_event = None
         if self.audit_out is not None:
-            append_audit_event(self.audit_out, record_audit_event(record))
+            audit_event = record_audit_event(record)
+            append_audit_event(self.audit_out, audit_event)
+        if self.decision_console is not None:
+            _write_decision_console(
+                self.decision_console,
+                record,
+                audit_event=audit_event,
+                output_format=self.decision_console_format,
+            )
+
+    def _enabled(self) -> bool:
+        return self.record_out is not None or self.audit_out is not None or self.decision_console is not None
 
 
 def create_proxy_application(
@@ -163,9 +183,12 @@ def create_proxy_application(
     record_out: str | Path | None = None,
     audit_out: str | Path | None = None,
     redact_records: bool = False,
+    decision_console: bool | TextIO = False,
+    decision_console_format: str = "text",
 ) -> ASGIApp:
     """Create an ASGI app that applies Lua policy before proxying to an upstream."""
 
+    console_enabled = _console_enabled(decision_console)
     proxy = ReverseProxyApp(upstream, timeout=timeout)
     app = LuaMiddleware(
         proxy,
@@ -173,12 +196,12 @@ def create_proxy_application(
         config=LuaConfig(
             read_body=True,
             max_body_bytes=max_body_bytes,
-            trace=trace or record_out is not None or audit_out is not None,
+            trace=trace or record_out is not None or audit_out is not None or console_enabled,
         ),
         state_store=state_store if state_store is not None else MemoryStateStore(),
         state_limits=state_limits,
     )
-    if record_out is None and audit_out is None:
+    if record_out is None and audit_out is None and not console_enabled:
         return app
     return ProxyRecorderMiddleware(
         app,
@@ -186,6 +209,8 @@ def create_proxy_application(
         record_out=record_out,
         audit_out=audit_out,
         redact_records=redact_records,
+        decision_console=decision_console,
+        decision_console_format=decision_console_format,
     )
 
 
@@ -202,6 +227,8 @@ def run_proxy(
     record_out: str | Path | None = None,
     audit_out: str | Path | None = None,
     redact_records: bool = False,
+    decision_console: bool = False,
+    decision_console_format: str = "text",
 ) -> None:
     """Run the reverse proxy with uvicorn."""
 
@@ -220,6 +247,8 @@ def run_proxy(
         record_out=record_out,
         audit_out=audit_out,
         redact_records=redact_records,
+        decision_console=decision_console,
+        decision_console_format=decision_console_format,
     )
     uvicorn.run(app, host=host, port=port)
 
@@ -232,6 +261,79 @@ def _state_store(value: str) -> PolicyStateStore | None:
     if value.startswith("sqlite:"):
         return SQLiteStateStore(value.removeprefix("sqlite:"))
     raise ValueError("state must be 'memory', 'none', or 'sqlite:/path/to/state.sqlite3'")
+
+
+def _console_enabled(value: bool | TextIO) -> bool:
+    return value is not False and value is not None
+
+
+def _console_stream(value: bool | TextIO) -> TextIO | None:
+    if value is True:
+        return sys.stderr
+    if value is False or value is None:
+        return None
+    return value
+
+
+def _write_decision_console(
+    output: TextIO,
+    record: Mapping[str, Any],
+    *,
+    audit_event: Mapping[str, Any] | None = None,
+    output_format: str,
+) -> None:
+    event = _decision_console_event(record, audit_event=audit_event)
+    if output_format == "json":
+        line = json.dumps(event, sort_keys=True, separators=(",", ":"))
+    else:
+        line = _format_decision_console_line(event)
+    output.write(line)
+    output.write("\n")
+    output.flush()
+
+
+def _decision_console_event(
+    record: Mapping[str, Any],
+    *,
+    audit_event: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    event = dict(audit_event) if audit_event is not None else record_audit_event(record)
+    result = record.get("result")
+    trace = result.get("trace") if isinstance(result, Mapping) else None
+    if isinstance(trace, Mapping):
+        event["trace"] = {
+            "duration_ms": trace.get("duration_ms"),
+            "instruction_count": trace.get("instruction_count"),
+        }
+    return event
+
+
+def _format_decision_console_line(event: Mapping[str, Any]) -> str:
+    request = event.get("request") if isinstance(event.get("request"), Mapping) else {}
+    decision = event.get("decision") if isinstance(event.get("decision"), Mapping) else {}
+    response = event.get("response") if isinstance(event.get("response"), Mapping) else {}
+    mcp = event.get("mcp") if isinstance(event.get("mcp"), Mapping) else {}
+    trace = event.get("trace") if isinstance(event.get("trace"), Mapping) else {}
+
+    parts = [
+        "asgi-lua",
+        f"decision={decision.get('action', 'unknown')}",
+        f"allowed={str(bool(decision.get('allowed', False))).lower()}",
+        f"status={response.get('status', decision.get('status', '-'))}",
+        f"method={request.get('method', '-')}",
+        f"path={request.get('path', '-')}",
+    ]
+    if request.get("query_string"):
+        parts.append(f"query={request['query_string']}")
+    if mcp.get("method"):
+        parts.append(f"mcp.method={mcp['method']}")
+    if mcp.get("tool"):
+        parts.append(f"mcp.tool={mcp['tool']}")
+    if trace.get("duration_ms") is not None:
+        parts.append(f"lua_ms={float(trace['duration_ms']):.3f}")
+    if trace.get("instruction_count") is not None:
+        parts.append(f"lua_instructions={trace['instruction_count']}")
+    return " ".join(parts)
 
 
 def _request_headers(raw_headers: list[tuple[bytes, bytes]], upstream: SplitResult) -> dict[str, str]:

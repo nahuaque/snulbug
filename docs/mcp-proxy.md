@@ -45,6 +45,16 @@ the upstream server.
 the proxy. `--audit-out` writes redacted audit events. Rejected/challenged
 requests are recorded too, not only requests forwarded upstream.
 
+Print live policy decisions while the proxy is running:
+
+```bash
+asgi-lua mcp proxy --config asgi-lua.toml --decision-console
+asgi-lua mcp proxy --config asgi-lua.toml --decision-console --decision-console-format json
+```
+
+The text console is optimized for watching local tunnel traffic. The JSON format
+emits redacted audit-shaped events that can be piped into local tools.
+
 Replay captured traffic against the same policy or a candidate policy:
 
 ```bash
@@ -74,6 +84,8 @@ trace = true
 record_out = "traces/session.jsonl"
 audit_out = "traces/audit.jsonl"
 redact_records = false
+decision_console = false
+decision_console_format = "text"
 max_body_bytes = 65536
 timeout = 30.0
 ```

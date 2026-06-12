@@ -21,6 +21,8 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "record_out": "traces/session.jsonl",
     "audit_out": "traces/audit.jsonl",
     "redact_records": False,
+    "decision_console": False,
+    "decision_console_format": "text",
     "max_body_bytes": 65536,
     "timeout": 30.0,
 }
@@ -35,6 +37,8 @@ trace = true
 record_out = "traces/session.jsonl"
 audit_out = "traces/audit.jsonl"
 redact_records = false
+decision_console = false
+decision_console_format = "text"
 max_body_bytes = 65536
 timeout = 30.0
 """
@@ -69,7 +73,7 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
     normalized.update({key: value for key, value in config.items() if value is not None})
     base = Path(base_dir)
 
-    for field in ("upstream", "host", "state"):
+    for field in ("upstream", "host", "state", "decision_console_format"):
         value = normalized.get(field)
         if value is not None and not isinstance(value, str):
             raise ValueError(f"mcp.proxy.{field} must be a string")
@@ -83,9 +87,11 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
             raise ValueError(f"mcp.proxy.{field} must be a positive integer")
     if not isinstance(normalized.get("timeout"), int | float) or float(normalized["timeout"]) <= 0:
         raise ValueError("mcp.proxy.timeout must be a positive number")
-    for field in ("trace", "redact_records"):
+    for field in ("trace", "redact_records", "decision_console"):
         if not isinstance(normalized.get(field), bool):
             raise ValueError(f"mcp.proxy.{field} must be a boolean")
+    if normalized["decision_console_format"] not in {"text", "json"}:
+        raise ValueError("mcp.proxy.decision_console_format must be 'text' or 'json'")
 
     normalized["policy"] = _resolve_path(base, normalized["policy"])
     for field in ("record_out", "audit_out"):

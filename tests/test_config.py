@@ -21,6 +21,8 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         record_out = "traces/session.jsonl"
         audit_out = "traces/audit.jsonl"
         redact_records = true
+        decision_console = true
+        decision_console_format = "json"
         max_body_bytes = 32768
         timeout = 5.5
         """,
@@ -36,6 +38,8 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
     assert result["port"] == 9090
     assert result["trace"] is False
     assert result["redact_records"] is True
+    assert result["decision_console"] is True
+    assert result["decision_console_format"] == "json"
 
 
 def test_merge_mcp_proxy_config_ignores_none_and_applies_overrides(tmp_path):
@@ -97,6 +101,8 @@ def test_mcp_proxy_cli_loads_config_before_running(monkeypatch, tmp_path):
     assert calls[0]["port"] == 8181
     assert calls[0]["trace"] is False
     assert calls[0]["record_out"] == tmp_path / "traces/session.jsonl"
+    assert calls[0]["decision_console"] is True
+    assert calls[0]["decision_console_format"] == "json"
 
 
 def write_config(tmp_path):
@@ -108,6 +114,8 @@ def write_config(tmp_path):
         policy = "policy.asgi-lua/policy.lua"
         record_out = "traces/session.jsonl"
         audit_out = "traces/audit.jsonl"
+        decision_console = true
+        decision_console_format = "json"
         """,
         encoding="utf-8",
     )

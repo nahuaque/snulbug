@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -79,6 +80,64 @@ def test_reverse_proxy_returns_bad_gateway_for_unreachable_upstream(tmp_path):
 
     assert sent[0]["status"] == 502
     assert b"upstream request failed" in sent[1]["body"]
+
+
+def test_reverse_proxy_writes_live_decision_console_text(tmp_path):
+    server, _seen = start_upstream()
+    policy = write_policy(tmp_path, "continue")
+    console = io.StringIO()
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        decision_console=console,
+    )
+
+    try:
+        run_asgi(
+            app,
+            path="/mcp",
+            headers=[(b"authorization", b"Bearer local-dev-secret")],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    output = console.getvalue()
+    assert "decision=continue" in output
+    assert "allowed=true" in output
+    assert "status=200" in output
+    assert "method=POST" in output
+    assert "path=/mcp" in output
+    assert "mcp.method=tools/list" in output
+    assert "local-dev-secret" not in output
+
+
+def test_reverse_proxy_writes_live_decision_console_json(tmp_path):
+    policy = write_policy(tmp_path, "reject")
+    console = io.StringIO()
+    app = create_proxy_application(
+        "http://127.0.0.1:9",
+        policy,
+        decision_console=console,
+        decision_console_format="json",
+    )
+
+    run_asgi(
+        app,
+        path="/mcp",
+        headers=[(b"authorization", b"Bearer local-dev-secret")],
+        body=b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shell_exec"}}',
+    )
+
+    event = json.loads(console.getvalue())
+    assert event["decision"]["action"] == "reject"
+    assert event["decision"]["allowed"] is False
+    assert event["response"]["status"] == 403
+    assert event["request"]["headers"]["authorization"] == "[REDACTED]"
+    assert event["mcp"]["method"] == "tools/call"
+    assert event["mcp"]["tool"] == "shell_exec"
+    assert event["trace"]["instruction_count"] == 0
 
 
 def start_upstream():

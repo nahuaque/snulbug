@@ -420,6 +420,12 @@ uv run asgi-lua mcp proxy \
 
 Then expose `http://127.0.0.1:8080/mcp` with ngrok or another tunnel.
 
+Watch live policy decisions while proxying:
+
+```bash
+uv run asgi-lua mcp proxy --config asgi-lua.toml --decision-console
+```
+
 ## Bounded policy state
 
 Policies can use small state capabilities when the middleware is configured with

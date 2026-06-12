@@ -15,6 +15,7 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 - Added live proxy request recording and audit logging with `asgi-lua mcp proxy --record-out --audit-out`.
 - Added MCP proxy TOML config files with `asgi-lua mcp config init` and `asgi-lua mcp proxy --config`.
 - Added configurable MCP policy generation options to `asgi-lua mcp init`.
+- Added live proxy decision console output with `asgi-lua mcp proxy --decision-console`.
 
 ## [0.1.0] - 2026-06-12
 

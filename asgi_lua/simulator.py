@@ -185,6 +185,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="redact secrets in live replay records",
     )
+    mcp_proxy.add_argument(
+        "--decision-console",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="print live redacted policy decisions while proxying",
+    )
+    mcp_proxy.add_argument(
+        "--decision-console-format",
+        choices=("text", "json"),
+        help="live decision console output format",
+    )
     mcp_proxy.add_argument("--max-body-bytes", type=int)
     mcp_proxy.add_argument("--timeout", type=float, help="upstream timeout in seconds")
 
@@ -356,6 +367,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "record_out": args.record_out,
                     "audit_out": args.audit_out,
                     "redact_records": args.redact_records,
+                    "decision_console": args.decision_console,
+                    "decision_console_format": args.decision_console_format,
                     "max_body_bytes": args.max_body_bytes,
                     "timeout": args.timeout,
                 }
@@ -380,6 +393,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     record_out=proxy_config["record_out"],
                     audit_out=proxy_config["audit_out"],
                     redact_records=proxy_config["redact_records"],
+                    decision_console=proxy_config["decision_console"],
+                    decision_console_format=proxy_config["decision_console_format"],
                 )
             except Exception as exc:
                 sys.stderr.write(f"asgi-lua proxy failed: {exc}\n")
