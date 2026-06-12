@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/snulbug.png" alt="snulbug logo" width="220">
+</p>
+
 # snulbug
 
 `snulbug` is a local-dev MCP policy proxy. Put it between an MCP client and one
