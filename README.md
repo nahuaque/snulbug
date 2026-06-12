@@ -34,6 +34,26 @@ uv sync --extra dev
 
 `asgi-lua` supports Python 3.10 through 3.13.
 
+## Quickstart
+
+For the local-dev MCP policy gateway path, start with the
+[quickstart](docs/quickstart.md). It walks through generating a safe MCP policy,
+creating proxy config, running the reverse proxy, pointing an MCP client at it,
+and inspecting redacted replay/audit logs.
+
+The minimal flow is:
+
+```bash
+uv run asgi-lua mcp quickstart \
+  --token local-dev-secret \
+  --allow-tool safe_read_file \
+  --allow-tool list_project_files
+uv run asgi-lua mcp proxy --config asgi-lua.toml
+```
+
+Then point the MCP client at `http://127.0.0.1:8080/mcp` with
+`Authorization: Bearer local-dev-secret`.
+
 ## Minimal app
 
 ```python
@@ -372,6 +392,7 @@ Bundled MCP presets can be copied into a project:
 
 ```bash
 uv run asgi-lua mcp presets
+uv run asgi-lua mcp quickstart
 uv run asgi-lua mcp init local-dev-safe --output policy.asgi-lua
 uv run asgi-lua bundle test policy.asgi-lua
 ```

@@ -2,6 +2,7 @@
 
 Start here:
 
+- [Quickstart: local MCP policy gateway](quickstart.md)
 - [Getting started](getting-started.md)
 - [Lua request API](lua-request-api.md)
 - [Action reference](actions.md)

@@ -21,6 +21,7 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 - Added offline MCP log inspection with `asgi-lua mcp inspect`.
 - Changed MCP record/proxy defaults to redact replay artifacts unless exact logging is explicitly requested.
 - Added MCP client setup recipes for local, tunneled, authenticated, recording, and stdio-only workflows.
+- Added a local MCP policy gateway quickstart and `asgi-lua mcp quickstart` generator.
 
 ## [0.1.0] - 2026-06-12
 

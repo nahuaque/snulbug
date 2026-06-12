@@ -128,6 +128,56 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_presets = mcp_subparsers.add_parser("presets", help="list bundled MCP policy presets")
     mcp_presets.add_argument("--compact", action="store_true", help="emit compact JSON")
 
+    mcp_quickstart = mcp_subparsers.add_parser("quickstart", help="create a local MCP policy proxy starter")
+    mcp_quickstart.add_argument("--directory", "--dir", type=Path, default=Path("."), help="starter output directory")
+    mcp_quickstart.add_argument("--preset", default="local-dev-safe", help="MCP preset to generate")
+    mcp_quickstart.add_argument(
+        "--policy-output", type=Path, default=Path("policy.asgi-lua"), help="policy bundle path"
+    )
+    mcp_quickstart.add_argument("--config-output", type=Path, default=Path("asgi-lua.toml"), help="config file path")
+    mcp_quickstart.add_argument("--traces-dir", type=Path, default=Path("traces"), help="trace directory path")
+    mcp_quickstart.add_argument("--upstream", default="http://127.0.0.1:9000", help="upstream MCP HTTP server URL")
+    mcp_quickstart.add_argument("--token", help="bearer token to render into generated policy")
+    mcp_quickstart.add_argument("--token-env", help="context key used by generated policy for env-derived token lookup")
+    mcp_quickstart.add_argument("--allow-tool", action="append", default=[], help="allowed MCP tool name")
+    mcp_quickstart.add_argument("--rate-limit", type=int, help="fixed-window request limit")
+    mcp_quickstart.add_argument("--rate-window", type=int, help="fixed-window duration in seconds")
+    mcp_quickstart.add_argument("--host", default="127.0.0.1", help="proxy bind host")
+    mcp_quickstart.add_argument("--port", type=int, default=8080, help="proxy bind port")
+    mcp_quickstart.add_argument(
+        "--state", default="memory", help="'memory', 'none', or 'sqlite:/path/to/state.sqlite3'"
+    )
+    mcp_quickstart.add_argument("--record-out", type=Path, default=Path("traces/session.jsonl"))
+    mcp_quickstart.add_argument("--audit-out", type=Path, default=Path("traces/audit.jsonl"))
+    mcp_quickstart.add_argument(
+        "--redact-records",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="redact secrets in live replay records",
+    )
+    mcp_quickstart.add_argument(
+        "--decision-console",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="print live redacted policy decisions while proxying",
+    )
+    mcp_quickstart.add_argument(
+        "--decision-console-format",
+        choices=("text", "json"),
+        default="text",
+        help="live decision console output format",
+    )
+    mcp_quickstart.add_argument("--max-body-bytes", type=int, default=65536)
+    mcp_quickstart.add_argument("--timeout", type=float, default=30.0, help="upstream timeout in seconds")
+    mcp_quickstart.add_argument("--force", action="store_true", help="overwrite generated policy and config")
+    mcp_quickstart.add_argument(
+        "--validate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="validate and test the generated policy bundle",
+    )
+    mcp_quickstart.add_argument("--compact", action="store_true", help="emit compact JSON")
+
     mcp_init = mcp_subparsers.add_parser("init", help="copy a bundled MCP policy preset")
     mcp_init.add_argument("preset", nargs="?", default="local-dev-safe", help="preset name to copy")
     mcp_init.add_argument("--output", type=Path, help="output bundle directory")
@@ -289,6 +339,39 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.mcp_command == "presets":
             result = {"presets": list_builtin_presets()}
             status = 0
+        elif args.mcp_command == "quickstart":
+            from .quickstart import create_mcp_quickstart
+
+            try:
+                result = create_mcp_quickstart(
+                    args.directory,
+                    preset=args.preset,
+                    policy_output=args.policy_output,
+                    config_output=args.config_output,
+                    traces_dir=args.traces_dir,
+                    upstream=args.upstream,
+                    token=args.token,
+                    token_env=args.token_env,
+                    allowed_tools=args.allow_tool or None,
+                    rate_limit=args.rate_limit,
+                    rate_window=args.rate_window,
+                    host=args.host,
+                    port=args.port,
+                    state=args.state,
+                    record_out=args.record_out,
+                    audit_out=args.audit_out,
+                    redact_records=args.redact_records,
+                    decision_console=args.decision_console,
+                    decision_console_format=args.decision_console_format,
+                    max_body_bytes=args.max_body_bytes,
+                    timeout=args.timeout,
+                    force=args.force,
+                    validate=args.validate,
+                )
+                status = 0 if result["ok"] else 1
+            except Exception as exc:
+                result = {"ok": False, "directory": str(args.directory), "error": str(exc)}
+                status = 1
         elif args.mcp_command == "init":
             output = args.output or Path(f"{args.preset}.asgi-lua")
             try:

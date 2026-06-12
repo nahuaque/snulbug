@@ -14,6 +14,12 @@ Copy the default local-dev policy:
 uv run asgi-lua mcp init --output policy.asgi-lua
 ```
 
+Create the full local proxy starter instead:
+
+```bash
+uv run asgi-lua mcp quickstart
+```
+
 Copy a specific preset:
 
 ```bash
