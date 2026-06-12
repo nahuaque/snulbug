@@ -5,6 +5,7 @@ __version__ = "0.1.0"
 from .bundle import pack_bundle, test_bundle, validate_bundle
 from .config import load_mcp_proxy_config, write_sample_config
 from .confirm import ConfirmationBroker
+from .guide import MCP_GUIDE_WORKFLOWS, build_mcp_guide, format_mcp_guide
 from .impact import analyze_mcp_impact, format_mcp_impact_report
 from .inspection import format_mcp_inspection_report, inspect_mcp_log
 from .lab import run_mcp_lab
@@ -50,6 +51,7 @@ __all__ = [
     "McpPolicyOptions",
     "FacadeUpstream",
     "ManagedStdioMcpClient",
+    "MCP_GUIDE_WORKFLOWS",
     "McpFacadeProxyApp",
     "RedisStateStore",
     "RedactionConfig",
@@ -71,8 +73,10 @@ __all__ = [
     "create_mcp_quickstart",
     "create_proxy_application",
     "diff_policies",
+    "build_mcp_guide",
     "format_mcp_inspection_report",
     "format_mcp_impact_report",
+    "format_mcp_guide",
     "generate_mcp_preset",
     "inspect_mcp_log",
     "learn_mcp_policy",

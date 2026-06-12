@@ -54,6 +54,13 @@ writes replay/audit/report artifacts under `.snulbug-lab/`.
 
 ## Quickstart
 
+Ask the CLI for a copy-paste workflow before wiring a client or harness:
+
+```bash
+uv run snulbug mcp guide --workflow tunnel
+uv run snulbug mcp guide --workflow learn-amend-impact --compact
+```
+
 For a tunnel-exposed local MCP server, `tunnel-safe` is the recommended default:
 
 ```bash
@@ -177,6 +184,7 @@ Workflow:
 Start with:
 
 - [Quickstart: local MCP policy gateway](docs/quickstart.md)
+- [MCP CLI guide for agents and harnesses](docs/mcp-guide.md)
 - [MCP reverse proxy](docs/mcp-proxy.md)
 - [MCP client setup recipes](docs/mcp-client-recipes.md)
 - [MCP learn and amend mode](docs/mcp-learn.md)

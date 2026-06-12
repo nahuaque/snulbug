@@ -3,6 +3,7 @@
 ## MCP Local-Dev Policy Proxy
 
 - [Quickstart: local MCP policy gateway](quickstart.md)
+- [MCP CLI guide for agents and harnesses](mcp-guide.md)
 - [One-command MCP policy lab](quickstart.md#2-run-the-policy-lab)
 - [MCP reverse proxy](mcp-proxy.md)
 - [MCP client setup recipes](mcp-client-recipes.md)

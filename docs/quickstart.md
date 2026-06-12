@@ -27,6 +27,12 @@ uv sync --extra dev
 The commands below use `uv run` for local repository development. With a
 published install, drop the `uv run` prefix.
 
+For a self-describing workflow that an agentic harness can parse:
+
+```bash
+uv run snulbug mcp guide --workflow tunnel --compact
+```
+
 ## 2. Run the policy lab
 
 Before wiring in a real MCP server, run the one-command lab:
@@ -227,6 +233,8 @@ auth-sensitive replay artifacts for a short-lived local debugging session.
 
 - [End-to-end MCP policy proxy demo](../examples/mcp_proxy_demo/README.md)
   runs a standalone HTTP MCP upstream behind the generated proxy policy.
+- [MCP CLI guide for agents and harnesses](mcp-guide.md) shows copy-paste and
+  compact JSON workflows.
 - [MCP client setup recipes](mcp-client-recipes.md) shows local, tunneled,
   header-authenticated, recording, and managed stdio upstream patterns.
 - [MCP reverse proxy](mcp-proxy.md) documents every proxy flag and config key.

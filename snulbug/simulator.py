@@ -135,6 +135,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp = subparsers.add_parser("mcp", help="work with local-dev MCP policy helpers and presets")
     mcp_subparsers = mcp.add_subparsers(dest="mcp_command", required=True)
 
+    mcp_guide = mcp_subparsers.add_parser("guide", help="print agent-oriented MCP workflow guidance")
+    mcp_guide.add_argument(
+        "--workflow",
+        choices=("all", "tunnel", "learn-amend-impact", "leases", "facade"),
+        default="all",
+        help="workflow to print",
+    )
+    mcp_guide.add_argument("--compact", action="store_true", help="emit compact JSON")
+
     mcp_presets = mcp_subparsers.add_parser("presets", help="list bundled MCP policy presets")
     mcp_presets.add_argument("--compact", action="store_true", help="emit compact JSON")
 
@@ -552,7 +561,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         from .recorder import append_record, record_audit_event, record_policy_request, replay_record_log
         from .redaction import append_audit_event
 
-        if args.mcp_command == "presets":
+        if args.mcp_command == "guide":
+            from .guide import build_mcp_guide, format_mcp_guide
+
+            try:
+                result = build_mcp_guide(workflow=args.workflow)
+            except Exception as exc:
+                result = {"ok": False, "workflow": args.workflow, "error": str(exc)}
+                status = 1
+            else:
+                status = 0
+            if args.compact:
+                output = json.dumps(result, separators=(",", ":"), sort_keys=True)
+            else:
+                output = format_mcp_guide(result) if status == 0 else json.dumps(result, indent=2, sort_keys=True)
+            sys.stdout.write(output)
+            sys.stdout.write("\n")
+            return status
+        elif args.mcp_command == "presets":
             result = {"presets": list_builtin_presets()}
             status = 0
         elif args.mcp_command == "quickstart":
