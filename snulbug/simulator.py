@@ -324,6 +324,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     mcp_inspect.add_argument("--compact", action="store_true", help="emit compact JSON")
 
+    mcp_impact = mcp_subparsers.add_parser("impact", help="preview policy or lease impact against MCP replay logs")
+    mcp_impact.add_argument("log", type=Path, help="JSONL replay log")
+    mcp_impact.add_argument("--policy", type=Path, help="candidate policy to replay against the log")
+    mcp_impact.add_argument("--lease", "--lease-file", dest="lease_file", type=Path, help="task lease JSON file")
+    mcp_impact.add_argument("--instruction-limit", type=int, default=100_000)
+    mcp_impact.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
+    mcp_impact.add_argument("--report-out", type=Path, help="optional Markdown impact report path")
+    mcp_impact.add_argument(
+        "--report-format",
+        choices=("markdown",),
+        default="markdown",
+        help="impact report output format",
+    )
+    mcp_impact.add_argument("--no-fail", action="store_true", help="return exit code 0 even when impact has errors")
+    mcp_impact.add_argument("--compact", action="store_true", help="emit compact JSON")
+
     mcp_learn = mcp_subparsers.add_parser("learn", help="compile MCP replay or audit logs into a policy bundle")
     mcp_learn.add_argument("log", type=Path, help="JSONL replay or audit log")
     mcp_learn.add_argument("--out", "--output", type=Path, required=True, help="output policy bundle directory")
@@ -695,6 +711,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                     result["report_out"] = str(args.report_out)
                     result["report_format"] = args.report_format
                 status = 0
+            except Exception as exc:
+                result = {"ok": False, "log": str(args.log), "error": str(exc)}
+                status = 1
+        elif args.mcp_command == "impact":
+            from .impact import analyze_mcp_impact, format_mcp_impact_report
+
+            memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
+            try:
+                result = analyze_mcp_impact(
+                    args.log,
+                    policy=args.policy,
+                    lease_file=args.lease_file,
+                    instruction_limit=args.instruction_limit,
+                    memory_limit_bytes=memory_limit,
+                )
+                if args.report_out is not None:
+                    report_text = format_mcp_impact_report(result, output_format=args.report_format)
+                    args.report_out.parent.mkdir(parents=True, exist_ok=True)
+                    args.report_out.write_text(report_text, encoding="utf-8")
+                    result["report_out"] = str(args.report_out)
+                    result["report_format"] = args.report_format
+                status = 0 if args.no_fail or result["ok"] else 1
             except Exception as exc:
                 result = {"ok": False, "log": str(args.log), "error": str(exc)}
                 status = 1

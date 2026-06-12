@@ -194,6 +194,67 @@ def enforce_mcp_lease_policy(
     return True, metadata
 
 
+def preview_mcp_lease_coverage(
+    request: Mapping[str, Any] | None,
+    path: str | Path,
+    *,
+    consumption: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """Evaluate whether any active lease would cover a tools/call request without mutating lease state."""
+
+    method = request.get("method") if isinstance(request, Mapping) else None
+    metadata: dict[str, Any] = {
+        "checked": False,
+        "covered": False,
+        "method": method,
+        "file": str(path),
+    }
+    if method != "tools/call" or not isinstance(request, Mapping):
+        metadata["skipped"] = "not_tool_call"
+        return metadata
+
+    params = request.get("params")
+    params = params if isinstance(params, Mapping) else {}
+    tool = params.get("name")
+    if isinstance(tool, str):
+        metadata["tool"] = tool
+
+    try:
+        store = _load_store(Path(path), create_missing=False)
+    except FileNotFoundError:
+        metadata["reason_code"] = "lease.store_missing"
+        return metadata
+    except ValueError as exc:
+        metadata["reason_code"] = "lease.store_invalid"
+        metadata["error"] = str(exc)
+        return metadata
+
+    metadata["checked"] = True
+    matches = []
+    denials = []
+    for lease in _leases(store):
+        lease_id = str(lease.get("id", ""))
+        extra_consumption = consumption.get(lease_id, 0) if consumption is not None else 0
+        use_count = int(lease.get("use_count") or 0) + extra_consumption
+        denial = _lease_denial_reason(lease, request, use_count=use_count)
+        if denial is None:
+            matches.append(_lease_view(lease))
+        else:
+            denials.append({"lease": lease_id or None, **denial})
+
+    if matches:
+        metadata["covered"] = True
+        metadata["matches"] = matches
+        if consumption is not None:
+            lease_id = str(matches[0].get("id", ""))
+            if lease_id:
+                consumption[lease_id] = consumption.get(lease_id, 0) + 1
+    else:
+        metadata["reason_code"] = _coverage_reason(denials)
+        metadata["denials"] = denials[:5]
+    return metadata
+
+
 def mcp_lease_error_response(request: Mapping[str, Any], metadata: Mapping[str, Any]) -> dict[str, Any]:
     reason = metadata.get("reason_code", "lease.rejected")
     tool = metadata.get("tool")
@@ -219,7 +280,12 @@ def mcp_lease_error_response(request: Mapping[str, Any], metadata: Mapping[str, 
     }
 
 
-def _lease_denial_reason(lease: Mapping[str, Any], request: Mapping[str, Any]) -> dict[str, Any] | None:
+def _lease_denial_reason(
+    lease: Mapping[str, Any],
+    request: Mapping[str, Any],
+    *,
+    use_count: int | None = None,
+) -> dict[str, Any] | None:
     now = _now()
     revoked_at = lease.get("revoked_at")
     if revoked_at:
@@ -229,8 +295,8 @@ def _lease_denial_reason(lease: Mapping[str, Any], request: Mapping[str, Any]) -
         return {"reason_code": "lease.expired"}
 
     max_calls = lease.get("max_calls")
-    use_count = int(lease.get("use_count") or 0)
-    if isinstance(max_calls, int) and use_count >= max_calls:
+    effective_use_count = int(lease.get("use_count") or 0) if use_count is None else use_count
+    if isinstance(max_calls, int) and effective_use_count >= max_calls:
         return {"reason_code": "lease.max_calls_exceeded"}
 
     params = request.get("params")
@@ -265,6 +331,16 @@ def _lease_denial_reason(lease: Mapping[str, Any], request: Mapping[str, Any]) -
         return {"reason_code": "lease.command_not_allowed", "command": denied_commands[0]}
 
     return None
+
+
+def _coverage_reason(denials: Sequence[Mapping[str, Any]]) -> str:
+    if not denials:
+        return "lease.none"
+    counts: dict[str, int] = {}
+    for denial in denials:
+        reason = str(denial.get("reason_code") or "lease.rejected")
+        counts[reason] = counts.get(reason, 0) + 1
+    return max(counts, key=counts.get)
 
 
 def _record_lease_use(path: Path, store: dict[str, Any], lease: dict[str, Any], tool: str | None) -> None:

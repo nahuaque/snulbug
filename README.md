@@ -125,6 +125,15 @@ uv run snulbug bundle validate learned-policy.snulbug
 uv run snulbug bundle test learned-policy.snulbug
 ```
 
+Preview the blast radius before enabling a candidate policy or lease:
+
+```bash
+uv run snulbug mcp impact traces/session.jsonl \
+  --policy learned-policy.snulbug/policy.lua \
+  --lease leases.json \
+  --report-out traces/impact-report.md
+```
+
 When the learned policy blocks a legitimate request, generate a candidate
 amendment instead of editing the active policy in place:
 
@@ -171,6 +180,7 @@ Start with:
 - [MCP reverse proxy](docs/mcp-proxy.md)
 - [MCP client setup recipes](docs/mcp-client-recipes.md)
 - [MCP learn and amend mode](docs/mcp-learn.md)
+- [MCP impact preview](docs/mcp-impact.md)
 - [MCP recorder and replay](docs/mcp-recorder.md)
 - [MCP presets](docs/mcp-presets.md)
 - [Security model](docs/security-model.md)

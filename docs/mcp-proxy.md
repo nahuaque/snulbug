@@ -159,6 +159,12 @@ snulbug mcp lease list --file leases.json
 snulbug mcp lease revoke lease_abc123 --file leases.json
 ```
 
+Preview whether a lease covers captured traffic before requiring it:
+
+```bash
+snulbug mcp impact traces/session.jsonl --lease leases.json --report-out traces/impact-report.md
+```
+
 In facade mode, leases use the client-facing tool name, such as
 `files.read_file` or `git.status`.
 

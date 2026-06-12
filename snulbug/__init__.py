@@ -5,6 +5,7 @@ __version__ = "0.1.0"
 from .bundle import pack_bundle, test_bundle, validate_bundle
 from .config import load_mcp_proxy_config, write_sample_config
 from .confirm import ConfirmationBroker
+from .impact import analyze_mcp_impact, format_mcp_impact_report
 from .inspection import format_mcp_inspection_report, inspect_mcp_log
 from .lab import run_mcp_lab
 from .learn import amend_mcp_policy, learn_mcp_policy
@@ -62,6 +63,7 @@ __all__ = [
     "append_audit_event",
     "append_record",
     "amend_mcp_policy",
+    "analyze_mcp_impact",
     "build_audit_event",
     "compare_decisions",
     "copy_builtin_preset",
@@ -70,6 +72,7 @@ __all__ = [
     "create_proxy_application",
     "diff_policies",
     "format_mcp_inspection_report",
+    "format_mcp_impact_report",
     "generate_mcp_preset",
     "inspect_mcp_log",
     "learn_mcp_policy",

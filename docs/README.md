@@ -9,6 +9,7 @@
 - [MCP presets](mcp-presets.md)
 - [MCP recorder and replay](mcp-recorder.md)
 - [MCP learn and amend mode](mcp-learn.md)
+- [MCP impact preview](mcp-impact.md)
 - [MCP offline inspection](mcp-recorder.md#inspect-a-captured-replay-or-audit-log-without-a-running-proxy)
 - [MCP gateway example](mcp-gateway.md)
 - [End-to-end MCP policy proxy demo](../examples/mcp_proxy_demo/README.md)

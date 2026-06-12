@@ -35,6 +35,15 @@ uv run snulbug bundle validate learned-policy.snulbug
 uv run snulbug bundle test learned-policy.snulbug
 ```
 
+Preview the policy impact against the captured session before enabling it:
+
+```bash
+uv run snulbug mcp impact \
+  traces/session.jsonl \
+  --policy learned-policy.snulbug/policy.lua \
+  --report-out traces/impact-report.md
+```
+
 Run the proxy with the learned policy:
 
 ```bash
@@ -120,6 +129,7 @@ Validate and review the candidate:
 ```bash
 uv run snulbug bundle validate candidate-policy.snulbug
 uv run snulbug bundle test candidate-policy.snulbug
+uv run snulbug mcp impact traces/session.jsonl --policy candidate-policy.snulbug/policy.lua
 ```
 
 If the source learned bundle points at a replayable `generated_from` record log,
