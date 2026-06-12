@@ -26,13 +26,8 @@ async def app(scope, receive, send):
         headers.append((b"x-lua-tenant", scope["lua"]["tenant"].encode("latin-1")))
 
     await send({"type": "http.response.start", "status": 200, "headers": headers})
-    await send(
-        {
-            "type": "http.response.body",
-            "body": f"{scope['method']} {scope['path']}?{scope.get('query_string', b'').decode()} {body.decode()}".encode(),
-            "more_body": False,
-        }
-    )
+    response_body = f"{scope['method']} {scope['path']}?{scope.get('query_string', b'').decode()} {body.decode()}"
+    await send({"type": "http.response.body", "body": response_body.encode(), "more_body": False})
 
 
 def run_asgi(middleware, *, path="/in", headers=None, body=b"", query_string=b"") -> list[dict[str, Any]]:

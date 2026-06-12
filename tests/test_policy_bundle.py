@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import tarfile
 
-from asgi_lua import pack_bundle, test_bundle as run_bundle_tests, validate_bundle
+from asgi_lua import pack_bundle, validate_bundle
+from asgi_lua import test_bundle as run_bundle_tests
 from asgi_lua.simulator import main as simulator_main
 
 BUNDLE = "examples/bundles/idempotency.asgi-lua"

@@ -4,8 +4,8 @@ import asyncio
 import json
 from typing import Any
 
-from examples.customer_policy.app import application
 from asgi_lua import simulate_policy
+from examples.customer_policy.app import application
 
 
 def run_demo_request(

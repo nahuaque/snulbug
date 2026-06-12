@@ -9,7 +9,13 @@ from typing import Any, Literal
 from urllib.parse import urlencode
 
 from .promotion import compare_decisions
-from .runtime import CompiledLuaScript, LuaDecisionError, LuaDecisionTrace, LuaRuntimeError, compile_lua_file, compile_lua_script
+from .runtime import (
+    CompiledLuaScript,
+    LuaDecisionError,
+    LuaDecisionTrace,
+    compile_lua_file,
+    compile_lua_script,
+)
 from .state import BoundedPolicyState, DryRunStateStore, PolicyStateStore, StateLimits
 
 Scope = dict[str, Any]
@@ -465,7 +471,9 @@ def _header_quote(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _merge_headers(existing: list[tuple[bytes, bytes]], updates: list[tuple[bytes, bytes]]) -> list[tuple[bytes, bytes]]:
+def _merge_headers(
+    existing: list[tuple[bytes, bytes]], updates: list[tuple[bytes, bytes]]
+) -> list[tuple[bytes, bytes]]:
     update_names = {name.lower() for name, _ in updates}
     return [(name, value) for name, value in existing if name.lower() not in update_names] + updates
 

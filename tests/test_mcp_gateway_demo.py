@@ -4,7 +4,8 @@ import asyncio
 import json
 from typing import Any
 
-from asgi_lua import test_bundle as run_bundle_tests, validate_bundle
+from asgi_lua import test_bundle as run_bundle_tests
+from asgi_lua import validate_bundle
 from examples.mcp_gateway.app import STATE, application
 
 BUNDLE = "examples/bundles/mcp-gateway.asgi-lua"
@@ -82,10 +83,7 @@ def test_mcp_gateway_rate_limits_allowed_calls():
         "params": {"name": "list_project_files", "arguments": {}},
     }
 
-    responses = [
-        run_mcp_request(request, authorization="Bearer local-dev-secret")
-        for _ in range(6)
-    ]
+    responses = [run_mcp_request(request, authorization="Bearer local-dev-secret") for _ in range(6)]
 
     assert responses[0][0]["status"] == 200
     assert responses[4][0]["status"] == 200

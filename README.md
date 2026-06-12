@@ -26,6 +26,8 @@ For local development from this repository:
 uv sync --extra dev
 ```
 
+`asgi-lua` supports Python 3.10 through 3.13.
+
 ## Minimal app
 
 ```python
@@ -56,8 +58,10 @@ application = LuaMiddleware(app, lua_script)
 Run it with:
 
 ```bash
-uv run uvicorn hello:application
+uv run uvicorn examples.basic.app:application --host 127.0.0.1 --port 8000
 ```
+
+Additional reference docs live in [docs/](docs/README.md).
 
 ## Lua contract
 

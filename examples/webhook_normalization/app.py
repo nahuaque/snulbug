@@ -10,10 +10,7 @@ from asgi_lua.runtime import CompiledLuaScript, compile_lua_file
 BASE_DIR = Path(__file__).parent
 POLICY_DIR = BASE_DIR / "policies"
 
-POLICIES = {
-    policy_path.stem: compile_lua_file(policy_path)
-    for policy_path in POLICY_DIR.glob("*.lua")
-}
+POLICIES = {policy_path.stem: compile_lua_file(policy_path) for policy_path in POLICY_DIR.glob("*.lua")}
 
 
 def policy_for_scope(scope: dict[str, Any]) -> CompiledLuaScript:

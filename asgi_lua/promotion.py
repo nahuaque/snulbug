@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -59,7 +59,9 @@ def diff_policies(
     results = []
     for fixture_path in fixture_paths:
         state_snapshot = load_state_snapshot_for_fixture(state_snapshots_path, fixture_path)
-        results.append(diff_fixture(old_script, new_script, fixture_path, context=context, state_snapshot=state_snapshot))
+        results.append(
+            diff_fixture(old_script, new_script, fixture_path, context=context, state_snapshot=state_snapshot)
+        )
     changed = [result for result in results if result["changed"]]
     regressions = [result for result in results if result["regression"]]
     return {

@@ -32,11 +32,3 @@ end
 """
 
 application = LuaMiddleware(app, lua_script)
-
-
-def main():
-    print("Run with: uvicorn hello:application")
-
-
-if __name__ == "__main__":
-    main()

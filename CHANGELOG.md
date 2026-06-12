@@ -1,0 +1,18 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on Keep a Changelog, and this project follows semantic versioning after `1.0.0`. Before `1.0.0`, minor versions may include action schema or trace schema changes.
+
+## [Unreleased]
+
+- Added public GitHub project metadata, CI, contribution docs, security docs, issue templates, and reference documentation.
+- Added the basic ASGI middleware example under `examples/basic`.
+
+## [0.1.0] - 2026-06-12
+
+- Initial alpha package for programmable Lua request policy in ASGI middleware.
+- Added request actions: `continue`, `set_context`, `rewrite`, `respond`, `reject`, `challenge`, `redirect`, and `rate_limit`.
+- Added bounded policy state with memory, SQLite, Redis, snapshot, and dry-run support.
+- Added simulator, policy diffing, shadow policy support, bundle validation, bundle tests, and bundle packing.
+- Added customer-owned request policy, webhook normalization, state replay, idempotency bundle, and MCP gateway examples.
