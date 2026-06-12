@@ -329,6 +329,10 @@ def _format_decision_console_line(event: Mapping[str, Any]) -> str:
         parts.append(f"mcp.method={mcp['method']}")
     if mcp.get("tool"):
         parts.append(f"mcp.tool={mcp['tool']}")
+    elif mcp.get("target"):
+        parts.append(f"mcp.target={mcp['target']}")
+    if mcp.get("request_id") is not None:
+        parts.append(f"mcp.id={mcp['request_id']}")
     if trace.get("duration_ms") is not None:
         parts.append(f"lua_ms={float(trace['duration_ms']):.3f}")
     if trace.get("instruction_count") is not None:

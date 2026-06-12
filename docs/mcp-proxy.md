@@ -53,7 +53,10 @@ asgi-lua mcp proxy --config asgi-lua.toml --decision-console --decision-console-
 ```
 
 The text console is optimized for watching local tunnel traffic. The JSON format
-emits redacted audit-shaped events that can be piped into local tools.
+emits redacted audit-shaped events that can be piped into local tools. Audit
+events include MCP-aware fields such as JSON-RPC id, MCP method, operation,
+target tool/resource/prompt, params key names, argument key names, and
+initialize client metadata.
 
 Replay captured traffic against the same policy or a candidate policy:
 

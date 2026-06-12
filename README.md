@@ -426,6 +426,9 @@ Watch live policy decisions while proxying:
 uv run asgi-lua mcp proxy --config asgi-lua.toml --decision-console
 ```
 
+Redacted audit events include MCP-aware fields such as JSON-RPC id, MCP method,
+operation, target tool/resource/prompt, and params/argument key names.
+
 ## Bounded policy state
 
 Policies can use small state capabilities when the middleware is configured with

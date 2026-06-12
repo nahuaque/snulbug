@@ -110,6 +110,7 @@ def test_reverse_proxy_writes_live_decision_console_text(tmp_path):
     assert "method=POST" in output
     assert "path=/mcp" in output
     assert "mcp.method=tools/list" in output
+    assert "mcp.id=1" in output
     assert "local-dev-secret" not in output
 
 
@@ -136,6 +137,10 @@ def test_reverse_proxy_writes_live_decision_console_json(tmp_path):
     assert event["response"]["status"] == 403
     assert event["request"]["headers"]["authorization"] == "[REDACTED]"
     assert event["mcp"]["method"] == "tools/call"
+    assert event["mcp"]["operation"] == "tools"
+    assert event["mcp"]["operation_detail"] == "call"
+    assert event["mcp"]["request_id"] == 1
+    assert event["mcp"]["target"] == "shell_exec"
     assert event["mcp"]["tool"] == "shell_exec"
     assert event["trace"]["instruction_count"] == 0
 

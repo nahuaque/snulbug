@@ -45,7 +45,10 @@ def test_build_audit_event_is_redacted_and_compact(tmp_path):
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "tools/call",
-                "params": {"name": "safe_read_file", "token": "sk-test_abcdefghijklmnopqrstuvwxyz"},
+                "params": {
+                    "name": "safe_read_file",
+                    "arguments": {"path": "README.md", "token": "sk-test_abcdefghijklmnopqrstuvwxyz"},
+                },
             }
         ),
     }
@@ -55,9 +58,76 @@ def test_build_audit_event_is_redacted_and_compact(tmp_path):
 
     assert audit["type"] == "asgi-lua.audit"
     assert audit["request"]["headers"]["authorization"] == "[REDACTED]"
-    assert audit["mcp"] == {"method": "tools/call", "tool": "safe_read_file"}
+    assert audit["mcp"] == {
+        "argument_keys": ["path", "token"],
+        "body_kind": "object",
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "notification": False,
+        "operation": "tools",
+        "operation_detail": "call",
+        "params_keys": ["arguments", "name"],
+        "request_id": 1,
+        "target": "safe_read_file",
+        "tool": "safe_read_file",
+        "valid_json": True,
+    }
     assert audit["decision"]["action"] == "continue"
     assert audit["decision"]["allowed"] is True
+
+
+def test_build_audit_event_extracts_initialize_client_metadata(tmp_path):
+    policy = write_policy(tmp_path)
+    request = {
+        "method": "POST",
+        "path": "/mcp",
+        "body": json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "init-1",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2026-06-12",
+                    "clientInfo": {"name": "codex", "version": "1.2.3"},
+                    "capabilities": {"roots": {}, "sampling": {}},
+                },
+            }
+        ),
+    }
+
+    audit = build_audit_event(record_policy_request(policy, request))
+
+    assert audit["mcp"]["method"] == "initialize"
+    assert audit["mcp"]["operation"] == "initialize"
+    assert audit["mcp"]["request_id"] == "init-1"
+    assert audit["mcp"]["protocol_version"] == "2026-06-12"
+    assert audit["mcp"]["client"] == {"name": "codex", "version": "1.2.3"}
+    assert audit["mcp"]["capabilities"] == ["roots", "sampling"]
+
+
+def test_build_audit_event_marks_batch_and_invalid_mcp_bodies(tmp_path):
+    policy = write_policy(tmp_path)
+    batch_request = {
+        "method": "POST",
+        "path": "/mcp",
+        "body": json.dumps(
+            [
+                {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                {"jsonrpc": "2.0", "id": 2, "method": "resources/read"},
+            ]
+        ),
+    }
+    invalid_request = {"method": "POST", "path": "/mcp", "body": "not json"}
+
+    batch_audit = build_audit_event(record_policy_request(policy, batch_request))
+    invalid_audit = build_audit_event(record_policy_request(policy, invalid_request))
+
+    assert batch_audit["mcp"]["body_kind"] == "batch"
+    assert batch_audit["mcp"]["batch"] is True
+    assert batch_audit["mcp"]["batch_count"] == 2
+    assert batch_audit["mcp"]["methods"] == ["tools/list", "resources/read"]
+    assert invalid_audit["mcp"]["body_kind"] == "invalid"
+    assert invalid_audit["mcp"]["valid_json"] is False
 
 
 def test_mcp_record_cli_writes_redacted_audit_log_without_redacting_record(tmp_path, capsys):

@@ -16,6 +16,7 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 - Added MCP proxy TOML config files with `asgi-lua mcp config init` and `asgi-lua mcp proxy --config`.
 - Added configurable MCP policy generation options to `asgi-lua mcp init`.
 - Added live proxy decision console output with `asgi-lua mcp proxy --decision-console`.
+- Added MCP-aware audit fields for JSON-RPC id, method, operation, targets, key names, batches, and initialize metadata.
 
 ## [0.1.0] - 2026-06-12
 

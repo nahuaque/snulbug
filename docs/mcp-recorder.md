@@ -121,7 +121,15 @@ Audit events have this shape:
     }
   },
   "mcp": {
+    "body_kind": "object",
+    "jsonrpc": "2.0",
     "method": "tools/call",
+    "notification": false,
+    "operation": "tools",
+    "operation_detail": "call",
+    "params_keys": ["arguments", "name"],
+    "request_id": 1,
+    "target": "safe_read_file",
     "tool": "safe_read_file"
   },
   "decision": {
@@ -131,3 +139,7 @@ Audit events have this shape:
   }
 }
 ```
+
+The `mcp` object is extracted from the JSON-RPC envelope and common MCP params.
+It records names and key lists, not full params or tool arguments, so audit logs
+remain useful without becoming a second copy of the request body.

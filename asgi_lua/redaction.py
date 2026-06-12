@@ -97,6 +97,8 @@ def _redact(value: Any, config: RedactionConfig, *, key: str | None) -> Any:
     if isinstance(value, Mapping):
         return {str(item_key): _redact(item_value, config, key=str(item_key)) for item_key, item_value in value.items()}
     if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        if key in {"argument_keys", "capabilities", "methods", "params_keys"}:
+            return list(value)
         return [_redact(item, config, key=None) for item in value]
     if isinstance(value, str):
         return _redact_string(value, config)
@@ -139,17 +141,116 @@ def _mcp_summary(request: Mapping[str, Any], decision: Mapping[str, Any]) -> dic
         "tool": context.get("tool"),
     }
     body = request.get("body")
-    if isinstance(body, str):
-        try:
-            parsed = json.loads(body)
-        except json.JSONDecodeError:
-            parsed = None
-        if isinstance(parsed, Mapping):
-            summary["method"] = summary["method"] or parsed.get("method")
-            params = parsed.get("params")
-            if isinstance(params, Mapping):
-                summary["tool"] = summary["tool"] or params.get("name")
-    return summary
+    if not isinstance(body, str):
+        summary["body_kind"] = "missing"
+        return _drop_empty(summary)
+
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        summary["body_kind"] = "invalid"
+        summary["valid_json"] = False
+        return _drop_empty(summary)
+
+    summary["valid_json"] = True
+    if isinstance(parsed, Sequence) and not isinstance(parsed, str | bytes | bytearray):
+        summary["body_kind"] = "batch"
+        summary["batch"] = True
+        summary["batch_count"] = len(parsed)
+        methods = [_jsonrpc_method(item) for item in parsed if isinstance(item, Mapping)]
+        methods = [method for method in methods if method is not None]
+        if methods:
+            summary["methods"] = methods[:20]
+        return _drop_empty(summary)
+
+    if not isinstance(parsed, Mapping):
+        summary["body_kind"] = "unknown"
+        return _drop_empty(summary)
+
+    summary["body_kind"] = "object"
+    _merge_jsonrpc_summary(summary, parsed)
+    return _drop_empty(summary)
+
+
+def _merge_jsonrpc_summary(summary: dict[str, Any], body: Mapping[str, Any]) -> None:
+    method = _jsonrpc_method(body)
+    params = body.get("params")
+    params = params if isinstance(params, Mapping) else {}
+
+    summary["jsonrpc"] = body.get("jsonrpc")
+    summary["request_id"] = _jsonrpc_id(body)
+    summary["notification"] = "id" not in body
+    summary["method"] = summary.get("method") or method
+    if method is not None:
+        operation, _, operation_detail = method.partition("/")
+        summary["operation"] = operation
+        if operation_detail:
+            summary["operation_detail"] = operation_detail
+    if params:
+        summary["params_keys"] = sorted(str(key) for key in params)
+
+    target = _mcp_target(method, params)
+    if target is not None:
+        summary["target"] = target
+    if method == "tools/call":
+        summary["tool"] = summary.get("tool") or target
+        arguments = params.get("arguments")
+        if isinstance(arguments, Mapping):
+            summary["argument_keys"] = sorted(str(key) for key in arguments)
+
+    if method == "initialize":
+        _merge_initialize_summary(summary, params)
+
+
+def _merge_initialize_summary(summary: dict[str, Any], params: Mapping[str, Any]) -> None:
+    if isinstance(params.get("protocolVersion"), str):
+        summary["protocol_version"] = params["protocolVersion"]
+    client = params.get("clientInfo")
+    if isinstance(client, Mapping):
+        summary["client"] = {
+            "name": client.get("name"),
+            "version": client.get("version"),
+        }
+    capabilities = params.get("capabilities")
+    if isinstance(capabilities, Mapping):
+        summary["capabilities"] = sorted(str(key) for key in capabilities)
+
+
+def _jsonrpc_method(body: Mapping[str, Any]) -> str | None:
+    method = body.get("method")
+    return method if isinstance(method, str) else None
+
+
+def _jsonrpc_id(body: Mapping[str, Any]) -> str | int | float | bool | None:
+    if "id" not in body:
+        return None
+    value = body.get("id")
+    if isinstance(value, str | int | float | bool) or value is None:
+        return value
+    return str(value)
+
+
+def _mcp_target(method: str | None, params: Mapping[str, Any]) -> Any:
+    if method == "tools/call":
+        return _string_param(params, "name")
+    if method in {"resources/read", "resources/subscribe", "resources/unsubscribe"}:
+        return _string_param(params, "uri")
+    if method == "prompts/get":
+        return _string_param(params, "name")
+    if method == "completion/complete":
+        ref = params.get("ref")
+        if isinstance(ref, Mapping):
+            return _string_param(ref, "name") or _string_param(ref, "uri")
+    return _string_param(params, "name") or _string_param(params, "uri")
+
+
+def _string_param(value: Mapping[str, Any], key: str) -> str | None:
+    item = value.get(key)
+    return item if isinstance(item, str) else None
+
+
+def _drop_empty(value: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: item for key, item in value.items() if item not in (None, "", [], {})}
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
