@@ -1,0 +1,8 @@
+{
+  "method": "POST",
+  "path": "/callbacks",
+  "headers": {
+    "x-tenant": "initech"
+  },
+  "body": "{\"test\":true}"
+}
