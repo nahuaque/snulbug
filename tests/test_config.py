@@ -42,6 +42,44 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
     assert result["decision_console_format"] == "json"
 
 
+def test_load_mcp_proxy_config_supports_facade_upstreams(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.proxy]
+        policy = "policy.snulbug/policy.lua"
+
+        [[mcp.proxy.upstreams]]
+        name = "files"
+        url = "http://127.0.0.1:9001/mcp"
+        default = true
+
+        [[mcp.proxy.upstreams]]
+        name = "git"
+        url = "http://127.0.0.1:9002/mcp"
+        tool_prefix = "repo."
+        """,
+        encoding="utf-8",
+    )
+
+    result = load_mcp_proxy_config(config)
+
+    assert result["upstreams"] == [
+        {
+            "name": "files",
+            "url": "http://127.0.0.1:9001/mcp",
+            "tool_prefix": "files.",
+            "default": True,
+        },
+        {
+            "name": "git",
+            "url": "http://127.0.0.1:9002/mcp",
+            "tool_prefix": "repo.",
+            "default": False,
+        },
+    ]
+
+
 def test_merge_mcp_proxy_config_ignores_none_and_applies_overrides(tmp_path):
     config = load_mcp_proxy_config(write_config(tmp_path))
 
@@ -83,7 +121,7 @@ def test_mcp_proxy_cli_requires_policy_and_upstream_without_config(capsys):
 
     captured = capsys.readouterr()
     assert status == 1
-    assert "--upstream and --policy are required" in captured.err
+    assert "--policy and either --upstream or --facade-upstream are required" in captured.err
 
 
 def test_mcp_proxy_cli_loads_config_before_running(monkeypatch, tmp_path):
@@ -106,6 +144,46 @@ def test_mcp_proxy_cli_loads_config_before_running(monkeypatch, tmp_path):
     assert calls[0]["redact_records"] is True
     assert calls[0]["decision_console"] is True
     assert calls[0]["decision_console_format"] == "json"
+
+
+def test_mcp_proxy_cli_passes_facade_upstreams_without_config(monkeypatch, tmp_path):
+    policy = tmp_path / "policy.lua"
+    policy.write_text('return function() return { action = "continue" } end', encoding="utf-8")
+    calls = []
+
+    def fake_run_proxy(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("snulbug.proxy.run_proxy", fake_run_proxy)
+
+    status = simulator_main(
+        [
+            "mcp",
+            "proxy",
+            "--policy",
+            str(policy),
+            "--facade-upstream",
+            "files=http://127.0.0.1:9001/mcp",
+            "--facade-upstream",
+            "git=http://127.0.0.1:9002/mcp",
+        ]
+    )
+
+    assert status == 0
+    assert calls[0]["upstreams"] == [
+        {
+            "name": "files",
+            "url": "http://127.0.0.1:9001/mcp",
+            "tool_prefix": "files.",
+            "default": False,
+        },
+        {
+            "name": "git",
+            "url": "http://127.0.0.1:9002/mcp",
+            "tool_prefix": "git.",
+            "default": False,
+        },
+    ]
 
 
 def test_mcp_proxy_cli_can_disable_record_redaction(monkeypatch, tmp_path):

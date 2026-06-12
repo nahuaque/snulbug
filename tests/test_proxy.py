@@ -172,6 +172,80 @@ def test_reverse_proxy_writes_live_decision_console_json(tmp_path):
     assert event["trace"]["instruction_count"] == 0
 
 
+def test_mcp_facade_aggregates_tool_lists_with_upstream_prefixes(tmp_path):
+    files_server, files_seen = start_mcp_upstream({"read_file": "Read a file"})
+    git_server, git_seen = start_mcp_upstream({"status": "Show git status"})
+    policy = write_policy(tmp_path, "continue")
+    app = create_proxy_application(
+        None,
+        policy,
+        upstreams=[
+            {"name": "files", "url": f"http://127.0.0.1:{files_server.server_port}/mcp"},
+            {"name": "git", "url": f"http://127.0.0.1:{git_server.server_port}/mcp"},
+        ],
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}',
+        )
+    finally:
+        files_server.shutdown()
+        files_server.server_close()
+        git_server.shutdown()
+        git_server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    assert sent[0]["status"] == 200
+    assert payload["id"] == "list-1"
+    assert [tool["name"] for tool in payload["result"]["tools"]] == ["files.read_file", "git.status"]
+    assert files_seen["calls"] == [{"method": "tools/list", "tool": None}]
+    assert git_seen["calls"] == [{"method": "tools/list", "tool": None}]
+
+
+def test_mcp_facade_routes_tool_calls_by_prefix_and_records_upstream_metadata(tmp_path):
+    files_server, files_seen = start_mcp_upstream({"read_file": "Read a file"})
+    git_server, git_seen = start_mcp_upstream({"status": "Show git status"})
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        None,
+        policy,
+        upstreams=[
+            {"name": "files", "url": f"http://127.0.0.1:{files_server.server_port}/mcp"},
+            {"name": "git", "url": f"http://127.0.0.1:{git_server.server_port}/mcp"},
+        ],
+        record_out=record_log,
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            body=b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"git.status"}}',
+        )
+    finally:
+        files_server.shutdown()
+        files_server.server_close()
+        git_server.shutdown()
+        git_server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    records = load_record_log(record_log)
+    assert sent[0]["status"] == 200
+    assert payload["result"]["content"][0]["text"] == "called status"
+    assert files_seen["calls"] == []
+    assert git_seen["calls"] == [{"method": "tools/call", "tool": "status"}]
+    assert records[0]["metadata"] == {
+        "source": "proxy",
+        "facade": True,
+        "operation": "tools/call",
+        "upstream": "git",
+        "tool": "git.status",
+        "upstream_tool": "status",
+    }
+
+
 def start_upstream():
     seen = {"count": 0}
 
@@ -186,6 +260,42 @@ def start_upstream():
                 "body": body.decode("utf-8"),
             }
             response = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+        def log_message(self, format, *args):  # noqa: A002
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, seen
+
+
+def start_mcp_upstream(tools: dict[str, str]):
+    seen: dict[str, Any] = {"calls": []}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            body = self.rfile.read(int(self.headers.get("content-length", "0")))
+            request = json.loads(body.decode("utf-8"))
+            params = request.get("params") if isinstance(request.get("params"), dict) else {}
+            seen["calls"].append({"method": request.get("method"), "tool": params.get("name")})
+            if request.get("method") == "tools/list":
+                result = {
+                    "tools": [
+                        {"name": name, "description": description, "inputSchema": {"type": "object"}}
+                        for name, description in tools.items()
+                    ]
+                }
+            elif request.get("method") == "tools/call":
+                result = {"content": [{"type": "text", "text": f"called {params.get('name')}"}]}
+            else:
+                result = {"ok": True}
+            response = json.dumps({"jsonrpc": "2.0", "id": request.get("id"), "result": result}).encode("utf-8")
             self.send_response(200)
             self.send_header("content-type", "application/json")
             self.send_header("content-length", str(len(response)))

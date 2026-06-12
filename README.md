@@ -463,6 +463,20 @@ Then expose `http://127.0.0.1:8080/mcp` with ngrok or another tunnel. Use the
 `tunnel-safe` preset for this flow unless a stronger external control sits in
 front of the tunnel.
 
+The reverse proxy can also act as a thin facade for multiple local MCP servers.
+In facade mode, `tools/list` is aggregated across upstreams and `tools/call` is
+routed by a namespaced tool prefix:
+
+```bash
+uv run snulbug mcp proxy \
+  --policy policy.snulbug/policy.lua \
+  --facade-upstream files=http://127.0.0.1:9001/mcp \
+  --facade-upstream git=http://127.0.0.1:9002/mcp
+```
+
+The client sees tools like `files.read_file` and `git.status` through the single
+`snulbug` endpoint.
+
 Run the full end-to-end proxy demo:
 
 ```bash

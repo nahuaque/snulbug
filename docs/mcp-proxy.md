@@ -109,6 +109,60 @@ max_body_bytes = 65536
 timeout = 30.0
 ```
 
+## MCP Facade Mode
+
+Facade mode lets one `snulbug` proxy present several local MCP HTTP servers as a
+single client-facing endpoint. It is intentionally small: `tools/list` is fanned
+out to every upstream and returned as one list with tool names prefixed by
+upstream name; `tools/call` is routed by that prefix and the prefix is stripped
+before the call reaches the upstream server. Other JSON-RPC methods are sent to
+the default upstream.
+
+Example config:
+
+```toml
+[mcp.proxy]
+policy = "policy.snulbug/policy.lua"
+host = "127.0.0.1"
+port = 8080
+record_out = "traces/session.jsonl"
+audit_out = "traces/audit.jsonl"
+decision_console = true
+
+[[mcp.proxy.upstreams]]
+name = "files"
+url = "http://127.0.0.1:9001/mcp"
+default = true
+
+[[mcp.proxy.upstreams]]
+name = "git"
+url = "http://127.0.0.1:9002/mcp"
+```
+
+The client sees tools such as `files.read_file` and `git.status`. A call to
+`git.status` is forwarded to the `git` upstream as `status`.
+
+You can also start facade mode directly from the CLI:
+
+```bash
+snulbug mcp proxy \
+  --policy policy.snulbug/policy.lua \
+  --facade-upstream files=http://127.0.0.1:9001/mcp \
+  --facade-upstream git=http://127.0.0.1:9002/mcp
+```
+
+Use `tool_prefix` when you want a different namespace:
+
+```toml
+[[mcp.proxy.upstreams]]
+name = "repo"
+url = "http://127.0.0.1:9002/mcp"
+tool_prefix = "git."
+```
+
+Replay records and audit logs include facade metadata such as selected upstream,
+original tool name, and upstream tool name for routed calls.
+
 ## State
 
 Proxy mode uses in-memory policy state by default, which supports presets that

@@ -13,6 +13,7 @@ DEFAULT_CONFIG_PATH = "snulbug.toml"
 
 DEFAULT_MCP_PROXY_CONFIG = {
     "upstream": "http://127.0.0.1:9000",
+    "upstreams": [],
     "policy": "policy.snulbug/policy.lua",
     "host": "127.0.0.1",
     "port": 8080,
@@ -41,6 +42,15 @@ decision_console = false
 decision_console_format = "text"
 max_body_bytes = 65536
 timeout = 30.0
+
+# Optional MCP facade mode:
+# [[mcp.proxy.upstreams]]
+# name = "files"
+# url = "http://127.0.0.1:9001/mcp"
+#
+# [[mcp.proxy.upstreams]]
+# name = "git"
+# url = "http://127.0.0.1:9002/mcp"
 """
 
 
@@ -93,6 +103,7 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
     if normalized["decision_console_format"] not in {"text", "json"}:
         raise ValueError("mcp.proxy.decision_console_format must be 'text' or 'json'")
 
+    normalized["upstreams"] = _normalize_upstreams(normalized.get("upstreams", []))
     normalized["policy"] = _resolve_path(base, normalized["policy"])
     for field in ("record_out", "audit_out"):
         if normalized.get(field):
@@ -112,3 +123,46 @@ def merge_mcp_proxy_config(config: Mapping[str, Any], overrides: Mapping[str, An
 def _resolve_path(base_dir: Path, value: str | Path) -> Path:
     path = Path(value)
     return path if path.is_absolute() else base_dir / path
+
+
+def _normalize_upstreams(value: Any) -> list[dict[str, Any]]:
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        raise ValueError("mcp.proxy.upstreams must be a list of tables")
+
+    upstreams = []
+    names = set()
+    prefixes = set()
+    default_count = 0
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise ValueError(f"mcp.proxy.upstreams[{index}] must be a table")
+        name = item.get("name")
+        url = item.get("url", item.get("upstream"))
+        tool_prefix = item.get("tool_prefix", f"{name}.")
+        default = bool(item.get("default", False))
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"mcp.proxy.upstreams[{index}].name must be a non-empty string")
+        if not isinstance(url, str) or not url:
+            raise ValueError(f"mcp.proxy.upstreams[{index}].url must be a non-empty string")
+        if not isinstance(tool_prefix, str) or not tool_prefix:
+            raise ValueError(f"mcp.proxy.upstreams[{index}].tool_prefix must be a non-empty string")
+        if name in names:
+            raise ValueError(f"duplicate mcp.proxy.upstreams name: {name!r}")
+        if tool_prefix in prefixes:
+            raise ValueError(f"duplicate mcp.proxy.upstreams tool_prefix: {tool_prefix!r}")
+        names.add(name)
+        prefixes.add(tool_prefix)
+        default_count += int(default)
+        upstreams.append(
+            {
+                "name": name,
+                "url": url,
+                "tool_prefix": tool_prefix,
+                "default": default,
+            }
+        )
+    if default_count > 1:
+        raise ValueError("only one mcp.proxy.upstreams entry may set default = true")
+    return upstreams

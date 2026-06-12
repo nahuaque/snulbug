@@ -8,7 +8,7 @@ from .inspection import format_mcp_inspection_report, inspect_mcp_log
 from .middleware import LuaConfig, LuaMiddleware
 from .presets import McpPolicyOptions, copy_builtin_preset, generate_mcp_preset, list_builtin_presets
 from .promotion import compare_decisions, diff_policies
-from .proxy import ReverseProxyApp, create_proxy_application, run_proxy
+from .proxy import FacadeUpstream, McpFacadeProxyApp, ReverseProxyApp, create_proxy_application, run_proxy
 from .quickstart import create_mcp_quickstart
 from .recorder import append_record, load_record_log, record_audit_event, record_policy_request, replay_record_log
 from .redaction import RedactionConfig, append_audit_event, build_audit_event, redact_secrets
@@ -32,6 +32,8 @@ __all__ = [
     "LuaRuntimeError",
     "MemoryStateStore",
     "McpPolicyOptions",
+    "FacadeUpstream",
+    "McpFacadeProxyApp",
     "RedisStateStore",
     "RedactionConfig",
     "ReverseProxyApp",

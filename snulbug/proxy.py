@@ -4,7 +4,7 @@ import asyncio
 import http.client
 import json
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
@@ -31,6 +31,14 @@ HOP_BY_HOP_HEADERS = {
 class ProxyConfig:
     upstream: str
     timeout: float = 30.0
+
+
+@dataclass(frozen=True)
+class FacadeUpstream:
+    name: str
+    url: str
+    tool_prefix: str
+    default: bool = False
 
 
 class ReverseProxyApp:
@@ -84,13 +92,7 @@ class ReverseProxyApp:
             connection.close()
 
     def _connection(self) -> http.client.HTTPConnection:
-        host = self._upstream.hostname
-        if host is None:
-            raise ValueError("upstream host is required")
-        port = self._upstream.port
-        if self._upstream.scheme == "https":
-            return http.client.HTTPSConnection(host, port=port, timeout=self.config.timeout)
-        return http.client.HTTPConnection(host, port=port, timeout=self.config.timeout)
+        return _connection(self._upstream, self.config.timeout)
 
     def _target(self, scope: Scope) -> str:
         upstream_path = self._upstream.path.rstrip("/")
@@ -102,6 +104,235 @@ class ReverseProxyApp:
         else:
             query = str(query_string)
         return f"{path}?{query}" if query else path
+
+
+class McpFacadeProxyApp:
+    """Minimal MCP facade that serves several local MCP HTTP servers as one endpoint."""
+
+    def __init__(self, upstreams: Sequence[FacadeUpstream | Mapping[str, Any]], *, timeout: float = 30.0) -> None:
+        self.upstreams = [_coerce_facade_upstream(upstream) for upstream in upstreams]
+        if not self.upstreams:
+            raise ValueError("facade mode requires at least one upstream")
+        self.timeout = timeout
+        self._parsed = {upstream.name: _parse_upstream(upstream.url) for upstream in self.upstreams}
+        self._default = next((upstream for upstream in self.upstreams if upstream.default), self.upstreams[0])
+        self._prefixes = sorted(self.upstreams, key=lambda upstream: len(upstream.tool_prefix), reverse=True)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http":
+            await _send_response(send, status=404, headers=[], body=b"unsupported scope type")
+            return
+
+        body = await _read_body(receive)
+        try:
+            request = json.loads(body.decode("utf-8")) if body else {}
+        except json.JSONDecodeError:
+            await self._send_jsonrpc_error(send, request_id=None, code=-32700, message="invalid JSON-RPC body")
+            return
+        if not isinstance(request, Mapping) or isinstance(request, list):
+            await self._send_jsonrpc_error(
+                send,
+                request_id=None,
+                code=-32600,
+                message="facade mode requires one JSON-RPC request",
+            )
+            return
+
+        method = request.get("method")
+        if method == "tools/list":
+            await self._list_tools(scope, request, body, send)
+            return
+        if method == "tools/call":
+            await self._call_tool(scope, request, send)
+            return
+
+        await self._forward_to_default(scope, body, send)
+
+    async def _list_tools(self, scope: Scope, request: Mapping[str, Any], body: bytes, send: Send) -> None:
+        responses = []
+        for upstream in self.upstreams:
+            try:
+                response = await asyncio.to_thread(self._forward, upstream, scope, body)
+            except Exception as exc:
+                await self._send_upstream_failure(send, upstream, exc)
+                return
+            if response["status"] < 200 or response["status"] >= 300:
+                await self._send_jsonrpc_error(
+                    send,
+                    request_id=request.get("id"),
+                    code=-32000,
+                    message=f"upstream {upstream.name!r} returned HTTP {response['status']}",
+                    status=502,
+                )
+                return
+            responses.append((upstream, response))
+
+        tools = []
+        for upstream, response in responses:
+            try:
+                payload = json.loads(response["body"].decode("utf-8"))
+                result = payload.get("result") if isinstance(payload, Mapping) else None
+                upstream_tools = result.get("tools") if isinstance(result, Mapping) else None
+            except Exception as exc:
+                await self._send_upstream_failure(send, upstream, exc)
+                return
+            if not isinstance(upstream_tools, list):
+                await self._send_jsonrpc_error(
+                    send,
+                    request_id=request.get("id"),
+                    code=-32000,
+                    message=f"upstream {upstream.name!r} did not return result.tools",
+                    status=502,
+                )
+                return
+            for tool in upstream_tools:
+                if not isinstance(tool, Mapping) or not isinstance(tool.get("name"), str):
+                    continue
+                decorated = dict(tool)
+                decorated["name"] = f"{upstream.tool_prefix}{tool['name']}"
+                tools.append(decorated)
+
+        _set_proxy_metadata(
+            scope,
+            {
+                "facade": True,
+                "operation": "tools/list",
+                "upstreams": [upstream.name for upstream in self.upstreams],
+                "tool_count": len(tools),
+            },
+        )
+        await _send_json(
+            send,
+            status=200,
+            payload={
+                "jsonrpc": "2.0",
+                "id": request.get("id"),
+                "result": {"tools": tools},
+            },
+        )
+
+    async def _call_tool(self, scope: Scope, request: Mapping[str, Any], send: Send) -> None:
+        params = request.get("params")
+        if not isinstance(params, Mapping) or not isinstance(params.get("name"), str):
+            await self._send_jsonrpc_error(
+                send,
+                request_id=request.get("id"),
+                code=-32602,
+                message="tools/call params.name is required",
+            )
+            return
+
+        tool_name = params["name"]
+        upstream = self._upstream_for_tool(tool_name)
+        if upstream is None:
+            await self._send_jsonrpc_error(
+                send,
+                request_id=request.get("id"),
+                code=-32602,
+                message=f"unknown facade tool prefix for {tool_name!r}",
+                status=404,
+            )
+            return
+
+        rewritten = dict(request)
+        rewritten_params = dict(params)
+        rewritten_params["name"] = tool_name.removeprefix(upstream.tool_prefix)
+        rewritten["params"] = rewritten_params
+        body = json.dumps(rewritten, separators=(",", ":")).encode("utf-8")
+        try:
+            response = await asyncio.to_thread(self._forward, upstream, scope, body)
+        except Exception as exc:
+            await self._send_upstream_failure(send, upstream, exc)
+            return
+
+        _set_proxy_metadata(
+            scope,
+            {
+                "facade": True,
+                "operation": "tools/call",
+                "upstream": upstream.name,
+                "tool": tool_name,
+                "upstream_tool": rewritten_params["name"],
+            },
+        )
+        await _send_response(
+            send,
+            status=response["status"],
+            headers=response["headers"],
+            body=response["body"],
+        )
+
+    async def _forward_to_default(self, scope: Scope, body: bytes, send: Send) -> None:
+        try:
+            response = await asyncio.to_thread(self._forward, self._default, scope, body)
+        except Exception as exc:
+            await self._send_upstream_failure(send, self._default, exc)
+            return
+
+        _set_proxy_metadata(
+            scope,
+            {
+                "facade": True,
+                "operation": "default",
+                "upstream": self._default.name,
+            },
+        )
+        await _send_response(
+            send,
+            status=response["status"],
+            headers=response["headers"],
+            body=response["body"],
+        )
+
+    def _forward(self, upstream: FacadeUpstream, scope: Scope, body: bytes) -> dict[str, Any]:
+        parsed = self._parsed[upstream.name]
+        connection = _connection(parsed, self.timeout)
+        try:
+            headers = _request_headers(scope.get("headers", []), parsed, content_length=len(body))
+            connection.request(str(scope.get("method", "POST")), _exact_target(parsed), body=body, headers=headers)
+            response = connection.getresponse()
+            response_body = response.read()
+            return {
+                "status": int(response.status),
+                "headers": _response_headers(response.getheaders()),
+                "body": response_body,
+            }
+        finally:
+            connection.close()
+
+    def _upstream_for_tool(self, tool_name: str) -> FacadeUpstream | None:
+        for upstream in self._prefixes:
+            if tool_name.startswith(upstream.tool_prefix):
+                return upstream
+        return None
+
+    async def _send_upstream_failure(self, send: Send, upstream: FacadeUpstream, exc: Exception) -> None:
+        await self._send_jsonrpc_error(
+            send,
+            request_id=None,
+            code=-32000,
+            message=f"upstream {upstream.name!r} request failed: {exc}",
+            status=502,
+        )
+
+    async def _send_jsonrpc_error(
+        self,
+        send: Send,
+        *,
+        request_id: Any,
+        code: int,
+        message: str,
+        status: int = 400,
+    ) -> None:
+        await _send_json(
+            send,
+            status=status,
+            payload={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": code, "message": message},
+            },
+        )
 
 
 class ProxyRecorderMiddleware:
@@ -150,7 +381,7 @@ class ProxyRecorderMiddleware:
             _scope_to_record_request(scope, body),
             _trace_result(scope),
             response=response,
-            metadata={"source": "proxy"},
+            metadata=_record_metadata(scope),
             redact=self.redact_records,
         )
         if self.record_out is not None:
@@ -172,9 +403,10 @@ class ProxyRecorderMiddleware:
 
 
 def create_proxy_application(
-    upstream: str,
+    upstream: str | None,
     policy: str | Path,
     *,
+    upstreams: Sequence[FacadeUpstream | Mapping[str, Any]] | None = None,
     state_store: PolicyStateStore | None = None,
     state_limits: StateLimits | None = None,
     trace: bool = True,
@@ -189,7 +421,7 @@ def create_proxy_application(
     """Create an ASGI app that applies Lua policy before proxying to an upstream."""
 
     console_enabled = _console_enabled(decision_console)
-    proxy = ReverseProxyApp(upstream, timeout=timeout)
+    proxy = _proxy_app(upstream, upstreams=upstreams, timeout=timeout)
     app = LuaMiddleware(
         proxy,
         Path(policy),
@@ -216,8 +448,9 @@ def create_proxy_application(
 
 def run_proxy(
     *,
-    upstream: str,
+    upstream: str | None,
     policy: str | Path,
+    upstreams: Sequence[FacadeUpstream | Mapping[str, Any]] | None = None,
     host: str = "127.0.0.1",
     port: int = 8080,
     state: str = "memory",
@@ -240,6 +473,7 @@ def run_proxy(
     app = create_proxy_application(
         upstream,
         policy,
+        upstreams=upstreams,
         state_store=_state_store(state),
         trace=trace,
         max_body_bytes=max_body_bytes,
@@ -251,6 +485,19 @@ def run_proxy(
         decision_console_format=decision_console_format,
     )
     uvicorn.run(app, host=host, port=port)
+
+
+def _proxy_app(
+    upstream: str | None,
+    *,
+    upstreams: Sequence[FacadeUpstream | Mapping[str, Any]] | None,
+    timeout: float,
+) -> ASGIApp:
+    if upstreams:
+        return McpFacadeProxyApp(upstreams, timeout=timeout)
+    if upstream is None:
+        raise ValueError("upstream is required unless facade upstreams are configured")
+    return ReverseProxyApp(upstream, timeout=timeout)
 
 
 def _state_store(value: str) -> PolicyStateStore | None:
@@ -348,14 +595,63 @@ def _console_value(value: Any) -> str:
     return json.dumps(str(value), separators=(",", ":"))
 
 
-def _request_headers(raw_headers: list[tuple[bytes, bytes]], upstream: SplitResult) -> dict[str, str]:
+def _coerce_facade_upstream(upstream: FacadeUpstream | Mapping[str, Any]) -> FacadeUpstream:
+    if isinstance(upstream, FacadeUpstream):
+        return upstream
+    name = upstream.get("name")
+    url = upstream.get("url", upstream.get("upstream"))
+    if not isinstance(name, str) or not name:
+        raise ValueError("facade upstream name must be a non-empty string")
+    if not isinstance(url, str) or not url:
+        raise ValueError(f"facade upstream {name!r} url must be a non-empty string")
+    tool_prefix = upstream.get("tool_prefix", f"{name}.")
+    if not isinstance(tool_prefix, str) or not tool_prefix:
+        raise ValueError(f"facade upstream {name!r} tool_prefix must be a non-empty string")
+    return FacadeUpstream(
+        name=name,
+        url=url,
+        tool_prefix=tool_prefix,
+        default=bool(upstream.get("default", False)),
+    )
+
+
+def _parse_upstream(upstream: str) -> SplitResult:
+    parsed = urlsplit(upstream)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("upstream must be an absolute http:// or https:// URL")
+    return parsed
+
+
+def _connection(upstream: SplitResult, timeout: float) -> http.client.HTTPConnection:
+    host = upstream.hostname
+    if host is None:
+        raise ValueError("upstream host is required")
+    port = upstream.port
+    if upstream.scheme == "https":
+        return http.client.HTTPSConnection(host, port=port, timeout=timeout)
+    return http.client.HTTPConnection(host, port=port, timeout=timeout)
+
+
+def _exact_target(upstream: SplitResult) -> str:
+    path = upstream.path or "/"
+    return f"{path}?{upstream.query}" if upstream.query else path
+
+
+def _request_headers(
+    raw_headers: list[tuple[bytes, bytes]],
+    upstream: SplitResult,
+    *,
+    content_length: int | None = None,
+) -> dict[str, str]:
     headers: dict[str, str] = {}
     for name, value in raw_headers:
         lower_name = name.lower()
-        if lower_name in HOP_BY_HOP_HEADERS or lower_name == b"host":
+        if lower_name in HOP_BY_HOP_HEADERS or lower_name in {b"host", b"content-length"}:
             continue
         headers[name.decode("latin-1")] = value.decode("latin-1")
     headers["Host"] = upstream.netloc
+    if content_length is not None:
+        headers["Content-Length"] = str(content_length)
     return headers
 
 
@@ -382,6 +678,19 @@ def _response_headers(raw_headers: list[tuple[str, str]]) -> list[tuple[bytes, b
             continue
         headers.append((name.encode("latin-1"), value.encode("latin-1")))
     return headers
+
+
+async def _send_json(send: Send, *, status: int, payload: Mapping[str, Any]) -> None:
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    await _send_response(
+        send,
+        status=status,
+        headers=[
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode("ascii")),
+        ],
+        body=body,
+    )
 
 
 async def _read_body(receive: Receive) -> bytes:
@@ -453,6 +762,21 @@ def _trace_result(scope: Scope) -> dict[str, Any]:
         "trace": {},
         "body_read": False,
     }
+
+
+def _record_metadata(scope: Scope) -> dict[str, Any]:
+    metadata: dict[str, Any] = {"source": "proxy"}
+    state = scope.get("state")
+    proxy_metadata = state.get("snulbug_proxy") if isinstance(state, Mapping) else None
+    if isinstance(proxy_metadata, Mapping):
+        metadata.update(proxy_metadata)
+    return metadata
+
+
+def _set_proxy_metadata(scope: Scope, metadata: Mapping[str, Any]) -> None:
+    state = scope.get("state")
+    if isinstance(state, dict):
+        state["snulbug_proxy"] = dict(metadata)
 
 
 def _decode_bytes(value: Any) -> str:

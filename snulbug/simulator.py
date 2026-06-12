@@ -238,6 +238,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_proxy = mcp_subparsers.add_parser("proxy", help="run a local-dev MCP reverse proxy")
     mcp_proxy.add_argument("--config", type=Path, help="TOML config file")
     mcp_proxy.add_argument("--upstream", help="upstream MCP HTTP server URL")
+    mcp_proxy.add_argument(
+        "--facade-upstream",
+        action="append",
+        metavar="NAME=URL",
+        help="add an MCP facade upstream; tools are exposed as NAME.tool_name",
+    )
     mcp_proxy.add_argument("--policy", type=Path, help="path to a Lua policy file")
     mcp_proxy.add_argument("--host", help="bind host")
     mcp_proxy.add_argument("--port", type=int, help="bind port")
@@ -476,6 +482,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             try:
                 overrides = {
                     "upstream": args.upstream,
+                    "upstreams": _parse_facade_upstreams(args.facade_upstream),
                     "policy": args.policy,
                     "host": args.host,
                     "port": args.port,
@@ -492,14 +499,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if args.config is not None:
                     proxy_config = merge_mcp_proxy_config(load_mcp_proxy_config(args.config), overrides)
                 else:
-                    if args.upstream is None or args.policy is None:
+                    if args.policy is None or (args.upstream is None and not args.facade_upstream):
                         sys.stderr.write(
-                            "snulbug proxy failed: --upstream and --policy are required without --config\n"
+                            "snulbug proxy failed: --policy and either --upstream or "
+                            "--facade-upstream are required without --config\n"
                         )
                         return 1
                     proxy_config = normalize_mcp_proxy_config(overrides)
                 run_proxy(
                     upstream=proxy_config["upstream"],
+                    upstreams=proxy_config["upstreams"],
                     policy=proxy_config["policy"],
                     host=proxy_config["host"],
                     port=proxy_config["port"],
@@ -533,6 +542,18 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _read_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as file:
         return json.load(file)
+
+
+def _parse_facade_upstreams(values: Sequence[str] | None) -> list[dict[str, Any]] | None:
+    if not values:
+        return None
+    upstreams = []
+    for value in values:
+        name, separator, url = value.partition("=")
+        if not separator or not name or not url:
+            raise ValueError("--facade-upstream must use NAME=URL")
+        upstreams.append({"name": name, "url": url, "tool_prefix": f"{name}."})
+    return upstreams
 
 
 def _normalize_headers(headers: Any) -> dict[str, str | list[str]]:
