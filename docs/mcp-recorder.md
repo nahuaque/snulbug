@@ -10,6 +10,16 @@ Record one request fixture:
 uv run asgi-lua mcp record policy.asgi-lua/policy.lua request.json --out traces/session.jsonl
 ```
 
+Record live traffic while proxying:
+
+```bash
+uv run asgi-lua mcp proxy \
+  --upstream http://127.0.0.1:9000 \
+  --policy policy.asgi-lua/policy.lua \
+  --record-out traces/session.jsonl \
+  --audit-out traces/audit.jsonl
+```
+
 Record with state, context, response metadata, or custom metadata:
 
 ```bash

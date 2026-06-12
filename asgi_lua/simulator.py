@@ -162,6 +162,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_proxy.add_argument("--port", type=int, default=8080, help="bind port")
     mcp_proxy.add_argument("--state", default="memory", help="'memory', 'none', or 'sqlite:/path/to/state.sqlite3'")
     mcp_proxy.add_argument("--no-trace", action="store_true", help="disable Lua trace scope data")
+    mcp_proxy.add_argument("--record-out", type=Path, help="optional live replay JSONL path to append to")
+    mcp_proxy.add_argument("--audit-out", type=Path, help="optional redacted live audit JSONL path to append to")
+    mcp_proxy.add_argument("--redact-records", action="store_true", help="redact secrets in live replay records")
     mcp_proxy.add_argument("--max-body-bytes", type=int, default=64 * 1024)
     mcp_proxy.add_argument("--timeout", type=float, default=30.0, help="upstream timeout in seconds")
 
@@ -300,6 +303,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     trace=not args.no_trace,
                     max_body_bytes=args.max_body_bytes,
                     timeout=args.timeout,
+                    record_out=args.record_out,
+                    audit_out=args.audit_out,
+                    redact_records=args.redact_records,
                 )
             except Exception as exc:
                 sys.stderr.write(f"asgi-lua proxy failed: {exc}\n")

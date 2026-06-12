@@ -6,13 +6,20 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from asgi_lua import create_proxy_application
+from asgi_lua import create_proxy_application, load_record_log
 
 
 def test_reverse_proxy_forwards_allowed_request_to_upstream(tmp_path):
     server, seen = start_upstream()
     policy = write_policy(tmp_path, "continue")
-    app = create_proxy_application(f"http://127.0.0.1:{server.server_port}/api", policy)
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/api",
+        policy,
+        record_out=record_log,
+        audit_out=audit_log,
+    )
 
     try:
         sent = run_asgi(
@@ -33,12 +40,22 @@ def test_reverse_proxy_forwards_allowed_request_to_upstream(tmp_path):
     assert payload["body"] == '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
     assert payload["headers"]["host"] == f"127.0.0.1:{server.server_port}"
     assert seen["count"] == 1
+    records = load_record_log(record_log)
+    audit = json.loads(audit_log.read_text(encoding="utf-8"))
+    assert records[0]["request"]["headers"]["authorization"] == "Bearer local-dev-secret"
+    assert records[0]["request"]["query_string"] == "x=1"
+    assert records[0]["result"]["action"] == "continue"
+    assert records[0]["response"]["status"] == 200
+    assert records[0]["metadata"] == {"source": "proxy"}
+    assert audit["request"]["headers"]["authorization"] == "[REDACTED]"
+    assert audit["mcp"]["method"] == "tools/list"
 
 
 def test_reverse_proxy_does_not_call_upstream_when_policy_rejects(tmp_path):
     server, seen = start_upstream()
     policy = write_policy(tmp_path, "reject")
-    app = create_proxy_application(f"http://127.0.0.1:{server.server_port}", policy)
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(f"http://127.0.0.1:{server.server_port}", policy, record_out=record_log)
 
     try:
         sent = run_asgi(app, path="/mcp", body=b"{}")
@@ -49,6 +66,9 @@ def test_reverse_proxy_does_not_call_upstream_when_policy_rejects(tmp_path):
     assert sent[0]["status"] == 403
     assert sent[1]["body"] == b"blocked by policy"
     assert seen["count"] == 0
+    records = load_record_log(record_log)
+    assert records[0]["result"]["action"] == "reject"
+    assert records[0]["response"]["status"] == 403
 
 
 def test_reverse_proxy_returns_bad_gateway_for_unreachable_upstream(tmp_path):

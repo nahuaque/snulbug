@@ -36,13 +36,40 @@ def record_policy_request(
         instruction_limit=instruction_limit,
         memory_limit_bytes=memory_limit_bytes,
     )
+    return build_request_record(
+        script_path,
+        request,
+        result,
+        context=context,
+        state_snapshot=state_snapshot,
+        response=response,
+        metadata=metadata,
+        recorded_at=recorded_at,
+        redact=redact,
+    )
+
+
+def build_request_record(
+    script_path: str | Path,
+    request: Mapping[str, Any],
+    result: Mapping[str, Any],
+    *,
+    context: Mapping[str, Any] | None = None,
+    state_snapshot: Mapping[str, Any] | None = None,
+    response: Mapping[str, Any] | None = None,
+    metadata: Mapping[str, Any] | None = None,
+    recorded_at: str | None = None,
+    redact: bool = False,
+) -> dict[str, Any]:
+    """Build a replayable request record from an already executed policy result."""
+
     record: dict[str, Any] = {
         "type": RECORD_TYPE,
         "version": RECORD_VERSION,
         "recorded_at": recorded_at or datetime.now(timezone.utc).isoformat(),
         "policy": {"source": str(script_path)},
         "request": dict(request),
-        "result": result,
+        "result": dict(result),
     }
     if context is not None:
         record["context"] = dict(context)
