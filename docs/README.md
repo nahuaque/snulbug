@@ -3,6 +3,7 @@
 Start here:
 
 - [Quickstart: local MCP policy gateway](quickstart.md)
+- [One-command MCP policy lab](quickstart.md#2-run-the-policy-lab)
 - [Getting started](getting-started.md)
 - [Lua request API](lua-request-api.md)
 - [Action reference](actions.md)

@@ -273,6 +273,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     mcp_amend.add_argument("--compact", action="store_true", help="emit compact JSON")
 
+    mcp_lab = mcp_subparsers.add_parser("lab", help="run the one-command local MCP policy lab")
+    mcp_lab.add_argument("--output-dir", type=Path, default=Path(".snulbug-lab"), help="lab artifact directory")
+    mcp_lab.add_argument(
+        "--force",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="overwrite the lab artifact directory",
+    )
+    mcp_lab.add_argument("--compact", action="store_true", help="emit compact JSON")
+
     mcp_proxy = mcp_subparsers.add_parser("proxy", help="run a local-dev MCP reverse proxy")
     mcp_proxy.add_argument("--config", type=Path, help="TOML config file")
     mcp_proxy.add_argument("--upstream", help="upstream MCP HTTP server URL")
@@ -552,6 +562,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "error": str(exc),
                 }
                 status = 1
+        elif args.mcp_command == "lab":
+            from .lab import run_mcp_lab
+
+            try:
+                result = run_mcp_lab(args.output_dir, force=args.force, emit=not args.compact)
+                status = 0 if result["ok"] else 1
+            except Exception as exc:
+                result = {"ok": False, "output_dir": str(args.output_dir), "error": str(exc)}
+                status = 1
+            if not args.compact:
+                return status
         elif args.mcp_command == "proxy":
             from .proxy import run_proxy
 

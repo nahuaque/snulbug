@@ -27,7 +27,19 @@ uv sync --extra dev
 The commands below use `uv run` for local repository development. With a
 published install, drop the `uv run` prefix.
 
-## 2. Create the starter
+## 2. Run the policy lab
+
+Before wiring in a real MCP server, run the one-command lab:
+
+```bash
+uv run snulbug mcp lab
+```
+
+It starts two fake MCP upstreams behind a single facade, records policy
+decisions, generates a learned policy, amends a blocked request into a candidate
+policy, and writes replay/audit/report artifacts under `.snulbug-lab/`.
+
+## 3. Create the starter
 
 Generate the policy bundle, proxy config, trace directory, and first-run
 instructions:
@@ -55,7 +67,7 @@ It also validates and tests the generated policy bundle by default. Use
 The quickstart command is intentionally conservative. It refuses to overwrite an
 existing policy or config unless you pass `--force`.
 
-## 3. Review the policy
+## 4. Review the policy
 
 The generated policy can come from any MCP preset. For a tunnel-exposed local
 server, `tunnel-safe` is the recommended default because it requires bearer
@@ -80,7 +92,7 @@ uv run snulbug bundle validate policy.snulbug
 uv run snulbug bundle test policy.snulbug
 ```
 
-## 4. Review proxy config
+## 5. Review proxy config
 
 The quickstart writes `snulbug.toml`. To create only the starter config
 manually:
@@ -114,7 +126,7 @@ Use SQLite if you want bounded local policy state to survive proxy restarts:
 state = "sqlite:policy-state.sqlite3"
 ```
 
-## 5. Run the proxy
+## 6. Run the proxy
 
 Start your MCP server on the configured upstream port, then run:
 
@@ -144,7 +156,7 @@ ngrok http 8080
 Then point the client at the tunnel URL plus `/mcp` and keep the same bearer
 header.
 
-## 6. Watch and inspect
+## 7. Watch and inspect
 
 With `decision_console = true`, the proxy prints one redacted policy decision
 per request, including the MCP method, operation target, action, and reason

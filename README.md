@@ -36,6 +36,16 @@ uv sync --extra dev
 
 ## Quickstart
 
+To see the full local MCP policy lifecycle in one command:
+
+```bash
+uv run snulbug mcp lab
+```
+
+The lab creates two fake MCP upstreams behind one facade, records traffic,
+learns a least-privilege policy, amends a blocked request into a candidate
+policy, and writes artifacts under `.snulbug-lab/`.
+
 For the local-dev MCP policy gateway path, start with the
 [quickstart](docs/quickstart.md). It walks through generating a safe MCP policy,
 creating proxy config, running the reverse proxy, pointing an MCP client at it,

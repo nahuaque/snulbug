@@ -5,6 +5,7 @@ __version__ = "0.1.0"
 from .bundle import pack_bundle, test_bundle, validate_bundle
 from .config import load_mcp_proxy_config, write_sample_config
 from .inspection import format_mcp_inspection_report, inspect_mcp_log
+from .lab import run_mcp_lab
 from .learn import amend_mcp_policy, learn_mcp_policy
 from .middleware import LuaConfig, LuaMiddleware
 from .presets import McpPolicyOptions, copy_builtin_preset, generate_mcp_preset, list_builtin_presets
@@ -63,6 +64,7 @@ __all__ = [
     "record_policy_request",
     "redact_secrets",
     "replay_record_log",
+    "run_mcp_lab",
     "run_proxy",
     "simulate_policy",
     "test_bundle",
