@@ -110,6 +110,29 @@ def test_tunnel_init_cli_emits_compact_tailscale_plan(capsys):
     assert output["client"]["headers"]["Authorization"] == "Bearer ${SNULBUG_TOKEN}"
 
 
+def test_tunnel_init_tailscale_readme_includes_bearer_and_lease_defaults(tmp_path):
+    output_dir = tmp_path / "tailscale"
+
+    result = init_tunnel_provider(
+        provider="tailscale",
+        local_url="http://127.0.0.1:8080/mcp",
+        hostname="dev.tailnet.ts.net",
+        output_dir=output_dir,
+    )
+
+    readme = output_dir / "README.md"
+    text = readme.read_text(encoding="utf-8")
+    assert result["written_files"] == [str(readme)]
+    assert "Tailscale Funnel bearer + lease recipe" in text
+    assert "Authorization: Bearer ${SNULBUG_TOKEN}" in text
+    assert 'lease_file = "leases.json"' in text
+    assert "lease_required = false" in text
+    assert 'lease_header = "x-snulbug-lease"' in text
+    assert "snulbug mcp lease create" in text
+    assert "x-snulbug-lease: <lease token>" in text
+    assert "lease_required = true" in text
+
+
 def test_format_tunnel_init_report_includes_commands_and_client():
     result = init_tunnel_provider(provider="generic", local_url="http://127.0.0.1:8080/mcp")
 

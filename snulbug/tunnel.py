@@ -668,6 +668,8 @@ def _tunnel_readme(
 
 
 def _provider_readme_notes(provider: str, plan: Mapping[str, Any]) -> str:
+    if provider == "tailscale":
+        return _tailscale_readme_notes(plan)
     if provider != "ngrok":
         return ""
     traffic_policy = plan.get("traffic_policy")
@@ -680,6 +682,43 @@ def _provider_readme_notes(provider: str, plan: Mapping[str, Any]) -> str:
         f"{checks}\n\n"
         "Run the ngrok command from this directory, or pass an absolute path to "
         "`--traffic-policy-file`.\n\n"
+    )
+
+
+def _tailscale_readme_notes(plan: Mapping[str, Any]) -> str:
+    client = plan.get("client", {})
+    headers = dict(client.get("headers", {})) if isinstance(client, Mapping) else {}
+    authorization = headers.get("Authorization", "Bearer ${SNULBUG_TOKEN}")
+    return (
+        "## Tailscale Funnel bearer + lease recipe\n\n"
+        "Tailscale Funnel gets public HTTPS traffic to this machine; snulbug is still "
+        "the MCP authorization boundary. Keep the `tunnel-safe` preset for public "
+        "Funnel URLs and require clients to send the bearer header:\n\n"
+        "```text\n"
+        f"Authorization: {authorization}\n"
+        "```\n\n"
+        "The generated quickstart defaults keep leases optional so existing clients "
+        "can connect with bearer auth only:\n\n"
+        "```toml\n"
+        'lease_file = "leases.json"\n'
+        "lease_required = false\n"
+        'lease_header = "x-snulbug-lease"\n'
+        "```\n\n"
+        "Create a short-lived lease when an agent needs one bounded task:\n\n"
+        "```bash\n"
+        "snulbug mcp lease create \\\n"
+        "  --file leases.json \\\n"
+        '  --task "Tailscale Funnel MCP session" \\\n'
+        "  --allow-tool safe_read_file \\\n"
+        "  --allow-tool list_project_files \\\n"
+        "  --ttl 30m\n"
+        "```\n\n"
+        "Send the returned lease token with tool-call requests:\n\n"
+        "```text\n"
+        "x-snulbug-lease: <lease token>\n"
+        "```\n\n"
+        "To require leases for every MCP `tools/call`, set `lease_required = true` "
+        "and keep the same `x-snulbug-lease` header.\n\n"
     )
 
 

@@ -145,6 +145,78 @@ Keep the same bearer header:
 Authorization: Bearer local-dev-secret
 ```
 
+### Tailscale Funnel with bearer and leases
+
+For Tailscale Funnel, keep the same snulbug defaults. Funnel exposes the local
+snulbug proxy over public HTTPS; snulbug still enforces the MCP bearer token,
+policy, audit log, and optional leases.
+
+```bash
+uv run snulbug mcp quickstart \
+  --preset tunnel-safe \
+  --upstream http://127.0.0.1:9000 \
+  --token local-dev-secret \
+  --allow-tool safe_read_file \
+  --allow-tool list_project_files \
+  --force
+
+uv run snulbug mcp proxy --config snulbug.toml --decision-console
+
+uv run snulbug tunnel init \
+  --provider tailscale \
+  --hostname HOST.TAILNET.ts.net \
+  --config snulbug.toml \
+  --output-dir tunnel.tailscale
+
+sudo tailscale funnel 8080
+```
+
+The MCP client should use the Funnel URL and bearer header:
+
+```text
+https://HOST.TAILNET.ts.net/mcp
+Authorization: Bearer local-dev-secret
+```
+
+The generated quickstart config keeps leases optional by default:
+
+```toml
+[mcp.proxy]
+tunnel_provider = "tailscale"
+tunnel_public_url = "https://HOST.TAILNET.ts.net/mcp"
+lease_file = "leases.json"
+lease_required = false
+lease_header = "x-snulbug-lease"
+```
+
+Mint a short-lived lease when an agent needs one bounded task:
+
+```bash
+uv run snulbug mcp lease create \
+  --file leases.json \
+  --task "Tailscale Funnel MCP session" \
+  --allow-tool safe_read_file \
+  --allow-tool list_project_files \
+  --ttl 30m
+```
+
+Send the returned lease token as:
+
+```text
+x-snulbug-lease: <lease token>
+```
+
+Set `lease_required = true` when every `tools/call` through the Funnel should
+carry an active lease. Before sharing the Funnel URL, run:
+
+```bash
+uv run snulbug tunnel doctor \
+  --provider tailscale \
+  --url https://HOST.TAILNET.ts.net/mcp \
+  --config snulbug.toml \
+  --token local-dev-secret
+```
+
 For public tunnels, treat `tunnel-safe` as the recommended default. Do not expose
 the `tool-allowlist` preset by itself unless another tunnel or network layer
 already authenticates callers and rejects abusive traffic.

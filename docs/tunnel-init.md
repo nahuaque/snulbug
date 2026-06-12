@@ -87,8 +87,47 @@ Generated output includes:
 
 - a `tailscale funnel` command pointed at the snulbug proxy port
 - the public MCP URL for client setup
+- an explicit bearer-header and lease recipe for public Funnel clients
 - a doctor command that verifies snulbug still blocks unauthenticated public
   traffic
+
+Tailscale Funnel exposes a local service over public HTTPS. Keep snulbug's
+`tunnel-safe` preset in front of the MCP server and require the bearer header:
+
+```text
+Authorization: Bearer ${SNULBUG_TOKEN}
+```
+
+The generated quickstart config leaves leases optional by default:
+
+```toml
+[mcp.proxy]
+tunnel_provider = "tailscale"
+tunnel_public_url = "https://HOST.TAILNET.ts.net/mcp"
+lease_file = "leases.json"
+lease_required = false
+lease_header = "x-snulbug-lease"
+```
+
+Create a short-lived lease when an agent needs one bounded task:
+
+```bash
+snulbug mcp lease create \
+  --file leases.json \
+  --task "Tailscale Funnel MCP session" \
+  --allow-tool safe_read_file \
+  --allow-tool list_project_files \
+  --ttl 30m
+```
+
+Then send the returned lease token with tool-call requests:
+
+```text
+x-snulbug-lease: <lease token>
+```
+
+Set `lease_required = true` when every `tools/call` through the Funnel should
+carry an active lease.
 
 ## Compact JSON
 
