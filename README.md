@@ -378,7 +378,8 @@ bearer auth, rejects JSON-RPC batches, keeps the safe-tool allowlist, and
 rate-limits traffic.
 
 See [docs/mcp-client-recipes.md](docs/mcp-client-recipes.md) for concrete
-local, tunneled, header-authenticated, and stdio-only client setup patterns.
+local, tunneled, header-authenticated, and managed stdio upstream setup
+patterns.
 
 The gateway policy lives as a portable bundle:
 
@@ -497,9 +498,9 @@ Then expose `http://127.0.0.1:8080/mcp` with ngrok or another tunnel. Use the
 `tunnel-safe` preset for this flow unless a stronger external control sits in
 front of the tunnel.
 
-The reverse proxy can also act as a thin facade for multiple local MCP servers.
-In facade mode, `tools/list` is aggregated across upstreams and `tools/call` is
-routed by a namespaced tool prefix:
+The reverse proxy can also act as a thin facade for multiple local MCP servers,
+including managed stdio servers. In facade mode, `tools/list` is aggregated
+across upstreams and `tools/call` is routed by a namespaced tool prefix:
 
 ```bash
 uv run snulbug mcp proxy \
@@ -510,6 +511,16 @@ uv run snulbug mcp proxy \
 
 The client sees tools like `files.read_file` and `git.status` through the single
 `snulbug` endpoint.
+
+Stdio upstreams can be managed directly from config:
+
+```toml
+[[mcp.proxy.upstreams]]
+name = "files"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+```
 
 Run the full end-to-end proxy demo:
 

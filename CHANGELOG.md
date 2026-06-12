@@ -27,6 +27,7 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 - Added Markdown MCP session reports with `snulbug mcp inspect --report-out`.
 - Documented `tunnel-safe` as the recommended default for public tunnel use.
 - Added MCP facade mode for serving multiple local MCP HTTP servers through one `snulbug mcp proxy` endpoint.
+- Added managed stdio MCP upstreams for facade mode, so local stdio servers can be exposed through the same policy-controlled HTTP endpoint.
 - Added MCP learn mode with `snulbug mcp learn` to compile captured replay/audit logs into least-privilege policy bundles.
 - Added MCP amend mode with `snulbug mcp amend` to produce candidate patches from blocked learned-policy decisions.
 - Added `snulbug mcp lab`, a one-command local MCP policy lab covering facade, recording, inspection, learn, and amend.

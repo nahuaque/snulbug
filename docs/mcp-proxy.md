@@ -111,12 +111,12 @@ timeout = 30.0
 
 ## MCP Facade Mode
 
-Facade mode lets one `snulbug` proxy present several local MCP HTTP servers as a
-single client-facing endpoint. It is intentionally small: `tools/list` is fanned
-out to every upstream and returned as one list with tool names prefixed by
-upstream name; `tools/call` is routed by that prefix and the prefix is stripped
-before the call reaches the upstream server. Other JSON-RPC methods are sent to
-the default upstream.
+Facade mode lets one `snulbug` proxy present several local MCP HTTP or stdio
+servers as a single client-facing HTTP endpoint. It is intentionally small:
+`tools/list` is fanned out to every upstream and returned as one list with tool
+names prefixed by upstream name; `tools/call` is routed by that prefix and the
+prefix is stripped before the call reaches the upstream server. Other JSON-RPC
+methods are sent to the default upstream.
 
 Example config:
 
@@ -162,6 +162,47 @@ tool_prefix = "git."
 
 Replay records and audit logs include facade metadata such as selected upstream,
 original tool name, and upstream tool name for routed calls.
+
+### Managed stdio upstreams
+
+Use `transport = "stdio"` when an MCP server is normally launched as a local
+stdio process. `snulbug` starts the process on first use, sends newline-delimited
+JSON-RPC over stdin/stdout, serializes requests per process, and exposes the
+server through the same HTTP facade endpoint.
+
+```toml
+[mcp.proxy]
+policy = "policy.snulbug/policy.lua"
+host = "127.0.0.1"
+port = 8080
+
+[[mcp.proxy.upstreams]]
+name = "files"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+default = true
+
+[[mcp.proxy.upstreams]]
+name = "git"
+transport = "stdio"
+command = "uvx"
+args = ["mcp-server-git"]
+```
+
+The client still connects to `http://127.0.0.1:8080/mcp` and sees namespaced
+tools such as `files.read_file` and `git.status`.
+
+Optional stdio fields:
+
+```toml
+cwd = "/path/to/project"
+env = { MCP_LOG_LEVEL = "error" }
+tool_prefix = "repo."
+```
+
+Only configure commands you trust. The process runs locally with the configured
+command, arguments, working directory, and environment.
 
 ## State
 

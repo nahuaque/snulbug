@@ -1,15 +1,17 @@
 # MCP client setup recipes
 
 These recipes show how to put `snulbug` between an MCP client and a local MCP
-HTTP server.
+HTTP server or managed stdio server.
 
-`snulbug` does not implement MCP and does not translate stdio to HTTP. It is a
-policy gateway for HTTP JSON-RPC traffic:
+`snulbug` exposes one policy-controlled HTTP MCP endpoint to the client. Behind
+that endpoint it can proxy to HTTP MCP servers or launch managed stdio MCP
+servers through facade mode:
 
 ```text
 MCP client
   -> snulbug reverse proxy
       -> local MCP HTTP server
+      -> managed stdio MCP server
 ```
 
 ## 1. Local HTTP MCP client
@@ -193,14 +195,44 @@ uv run snulbug mcp init tool-allowlist \
 This does not authenticate callers. It should be paired with local-only network
 binding or another trusted access-control layer.
 
-## 6. Client only supports stdio MCP servers
+## 6. Upstream server only supports stdio
 
-Some MCP clients only launch stdio servers. `snulbug` does not bridge stdio to
-HTTP. Use one of these patterns instead:
+Use this when the MCP server you want to protect is normally launched as a stdio
+process. Configure it as a managed facade upstream:
 
-- Run an HTTP-capable MCP server upstream and configure the client to use its
-  HTTP transport through `snulbug`.
-- Use a separate stdio-to-HTTP bridge, then put `snulbug` between the bridge and
-  the HTTP MCP server.
-- Keep stdio-only tools outside `snulbug` and use `snulbug` only for HTTP MCP
-  endpoints that need local policy, audit, replay, and inspection.
+```toml
+[mcp.proxy]
+policy = "policy.snulbug/policy.lua"
+host = "127.0.0.1"
+port = 8080
+record_out = "traces/session.jsonl"
+audit_out = "traces/audit.jsonl"
+
+[[mcp.proxy.upstreams]]
+name = "files"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+
+[[mcp.proxy.upstreams]]
+name = "git"
+transport = "stdio"
+command = "uvx"
+args = ["mcp-server-git"]
+```
+
+Run the proxy:
+
+```bash
+uv run snulbug mcp proxy --config snulbug.toml --decision-console
+```
+
+Point the client at the single facade endpoint:
+
+```text
+http://127.0.0.1:8080/mcp
+```
+
+The client sees namespaced tools such as `files.read_file` and `git.status`.
+`tools/list` is aggregated across the configured upstreams and `tools/call` is
+routed back to the matching stdio process.

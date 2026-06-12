@@ -67,16 +67,52 @@ def test_load_mcp_proxy_config_supports_facade_upstreams(tmp_path):
     assert result["upstreams"] == [
         {
             "name": "files",
+            "transport": "http",
             "url": "http://127.0.0.1:9001/mcp",
             "tool_prefix": "files.",
             "default": True,
         },
         {
             "name": "git",
+            "transport": "http",
             "url": "http://127.0.0.1:9002/mcp",
             "tool_prefix": "repo.",
             "default": False,
         },
+    ]
+
+
+def test_load_mcp_proxy_config_supports_stdio_facade_upstreams(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.proxy]
+        policy = "policy.snulbug/policy.lua"
+
+        [[mcp.proxy.upstreams]]
+        name = "files"
+        transport = "stdio"
+        command = "npx"
+        args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+        cwd = "."
+        env = { MCP_LOG_LEVEL = "error" }
+        """,
+        encoding="utf-8",
+    )
+
+    result = load_mcp_proxy_config(config)
+
+    assert result["upstreams"] == [
+        {
+            "name": "files",
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+            "cwd": ".",
+            "env": {"MCP_LOG_LEVEL": "error"},
+            "tool_prefix": "files.",
+            "default": False,
+        }
     ]
 
 
@@ -173,12 +209,14 @@ def test_mcp_proxy_cli_passes_facade_upstreams_without_config(monkeypatch, tmp_p
     assert calls[0]["upstreams"] == [
         {
             "name": "files",
+            "transport": "http",
             "url": "http://127.0.0.1:9001/mcp",
             "tool_prefix": "files.",
             "default": False,
         },
         {
             "name": "git",
+            "transport": "http",
             "url": "http://127.0.0.1:9002/mcp",
             "tool_prefix": "git.",
             "default": False,

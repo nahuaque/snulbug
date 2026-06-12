@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -246,6 +247,38 @@ def test_mcp_facade_routes_tool_calls_by_prefix_and_records_upstream_metadata(tm
     }
 
 
+def test_mcp_facade_can_route_to_managed_stdio_upstream(tmp_path):
+    server = write_stdio_mcp_server(tmp_path)
+    policy = write_policy(tmp_path, "continue")
+    app = create_proxy_application(
+        None,
+        policy,
+        upstreams=[
+            {
+                "name": "git",
+                "transport": "stdio",
+                "command": sys.executable,
+                "args": [str(server)],
+            }
+        ],
+    )
+
+    listed, called = run_asgi_sequence(
+        app,
+        [
+            {"body": b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}'},
+            {"body": b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"git.status"}}'},
+        ],
+    )
+
+    list_payload = json.loads(listed[1]["body"])
+    call_payload = json.loads(called[1]["body"])
+    assert listed[0]["status"] == 200
+    assert [tool["name"] for tool in list_payload["result"]["tools"]] == ["git.status"]
+    assert called[0]["status"] == 200
+    assert call_payload["result"]["content"][0]["text"] == "called status"
+
+
 def start_upstream():
     seen = {"count": 0}
 
@@ -273,6 +306,47 @@ def start_upstream():
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, seen
+
+
+def write_stdio_mcp_server(tmp_path):
+    server = tmp_path / "stdio_mcp.py"
+    server.write_text(
+        """
+import json
+import sys
+
+for line in sys.stdin:
+    request = json.loads(line)
+    request_id = request.get("id")
+    method = request.get("method")
+    params = request.get("params") if isinstance(request.get("params"), dict) else {}
+    if method == "tools/list":
+        response = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "tools": [
+                    {"name": "status", "description": "Show status", "inputSchema": {"type": "object"}}
+                ]
+            },
+        }
+    elif method == "tools/call":
+        response = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {"content": [{"type": "text", "text": "called " + params.get("name", "")}]},
+        }
+    else:
+        response = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {"code": -32601, "message": "method not found"},
+        }
+    print(json.dumps(response), flush=True)
+        """,
+        encoding="utf-8",
+    )
+    return server
 
 
 def start_mcp_upstream(tools: dict[str, str]):
@@ -338,6 +412,54 @@ def run_asgi(app, *, path="/mcp", headers=None, body=b"", query_string=b"") -> l
 
     asyncio.run(app(scope, receive, send))
     return sent
+
+
+def run_asgi_sequence(app, requests: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    async def run_all():
+        results = []
+        for request in requests:
+            results.append(await run_asgi_once(app, body=request.get("body", b"")))
+        await close_app(app)
+        return results
+
+    return asyncio.run(run_all())
+
+
+async def run_asgi_once(app, *, path="/mcp", headers=None, body=b"", query_string=b"") -> list[dict[str, Any]]:
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode("ascii"),
+        "query_string": query_string,
+        "headers": headers or [],
+        "client": ("127.0.0.1", 1234),
+        "state": {},
+    }
+    messages = [{"type": "http.request", "body": body, "more_body": False}]
+    sent = []
+
+    async def receive():
+        if messages:
+            return messages.pop(0)
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    await app(scope, receive, send)
+    return sent
+
+
+async def close_app(app) -> None:
+    current = app
+    while hasattr(current, "app"):
+        current = current.app
+    if hasattr(current, "aclose"):
+        await current.aclose()
 
 
 def write_policy(tmp_path, action: str):

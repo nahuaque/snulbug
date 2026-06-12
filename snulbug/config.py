@@ -51,6 +51,12 @@ timeout = 30.0
 # [[mcp.proxy.upstreams]]
 # name = "git"
 # url = "http://127.0.0.1:9002/mcp"
+#
+# [[mcp.proxy.upstreams]]
+# name = "filesystem"
+# transport = "stdio"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
 """
 
 
@@ -139,15 +145,33 @@ def _normalize_upstreams(value: Any) -> list[dict[str, Any]]:
         if not isinstance(item, Mapping):
             raise ValueError(f"mcp.proxy.upstreams[{index}] must be a table")
         name = item.get("name")
+        transport = item.get("transport") or ("stdio" if item.get("command") else "http")
         url = item.get("url", item.get("upstream"))
+        command = item.get("command")
+        args = item.get("args", [])
+        cwd = item.get("cwd")
+        env = item.get("env")
         tool_prefix = item.get("tool_prefix", f"{name}.")
         default = bool(item.get("default", False))
         if not isinstance(name, str) or not name:
             raise ValueError(f"mcp.proxy.upstreams[{index}].name must be a non-empty string")
-        if not isinstance(url, str) or not url:
+        if transport not in {"http", "stdio"}:
+            raise ValueError(f"mcp.proxy.upstreams[{index}].transport must be 'http' or 'stdio'")
+        if transport == "http" and (not isinstance(url, str) or not url):
             raise ValueError(f"mcp.proxy.upstreams[{index}].url must be a non-empty string")
+        if transport == "stdio" and (not isinstance(command, str) or not command):
+            raise ValueError(f"mcp.proxy.upstreams[{index}].command must be a non-empty string")
         if not isinstance(tool_prefix, str) or not tool_prefix:
             raise ValueError(f"mcp.proxy.upstreams[{index}].tool_prefix must be a non-empty string")
+        if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+            raise ValueError(f"mcp.proxy.upstreams[{index}].args must be a list of strings")
+        if cwd is not None and not isinstance(cwd, str):
+            raise ValueError(f"mcp.proxy.upstreams[{index}].cwd must be a string")
+        if env is not None:
+            if not isinstance(env, Mapping):
+                raise ValueError(f"mcp.proxy.upstreams[{index}].env must be a table of strings")
+            if not all(isinstance(key, str) and isinstance(item_value, str) for key, item_value in env.items()):
+                raise ValueError(f"mcp.proxy.upstreams[{index}].env must be a table of strings")
         if name in names:
             raise ValueError(f"duplicate mcp.proxy.upstreams name: {name!r}")
         if tool_prefix in prefixes:
@@ -158,9 +182,20 @@ def _normalize_upstreams(value: Any) -> list[dict[str, Any]]:
         upstreams.append(
             {
                 "name": name,
-                "url": url,
+                "transport": transport,
                 "tool_prefix": tool_prefix,
                 "default": default,
+                **({"url": url} if transport == "http" else {}),
+                **(
+                    {
+                        "command": command,
+                        "args": list(args),
+                        **({"cwd": cwd} if cwd is not None else {}),
+                        **({"env": dict(env)} if isinstance(env, Mapping) else {}),
+                    }
+                    if transport == "stdio"
+                    else {}
+                ),
             }
         )
     if default_count > 1:

@@ -19,7 +19,7 @@ ngrok http 8000
 
 Point MCP clients at the ngrok URL plus `/mcp`.
 
-For local, tunneled, header-authenticated, and stdio-only client patterns, see
+For local, tunneled, header-authenticated, and managed stdio upstream patterns, see
 [MCP client setup recipes](mcp-client-recipes.md).
 
 The policy bundle is in `examples/bundles/mcp-gateway.snulbug`. It demonstrates:

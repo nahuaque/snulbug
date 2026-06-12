@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import http.client
 import json
+import os
+import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -36,9 +38,14 @@ class ProxyConfig:
 @dataclass(frozen=True)
 class FacadeUpstream:
     name: str
-    url: str
     tool_prefix: str
     default: bool = False
+    transport: str = "http"
+    url: str | None = None
+    command: str | None = None
+    args: tuple[str, ...] = ()
+    cwd: str | None = None
+    env: Mapping[str, str] | None = None
 
 
 class ReverseProxyApp:
@@ -106,6 +113,110 @@ class ReverseProxyApp:
         return f"{path}?{query}" if query else path
 
 
+class ManagedStdioMcpClient:
+    """Managed line-delimited JSON-RPC client for local stdio MCP servers."""
+
+    def __init__(
+        self,
+        command: str,
+        args: Sequence[str] = (),
+        *,
+        cwd: str | None = None,
+        env: Mapping[str, str] | None = None,
+        timeout: float = 30.0,
+    ) -> None:
+        self.command = command
+        self.args = tuple(args)
+        self.cwd = cwd
+        self.env = dict(env) if env is not None else None
+        self.timeout = timeout
+        self._process: asyncio.subprocess.Process | None = None
+        self._process_loop: asyncio.AbstractEventLoop | None = None
+        self._lock: asyncio.Lock | None = None
+        self._lock_loop: asyncio.AbstractEventLoop | None = None
+
+    async def request(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        lock = self._lock_for_loop()
+        async with lock:
+            process = await self._ensure_process()
+            assert process.stdin is not None
+            message = json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
+            process.stdin.write(message)
+            await process.stdin.drain()
+
+            if "id" not in request:
+                return {"status": 202, "headers": [(b"content-length", b"0")], "body": b""}
+
+            response = await self._read_response(request.get("id"))
+            body = json.dumps(response, separators=(",", ":")).encode("utf-8")
+            return {
+                "status": 200,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode("ascii")),
+                ],
+                "body": body,
+            }
+
+    async def aclose(self) -> None:
+        process = self._process
+        self._process = None
+        self._process_loop = None
+        if process is None or process.returncode is not None:
+            return
+        process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=2.0)
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+
+    def _lock_for_loop(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._lock_loop is not loop:
+            self._lock = asyncio.Lock()
+            self._lock_loop = loop
+        return self._lock
+
+    async def _ensure_process(self) -> asyncio.subprocess.Process:
+        loop = asyncio.get_running_loop()
+        if self._process is not None and self._process_loop is not loop:
+            await self.aclose()
+        if self._process is not None and self._process.returncode is None:
+            return self._process
+
+        env = None if self.env is None else {**os.environ, **self.env}
+        self._process = await asyncio.create_subprocess_exec(
+            self.command,
+            *self.args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            cwd=self.cwd,
+            env=env,
+        )
+        self._process_loop = loop
+        return self._process
+
+    async def _read_response(self, request_id: Any) -> Mapping[str, Any]:
+        process = await self._ensure_process()
+        assert process.stdout is not None
+        while True:
+            line = await asyncio.wait_for(process.stdout.readline(), timeout=self.timeout)
+            if not line:
+                self._process = None
+                self._process_loop = None
+                raise RuntimeError("stdio MCP server closed stdout")
+            try:
+                response = json.loads(line.decode("utf-8"))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(response, Mapping):
+                continue
+            if response.get("id") == request_id:
+                return response
+
+
 class McpFacadeProxyApp:
     """Minimal MCP facade that serves several local MCP HTTP servers as one endpoint."""
 
@@ -114,7 +225,22 @@ class McpFacadeProxyApp:
         if not self.upstreams:
             raise ValueError("facade mode requires at least one upstream")
         self.timeout = timeout
-        self._parsed = {upstream.name: _parse_upstream(upstream.url) for upstream in self.upstreams}
+        self._parsed = {
+            upstream.name: _parse_upstream(_required_url(upstream))
+            for upstream in self.upstreams
+            if upstream.transport == "http"
+        }
+        self._stdio_clients = {
+            upstream.name: ManagedStdioMcpClient(
+                _required_command(upstream),
+                upstream.args,
+                cwd=upstream.cwd,
+                env=upstream.env,
+                timeout=timeout,
+            )
+            for upstream in self.upstreams
+            if upstream.transport == "stdio"
+        }
         self._default = next((upstream for upstream in self.upstreams if upstream.default), self.upstreams[0])
         self._prefixes = sorted(self.upstreams, key=lambda upstream: len(upstream.tool_prefix), reverse=True)
 
@@ -152,7 +278,7 @@ class McpFacadeProxyApp:
         responses = []
         for upstream in self.upstreams:
             try:
-                response = await asyncio.to_thread(self._forward, upstream, scope, body)
+                response = await self._forward(upstream, scope, body, request)
             except Exception as exc:
                 await self._send_upstream_failure(send, upstream, exc)
                 return
@@ -240,7 +366,7 @@ class McpFacadeProxyApp:
         rewritten["params"] = rewritten_params
         body = json.dumps(rewritten, separators=(",", ":")).encode("utf-8")
         try:
-            response = await asyncio.to_thread(self._forward, upstream, scope, body)
+            response = await self._forward(upstream, scope, body, rewritten)
         except Exception as exc:
             await self._send_upstream_failure(send, upstream, exc)
             return
@@ -264,7 +390,8 @@ class McpFacadeProxyApp:
 
     async def _forward_to_default(self, scope: Scope, body: bytes, send: Send) -> None:
         try:
-            response = await asyncio.to_thread(self._forward, self._default, scope, body)
+            request = json.loads(body.decode("utf-8")) if body else {}
+            response = await self._forward(self._default, scope, body, request if isinstance(request, Mapping) else {})
         except Exception as exc:
             await self._send_upstream_failure(send, self._default, exc)
             return
@@ -284,7 +411,18 @@ class McpFacadeProxyApp:
             body=response["body"],
         )
 
-    def _forward(self, upstream: FacadeUpstream, scope: Scope, body: bytes) -> dict[str, Any]:
+    async def _forward(
+        self,
+        upstream: FacadeUpstream,
+        scope: Scope,
+        body: bytes,
+        request: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if upstream.transport == "stdio":
+            return await self._stdio_clients[upstream.name].request(request)
+        return await asyncio.to_thread(self._forward_http, upstream, scope, body)
+
+    def _forward_http(self, upstream: FacadeUpstream, scope: Scope, body: bytes) -> dict[str, Any]:
         parsed = self._parsed[upstream.name]
         connection = _connection(parsed, self.timeout)
         try:
@@ -305,6 +443,10 @@ class McpFacadeProxyApp:
             if tool_name.startswith(upstream.tool_prefix):
                 return upstream
         return None
+
+    async def aclose(self) -> None:
+        for client in self._stdio_clients.values():
+            await client.aclose()
 
     async def _send_upstream_failure(self, send: Send, upstream: FacadeUpstream, exc: Exception) -> None:
         await self._send_jsonrpc_error(
@@ -599,20 +741,57 @@ def _coerce_facade_upstream(upstream: FacadeUpstream | Mapping[str, Any]) -> Fac
     if isinstance(upstream, FacadeUpstream):
         return upstream
     name = upstream.get("name")
-    url = upstream.get("url", upstream.get("upstream"))
     if not isinstance(name, str) or not name:
         raise ValueError("facade upstream name must be a non-empty string")
-    if not isinstance(url, str) or not url:
+    transport = str(upstream.get("transport") or ("stdio" if upstream.get("command") else "http"))
+    if transport not in {"http", "stdio"}:
+        raise ValueError(f"facade upstream {name!r} transport must be 'http' or 'stdio'")
+    url = upstream.get("url", upstream.get("upstream"))
+    command = upstream.get("command")
+    if transport == "http" and (not isinstance(url, str) or not url):
         raise ValueError(f"facade upstream {name!r} url must be a non-empty string")
+    if transport == "stdio" and (not isinstance(command, str) or not command):
+        raise ValueError(f"facade upstream {name!r} command must be a non-empty string")
     tool_prefix = upstream.get("tool_prefix", f"{name}.")
     if not isinstance(tool_prefix, str) or not tool_prefix:
         raise ValueError(f"facade upstream {name!r} tool_prefix must be a non-empty string")
+    args = upstream.get("args", [])
+    if not isinstance(args, Sequence) or isinstance(args, str | bytes | bytearray):
+        raise ValueError(f"facade upstream {name!r} args must be a list of strings")
+    if not all(isinstance(arg, str) for arg in args):
+        raise ValueError(f"facade upstream {name!r} args must be a list of strings")
+    cwd = upstream.get("cwd")
+    if cwd is not None and not isinstance(cwd, str):
+        raise ValueError(f"facade upstream {name!r} cwd must be a string")
+    env = upstream.get("env")
+    if env is not None:
+        if not isinstance(env, Mapping) or not all(isinstance(key, str) for key in env):
+            raise ValueError(f"facade upstream {name!r} env must be a string table")
+        if not all(isinstance(value, str) for value in env.values()):
+            raise ValueError(f"facade upstream {name!r} env must be a string table")
     return FacadeUpstream(
         name=name,
-        url=url,
         tool_prefix=tool_prefix,
         default=bool(upstream.get("default", False)),
+        transport=transport,
+        url=url if isinstance(url, str) else None,
+        command=command if isinstance(command, str) else None,
+        args=tuple(args),
+        cwd=cwd,
+        env=dict(env) if isinstance(env, Mapping) else None,
     )
+
+
+def _required_url(upstream: FacadeUpstream) -> str:
+    if not upstream.url:
+        raise ValueError(f"facade upstream {upstream.name!r} url is required")
+    return upstream.url
+
+
+def _required_command(upstream: FacadeUpstream) -> str:
+    if not upstream.command:
+        raise ValueError(f"facade upstream {upstream.name!r} command is required")
+    return upstream.command
 
 
 def _parse_upstream(upstream: str) -> SplitResult:
