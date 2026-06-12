@@ -316,6 +316,20 @@ def test_invalid_action_is_rejected():
         run_asgi(middleware)
 
 
+def test_invalid_reason_metadata_is_rejected():
+    middleware = LuaMiddleware(
+        app,
+        """
+        return function(request, context)
+          return { action = "reject", reason_code = 123 }
+        end
+        """,
+    )
+
+    with pytest.raises(LuaDecisionError, match="reason_code"):
+        run_asgi(middleware)
+
+
 def test_middleware_can_attach_trace_to_scope():
     captured = {}
 

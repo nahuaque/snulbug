@@ -17,6 +17,7 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 - Added configurable MCP policy generation options to `asgi-lua mcp init`.
 - Added live proxy decision console output with `asgi-lua mcp proxy --decision-console`.
 - Added MCP-aware audit fields for JSON-RPC id, method, operation, targets, key names, batches, and initialize metadata.
+- Added policy decision `reason` and `reason_code` conventions across MCP helpers, presets, audit logs, and live console output.
 
 ## [0.1.0] - 2026-06-12
 

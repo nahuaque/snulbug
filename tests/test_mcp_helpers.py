@@ -71,6 +71,32 @@ def test_mcp_allow_tools_rejects_unlisted_tool():
         "action": "reject",
         "status": 403,
         "body": "MCP tool not allowed: shell_exec",
+        "reason": "MCP tool not allowed: shell_exec",
+        "reason_code": "mcp.tool_not_allowed",
+    }
+
+
+def test_mcp_allow_tools_can_override_rejection_reason():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return mcp.allow_tools(request, { safe_read_file = true }, {
+            body = "blocked",
+            reason = "Tool is outside this session's allowlist",
+            reason_code = "session.tool_blocked"
+          }) or { action = "continue" }
+        end
+        """
+    )
+
+    decision = script.decide({"body": '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shell_exec"}}'})
+
+    assert decision == {
+        "action": "reject",
+        "status": 403,
+        "body": "blocked",
+        "reason": "Tool is outside this session's allowlist",
+        "reason_code": "session.tool_blocked",
     }
 
 

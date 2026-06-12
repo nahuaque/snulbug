@@ -10,7 +10,8 @@
       "request": "fixtures/safe-tool.json",
       "expect": {
         "action": "continue",
-        "decision.context.tool": "safe_read_file"
+        "decision.context.tool": "safe_read_file",
+        "decision.reason_code": "mcp.tool_allowed"
       }
     },
     {
@@ -19,7 +20,8 @@
       "expect": {
         "action": "reject",
         "status": 403,
-        "body": "MCP tool not allowed: shell_exec"
+        "body": "MCP tool not allowed: shell_exec",
+        "decision.reason_code": "mcp.tool_not_allowed"
       }
     },
     {
@@ -27,7 +29,8 @@
       "request": "fixtures/tools-list.json",
       "expect": {
         "action": "continue",
-        "decision.context.method": "tools/list"
+        "decision.context.method": "tools/list",
+        "decision.reason_code": "mcp.tool_allowed"
       }
     }
   ]

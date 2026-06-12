@@ -7,7 +7,13 @@ local token = "local-dev-secret"
 
 return function(request, context, state)
   if request.path ~= "/mcp" then
-    return { action = "reject", status = 404, body = "unknown MCP endpoint" }
+    return {
+      action = "reject",
+      status = 404,
+      body = "unknown MCP endpoint",
+      reason = "Request path is not the configured MCP endpoint",
+      reason_code = "mcp.endpoint_not_found"
+    }
   end
 
   if request.headers.authorization ~= "Bearer " .. token then
@@ -16,7 +22,9 @@ return function(request, context, state)
       scheme = "Bearer",
       realm = "local-mcp",
       error = "invalid_token",
-      body = "MCP bearer token required"
+      body = "MCP bearer token required",
+      reason = "Missing or invalid MCP bearer token",
+      reason_code = "mcp.auth_required"
     }
   end
 
@@ -31,6 +39,8 @@ return function(request, context, state)
     limit = 60,
     window = 60,
     body = "too many MCP calls",
+    reason = "MCP request is subject to the local fixed-window rate limit",
+    reason_code = "mcp.rate_limit",
     context = {
       policy = "mcp-local-dev-safe",
       method = mcp.method(request) or "",

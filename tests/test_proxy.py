@@ -50,6 +50,7 @@ def test_reverse_proxy_forwards_allowed_request_to_upstream(tmp_path):
     assert records[0]["metadata"] == {"source": "proxy"}
     assert audit["request"]["headers"]["authorization"] == "[REDACTED]"
     assert audit["mcp"]["method"] == "tools/list"
+    assert audit["decision"]["reason_code"] == "test.allowed"
 
 
 def test_reverse_proxy_does_not_call_upstream_when_policy_rejects(tmp_path):
@@ -107,6 +108,8 @@ def test_reverse_proxy_writes_live_decision_console_text(tmp_path):
     assert "decision=continue" in output
     assert "allowed=true" in output
     assert "status=200" in output
+    assert "reason_code=test.allowed" in output
+    assert 'reason="request allowed"' in output
     assert "method=POST" in output
     assert "path=/mcp" in output
     assert "mcp.method=tools/list" in output
@@ -134,6 +137,8 @@ def test_reverse_proxy_writes_live_decision_console_json(tmp_path):
     event = json.loads(console.getvalue())
     assert event["decision"]["action"] == "reject"
     assert event["decision"]["allowed"] is False
+    assert event["decision"]["reason"] == "request blocked"
+    assert event["decision"]["reason_code"] == "test.blocked"
     assert event["response"]["status"] == 403
     assert event["request"]["headers"]["authorization"] == "[REDACTED]"
     assert event["mcp"]["method"] == "tools/call"
@@ -205,9 +210,12 @@ def run_asgi(app, *, path="/mcp", headers=None, body=b"", query_string=b"") -> l
 
 def write_policy(tmp_path, action: str):
     if action == "continue":
-        decision = '{ action = "continue" }'
+        decision = '{ action = "continue", reason = "request allowed", reason_code = "test.allowed" }'
     else:
-        decision = '{ action = "reject", status = 403, body = "blocked by policy" }'
+        decision = (
+            '{ action = "reject", status = 403, body = "blocked by policy", '
+            'reason = "request blocked", reason_code = "test.blocked" }'
+        )
     path = tmp_path / "policy.lua"
     path.write_text(
         f"""

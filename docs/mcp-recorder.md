@@ -135,6 +135,8 @@ Audit events have this shape:
   "decision": {
     "action": "continue",
     "allowed": true,
+    "reason": "MCP tool is allowed",
+    "reason_code": "mcp.tool_allowed",
     "status": null
   }
 }

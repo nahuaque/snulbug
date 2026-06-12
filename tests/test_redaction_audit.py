@@ -74,6 +74,8 @@ def test_build_audit_event_is_redacted_and_compact(tmp_path):
     }
     assert audit["decision"]["action"] == "continue"
     assert audit["decision"]["allowed"] is True
+    assert audit["decision"]["reason"] == "audit fixture allowed"
+    assert audit["decision"]["reason_code"] == "test.audit_allowed"
 
 
 def test_build_audit_event_extracts_initialize_client_metadata(tmp_path):
@@ -221,6 +223,8 @@ def write_policy(tmp_path):
         return function(request, context, state)
           return {
             action = "continue",
+            reason = "audit fixture allowed",
+            reason_code = "test.audit_allowed",
             context = {
               method = mcp.method(request) or "",
               tool = mcp.tool_name(request) or ""

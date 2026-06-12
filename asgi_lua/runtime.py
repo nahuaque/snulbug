@@ -97,6 +97,9 @@ def _normalize_decision(decision: Any) -> dict[str, Any]:
     if not isinstance(action, str):
         raise LuaDecisionError("Lua decision field 'action' must be a string")
     decision["action"] = action
+    for metadata_field in ("reason", "reason_code"):
+        if metadata_field in decision and not isinstance(decision[metadata_field], str):
+            raise LuaDecisionError(f"Lua decision field {metadata_field!r} must be a string")
     return decision
 
 
@@ -511,15 +514,19 @@ return function(source, source_name, instruction_limit)
     return list_contains(allowed, name)
   end
 
-  function mcp.reject_tool(request_or_name, status, body)
+  function mcp.reject_tool(request_or_name, status, body, options)
     local name = request_or_name
     if type(request_or_name) == "table" then
       name = mcp.tool_name(request_or_name)
     end
+    options = options or {}
+    local message = body or ("MCP tool not allowed: " .. tostring(name))
     return {
       action = "reject",
       status = status or 403,
-      body = body or ("MCP tool not allowed: " .. tostring(name)),
+      body = message,
+      reason = options.reason or message,
+      reason_code = options.reason_code or "mcp.tool_not_allowed",
     }
   end
 
@@ -529,7 +536,10 @@ return function(source, source_name, instruction_limit)
       return nil
     end
     options = options or {}
-    return mcp.reject_tool(name, options.status or 403, options.body)
+    return mcp.reject_tool(name, options.status or 403, options.body, {
+      reason = options.reason,
+      reason_code = options.reason_code,
+    })
   end
 
   safe_env.mcp = mcp

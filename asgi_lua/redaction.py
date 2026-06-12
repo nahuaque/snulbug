@@ -73,6 +73,8 @@ def build_audit_event(record: Mapping[str, Any], *, redact: bool = True) -> dict
             "action": action,
             "allowed": action in {"continue", "set_context", "rewrite", "rate_limit"},
             "status": decision.get("status"),
+            "reason": decision.get("reason"),
+            "reason_code": decision.get("reason_code"),
             "context": decision.get("context", {}),
         },
     }

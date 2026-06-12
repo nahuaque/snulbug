@@ -20,7 +20,8 @@
         "decision.context.method": "tools/call",
         "decision.context.tool": "safe_read_file",
         "decision.key": "mcp:token:local-dev-secret",
-        "decision.limit": 5
+        "decision.limit": 5,
+        "decision.reason_code": "mcp.rate_limit"
       }
     },
     {
@@ -30,7 +31,8 @@
       "expect": {
         "action": "reject",
         "status": 403,
-        "body": "MCP tool not allowed: shell_exec"
+        "body": "MCP tool not allowed: shell_exec",
+        "decision.reason_code": "mcp.tool_not_allowed"
       }
     },
     {
@@ -41,7 +43,8 @@
         "action": "challenge",
         "status": null,
         "body": "MCP gateway token required",
-        "decision.realm": "local-mcp"
+        "decision.realm": "local-mcp",
+        "decision.reason_code": "mcp.auth_required"
       }
     }
   ]

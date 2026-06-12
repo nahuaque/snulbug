@@ -158,7 +158,13 @@ def _render_policy(root: Path, preset: str, options: McpPolicyOptions) -> None:
 def _auth_required_policy(options: McpPolicyOptions) -> str:
     return f"""return function(request, context, state)
   if request.path ~= "/mcp" then
-    return {{ action = "reject", status = 404, body = "unknown MCP endpoint" }}
+    return {{
+      action = "reject",
+      status = 404,
+      body = "unknown MCP endpoint",
+      reason = "Request path is not the configured MCP endpoint",
+      reason_code = "mcp.endpoint_not_found"
+    }}
   end
 
 {_token_assignment(options)}
@@ -168,12 +174,16 @@ def _auth_required_policy(options: McpPolicyOptions) -> str:
       scheme = "Bearer",
       realm = "local-mcp",
       error = "invalid_token",
-      body = "MCP bearer token required"
+      body = "MCP bearer token required",
+      reason = "Missing or invalid MCP bearer token",
+      reason_code = "mcp.auth_required"
     }}
   end
 
   return {{
     action = "continue",
+    reason = "MCP bearer token accepted",
+    reason_code = "mcp.authenticated",
     context = {{
       policy = "mcp-auth-required"
     }}
@@ -195,6 +205,8 @@ return function(request, context, state)
 
   return {{
     action = "continue",
+    reason = "MCP tool is allowed",
+    reason_code = "mcp.tool_allowed",
     context = {{
       policy = "mcp-tool-allowlist",
       method = mcp.method(request) or "",
@@ -212,7 +224,13 @@ def _local_dev_safe_policy(options: McpPolicyOptions) -> str:
 
 return function(request, context, state)
   if request.path ~= "/mcp" then
-    return {{ action = "reject", status = 404, body = "unknown MCP endpoint" }}
+    return {{
+      action = "reject",
+      status = 404,
+      body = "unknown MCP endpoint",
+      reason = "Request path is not the configured MCP endpoint",
+      reason_code = "mcp.endpoint_not_found"
+    }}
   end
 
 {_token_assignment(options)}
@@ -222,7 +240,9 @@ return function(request, context, state)
       scheme = "Bearer",
       realm = "local-mcp",
       error = "invalid_token",
-      body = "MCP bearer token required"
+      body = "MCP bearer token required",
+      reason = "Missing or invalid MCP bearer token",
+      reason_code = "mcp.auth_required"
     }}
   end
 
@@ -237,6 +257,8 @@ return function(request, context, state)
     limit = {options.rate_limit},
     window = {options.rate_window},
     body = "too many MCP calls",
+    reason = "MCP request is subject to the local fixed-window rate limit",
+    reason_code = "mcp.rate_limit",
     context = {{
       policy = "mcp-local-dev-safe",
       method = mcp.method(request) or "",

@@ -19,7 +19,8 @@
         "decision.context.policy": "mcp-local-dev-safe",
         "decision.context.method": "tools/call",
         "decision.context.tool": "safe_read_file",
-        "decision.limit": 60
+        "decision.limit": 60,
+        "decision.reason_code": "mcp.rate_limit"
       }
     },
     {
@@ -29,7 +30,8 @@
       "expect": {
         "action": "reject",
         "status": 403,
-        "body": "MCP tool not allowed: shell_exec"
+        "body": "MCP tool not allowed: shell_exec",
+        "decision.reason_code": "mcp.tool_not_allowed"
       }
     },
     {
@@ -39,7 +41,8 @@
       "expect": {
         "action": "challenge",
         "body": "MCP bearer token required",
-        "decision.realm": "local-mcp"
+        "decision.realm": "local-mcp",
+        "decision.reason_code": "mcp.auth_required"
       }
     }
   ]

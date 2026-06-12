@@ -11,6 +11,8 @@ return function(request, context, state)
 
   return {
     action = "continue",
+    reason = "MCP tool is allowed",
+    reason_code = "mcp.tool_allowed",
     context = {
       policy = "mcp-tool-allowlist",
       method = mcp.method(request) or "",

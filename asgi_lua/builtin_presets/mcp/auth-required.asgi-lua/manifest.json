@@ -10,7 +10,8 @@
       "request": "fixtures/authenticated.json",
       "expect": {
         "action": "continue",
-        "decision.context.policy": "mcp-auth-required"
+        "decision.context.policy": "mcp-auth-required",
+        "decision.reason_code": "mcp.authenticated"
       }
     },
     {
@@ -19,7 +20,8 @@
       "expect": {
         "action": "challenge",
         "body": "MCP bearer token required",
-        "decision.realm": "local-mcp"
+        "decision.realm": "local-mcp",
+        "decision.reason_code": "mcp.auth_required"
       }
     }
   ]

@@ -323,6 +323,10 @@ def _format_decision_console_line(event: Mapping[str, Any]) -> str:
         f"method={request.get('method', '-')}",
         f"path={request.get('path', '-')}",
     ]
+    if decision.get("reason_code"):
+        parts.append(f"reason_code={decision['reason_code']}")
+    if decision.get("reason"):
+        parts.append(f"reason={_console_value(decision['reason'])}")
     if request.get("query_string"):
         parts.append(f"query={request['query_string']}")
     if mcp.get("method"):
@@ -338,6 +342,10 @@ def _format_decision_console_line(event: Mapping[str, Any]) -> str:
     if trace.get("instruction_count") is not None:
         parts.append(f"lua_instructions={trace['instruction_count']}")
     return " ".join(parts)
+
+
+def _console_value(value: Any) -> str:
+    return json.dumps(str(value), separators=(",", ":"))
 
 
 def _request_headers(raw_headers: list[tuple[bytes, bytes]], upstream: SplitResult) -> dict[str, str]:

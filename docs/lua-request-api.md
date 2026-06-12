@@ -51,6 +51,8 @@ Available helpers:
 - `mcp.tool_name(request)`: `params.name` for `tools/call`, or `nil`.
 - `mcp.tool_allowed(request, allowed)`: true when the request is not a tool call or the tool is allowed.
 - `mcp.allow_tools(request, allowed, options)`: returns `nil` when allowed, otherwise a `reject` decision.
-- `mcp.reject_tool(request_or_name, status, body)`: builds a standard tool rejection decision.
+- `mcp.reject_tool(request_or_name, status, body, options)`: builds a standard tool rejection decision.
 
 `allowed` can be an array, such as `{ "read_file" }`, or a map, such as `{ read_file = true }`.
+`options.reason` and `options.reason_code` can override the default
+`mcp.tool_not_allowed` reason metadata.

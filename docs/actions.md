@@ -2,6 +2,21 @@
 
 Policies return a decision table with an `action` field.
 
+Any decision can also include:
+
+- `reason`: short human-readable explanation for audit logs and live consoles.
+- `reason_code`: stable machine-readable code for filtering and tests.
+
+```lua
+return {
+  action = "reject",
+  status = 403,
+  body = "forbidden",
+  reason = "Tool is outside this session's allowlist",
+  reason_code = "session.tool_blocked"
+}
+```
+
 ## continue
 
 Call the downstream app.
