@@ -58,8 +58,9 @@ existing policy or config unless you pass `--force`.
 ## 3. Review the policy
 
 The generated policy can come from any MCP preset. For a tunnel-exposed local
-server, `tunnel-safe` is a good default because it requires bearer auth, rejects
-JSON-RPC batches, allows configured safe tools, and applies a small rate limit.
+server, `tunnel-safe` is the recommended default because it requires bearer
+auth, rejects JSON-RPC batches, allows configured safe tools, and applies a
+small rate limit.
 To create a similar policy manually:
 
 ```bash

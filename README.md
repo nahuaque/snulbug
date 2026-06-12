@@ -363,6 +363,10 @@ ngrok http 8000
 
 Then point clients at the ngrok URL plus `/mcp`.
 
+For public tunnel use, `tunnel-safe` is the recommended preset. It requires
+bearer auth, rejects JSON-RPC batches, keeps the safe-tool allowlist, and
+rate-limits traffic.
+
 See [docs/mcp-client-recipes.md](docs/mcp-client-recipes.md) for concrete
 local, tunneled, header-authenticated, and stdio-only client setup patterns.
 
@@ -393,15 +397,15 @@ Bundled MCP presets can be copied into a project:
 
 ```bash
 uv run asgi-lua mcp presets
-uv run asgi-lua mcp quickstart
-uv run asgi-lua mcp init local-dev-safe --output policy.asgi-lua
+uv run asgi-lua mcp quickstart --preset tunnel-safe
+uv run asgi-lua mcp init tunnel-safe --output policy.asgi-lua
 uv run asgi-lua bundle test policy.asgi-lua
 ```
 
 Generate a tailored preset:
 
 ```bash
-uv run asgi-lua mcp init local-dev-safe \
+uv run asgi-lua mcp init tunnel-safe \
   --output policy.asgi-lua \
   --token local-dev-secret \
   --allow-tool safe_read_file \
@@ -418,7 +422,7 @@ Included presets:
 - `read-only-local-dev`: bearer auth, read-oriented MCP methods, safe tools, and rate limiting.
 - `no-shell-tools`: bearer auth plus a shell/process tool-name denylist.
 - `project-path-allowlist`: bearer auth, safe tools, and project path constraints for tool arguments.
-- `tunnel-safe`: bearer auth, no JSON-RPC batches, safe tools, and rate limiting for tunneled local servers.
+- `tunnel-safe`: recommended default for public tunnels; bearer auth, no JSON-RPC batches, safe tools, and rate limiting.
 
 Record and replay MCP request decisions as JSONL:
 
@@ -455,7 +459,9 @@ uv run asgi-lua mcp proxy \
   --config asgi-lua.toml
 ```
 
-Then expose `http://127.0.0.1:8080/mcp` with ngrok or another tunnel.
+Then expose `http://127.0.0.1:8080/mcp` with ngrok or another tunnel. Use the
+`tunnel-safe` preset for this flow unless a stronger external control sits in
+front of the tunnel.
 
 Run the full end-to-end proxy demo:
 

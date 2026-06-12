@@ -2,6 +2,9 @@
 
 The MCP gateway demo protects a local JSON-RPC endpoint before it is exposed through ngrok.
 
+For real public tunnel use, prefer the reverse proxy flow with the `tunnel-safe`
+preset. This demo shows the lower-level ASGI middleware pattern.
+
 Run the app:
 
 ```bash
@@ -46,7 +49,7 @@ For a packaged starter policy, use the bundled presets:
 
 ```bash
 uv run asgi-lua mcp presets
-uv run asgi-lua mcp init local-dev-safe --output policy.asgi-lua
+uv run asgi-lua mcp init tunnel-safe --output policy.asgi-lua
 ```
 
 Record request decisions and replay them later:

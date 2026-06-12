@@ -2,6 +2,9 @@
 
 This demo wraps a small MCP-style JSON-RPC ASGI app with `asgi-lua`.
 
+For public tunnel use, prefer the reverse proxy quickstart with
+`--preset tunnel-safe`. This demo shows the direct ASGI middleware integration.
+
 The Lua policy is stored as a portable bundle at:
 
 ```text

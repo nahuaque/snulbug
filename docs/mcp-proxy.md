@@ -9,16 +9,17 @@ Install the proxy runner:
 pip install "asgi-lua[proxy]"
 ```
 
-Copy a starter policy:
+Copy a starter policy. For public tunnel use, `tunnel-safe` is the recommended
+default:
 
 ```bash
-asgi-lua mcp init local-dev-safe --output policy.asgi-lua
+asgi-lua mcp init tunnel-safe --output policy.asgi-lua
 ```
 
 Or generate one with project-specific values:
 
 ```bash
-asgi-lua mcp init local-dev-safe \
+asgi-lua mcp init tunnel-safe \
   --output policy.asgi-lua \
   --token local-dev-secret \
   --allow-tool safe_read_file \
@@ -45,7 +46,8 @@ For a runnable upstream-plus-proxy walkthrough, see the
 
 Point ngrok, Cloudflare Tunnel, or another tunnel at
 `http://127.0.0.1:8080`. The proxy applies the Lua policy before forwarding to
-the upstream server.
+the upstream server. Use `tunnel-safe` unless you have a stronger external
+access-control layer in front of the tunnel.
 
 `--record-out` writes replayable request records for traffic that passes through
 the proxy. `--audit-out` writes redacted audit events. Rejected/challenged

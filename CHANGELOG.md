@@ -25,6 +25,7 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 - Added a runnable end-to-end MCP policy proxy demo.
 - Added MCP risk-profile presets for read-only local development, shell-tool denial, project path allowlists, and tunneled servers.
 - Added Markdown MCP session reports with `asgi-lua mcp inspect --report-out`.
+- Documented `tunnel-safe` as the recommended default for public tunnel use.
 
 ## [0.1.0] - 2026-06-12
 

@@ -1,7 +1,7 @@
 # Local MCP Gateway Policy Bundle
 
-This bundle protects a local MCP-style JSON-RPC endpoint exposed through an
-ngrok tunnel.
+This bundle demonstrates protecting a local MCP-style JSON-RPC endpoint. For
+real public tunnel use, prefer the bundled `tunnel-safe` preset.
 
 It demonstrates:
 

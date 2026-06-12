@@ -81,6 +81,20 @@ header.
 
 Use this when the MCP client cannot reach your laptop directly.
 
+For public tunnel use, start from the `tunnel-safe` preset. It requires bearer
+auth, rejects JSON-RPC batch requests, allows only configured safe tools, and
+rate-limits traffic.
+
+```bash
+uv run asgi-lua mcp quickstart \
+  --preset tunnel-safe \
+  --upstream http://127.0.0.1:9000 \
+  --token local-dev-secret \
+  --allow-tool safe_read_file \
+  --allow-tool list_project_files \
+  --force
+```
+
 Run the proxy locally:
 
 ```bash
@@ -105,9 +119,9 @@ Keep the same bearer header:
 Authorization: Bearer local-dev-secret
 ```
 
-For public tunnels, keep an auth policy enabled. Do not expose the
-`tool-allowlist` preset by itself unless another tunnel or network layer already
-authenticates callers.
+For public tunnels, treat `tunnel-safe` as the recommended default. Do not expose
+the `tool-allowlist` preset by itself unless another tunnel or network layer
+already authenticates callers and rejects abusive traffic.
 
 ## 3. Observe a client session
 
