@@ -401,13 +401,9 @@ matter more than replaying auth-sensitive requests exactly.
 Run a local-dev reverse proxy in front of an MCP server:
 
 ```bash
+uv run asgi-lua mcp config init
 uv run asgi-lua mcp proxy \
-  --upstream http://127.0.0.1:9000 \
-  --policy policy.asgi-lua/policy.lua \
-  --record-out traces/session.jsonl \
-  --audit-out traces/audit.jsonl \
-  --host 127.0.0.1 \
-  --port 8080
+  --config asgi-lua.toml
 ```
 
 Then expose `http://127.0.0.1:8080/mcp` with ngrok or another tunnel.

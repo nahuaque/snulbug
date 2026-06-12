@@ -13,6 +13,7 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 - Added secret redaction and redacted MCP audit JSONL logs with `asgi-lua mcp record --audit-out`.
 - Added local-dev MCP reverse proxy mode with `asgi-lua mcp proxy`.
 - Added live proxy request recording and audit logging with `asgi-lua mcp proxy --record-out --audit-out`.
+- Added MCP proxy TOML config files with `asgi-lua mcp config init` and `asgi-lua mcp proxy --config`.
 
 ## [0.1.0] - 2026-06-12
 

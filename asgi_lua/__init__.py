@@ -3,6 +3,7 @@
 __version__ = "0.1.0"
 
 from .bundle import pack_bundle, test_bundle, validate_bundle
+from .config import load_mcp_proxy_config, write_sample_config
 from .middleware import LuaConfig, LuaMiddleware
 from .presets import copy_builtin_preset, list_builtin_presets
 from .promotion import compare_decisions, diff_policies
@@ -42,6 +43,7 @@ __all__ = [
     "copy_builtin_preset",
     "create_proxy_application",
     "diff_policies",
+    "load_mcp_proxy_config",
     "load_record_log",
     "list_builtin_presets",
     "pack_bundle",
@@ -53,4 +55,5 @@ __all__ = [
     "simulate_policy",
     "test_bundle",
     "validate_bundle",
+    "write_sample_config",
 ]

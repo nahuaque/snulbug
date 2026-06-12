@@ -56,10 +56,7 @@ uv run asgi-lua mcp replay traces/session.jsonl
 Run the policy as a reverse proxy for a non-ASGI MCP server:
 
 ```bash
+uv run asgi-lua mcp config init
 uv run asgi-lua mcp proxy \
-  --upstream http://127.0.0.1:9000 \
-  --policy policy.asgi-lua/policy.lua \
-  --record-out traces/session.jsonl \
-  --audit-out traces/audit.jsonl \
-  --port 8080
+  --config asgi-lua.toml
 ```

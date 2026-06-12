@@ -15,16 +15,16 @@ Copy a starter policy:
 asgi-lua mcp init local-dev-safe --output policy.asgi-lua
 ```
 
+Write a starter config:
+
+```bash
+asgi-lua mcp config init
+```
+
 Run the proxy:
 
 ```bash
-asgi-lua mcp proxy \
-  --upstream http://127.0.0.1:9000 \
-  --policy policy.asgi-lua/policy.lua \
-  --record-out traces/session.jsonl \
-  --audit-out traces/audit.jsonl \
-  --host 127.0.0.1 \
-  --port 8080
+asgi-lua mcp proxy --config asgi-lua.toml
 ```
 
 Point ngrok, Cloudflare Tunnel, or another tunnel at
@@ -45,6 +45,29 @@ asgi-lua mcp replay traces/session.jsonl --script candidate.lua
 Live replay records are exact by default. Use `--redact-records` when the replay
 record itself must avoid storing secrets.
 
+CLI flags override config values:
+
+```bash
+asgi-lua mcp proxy --config asgi-lua.toml --port 8181 --no-trace
+```
+
+Example config:
+
+```toml
+[mcp.proxy]
+upstream = "http://127.0.0.1:9000"
+policy = "policy.asgi-lua/policy.lua"
+host = "127.0.0.1"
+port = 8080
+state = "memory"
+trace = true
+record_out = "traces/session.jsonl"
+audit_out = "traces/audit.jsonl"
+redact_records = false
+max_body_bytes = 65536
+timeout = 30.0
+```
+
 ## State
 
 Proxy mode uses in-memory policy state by default, which supports presets that
@@ -53,11 +76,7 @@ use `rate_limit`.
 Use SQLite-backed local state:
 
 ```bash
-asgi-lua mcp proxy \
-  --upstream http://127.0.0.1:9000 \
-  --policy policy.asgi-lua/policy.lua \
-  --record-out traces/session.jsonl \
-  --state sqlite:policy-state.sqlite3
+asgi-lua mcp proxy --config asgi-lua.toml --state sqlite:policy-state.sqlite3
 ```
 
 Disable state:

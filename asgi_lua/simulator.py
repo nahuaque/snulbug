@@ -134,6 +134,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_init.add_argument("--force", action="store_true", help="overwrite the output directory when it exists")
     mcp_init.add_argument("--compact", action="store_true", help="emit compact JSON")
 
+    mcp_config = mcp_subparsers.add_parser("config", help="work with MCP TOML config files")
+    mcp_config_subparsers = mcp_config.add_subparsers(dest="config_command", required=True)
+    mcp_config_init = mcp_config_subparsers.add_parser("init", help="write a starter asgi-lua.toml config")
+    mcp_config_init.add_argument("--output", type=Path, default=Path("asgi-lua.toml"), help="config file path")
+    mcp_config_init.add_argument("--force", action="store_true", help="overwrite the config file when it exists")
+    mcp_config_init.add_argument("--compact", action="store_true", help="emit compact JSON")
+
     mcp_record = mcp_subparsers.add_parser("record", help="record one replayable MCP request decision")
     mcp_record.add_argument("script", type=Path, help="path to a Lua policy file")
     mcp_record.add_argument("request", type=Path, help="path to a JSON request fixture")
@@ -156,17 +163,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_replay.add_argument("--compact", action="store_true", help="emit compact JSON")
 
     mcp_proxy = mcp_subparsers.add_parser("proxy", help="run a local-dev MCP reverse proxy")
-    mcp_proxy.add_argument("--upstream", required=True, help="upstream MCP HTTP server URL")
-    mcp_proxy.add_argument("--policy", type=Path, required=True, help="path to a Lua policy file")
-    mcp_proxy.add_argument("--host", default="127.0.0.1", help="bind host")
-    mcp_proxy.add_argument("--port", type=int, default=8080, help="bind port")
-    mcp_proxy.add_argument("--state", default="memory", help="'memory', 'none', or 'sqlite:/path/to/state.sqlite3'")
-    mcp_proxy.add_argument("--no-trace", action="store_true", help="disable Lua trace scope data")
+    mcp_proxy.add_argument("--config", type=Path, help="TOML config file")
+    mcp_proxy.add_argument("--upstream", help="upstream MCP HTTP server URL")
+    mcp_proxy.add_argument("--policy", type=Path, help="path to a Lua policy file")
+    mcp_proxy.add_argument("--host", help="bind host")
+    mcp_proxy.add_argument("--port", type=int, help="bind port")
+    mcp_proxy.add_argument("--state", help="'memory', 'none', or 'sqlite:/path/to/state.sqlite3'")
+    mcp_proxy.add_argument(
+        "--no-trace", action="store_false", dest="trace", default=None, help="disable Lua trace scope data"
+    )
     mcp_proxy.add_argument("--record-out", type=Path, help="optional live replay JSONL path to append to")
     mcp_proxy.add_argument("--audit-out", type=Path, help="optional redacted live audit JSONL path to append to")
-    mcp_proxy.add_argument("--redact-records", action="store_true", help="redact secrets in live replay records")
-    mcp_proxy.add_argument("--max-body-bytes", type=int, default=64 * 1024)
-    mcp_proxy.add_argument("--timeout", type=float, default=30.0, help="upstream timeout in seconds")
+    mcp_proxy.add_argument(
+        "--redact-records",
+        action="store_true",
+        default=None,
+        help="redact secrets in live replay records",
+    )
+    mcp_proxy.add_argument("--max-body-bytes", type=int)
+    mcp_proxy.add_argument("--timeout", type=float, help="upstream timeout in seconds")
 
     args = parser.parse_args(argv)
     if args.command == "simulate":
@@ -233,6 +248,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return status
 
     if args.command == "mcp":
+        from .config import (
+            load_mcp_proxy_config,
+            merge_mcp_proxy_config,
+            normalize_mcp_proxy_config,
+            write_sample_config,
+        )
         from .presets import copy_builtin_preset, list_builtin_presets
         from .recorder import append_record, record_audit_event, record_policy_request, replay_record_log
         from .redaction import append_audit_event
@@ -252,6 +273,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             except Exception as exc:
                 result = {"ok": False, "preset": args.preset, "output": str(output), "error": str(exc)}
                 status = 1
+        elif args.mcp_command == "config":
+            if args.config_command == "init":
+                try:
+                    result = write_sample_config(args.output, force=args.force)
+                    result["next_steps"] = [
+                        "uv run asgi-lua mcp init local-dev-safe --output policy.asgi-lua",
+                        f"uv run asgi-lua mcp proxy --config {args.output}",
+                    ]
+                    status = 0
+                except Exception as exc:
+                    result = {"ok": False, "config": str(args.output), "error": str(exc)}
+                    status = 1
+            else:
+                parser.error(f"unknown mcp config command: {args.config_command}")
+                return 2
         elif args.mcp_command == "record":
             memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
             request = _read_json(args.request)
@@ -294,18 +330,40 @@ def main(argv: Sequence[str] | None = None) -> int:
             from .proxy import run_proxy
 
             try:
+                overrides = {
+                    "upstream": args.upstream,
+                    "policy": args.policy,
+                    "host": args.host,
+                    "port": args.port,
+                    "state": args.state,
+                    "trace": args.trace,
+                    "record_out": args.record_out,
+                    "audit_out": args.audit_out,
+                    "redact_records": args.redact_records,
+                    "max_body_bytes": args.max_body_bytes,
+                    "timeout": args.timeout,
+                }
+                if args.config is not None:
+                    proxy_config = merge_mcp_proxy_config(load_mcp_proxy_config(args.config), overrides)
+                else:
+                    if args.upstream is None or args.policy is None:
+                        sys.stderr.write(
+                            "asgi-lua proxy failed: --upstream and --policy are required without --config\n"
+                        )
+                        return 1
+                    proxy_config = normalize_mcp_proxy_config(overrides)
                 run_proxy(
-                    upstream=args.upstream,
-                    policy=args.policy,
-                    host=args.host,
-                    port=args.port,
-                    state=args.state,
-                    trace=not args.no_trace,
-                    max_body_bytes=args.max_body_bytes,
-                    timeout=args.timeout,
-                    record_out=args.record_out,
-                    audit_out=args.audit_out,
-                    redact_records=args.redact_records,
+                    upstream=proxy_config["upstream"],
+                    policy=proxy_config["policy"],
+                    host=proxy_config["host"],
+                    port=proxy_config["port"],
+                    state=proxy_config["state"],
+                    trace=proxy_config["trace"],
+                    max_body_bytes=proxy_config["max_body_bytes"],
+                    timeout=proxy_config["timeout"],
+                    record_out=proxy_config["record_out"],
+                    audit_out=proxy_config["audit_out"],
+                    redact_records=proxy_config["redact_records"],
                 )
             except Exception as exc:
                 sys.stderr.write(f"asgi-lua proxy failed: {exc}\n")
