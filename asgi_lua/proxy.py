@@ -114,7 +114,7 @@ class ProxyRecorderMiddleware:
         policy: str | Path,
         record_out: str | Path | None = None,
         audit_out: str | Path | None = None,
-        redact_records: bool = False,
+        redact_records: bool = True,
         decision_console: bool | TextIO = False,
         decision_console_format: str = "text",
     ) -> None:
@@ -182,7 +182,7 @@ def create_proxy_application(
     timeout: float = 30.0,
     record_out: str | Path | None = None,
     audit_out: str | Path | None = None,
-    redact_records: bool = False,
+    redact_records: bool = True,
     decision_console: bool | TextIO = False,
     decision_console_format: str = "text",
 ) -> ASGIApp:
@@ -226,7 +226,7 @@ def run_proxy(
     timeout: float = 30.0,
     record_out: str | Path | None = None,
     audit_out: str | Path | None = None,
-    redact_records: bool = False,
+    redact_records: bool = True,
     decision_console: bool = False,
     decision_console_format: str = "text",
 ) -> None:

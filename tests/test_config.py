@@ -50,6 +50,7 @@ def test_merge_mcp_proxy_config_ignores_none_and_applies_overrides(tmp_path):
     assert merged["host"] == "127.0.0.1"
     assert merged["port"] == 8181
     assert merged["record_out"] == tmp_path / "override.jsonl"
+    assert merged["redact_records"] is True
 
 
 def test_write_sample_config_refuses_to_overwrite(tmp_path):
@@ -74,6 +75,7 @@ def test_mcp_config_init_cli_writes_config(tmp_path, capsys):
     assert output["ok"] is True
     assert config.is_file()
     assert load_mcp_proxy_config(config)["policy"] == tmp_path / "policy.asgi-lua/policy.lua"
+    assert load_mcp_proxy_config(config)["redact_records"] is True
 
 
 def test_mcp_proxy_cli_requires_policy_and_upstream_without_config(capsys):
@@ -101,8 +103,24 @@ def test_mcp_proxy_cli_loads_config_before_running(monkeypatch, tmp_path):
     assert calls[0]["port"] == 8181
     assert calls[0]["trace"] is False
     assert calls[0]["record_out"] == tmp_path / "traces/session.jsonl"
+    assert calls[0]["redact_records"] is True
     assert calls[0]["decision_console"] is True
     assert calls[0]["decision_console_format"] == "json"
+
+
+def test_mcp_proxy_cli_can_disable_record_redaction(monkeypatch, tmp_path):
+    config = write_config(tmp_path)
+    calls = []
+
+    def fake_run_proxy(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("asgi_lua.proxy.run_proxy", fake_run_proxy)
+
+    status = simulator_main(["mcp", "proxy", "--config", str(config), "--no-redact-records"])
+
+    assert status == 0
+    assert calls[0]["redact_records"] is False
 
 
 def write_config(tmp_path):

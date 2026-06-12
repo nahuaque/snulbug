@@ -72,8 +72,8 @@ asgi-lua mcp inspect traces/session.jsonl
 asgi-lua mcp inspect traces/audit.jsonl --kind audit
 ```
 
-Live replay records are exact by default. Use `--redact-records` when the replay
-record itself must avoid storing secrets.
+Live replay records are redacted by default. Use `--no-redact-records` only when
+you need exact auth-sensitive replay artifacts.
 
 CLI flags override config values:
 
@@ -93,7 +93,7 @@ state = "memory"
 trace = true
 record_out = "traces/session.jsonl"
 audit_out = "traces/audit.jsonl"
-redact_records = false
+redact_records = true
 decision_console = false
 decision_console_format = "text"
 max_body_bytes = 65536

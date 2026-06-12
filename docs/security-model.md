@@ -16,6 +16,7 @@ Use these controls:
 
 For hostile third-party scripts, add an external isolation boundary. A separate process, container, VM, or WebAssembly runtime is a stronger boundary than the in-process Lua runtime.
 
-Request replay logs are exact by default so they can reproduce auth-sensitive
-decisions. Use `asgi-lua mcp record --audit-out ...` for redacted audit logs,
-and use `--redact` only when a replay record itself must be safe to share.
+CLI-created request replay logs and proxy replay logs are redacted by default.
+Use `asgi-lua mcp record --no-redact ...` or
+`asgi-lua mcp proxy --no-redact-records ...` only when exact auth-sensitive
+replay artifacts are required.

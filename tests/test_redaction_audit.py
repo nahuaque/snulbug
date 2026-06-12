@@ -132,7 +132,7 @@ def test_build_audit_event_marks_batch_and_invalid_mcp_bodies(tmp_path):
     assert invalid_audit["mcp"]["valid_json"] is False
 
 
-def test_mcp_record_cli_writes_redacted_audit_log_without_redacting_record(tmp_path, capsys):
+def test_mcp_record_cli_redacts_record_and_audit_log_by_default(tmp_path, capsys):
     policy = write_policy(tmp_path)
     request = tmp_path / "request.json"
     record_log = tmp_path / "records.jsonl"
@@ -175,9 +175,40 @@ def test_mcp_record_cli_writes_redacted_audit_log_without_redacting_record(tmp_p
     audit = json.loads(audit_log.read_text(encoding="utf-8"))
     assert status == 0
     assert output["audit_out"] == str(audit_log)
-    assert record["request"]["headers"]["authorization"] == "Bearer local-dev-secret"
+    assert output["redacted"] is True
+    assert record["redacted"] is True
+    assert record["request"]["headers"]["authorization"] == "[REDACTED]"
     assert audit["request"]["headers"]["authorization"] == "[REDACTED]"
+    assert "local-dev-secret" not in record_log.read_text(encoding="utf-8")
     assert "ghp_" not in audit_log.read_text(encoding="utf-8")
+
+
+def test_mcp_record_cli_can_write_exact_record_when_explicitly_requested(tmp_path, capsys):
+    policy = write_policy(tmp_path)
+    request = tmp_path / "request.json"
+    record_log = tmp_path / "records.jsonl"
+    request.write_text(
+        json.dumps(
+            {
+                "method": "POST",
+                "path": "/mcp",
+                "headers": {"authorization": "Bearer local-dev-secret"},
+                "body": json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status = simulator_main(
+        ["mcp", "record", str(policy), str(request), "--out", str(record_log), "--no-redact", "--compact"]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    record = json.loads(record_log.read_text(encoding="utf-8"))
+    assert status == 0
+    assert output["redacted"] is False
+    assert record.get("redacted") is None
+    assert record["request"]["headers"]["authorization"] == "Bearer local-dev-secret"
 
 
 def test_mcp_record_cli_can_redact_record_itself(tmp_path, capsys):

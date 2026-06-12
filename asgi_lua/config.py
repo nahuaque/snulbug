@@ -20,7 +20,7 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "trace": True,
     "record_out": "traces/session.jsonl",
     "audit_out": "traces/audit.jsonl",
-    "redact_records": False,
+    "redact_records": True,
     "decision_console": False,
     "decision_console_format": "text",
     "max_body_bytes": 65536,
@@ -36,7 +36,7 @@ state = "memory"
 trace = true
 record_out = "traces/session.jsonl"
 audit_out = "traces/audit.jsonl"
-redact_records = false
+redact_records = true
 decision_console = false
 decision_console_format = "text"
 max_body_bytes = 65536

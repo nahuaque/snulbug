@@ -155,7 +155,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_record.add_argument("--response", type=Path, help="optional JSON response metadata to store with the record")
     mcp_record.add_argument("--metadata", type=Path, help="optional JSON metadata to store with the record")
     mcp_record.add_argument("--audit-out", type=Path, help="optional redacted audit JSONL path to append to")
-    mcp_record.add_argument("--redact", action="store_true", help="redact secrets in the replay record itself")
+    mcp_record.add_argument(
+        "--redact",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="redact secrets in the replay record itself; use --no-redact for exact replay artifacts",
+    )
     mcp_record.add_argument("--instruction-limit", type=int, default=100_000)
     mcp_record.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
     mcp_record.add_argument("--compact", action="store_true", help="emit compact JSON")
@@ -187,9 +192,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_proxy.add_argument("--audit-out", type=Path, help="optional redacted live audit JSONL path to append to")
     mcp_proxy.add_argument(
         "--redact-records",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=None,
-        help="redact secrets in live replay records",
+        help="redact secrets in live replay records; use --no-redact-records for exact replay artifacts",
     )
     mcp_proxy.add_argument(
         "--decision-console",

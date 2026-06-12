@@ -414,8 +414,8 @@ uv run asgi-lua mcp record policy.asgi-lua/policy.lua request.json \
   --audit-out traces/audit.jsonl
 ```
 
-Replay records are exact by default. Pass `--redact` only when safer artifacts
-matter more than replaying auth-sensitive requests exactly.
+Replay records are redacted by default so captured artifacts are safer to keep
+around. Pass `--no-redact` only when you need exact auth-sensitive replay.
 
 Run a local-dev reverse proxy in front of an MCP server:
 

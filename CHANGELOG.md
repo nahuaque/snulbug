@@ -19,6 +19,7 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 - Added MCP-aware audit fields for JSON-RPC id, method, operation, targets, key names, batches, and initialize metadata.
 - Added policy decision `reason` and `reason_code` conventions across MCP helpers, presets, audit logs, and live console output.
 - Added offline MCP log inspection with `asgi-lua mcp inspect`.
+- Changed MCP record/proxy defaults to redact replay artifacts unless exact logging is explicitly requested.
 
 ## [0.1.0] - 2026-06-12
 

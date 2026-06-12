@@ -69,21 +69,22 @@ Audit events are compact JSONL records designed for local-dev visibility. They
 include request method/path/headers, MCP method/tool, decision action, allowed
 status, policy source, and optional response or metadata fields.
 
-Audit logs are redacted by default. The redactor masks likely secret keys such
+Audit logs and CLI-created replay records are redacted by default. The redactor masks likely secret keys such
 as `authorization`, `cookie`, `x-api-key`, `token`, `secret`, and `password`,
 plus common bearer tokens, OpenAI-style `sk-` tokens, GitHub tokens, and AWS
 access key IDs.
 
-Replay records are exact by default so they remain deterministic. To redact the
-record itself:
+To write an exact replay record for local debugging, opt in explicitly:
 
 ```bash
 uv run asgi-lua mcp record policy.asgi-lua/policy.lua request.json \
-  --out traces/session.redacted.jsonl \
-  --redact
+  --out traces/session.exact.jsonl \
+  --no-redact
 ```
 
-Redacted replay records may not reproduce auth-sensitive decisions exactly.
+Exact replay records may contain bearer tokens, cookies, API keys, and tool
+arguments. Redacted replay records may not reproduce auth-sensitive decisions
+exactly.
 
 ## JSONL record shape
 

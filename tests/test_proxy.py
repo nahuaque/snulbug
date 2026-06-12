@@ -43,7 +43,7 @@ def test_reverse_proxy_forwards_allowed_request_to_upstream(tmp_path):
     assert seen["count"] == 1
     records = load_record_log(record_log)
     audit = json.loads(audit_log.read_text(encoding="utf-8"))
-    assert records[0]["request"]["headers"]["authorization"] == "Bearer local-dev-secret"
+    assert records[0]["request"]["headers"]["authorization"] == "[REDACTED]"
     assert records[0]["request"]["query_string"] == "x=1"
     assert records[0]["result"]["action"] == "continue"
     assert records[0]["response"]["status"] == 200
@@ -71,6 +71,28 @@ def test_reverse_proxy_does_not_call_upstream_when_policy_rejects(tmp_path):
     records = load_record_log(record_log)
     assert records[0]["result"]["action"] == "reject"
     assert records[0]["response"]["status"] == 403
+
+
+def test_reverse_proxy_can_write_exact_records_when_explicitly_requested(tmp_path):
+    server, _seen = start_upstream()
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        redact_records=False,
+    )
+
+    try:
+        run_asgi(app, path="/mcp", headers=[(b"authorization", b"Bearer local-dev-secret")], body=b"{}")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    records = load_record_log(record_log)
+    assert records[0]["request"]["headers"]["authorization"] == "Bearer local-dev-secret"
+    assert records[0].get("redacted") is None
 
 
 def test_reverse_proxy_returns_bad_gateway_for_unreachable_upstream(tmp_path):
