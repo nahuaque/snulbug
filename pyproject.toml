@@ -39,6 +39,9 @@ dependencies = [
 redis = [
     "redis>=5.0",
 ]
+proxy = [
+    "uvicorn>=0.30",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.8",

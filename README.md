@@ -20,6 +20,12 @@ For Redis-backed policy state:
 pip install "asgi-lua[redis]"
 ```
 
+For the built-in reverse proxy runner:
+
+```bash
+pip install "asgi-lua[proxy]"
+```
+
 For local development from this repository:
 
 ```bash
@@ -391,6 +397,18 @@ uv run asgi-lua mcp record policy.asgi-lua/policy.lua request.json \
 
 Replay records are exact by default. Pass `--redact` only when safer artifacts
 matter more than replaying auth-sensitive requests exactly.
+
+Run a local-dev reverse proxy in front of an MCP server:
+
+```bash
+uv run asgi-lua mcp proxy \
+  --upstream http://127.0.0.1:9000 \
+  --policy policy.asgi-lua/policy.lua \
+  --host 127.0.0.1 \
+  --port 8080
+```
+
+Then expose `http://127.0.0.1:8080/mcp` with ngrok or another tunnel.
 
 ## Bounded policy state
 

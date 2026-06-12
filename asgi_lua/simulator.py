@@ -155,6 +155,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_replay.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
     mcp_replay.add_argument("--compact", action="store_true", help="emit compact JSON")
 
+    mcp_proxy = mcp_subparsers.add_parser("proxy", help="run a local-dev MCP reverse proxy")
+    mcp_proxy.add_argument("--upstream", required=True, help="upstream MCP HTTP server URL")
+    mcp_proxy.add_argument("--policy", type=Path, required=True, help="path to a Lua policy file")
+    mcp_proxy.add_argument("--host", default="127.0.0.1", help="bind host")
+    mcp_proxy.add_argument("--port", type=int, default=8080, help="bind port")
+    mcp_proxy.add_argument("--state", default="memory", help="'memory', 'none', or 'sqlite:/path/to/state.sqlite3'")
+    mcp_proxy.add_argument("--no-trace", action="store_true", help="disable Lua trace scope data")
+    mcp_proxy.add_argument("--max-body-bytes", type=int, default=64 * 1024)
+    mcp_proxy.add_argument("--timeout", type=float, default=30.0, help="upstream timeout in seconds")
+
     args = parser.parse_args(argv)
     if args.command == "simulate":
         request = _read_json(args.request)
@@ -277,6 +287,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 memory_limit_bytes=memory_limit,
             )
             status = 0 if result["ok"] else 1
+        elif args.mcp_command == "proxy":
+            from .proxy import run_proxy
+
+            try:
+                run_proxy(
+                    upstream=args.upstream,
+                    policy=args.policy,
+                    host=args.host,
+                    port=args.port,
+                    state=args.state,
+                    trace=not args.no_trace,
+                    max_body_bytes=args.max_body_bytes,
+                    timeout=args.timeout,
+                )
+            except Exception as exc:
+                sys.stderr.write(f"asgi-lua proxy failed: {exc}\n")
+                return 1
+            return 0
         else:
             parser.error(f"unknown mcp command: {args.mcp_command}")
             return 2

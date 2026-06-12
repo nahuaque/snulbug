@@ -34,6 +34,15 @@ uv run asgi-lua mcp record policy.asgi-lua/policy.lua request.json --out traces/
 uv run asgi-lua mcp replay traces/session.jsonl
 ```
 
+Run the copied policy as a local reverse proxy:
+
+```bash
+uv run asgi-lua mcp proxy \
+  --upstream http://127.0.0.1:9000 \
+  --policy policy.asgi-lua/policy.lua \
+  --port 8080
+```
+
 ## Included presets
 
 `local-dev-safe` is the default. It requires bearer auth, allows only

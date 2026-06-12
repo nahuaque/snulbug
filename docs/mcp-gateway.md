@@ -52,3 +52,12 @@ Record request decisions and replay them later:
 uv run asgi-lua mcp record policy.asgi-lua/policy.lua request.json --out traces/session.jsonl
 uv run asgi-lua mcp replay traces/session.jsonl
 ```
+
+Run the policy as a reverse proxy for a non-ASGI MCP server:
+
+```bash
+uv run asgi-lua mcp proxy \
+  --upstream http://127.0.0.1:9000 \
+  --policy policy.asgi-lua/policy.lua \
+  --port 8080
+```
