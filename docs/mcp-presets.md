@@ -20,6 +20,26 @@ Copy a specific preset:
 uv run asgi-lua mcp init tool-allowlist --output policy.asgi-lua
 ```
 
+Generate a tailored preset:
+
+```bash
+uv run asgi-lua mcp init local-dev-safe \
+  --output policy.asgi-lua \
+  --token local-dev-secret \
+  --allow-tool safe_read_file \
+  --allow-tool list_project_files \
+  --rate-limit 60 \
+  --rate-window 60
+```
+
+Options:
+
+- `--token`: bearer token rendered into `policy.lua`.
+- `--token-env`: context key used by the generated policy for an environment-derived token, with `--token` as fallback.
+- `--allow-tool`: MCP tool name to allow. Repeat for multiple tools.
+- `--rate-limit`: fixed-window limit for `local-dev-safe`.
+- `--rate-window`: fixed-window duration in seconds.
+
 Validate and test the copied bundle:
 
 ```bash

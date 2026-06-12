@@ -132,6 +132,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_init.add_argument("preset", nargs="?", default="local-dev-safe", help="preset name to copy")
     mcp_init.add_argument("--output", type=Path, help="output bundle directory")
     mcp_init.add_argument("--force", action="store_true", help="overwrite the output directory when it exists")
+    mcp_init.add_argument("--token", help="bearer token to render into generated policy")
+    mcp_init.add_argument("--token-env", help="context key used by generated policy for env-derived token lookup")
+    mcp_init.add_argument("--allow-tool", action="append", default=[], help="allowed MCP tool name")
+    mcp_init.add_argument("--rate-limit", type=int, help="fixed-window request limit")
+    mcp_init.add_argument("--rate-window", type=int, help="fixed-window duration in seconds")
     mcp_init.add_argument("--compact", action="store_true", help="emit compact JSON")
 
     mcp_config = mcp_subparsers.add_parser("config", help="work with MCP TOML config files")
@@ -254,7 +259,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             normalize_mcp_proxy_config,
             write_sample_config,
         )
-        from .presets import copy_builtin_preset, list_builtin_presets
+        from .presets import McpPolicyOptions, generate_mcp_preset, list_builtin_presets
         from .recorder import append_record, record_audit_event, record_policy_request, replay_record_log
         from .redaction import append_audit_event
 
@@ -264,7 +269,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.mcp_command == "init":
             output = args.output or Path(f"{args.preset}.asgi-lua")
             try:
-                result = copy_builtin_preset(args.preset, output, force=args.force)
+                result = generate_mcp_preset(
+                    args.preset,
+                    output,
+                    options=McpPolicyOptions(
+                        token=args.token,
+                        token_env=args.token_env,
+                        allowed_tools=args.allow_tool or None,
+                        rate_limit=args.rate_limit,
+                        rate_window=args.rate_window,
+                    ),
+                    force=args.force,
+                )
                 result["next_steps"] = [
                     f"uv run asgi-lua bundle validate {output}",
                     f"uv run asgi-lua bundle test {output}",

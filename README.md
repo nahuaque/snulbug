@@ -373,6 +373,18 @@ uv run asgi-lua mcp init local-dev-safe --output policy.asgi-lua
 uv run asgi-lua bundle test policy.asgi-lua
 ```
 
+Generate a tailored preset:
+
+```bash
+uv run asgi-lua mcp init local-dev-safe \
+  --output policy.asgi-lua \
+  --token local-dev-secret \
+  --allow-tool safe_read_file \
+  --allow-tool list_project_files \
+  --rate-limit 60 \
+  --rate-window 60
+```
+
 Included presets:
 
 - `local-dev-safe`: bearer auth, MCP tool allowlist, and middleware-owned rate limit.

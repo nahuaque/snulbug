@@ -14,6 +14,7 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 - Added local-dev MCP reverse proxy mode with `asgi-lua mcp proxy`.
 - Added live proxy request recording and audit logging with `asgi-lua mcp proxy --record-out --audit-out`.
 - Added MCP proxy TOML config files with `asgi-lua mcp config init` and `asgi-lua mcp proxy --config`.
+- Added configurable MCP policy generation options to `asgi-lua mcp init`.
 
 ## [0.1.0] - 2026-06-12
 

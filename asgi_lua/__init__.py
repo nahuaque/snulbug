@@ -5,7 +5,7 @@ __version__ = "0.1.0"
 from .bundle import pack_bundle, test_bundle, validate_bundle
 from .config import load_mcp_proxy_config, write_sample_config
 from .middleware import LuaConfig, LuaMiddleware
-from .presets import copy_builtin_preset, list_builtin_presets
+from .presets import McpPolicyOptions, copy_builtin_preset, generate_mcp_preset, list_builtin_presets
 from .promotion import compare_decisions, diff_policies
 from .proxy import ReverseProxyApp, create_proxy_application, run_proxy
 from .recorder import append_record, load_record_log, record_audit_event, record_policy_request, replay_record_log
@@ -29,6 +29,7 @@ __all__ = [
     "LuaMiddleware",
     "LuaRuntimeError",
     "MemoryStateStore",
+    "McpPolicyOptions",
     "RedisStateStore",
     "RedactionConfig",
     "ReverseProxyApp",
@@ -43,6 +44,7 @@ __all__ = [
     "copy_builtin_preset",
     "create_proxy_application",
     "diff_policies",
+    "generate_mcp_preset",
     "load_mcp_proxy_config",
     "load_record_log",
     "list_builtin_presets",

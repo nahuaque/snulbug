@@ -15,6 +15,16 @@ Copy a starter policy:
 asgi-lua mcp init local-dev-safe --output policy.asgi-lua
 ```
 
+Or generate one with project-specific values:
+
+```bash
+asgi-lua mcp init local-dev-safe \
+  --output policy.asgi-lua \
+  --token local-dev-secret \
+  --allow-tool safe_read_file \
+  --allow-tool list_project_files
+```
+
 Write a starter config:
 
 ```bash
