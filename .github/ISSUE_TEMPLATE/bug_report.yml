@@ -1,11 +1,11 @@
 name: Bug report
-description: Report a reproducible problem in asgi-lua.
+description: Report a reproducible problem in snulbug.
 title: "[Bug]: "
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
-      value: Thanks for helping improve asgi-lua. Please include enough detail to reproduce the issue.
+      value: Thanks for helping improve snulbug. Please include enough detail to reproduce the issue.
   - type: textarea
     id: description
     attributes:
@@ -24,7 +24,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: asgi-lua version
+      label: snulbug version
       placeholder: "0.1.0"
   - type: input
     id: python

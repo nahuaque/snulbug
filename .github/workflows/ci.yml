@@ -41,5 +41,5 @@ jobs:
 
       - name: Smoke test CLI
         run: |
-          uv run asgi-lua --help
-          uv run python -m asgi_lua --help
+          uv run snulbug --help
+          uv run python -m snulbug --help
