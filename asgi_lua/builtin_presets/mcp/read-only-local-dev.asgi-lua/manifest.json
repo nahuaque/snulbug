@@ -1,0 +1,58 @@
+{
+  "name": "mcp-read-only-local-dev",
+  "version": "0.1.0",
+  "entrypoint": "policy.lua",
+  "description": "Require auth, allow read-oriented MCP methods and safe tools, and rate-limit local-dev traffic",
+  "risk_profile": "read-only",
+  "required_capabilities": ["body", "mcp", "state", "rate_limit"],
+  "limits": {
+    "max_body_bytes": 16384,
+    "max_state_operations": 4,
+    "max_key_bytes": 128
+  },
+  "fixtures": [
+    {
+      "name": "safe tool call is read-only and rate limited",
+      "request": "fixtures/safe-tool.json",
+      "state": "snapshots/empty.json",
+      "expect": {
+        "action": "rate_limit",
+        "decision.context.policy": "mcp-read-only-local-dev",
+        "decision.context.method": "tools/call",
+        "decision.context.tool": "safe_read_file",
+        "decision.limit": 60,
+        "decision.reason_code": "mcp.read_only_allowed"
+      }
+    },
+    {
+      "name": "read-only method is rate limited",
+      "request": "fixtures/tools-list.json",
+      "state": "snapshots/empty.json",
+      "expect": {
+        "action": "rate_limit",
+        "decision.context.method": "tools/list",
+        "decision.reason_code": "mcp.read_only_allowed"
+      }
+    },
+    {
+      "name": "write-like method is rejected",
+      "request": "fixtures/write-method.json",
+      "state": "snapshots/empty.json",
+      "expect": {
+        "action": "reject",
+        "status": 403,
+        "decision.reason_code": "mcp.method_not_read_only"
+      }
+    },
+    {
+      "name": "missing token is challenged",
+      "request": "fixtures/missing-token.json",
+      "state": "snapshots/empty.json",
+      "expect": {
+        "action": "challenge",
+        "body": "MCP bearer token required",
+        "decision.reason_code": "mcp.auth_required"
+      }
+    }
+  ]
+}

@@ -35,6 +35,7 @@ instructions:
 ```bash
 uv run asgi-lua mcp quickstart \
   --upstream http://127.0.0.1:9000 \
+  --preset tunnel-safe \
   --token local-dev-secret \
   --allow-tool safe_read_file \
   --allow-tool list_project_files
@@ -56,11 +57,13 @@ existing policy or config unless you pass `--force`.
 
 ## 3. Review the policy
 
-The generated policy comes from the `local-dev-safe` preset: bearer auth, an MCP
-tool allowlist, and a small rate limit. To create the same policy manually:
+The generated policy can come from any MCP preset. For a tunnel-exposed local
+server, `tunnel-safe` is a good default because it requires bearer auth, rejects
+JSON-RPC batches, allows configured safe tools, and applies a small rate limit.
+To create a similar policy manually:
 
 ```bash
-uv run asgi-lua mcp init local-dev-safe \
+uv run asgi-lua mcp init tunnel-safe \
   --output policy.asgi-lua \
   --token local-dev-secret \
   --allow-tool safe_read_file \

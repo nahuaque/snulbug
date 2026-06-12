@@ -34,6 +34,7 @@ uv run asgi-lua mcp init local-dev-safe \
   --token local-dev-secret \
   --allow-tool safe_read_file \
   --allow-tool list_project_files \
+  --allow-path docs/ \
   --rate-limit 60 \
   --rate-window 60
 ```
@@ -43,7 +44,8 @@ Options:
 - `--token`: bearer token rendered into `policy.lua`.
 - `--token-env`: context key used by the generated policy for an environment-derived token, with `--token` as fallback.
 - `--allow-tool`: MCP tool name to allow. Repeat for multiple tools.
-- `--rate-limit`: fixed-window limit for `local-dev-safe`.
+- `--allow-path`: project path or prefix to allow in path-scoped profiles. Repeat for multiple paths.
+- `--rate-limit`: fixed-window limit for stateful profiles.
 - `--rate-window`: fixed-window duration in seconds.
 
 Validate and test the copied bundle:
@@ -79,6 +81,47 @@ limiting to middleware state.
 
 `tool-allowlist` only rejects unlisted `tools/call` names and passes non-tool
 JSON-RPC methods through.
+
+## Risk profiles
+
+`read-only-local-dev` requires bearer auth, allows read-oriented MCP methods,
+allows only configured safe tools, and rate-limits traffic. Use it when a client
+should inspect local context without making write-like MCP calls.
+
+```bash
+uv run asgi-lua mcp init read-only-local-dev --output policy.asgi-lua
+```
+
+`no-shell-tools` requires bearer auth and blocks tool names that look like shell
+or process execution, such as `shell_exec`, `run_command`, `terminal`, `bash`,
+`powershell`, `spawn`, or `system`.
+
+```bash
+uv run asgi-lua mcp init no-shell-tools --output policy.asgi-lua
+```
+
+`project-path-allowlist` requires bearer auth, applies a tool allowlist, and
+rejects `params.arguments.path` / `params.arguments.paths` outside configured
+project paths.
+
+```bash
+uv run asgi-lua mcp init project-path-allowlist \
+  --output policy.asgi-lua \
+  --allow-tool safe_read_file \
+  --allow-path README.md \
+  --allow-path docs/
+```
+
+`tunnel-safe` is intended for ngrok, Cloudflare Tunnel, or similar exposure. It
+requires bearer auth, rejects JSON-RPC batch requests, allows only configured
+safe tools, and rate-limits traffic.
+
+```bash
+uv run asgi-lua mcp quickstart \
+  --preset tunnel-safe \
+  --upstream http://127.0.0.1:9000 \
+  --token local-dev-secret
+```
 
 All copied presets are ordinary policy bundles with `manifest.json`,
 `policy.lua`, fixtures, and local README files.

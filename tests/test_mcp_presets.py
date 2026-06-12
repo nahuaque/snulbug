@@ -10,8 +10,17 @@ from asgi_lua.simulator import main as simulator_main
 def test_builtin_mcp_presets_are_listed():
     presets = {preset["preset"]: preset for preset in list_builtin_presets()}
 
-    assert set(presets) == {"auth-required", "local-dev-safe", "tool-allowlist"}
+    assert set(presets) == {
+        "auth-required",
+        "local-dev-safe",
+        "no-shell-tools",
+        "project-path-allowlist",
+        "read-only-local-dev",
+        "tool-allowlist",
+        "tunnel-safe",
+    }
     assert presets["local-dev-safe"]["required_capabilities"] == ["body", "mcp", "state", "rate_limit"]
+    assert presets["tunnel-safe"]["risk_profile"] == "tunnel-safe"
 
 
 def test_builtin_mcp_presets_copy_validate_and_test(tmp_path):
@@ -37,7 +46,11 @@ def test_mcp_presets_cli_lists_presets(capsys):
     assert [preset["preset"] for preset in output["presets"]] == [
         "auth-required",
         "local-dev-safe",
+        "no-shell-tools",
+        "project-path-allowlist",
+        "read-only-local-dev",
         "tool-allowlist",
+        "tunnel-safe",
     ]
 
 
@@ -108,6 +121,31 @@ def test_generate_mcp_preset_can_use_context_token_env(tmp_path):
     assert validate_bundle(output_path)["ok"] is True
 
 
+def test_generate_project_path_profile_renders_custom_paths(tmp_path):
+    output_path = tmp_path / "policy.asgi-lua"
+
+    result = generate_mcp_preset(
+        "project-path-allowlist",
+        output_path,
+        options=McpPolicyOptions(
+            token="custom-secret",
+            allowed_tools=["read_repo"],
+            allowed_paths=["src/", "README.md"],
+        ),
+    )
+
+    policy = (output_path / "policy.lua").read_text(encoding="utf-8")
+    fixture = json.loads((output_path / "fixtures" / "allowed-path.json").read_text(encoding="utf-8"))
+    assert result["generated"] is True
+    assert '"read_repo",' in policy
+    assert '"src/",' in policy
+    assert fixture["headers"]["authorization"] == "Bearer custom-secret"
+    assert "read_repo" in fixture["body"]
+    assert "src/" in fixture["body"]
+    assert validate_bundle(output_path)["ok"] is True
+    assert run_bundle_tests(output_path)["ok"] is True
+
+
 def test_mcp_init_cli_generates_custom_policy(tmp_path, capsys):
     output_path = tmp_path / "policy.asgi-lua"
 
@@ -115,11 +153,13 @@ def test_mcp_init_cli_generates_custom_policy(tmp_path, capsys):
         [
             "mcp",
             "init",
-            "tool-allowlist",
+            "project-path-allowlist",
             "--output",
             str(output_path),
             "--allow-tool",
             "read_repo",
+            "--allow-path",
+            "src/",
             "--compact",
         ]
     )
@@ -129,5 +169,7 @@ def test_mcp_init_cli_generates_custom_policy(tmp_path, capsys):
     assert status == 0
     assert output["generated"] is True
     assert '"read_repo",' in policy
+    assert '"src/",' in policy
+    assert output["options"]["allowed_paths"] == ["src/"]
     assert validate_bundle(output_path)["ok"] is True
     assert run_bundle_tests(output_path)["ok"] is True

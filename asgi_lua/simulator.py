@@ -140,6 +140,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_quickstart.add_argument("--token", help="bearer token to render into generated policy")
     mcp_quickstart.add_argument("--token-env", help="context key used by generated policy for env-derived token lookup")
     mcp_quickstart.add_argument("--allow-tool", action="append", default=[], help="allowed MCP tool name")
+    mcp_quickstart.add_argument("--allow-path", action="append", default=[], help="allowed project path or prefix")
     mcp_quickstart.add_argument("--rate-limit", type=int, help="fixed-window request limit")
     mcp_quickstart.add_argument("--rate-window", type=int, help="fixed-window duration in seconds")
     mcp_quickstart.add_argument("--host", default="127.0.0.1", help="proxy bind host")
@@ -185,6 +186,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_init.add_argument("--token", help="bearer token to render into generated policy")
     mcp_init.add_argument("--token-env", help="context key used by generated policy for env-derived token lookup")
     mcp_init.add_argument("--allow-tool", action="append", default=[], help="allowed MCP tool name")
+    mcp_init.add_argument("--allow-path", action="append", default=[], help="allowed project path or prefix")
     mcp_init.add_argument("--rate-limit", type=int, help="fixed-window request limit")
     mcp_init.add_argument("--rate-window", type=int, help="fixed-window duration in seconds")
     mcp_init.add_argument("--compact", action="store_true", help="emit compact JSON")
@@ -353,6 +355,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     token=args.token,
                     token_env=args.token_env,
                     allowed_tools=args.allow_tool or None,
+                    allowed_paths=args.allow_path or None,
                     rate_limit=args.rate_limit,
                     rate_window=args.rate_window,
                     host=args.host,
@@ -382,6 +385,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         token=args.token,
                         token_env=args.token_env,
                         allowed_tools=args.allow_tool or None,
+                        allowed_paths=args.allow_path or None,
                         rate_limit=args.rate_limit,
                         rate_window=args.rate_window,
                     ),

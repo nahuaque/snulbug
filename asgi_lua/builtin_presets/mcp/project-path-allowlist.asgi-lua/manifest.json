@@ -1,0 +1,50 @@
+{
+  "name": "mcp-project-path-allowlist",
+  "version": "0.1.0",
+  "entrypoint": "policy.lua",
+  "description": "Require auth and constrain MCP tool path arguments to project-local allowlisted paths",
+  "risk_profile": "project-path-allowlist",
+  "required_capabilities": ["body", "mcp"],
+  "fixtures": [
+    {
+      "name": "allowlisted project path continues",
+      "request": "fixtures/allowed-path.json",
+      "expect": {
+        "action": "continue",
+        "decision.context.policy": "mcp-project-path-allowlist",
+        "decision.context.tool": "safe_read_file",
+        "decision.reason_code": "mcp.path_allowed"
+      }
+    },
+    {
+      "name": "absolute path is rejected",
+      "request": "fixtures/absolute-path.json",
+      "expect": {
+        "action": "reject",
+        "status": 403,
+        "body": "MCP path not allowed: /etc/passwd",
+        "decision.reason_code": "mcp.path_not_allowed"
+      }
+    },
+    {
+      "name": "traversal path is rejected",
+      "request": "fixtures/traversal-path.json",
+      "expect": {
+        "action": "reject",
+        "status": 403,
+        "body": "MCP path not allowed: ../secrets.env",
+        "decision.reason_code": "mcp.path_not_allowed"
+      }
+    },
+    {
+      "name": "unsafe tool is rejected",
+      "request": "fixtures/unsafe-tool.json",
+      "expect": {
+        "action": "reject",
+        "status": 403,
+        "body": "MCP tool not allowed: shell_exec",
+        "decision.reason_code": "mcp.tool_not_allowed"
+      }
+    }
+  ]
+}

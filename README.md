@@ -45,6 +45,7 @@ The minimal flow is:
 
 ```bash
 uv run asgi-lua mcp quickstart \
+  --preset tunnel-safe \
   --token local-dev-secret \
   --allow-tool safe_read_file \
   --allow-tool list_project_files
@@ -414,6 +415,10 @@ Included presets:
 - `local-dev-safe`: bearer auth, MCP tool allowlist, and middleware-owned rate limit.
 - `auth-required`: bearer auth only.
 - `tool-allowlist`: MCP `tools/call` allowlist only.
+- `read-only-local-dev`: bearer auth, read-oriented MCP methods, safe tools, and rate limiting.
+- `no-shell-tools`: bearer auth plus a shell/process tool-name denylist.
+- `project-path-allowlist`: bearer auth, safe tools, and project path constraints for tool arguments.
+- `tunnel-safe`: bearer auth, no JSON-RPC batches, safe tools, and rate limiting for tunneled local servers.
 
 Record and replay MCP request decisions as JSONL:
 

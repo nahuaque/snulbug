@@ -72,6 +72,34 @@ def test_mcp_quickstart_cli_writes_compact_result(tmp_path, capsys):
     assert output["tests"]["ok"] is True
 
 
+def test_mcp_quickstart_cli_can_generate_path_profile(tmp_path, capsys):
+    status = simulator_main(
+        [
+            "mcp",
+            "quickstart",
+            "--directory",
+            str(tmp_path),
+            "--preset",
+            "project-path-allowlist",
+            "--allow-tool",
+            "read_repo",
+            "--allow-path",
+            "src/",
+            "--compact",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    policy = (tmp_path / "policy.asgi-lua" / "policy.lua").read_text(encoding="utf-8")
+    assert status == 0
+    assert output["ok"] is True
+    assert output["preset"] == "project-path-allowlist"
+    assert output["policy_options"]["allowed_tools"] == ["read_repo"]
+    assert output["policy_options"]["allowed_paths"] == ["src/"]
+    assert '"read_repo",' in policy
+    assert '"src/",' in policy
+
+
 def test_mcp_quickstart_cli_refuses_to_overwrite_without_force(tmp_path, capsys):
     status = simulator_main(["mcp", "quickstart", "--directory", str(tmp_path), "--compact"])
     assert status == 0

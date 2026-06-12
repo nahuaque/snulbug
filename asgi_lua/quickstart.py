@@ -8,6 +8,7 @@ from typing import Any
 
 from .bundle import test_bundle, validate_bundle
 from .presets import (
+    DEFAULT_ALLOWED_PATHS,
     DEFAULT_ALLOWED_TOOLS,
     DEFAULT_RATE_LIMIT,
     DEFAULT_RATE_WINDOW,
@@ -28,6 +29,7 @@ def create_mcp_quickstart(
     token: str | None = None,
     token_env: str | None = None,
     allowed_tools: Sequence[str] | None = None,
+    allowed_paths: Sequence[str] | None = None,
     rate_limit: int | None = None,
     rate_window: int | None = None,
     host: str = "127.0.0.1",
@@ -60,6 +62,7 @@ def create_mcp_quickstart(
             token=token,
             token_env=token_env,
             allowed_tools=list(allowed_tools) if allowed_tools else None,
+            allowed_paths=list(allowed_paths) if allowed_paths else None,
             rate_limit=rate_limit,
             rate_window=rate_window,
         ),
@@ -69,6 +72,7 @@ def create_mcp_quickstart(
 
     effective_token = token or DEFAULT_TOKEN
     effective_tools = list(allowed_tools) if allowed_tools else list(DEFAULT_ALLOWED_TOOLS)
+    effective_paths = list(allowed_paths) if allowed_paths else list(DEFAULT_ALLOWED_PATHS)
     effective_rate_limit = rate_limit or DEFAULT_RATE_LIMIT
     effective_rate_window = rate_window or DEFAULT_RATE_WINDOW
     policy_file = policy_dir / "policy.lua"
@@ -115,6 +119,7 @@ def create_mcp_quickstart(
             "token": effective_token,
             "token_env": token_env,
             "allowed_tools": effective_tools,
+            "allowed_paths": effective_paths,
             "rate_limit": effective_rate_limit,
             "rate_window": effective_rate_window,
         },

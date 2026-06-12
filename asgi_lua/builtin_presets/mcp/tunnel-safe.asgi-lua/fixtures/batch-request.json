@@ -1,0 +1,9 @@
+{
+  "method": "POST",
+  "path": "/mcp",
+  "headers": {
+    "authorization": "Bearer local-dev-secret",
+    "content-type": "application/json"
+  },
+  "body": "[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}]"
+}

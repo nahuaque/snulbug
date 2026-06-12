@@ -1,0 +1,60 @@
+{
+  "name": "mcp-tunnel-safe",
+  "version": "0.1.0",
+  "entrypoint": "policy.lua",
+  "description": "Require auth, reject batch JSON-RPC, allow safe tools only, and rate-limit tunneled MCP traffic",
+  "risk_profile": "tunnel-safe",
+  "required_capabilities": ["body", "mcp", "state", "rate_limit"],
+  "limits": {
+    "max_body_bytes": 16384,
+    "max_state_operations": 4,
+    "max_key_bytes": 128
+  },
+  "fixtures": [
+    {
+      "name": "safe tool call is rate limited",
+      "request": "fixtures/safe-tool.json",
+      "state": "snapshots/empty.json",
+      "expect": {
+        "action": "rate_limit",
+        "decision.context.policy": "mcp-tunnel-safe",
+        "decision.context.method": "tools/call",
+        "decision.context.tool": "safe_read_file",
+        "decision.limit": 60,
+        "decision.reason_code": "mcp.tunnel_safe_rate_limit"
+      }
+    },
+    {
+      "name": "batch request is rejected",
+      "request": "fixtures/batch-request.json",
+      "state": "snapshots/empty.json",
+      "expect": {
+        "action": "reject",
+        "status": 400,
+        "body": "MCP batch requests are disabled for tunnel-safe profile",
+        "decision.reason_code": "mcp.batch_rejected"
+      }
+    },
+    {
+      "name": "unsafe tool is rejected",
+      "request": "fixtures/unsafe-tool.json",
+      "state": "snapshots/empty.json",
+      "expect": {
+        "action": "reject",
+        "status": 403,
+        "body": "MCP tool not allowed: shell_exec",
+        "decision.reason_code": "mcp.tool_not_allowed"
+      }
+    },
+    {
+      "name": "missing token is challenged",
+      "request": "fixtures/missing-token.json",
+      "state": "snapshots/empty.json",
+      "expect": {
+        "action": "challenge",
+        "body": "MCP bearer token required",
+        "decision.reason_code": "mcp.auth_required"
+      }
+    }
+  ]
+}

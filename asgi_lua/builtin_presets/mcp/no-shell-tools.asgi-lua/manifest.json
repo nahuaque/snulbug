@@ -1,0 +1,39 @@
+{
+  "name": "mcp-no-shell-tools",
+  "version": "0.1.0",
+  "entrypoint": "policy.lua",
+  "description": "Require auth and block shell-like MCP tool names before they reach a local server",
+  "risk_profile": "no-shell",
+  "required_capabilities": ["body", "mcp"],
+  "fixtures": [
+    {
+      "name": "safe tool continues",
+      "request": "fixtures/safe-tool.json",
+      "expect": {
+        "action": "continue",
+        "decision.context.policy": "mcp-no-shell-tools",
+        "decision.context.tool": "safe_read_file",
+        "decision.reason_code": "mcp.no_shell_allowed"
+      }
+    },
+    {
+      "name": "shell tool is rejected",
+      "request": "fixtures/shell-tool.json",
+      "expect": {
+        "action": "reject",
+        "status": 403,
+        "body": "MCP shell-like tool blocked: shell_exec",
+        "decision.reason_code": "mcp.shell_tool_blocked"
+      }
+    },
+    {
+      "name": "missing token is challenged",
+      "request": "fixtures/missing-token.json",
+      "expect": {
+        "action": "challenge",
+        "body": "MCP bearer token required",
+        "decision.reason_code": "mcp.auth_required"
+      }
+    }
+  ]
+}
