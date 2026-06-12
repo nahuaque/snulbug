@@ -4,6 +4,7 @@
 
 - [Quickstart: local MCP policy gateway](quickstart.md)
 - [MCP CLI guide for agents and harnesses](mcp-guide.md)
+- [Tunnel init](tunnel-init.md)
 - [Tunnel doctor](tunnel-doctor.md)
 - [One-command MCP policy lab](quickstart.md#2-run-the-policy-lab)
 - [MCP reverse proxy](mcp-proxy.md)

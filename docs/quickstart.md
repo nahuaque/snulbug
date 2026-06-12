@@ -167,6 +167,10 @@ To expose the protected proxy through a tunnel, expose the proxy port, not the
 upstream MCP server:
 
 ```bash
+uv run snulbug tunnel init \
+  --provider ngrok \
+  --hostname YOUR-TUNNEL.ngrok.app \
+  --config snulbug.toml
 ngrok http 8080
 ```
 
@@ -245,6 +249,8 @@ auth-sensitive replay artifacts for a short-lived local debugging session.
   runs a standalone HTTP MCP upstream behind the generated proxy policy.
 - [MCP CLI guide for agents and harnesses](mcp-guide.md) shows copy-paste and
   compact JSON workflows.
+- [Tunnel init](tunnel-init.md) generates provider-specific setup commands and
+  config snippets.
 - [Tunnel doctor](tunnel-doctor.md) checks a local proxy or public tunnel before
   you share it.
 - [MCP client setup recipes](mcp-client-recipes.md) shows local, tunneled,

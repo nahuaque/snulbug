@@ -116,6 +116,10 @@ uv run snulbug mcp proxy --config snulbug.toml --decision-console
 Expose the proxy, not the upstream MCP server:
 
 ```bash
+uv run snulbug tunnel init \
+  --provider ngrok \
+  --hostname YOUR-TUNNEL.ngrok.app \
+  --config snulbug.toml
 ngrok http 8080
 ```
 

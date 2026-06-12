@@ -135,6 +135,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     tunnel = subparsers.add_parser("tunnel", help="work with public tunnel interop checks")
     tunnel_subparsers = tunnel.add_subparsers(dest="tunnel_command", required=True)
 
+    tunnel_init = tunnel_subparsers.add_parser("init", help="generate provider-specific tunnel setup snippets")
+    tunnel_init.add_argument(
+        "--provider",
+        choices=("generic", "ngrok", "cloudflare", "tailscale"),
+        required=True,
+        help="tunnel provider profile",
+    )
+    tunnel_init.add_argument("--config", type=Path, help="snulbug.toml config file")
+    tunnel_init.add_argument("--local-url", help="local snulbug MCP URL or origin")
+    tunnel_init.add_argument("--url", "--public-url", dest="url", help="public tunnel MCP URL")
+    tunnel_init.add_argument("--hostname", help="provider hostname to use when --url is omitted")
+    tunnel_init.add_argument("--token-env", default="SNULBUG_TOKEN", help="environment variable holding bearer token")
+    tunnel_init.add_argument("--path", default="/mcp", help="MCP path to append when URLs omit a path")
+    tunnel_init.add_argument("--output-dir", type=Path, help="optional directory for generated setup files")
+    tunnel_init.add_argument("--force", action="store_true", help="overwrite generated files")
+    tunnel_init.add_argument("--compact", action="store_true", help="emit compact JSON")
+
     tunnel_doctor = tunnel_subparsers.add_parser("doctor", help="verify tunnel-safe MCP proxy exposure")
     tunnel_doctor.add_argument(
         "--provider",
@@ -574,9 +591,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         return status
 
     if args.command == "tunnel":
-        from .tunnel import doctor_tunnel, format_tunnel_doctor_report, parse_tunnel_headers
+        from .tunnel import (
+            doctor_tunnel,
+            format_tunnel_doctor_report,
+            format_tunnel_init_report,
+            init_tunnel_provider,
+            parse_tunnel_headers,
+        )
 
-        if args.tunnel_command == "doctor":
+        if args.tunnel_command == "init":
+            try:
+                result = init_tunnel_provider(
+                    provider=args.provider,
+                    config=args.config,
+                    local_url=args.local_url,
+                    public_url=args.url,
+                    hostname=args.hostname,
+                    token_env=args.token_env,
+                    path=args.path,
+                    output_dir=args.output_dir,
+                    force=args.force,
+                )
+                status = 0
+            except Exception as exc:
+                result = {"ok": False, "error": str(exc)}
+                status = 1
+        elif args.tunnel_command == "doctor":
             try:
                 result = doctor_tunnel(
                     provider=args.provider,
@@ -598,7 +638,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.compact:
             sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
         else:
-            output = format_tunnel_doctor_report(result) if "checks" in result else json.dumps(result, indent=2)
+            if "checks" in result:
+                output = format_tunnel_doctor_report(result)
+            elif "commands" in result:
+                output = format_tunnel_init_report(result)
+            else:
+                output = json.dumps(result, indent=2)
             sys.stdout.write(output)
         sys.stdout.write("\n")
         return status

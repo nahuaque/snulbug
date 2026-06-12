@@ -37,7 +37,14 @@ from .state import (
     SQLiteStateStore,
     StateLimits,
 )
-from .tunnel import TUNNEL_PROVIDERS, doctor_tunnel, format_tunnel_doctor_report, parse_tunnel_headers
+from .tunnel import (
+    TUNNEL_PROVIDERS,
+    doctor_tunnel,
+    format_tunnel_doctor_report,
+    format_tunnel_init_report,
+    init_tunnel_provider,
+    parse_tunnel_headers,
+)
 
 __all__ = [
     "BoundedPolicyState",
@@ -81,8 +88,10 @@ __all__ = [
     "format_mcp_impact_report",
     "format_mcp_guide",
     "format_tunnel_doctor_report",
+    "format_tunnel_init_report",
     "generate_mcp_preset",
     "inspect_mcp_log",
+    "init_tunnel_provider",
     "learn_mcp_policy",
     "load_mcp_proxy_config",
     "load_record_log",

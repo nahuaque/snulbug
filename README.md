@@ -87,6 +87,7 @@ Authorization: Bearer local-dev-secret
 Expose the proxy, not the upstream server:
 
 ```bash
+uv run snulbug tunnel init --provider ngrok --hostname YOUR-TUNNEL.ngrok.app
 ngrok http 8080
 ```
 
@@ -195,6 +196,7 @@ Start with:
 
 - [Quickstart: local MCP policy gateway](docs/quickstart.md)
 - [MCP CLI guide for agents and harnesses](docs/mcp-guide.md)
+- [Tunnel init](docs/tunnel-init.md)
 - [Tunnel doctor](docs/tunnel-doctor.md)
 - [MCP reverse proxy](docs/mcp-proxy.md)
 - [MCP client setup recipes](docs/mcp-client-recipes.md)

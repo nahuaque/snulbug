@@ -3,6 +3,9 @@
 `snulbug tunnel doctor` checks whether a local MCP policy proxy is safe to put
 behind a public tunnel.
 
+Use [Tunnel init](tunnel-init.md) first when you want provider-specific setup
+commands or config files.
+
 Run it against the local proxy before sharing a tunnel URL:
 
 ```bash
