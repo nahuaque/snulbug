@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +19,16 @@ Send = Callable[[Message], Awaitable[None]]
 ASGIApp = Callable[[Scope, Receive, Send], Awaitable[None]]
 ScriptLoader = Callable[[Scope], CompiledLuaScript]
 
-DecisionAction = Literal["continue", "set_context", "rewrite", "respond", "reject"]
+DecisionAction = Literal[
+    "continue",
+    "set_context",
+    "rewrite",
+    "respond",
+    "reject",
+    "challenge",
+    "redirect",
+    "rate_limit",
+]
 
 
 @dataclass(frozen=True)
@@ -111,6 +121,34 @@ class LuaMiddleware:
             await self.app(child_scope, replay_receive, send)
             return
 
+        if action == "challenge":
+            status, headers, body_bytes = _challenge_response(decision)
+            await _send_response(send, status=status, headers=headers, body=body_bytes)
+            return
+
+        if action == "redirect":
+            status, headers, body_bytes = _redirect_response(decision)
+            await _send_response(send, status=status, headers=headers, body=body_bytes)
+            return
+
+        if action == "rate_limit":
+            rate_limit = self._enforce_rate_limit(decision)
+            if self.config.trace:
+                child_scope[self.config.trace_scope_key]["rate_limit"] = rate_limit
+            if not rate_limit["allowed"]:
+                headers = _rate_limit_headers(rate_limit)
+                headers.extend(_decision_headers(decision.get("headers")))
+                await _send_response(
+                    send,
+                    status=int(decision.get("status", 429)),
+                    headers=headers,
+                    body=_body_bytes(decision.get("body", "rate limit exceeded")),
+                )
+                return
+            _merge_context(child_scope, self.config.context_scope_key, decision.get("context"))
+            await self.app(child_scope, replay_receive, send)
+            return
+
         if action in {"respond", "reject"}:
             status = int(decision.get("status", 403 if action == "reject" else 200))
             body_bytes = _body_bytes(decision.get("body", ""))
@@ -156,6 +194,42 @@ class LuaMiddleware:
             limits=self.state_limits,
             key_prefix=self.state_key_prefix,
         )
+
+    def _enforce_rate_limit(self, decision: Mapping[str, Any]) -> dict[str, Any]:
+        if self.state_store is None:
+            raise LuaDecisionError("Lua rate_limit action requires a configured state_store")
+
+        key = decision.get("key")
+        if key is None:
+            raise LuaDecisionError("Lua rate_limit action requires field 'key'")
+        limit = int(decision.get("limit", 0))
+        window = int(decision.get("window", 0))
+        if limit <= 0:
+            raise LuaDecisionError("Lua rate_limit field 'limit' must be positive")
+        if window <= 0:
+            raise LuaDecisionError("Lua rate_limit field 'window' must be positive")
+
+        now = time.time()
+        bucket = int(now // window)
+        reset_at = (bucket + 1) * window
+        state_key = f"rate_limit:{key}:{bucket}"
+        state = self._state_for_request()
+        if state is None:
+            raise LuaDecisionError("Lua rate_limit action requires a configured state_store")
+        count = state.incr(state_key, 1, {"ttl": window * 2})
+        remaining = max(0, limit - count)
+        return {
+            "allowed": count <= limit,
+            "key": str(key),
+            "state_key": f"{self.state_key_prefix}{state_key}",
+            "limit": limit,
+            "window": window,
+            "count": count,
+            "remaining": remaining,
+            "reset_at": int(reset_at),
+            "retry_after": max(1, int(reset_at - now)),
+            "state_operations": state.operations,
+        }
 
     async def _read_and_replay_body(self, receive: Receive, send: Send) -> tuple[bytes, Receive | None]:
         messages: list[Message] = []
@@ -215,8 +289,11 @@ def _scope_to_request(scope: Scope, body: bytes | None) -> dict[str, Any]:
 
 def _validate_action(decision: Mapping[str, Any]) -> DecisionAction:
     action = decision.get("action", "continue")
-    if action not in {"continue", "set_context", "rewrite", "respond", "reject"}:
-        raise LuaDecisionError(f"Lua action must be one of continue, set_context, rewrite, respond, reject; got {action!r}")
+    if action not in {"continue", "set_context", "rewrite", "respond", "reject", "challenge", "redirect", "rate_limit"}:
+        raise LuaDecisionError(
+            "Lua action must be one of continue, set_context, rewrite, respond, reject, "
+            f"challenge, redirect, rate_limit; got {action!r}"
+        )
     return action  # type: ignore[return-value]
 
 
@@ -348,6 +425,44 @@ def _decision_headers(headers: Any) -> list[tuple[bytes, bytes]]:
         for item in values:
             result.append((raw_name, str(item).encode("latin-1")))
     return result
+
+
+def _challenge_response(decision: Mapping[str, Any]) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
+    status = int(decision.get("status", 401))
+    scheme = str(decision.get("scheme", "Bearer"))
+    challenge_parts = [scheme]
+    for key in ("realm", "error", "error_description", "scope"):
+        value = decision.get(key)
+        if value is not None:
+            challenge_parts.append(f'{key.replace("_", "-")}="{_header_quote(str(value))}"')
+    headers = [(b"www-authenticate", ", ".join(challenge_parts).encode("latin-1"))]
+    headers.extend(_decision_headers(decision.get("headers")))
+    return status, headers, _body_bytes(decision.get("body", "authentication required"))
+
+
+def _redirect_response(decision: Mapping[str, Any]) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
+    location = decision.get("location")
+    if not isinstance(location, str) or not location:
+        raise LuaDecisionError("Lua redirect action requires non-empty field 'location'")
+    status = int(decision.get("status", 307))
+    if status not in {301, 302, 303, 307, 308}:
+        raise LuaDecisionError("Lua redirect field 'status' must be one of 301, 302, 303, 307, 308")
+    headers = [(b"location", location.encode("latin-1"))]
+    headers.extend(_decision_headers(decision.get("headers")))
+    return status, headers, _body_bytes(decision.get("body", ""))
+
+
+def _rate_limit_headers(rate_limit: Mapping[str, Any]) -> list[tuple[bytes, bytes]]:
+    return [
+        (b"retry-after", str(rate_limit["retry_after"]).encode("ascii")),
+        (b"x-ratelimit-limit", str(rate_limit["limit"]).encode("ascii")),
+        (b"x-ratelimit-remaining", str(rate_limit["remaining"]).encode("ascii")),
+        (b"x-ratelimit-reset", str(rate_limit["reset_at"]).encode("ascii")),
+    ]
+
+
+def _header_quote(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _merge_headers(existing: list[tuple[bytes, bytes]], updates: list[tuple[bytes, bytes]]) -> list[tuple[bytes, bytes]]:

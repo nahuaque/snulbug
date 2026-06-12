@@ -192,6 +192,75 @@ class DryRunStateStore:
         return self.store.get(key) == expected
 
 
+class SnapshotStateStore:
+    """Deterministic state store for replaying and recording policy state."""
+
+    def __init__(self, initial_state: Mapping[str, Any] | None = None) -> None:
+        self.initial_state = _normalize_snapshot_state(initial_state or {})
+        self._items = dict(self.initial_state)
+        self.operations: list[dict[str, Any]] = []
+
+    @classmethod
+    def from_snapshot(cls, snapshot: Mapping[str, Any] | None) -> "SnapshotStateStore":
+        if snapshot is None:
+            return cls()
+        initial_state = snapshot.get("initial_state", snapshot.get("state", snapshot))
+        if not isinstance(initial_state, Mapping):
+            raise LuaDecisionError("state snapshot must contain an object initial_state")
+        return cls(initial_state)
+
+    def get(self, key: str) -> str | None:
+        value = self._items.get(key)
+        self.operations.append({"op": "get", "key": key, "value": value, "hit": value is not None})
+        return value
+
+    def put(self, key: str, value: str, *, ttl: float | None = None) -> None:
+        before = self._items.get(key)
+        self._items[key] = value
+        self.operations.append({"op": "put", "key": key, "before": before, "after": value, "ttl": ttl})
+
+    def delete(self, key: str) -> bool:
+        before = self._items.get(key)
+        deleted = key in self._items
+        self._items.pop(key, None)
+        self.operations.append({"op": "delete", "key": key, "before": before, "deleted": deleted})
+        return deleted
+
+    def incr(self, key: str, amount: int = 1, *, ttl: float | None = None) -> int:
+        before = self._items.get(key)
+        after = int(before or "0") + amount
+        self._items[key] = str(after)
+        self.operations.append(
+            {"op": "incr", "key": key, "before": before, "amount": amount, "after": str(after), "ttl": ttl}
+        )
+        return after
+
+    def cas(self, key: str, expected: str | None, value: str, *, ttl: float | None = None) -> bool:
+        before = self._items.get(key)
+        swapped = before == expected
+        if swapped:
+            self._items[key] = value
+        self.operations.append(
+            {
+                "op": "cas",
+                "key": key,
+                "before": before,
+                "expected": expected,
+                "after": self._items.get(key),
+                "swapped": swapped,
+                "ttl": ttl,
+            }
+        )
+        return swapped
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "initial_state": dict(sorted(self.initial_state.items())),
+            "operations": list(self.operations),
+            "final_state": dict(sorted(self._items.items())),
+        }
+
+
 class SQLiteStateStore:
     def __init__(self, path: str | Path, *, busy_timeout_ms: int = 250) -> None:
         self.path = Path(path)
@@ -351,3 +420,11 @@ def _from_lua_options(value: Any) -> dict[str, Any]:
     if hasattr(value, "keys") and hasattr(value, "__getitem__"):
         return {str(key): value[key] for key in value.keys()}
     raise LuaDecisionError("state options must be a table/object")
+
+
+def _normalize_snapshot_state(state: Mapping[str, Any]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for key, value in state.items():
+        if value is not None:
+            result[str(key)] = str(value)
+    return result

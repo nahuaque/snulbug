@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from uvicorn_lua import LuaConfig, LuaDecisionError, LuaMiddleware, LuaRuntimeError, simulate_policy
+from uvicorn_lua import LuaConfig, LuaDecisionError, LuaMiddleware, LuaRuntimeError, MemoryStateStore, simulate_policy
 from uvicorn_lua.simulator import main as simulator_main
 
 
@@ -107,6 +107,94 @@ def test_lua_can_reject_request():
         {"type": "http.response.start", "status": 401, "headers": [(b"content-type", b"text/plain")]},
         {"type": "http.response.body", "body": b"nope", "more_body": False},
     ]
+
+
+def test_lua_can_issue_auth_challenge():
+    middleware = LuaMiddleware(
+        app,
+        """
+        return function(request, context)
+          return {
+            action = "challenge",
+            scheme = "Bearer",
+            realm = "tenant:acme",
+            error = "invalid_token",
+            body = "token required"
+          }
+        end
+        """,
+    )
+
+    sent = run_asgi(middleware)
+
+    assert sent[0]["status"] == 401
+    assert (b"www-authenticate", b'Bearer, realm="tenant:acme", error="invalid_token"') in sent[0]["headers"]
+    assert sent[1]["body"] == b"token required"
+
+
+def test_lua_can_redirect_request():
+    middleware = LuaMiddleware(
+        app,
+        """
+        return function(request, context)
+          return {
+            action = "redirect",
+            status = 308,
+            location = "https://api.example.test/v2/webhooks/acme"
+          }
+        end
+        """,
+    )
+
+    sent = run_asgi(middleware)
+
+    assert sent[0]["status"] == 308
+    assert (b"location", b"https://api.example.test/v2/webhooks/acme") in sent[0]["headers"]
+    assert sent[1]["body"] == b""
+
+
+def test_lua_can_rate_limit_with_state_store():
+    middleware = LuaMiddleware(
+        app,
+        """
+        return function(request, context)
+          return {
+            action = "rate_limit",
+            key = "tenant:" .. request.headers["x-tenant"],
+            limit = 2,
+            window = 60,
+            body = "slow down"
+          }
+        end
+        """,
+        config=LuaConfig(trace=True),
+        state_store=MemoryStateStore(),
+    )
+
+    first = run_asgi(middleware, headers=[(b"x-tenant", b"acme")])
+    second = run_asgi(middleware, headers=[(b"x-tenant", b"acme")])
+    third = run_asgi(middleware, headers=[(b"x-tenant", b"acme")])
+
+    assert first[0]["status"] == 200
+    assert second[0]["status"] == 200
+    assert third[0]["status"] == 429
+    assert (b"x-ratelimit-limit", b"2") in third[0]["headers"]
+    assert (b"x-ratelimit-remaining", b"0") in third[0]["headers"]
+    assert third[1]["body"] == b"slow down"
+
+
+def test_lua_rate_limit_requires_state_store():
+    middleware = LuaMiddleware(
+        app,
+        """
+        return function(request, context)
+          return { action = "rate_limit", key = "global", limit = 1, window = 60 }
+        end
+        """,
+    )
+
+    with pytest.raises(LuaDecisionError, match="requires a configured state_store"):
+        run_asgi(middleware)
 
 
 def test_lua_can_rewrite_request_and_replay_body():

@@ -1,0 +1,8 @@
+{
+  "method": "POST",
+  "path": "/webhooks/github",
+  "headers": {
+    "x-delivery": "2f1c2a3b-demo"
+  },
+  "body": "{\"event\":\"push\"}"
+}

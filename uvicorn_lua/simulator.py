@@ -9,8 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from .runtime import LuaDecisionError, compile_lua_file
+from .state import BoundedPolicyState, SnapshotStateStore
 
-_ACTIONS = {"continue", "set_context", "rewrite", "respond", "reject"}
+_ACTIONS = {"continue", "set_context", "rewrite", "respond", "reject", "challenge", "redirect", "rate_limit"}
 
 
 def simulate_policy(
@@ -18,6 +19,7 @@ def simulate_policy(
     request: Mapping[str, Any],
     *,
     context: Mapping[str, Any] | None = None,
+    state_snapshot: Mapping[str, Any] | None = None,
     instruction_limit: int = 100_000,
     memory_limit_bytes: int | None = 8 * 1024 * 1024,
 ) -> dict[str, Any]:
@@ -29,18 +31,24 @@ def simulate_policy(
         instruction_limit=instruction_limit,
         memory_limit_bytes=memory_limit_bytes,
     )
-    trace = script.decide_with_trace(normalized_request, context or {})
+    snapshot_store = SnapshotStateStore.from_snapshot(state_snapshot) if state_snapshot is not None else None
+    state = BoundedPolicyState(snapshot_store) if snapshot_store is not None else None
+    trace = script.decide_with_trace(normalized_request, context or {}, state)
     action = trace.decision["action"]
     if action not in _ACTIONS:
         raise LuaDecisionError(
-            f"Lua action must be one of continue, set_context, rewrite, respond, reject; got {action!r}"
+            "Lua action must be one of continue, set_context, rewrite, respond, reject, "
+            f"challenge, redirect, rate_limit; got {action!r}"
         )
-    return {
+    result = {
         "action": action,
         "decision": trace.decision,
         "trace": trace.to_dict(),
         "body_read": body_read,
     }
+    if snapshot_store is not None:
+        result["state_snapshot"] = snapshot_store.snapshot()
+    return result
 
 
 def normalize_request(request: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
@@ -80,6 +88,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     simulate.add_argument("script", type=Path, help="path to a Lua policy file")
     simulate.add_argument("request", type=Path, help="path to a JSON request fixture")
     simulate.add_argument("--context", type=Path, help="optional JSON context fixture")
+    simulate.add_argument("--state", type=Path, help="optional JSON state snapshot")
     simulate.add_argument("--instruction-limit", type=int, default=100_000)
     simulate.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
     simulate.add_argument("--compact", action="store_true", help="emit compact JSON")
@@ -89,6 +98,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     diff.add_argument("new_script", type=Path, help="path to the candidate Lua policy")
     diff.add_argument("fixtures", type=Path, help="JSON fixture file or directory")
     diff.add_argument("--context", type=Path, help="optional JSON context fixture")
+    diff.add_argument("--state-snapshots", type=Path, help="optional state snapshot file or directory")
     diff.add_argument("--instruction-limit", type=int, default=100_000)
     diff.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
     diff.add_argument("--compact", action="store_true", help="emit compact JSON")
@@ -98,11 +108,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "simulate":
         request = _read_json(args.request)
         context = _read_json(args.context) if args.context else None
+        state_snapshot = _read_json(args.state) if args.state else None
         memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
         result = simulate_policy(
             args.script,
             request,
             context=context,
+            state_snapshot=state_snapshot,
             instruction_limit=args.instruction_limit,
             memory_limit_bytes=memory_limit,
         )
@@ -121,6 +133,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.new_script,
             args.fixtures,
             context=context,
+            state_snapshots_path=args.state_snapshots,
             instruction_limit=args.instruction_limit,
             memory_limit_bytes=memory_limit,
         )
