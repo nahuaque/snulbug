@@ -309,6 +309,43 @@ Bundle expectations can reference common decision fields directly, such as
 use dotted paths like `decision.context.tenant` or
 `state_snapshot.final_state.delivery:evt-1`.
 
+## MCP gateway example
+
+`asgi-lua` can protect a local MCP-style JSON-RPC endpoint before it is exposed
+through an ngrok tunnel. The demo app is at:
+
+```text
+examples/mcp_gateway/
+```
+
+Run it locally:
+
+```bash
+uv run uvicorn examples.mcp_gateway.app:application --host 127.0.0.1 --port 8000
+```
+
+Expose it with ngrok:
+
+```bash
+ngrok http 8000
+```
+
+Then point clients at the ngrok URL plus `/mcp`.
+
+The gateway policy lives as a portable bundle:
+
+```text
+examples/bundles/mcp-gateway.asgi-lua/
+```
+
+It demonstrates bearer challenges, tool allowlists, middleware-owned rate
+limits, state-backed traces, and replayable fixtures:
+
+```bash
+uv run asgi-lua bundle validate examples/bundles/mcp-gateway.asgi-lua
+uv run asgi-lua bundle test examples/bundles/mcp-gateway.asgi-lua
+```
+
 ## Bounded policy state
 
 Policies can use small state capabilities when the middleware is configured with

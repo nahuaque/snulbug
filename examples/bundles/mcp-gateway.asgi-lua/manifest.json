@@ -1,0 +1,47 @@
+{
+  "name": "local-mcp-gateway",
+  "version": "0.1.0",
+  "entrypoint": "policy.lua",
+  "description": "Protect a local MCP JSON-RPC endpoint exposed through ngrok",
+  "required_capabilities": ["body", "state", "rate_limit"],
+  "limits": {
+    "max_body_bytes": 16384,
+    "max_state_operations": 4,
+    "max_key_bytes": 128
+  },
+  "fixtures": [
+    {
+      "name": "allowed tool call declares rate limit",
+      "request": "fixtures/allowed-tool.json",
+      "state": "snapshots/empty.json",
+      "expect": {
+        "action": "rate_limit",
+        "decision.context.gateway": "mcp",
+        "decision.context.tool": "safe_read_file",
+        "decision.key": "mcp:token:local-dev-secret",
+        "decision.limit": 5
+      }
+    },
+    {
+      "name": "blocked tool call rejects",
+      "request": "fixtures/blocked-tool.json",
+      "state": "snapshots/empty.json",
+      "expect": {
+        "action": "reject",
+        "status": 403,
+        "body": "MCP tool not allowed: shell_exec"
+      }
+    },
+    {
+      "name": "unauthenticated call challenges",
+      "request": "fixtures/unauthenticated.json",
+      "state": "snapshots/empty.json",
+      "expect": {
+        "action": "challenge",
+        "status": null,
+        "body": "MCP gateway token required",
+        "decision.realm": "local-mcp"
+      }
+    }
+  ]
+}
