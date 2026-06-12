@@ -10,6 +10,7 @@ Start here:
 - [MCP gateway example](mcp-gateway.md)
 - [MCP presets](mcp-presets.md)
 - [MCP recorder and replay](mcp-recorder.md)
+- [MCP offline inspection](mcp-recorder.md#inspect-a-captured-replay-or-audit-log-without-a-running-proxy)
 - [MCP reverse proxy](mcp-proxy.md)
 - [Security model](security-model.md)
 - [Release process](release.md)

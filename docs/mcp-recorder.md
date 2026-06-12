@@ -44,6 +44,17 @@ uv run asgi-lua mcp replay traces/session.jsonl --script candidate.lua
 The replay command exits with status `1` when any current decision differs from
 the recorded decision.
 
+Inspect a captured replay or audit log without a running proxy:
+
+```bash
+uv run asgi-lua mcp inspect traces/session.jsonl
+uv run asgi-lua mcp inspect traces/audit.jsonl --kind audit
+```
+
+The inspection report summarizes decisions, MCP methods, tools, targets, reason
+codes, HTTP statuses, invalid JSON, batch requests, upstream errors, and example
+events for notable findings.
+
 ## Audit logs and redaction
 
 Write a redacted audit log while recording:

@@ -167,6 +167,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_replay.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
     mcp_replay.add_argument("--compact", action="store_true", help="emit compact JSON")
 
+    mcp_inspect = mcp_subparsers.add_parser("inspect", help="summarize MCP replay or audit JSONL logs offline")
+    mcp_inspect.add_argument("log", type=Path, help="JSONL replay or audit log")
+    mcp_inspect.add_argument("--kind", choices=("auto", "record", "audit"), default="auto", help="input log type")
+    mcp_inspect.add_argument("--top", type=int, default=10, help="number of top values to include per category")
+    mcp_inspect.add_argument("--compact", action="store_true", help="emit compact JSON")
+
     mcp_proxy = mcp_subparsers.add_parser("proxy", help="run a local-dev MCP reverse proxy")
     mcp_proxy.add_argument("--config", type=Path, help="TOML config file")
     mcp_proxy.add_argument("--upstream", help="upstream MCP HTTP server URL")
@@ -270,6 +276,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             normalize_mcp_proxy_config,
             write_sample_config,
         )
+        from .inspection import inspect_mcp_log
         from .presets import McpPolicyOptions, generate_mcp_preset, list_builtin_presets
         from .recorder import append_record, record_audit_event, record_policy_request, replay_record_log
         from .redaction import append_audit_event
@@ -353,6 +360,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 memory_limit_bytes=memory_limit,
             )
             status = 0 if result["ok"] else 1
+        elif args.mcp_command == "inspect":
+            try:
+                result = inspect_mcp_log(args.log, kind=args.kind, top=args.top)
+                status = 0
+            except Exception as exc:
+                result = {"ok": False, "log": str(args.log), "error": str(exc)}
+                status = 1
         elif args.mcp_command == "proxy":
             from .proxy import run_proxy
 

@@ -65,6 +65,13 @@ asgi-lua mcp replay traces/session.jsonl
 asgi-lua mcp replay traces/session.jsonl --script candidate.lua
 ```
 
+Inspect a session after the proxy stops:
+
+```bash
+asgi-lua mcp inspect traces/session.jsonl
+asgi-lua mcp inspect traces/audit.jsonl --kind audit
+```
+
 Live replay records are exact by default. Use `--redact-records` when the replay
 record itself must avoid storing secrets.
 

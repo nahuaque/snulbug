@@ -399,6 +399,13 @@ uv run asgi-lua mcp replay traces/session.jsonl
 uv run asgi-lua mcp replay traces/session.jsonl --script candidate.lua
 ```
 
+Inspect replay or audit logs offline:
+
+```bash
+uv run asgi-lua mcp inspect traces/session.jsonl
+uv run asgi-lua mcp inspect traces/audit.jsonl --kind audit
+```
+
 Write a redacted audit log while recording:
 
 ```bash
