@@ -342,6 +342,9 @@ ngrok http 8000
 
 Then point clients at the ngrok URL plus `/mcp`.
 
+See [docs/mcp-client-recipes.md](docs/mcp-client-recipes.md) for concrete
+local, tunneled, header-authenticated, and stdio-only client setup patterns.
+
 The gateway policy lives as a portable bundle:
 
 ```text

@@ -8,6 +8,7 @@ Start here:
 - [State adapters](state.md)
 - [Policy bundles](bundles.md)
 - [MCP gateway example](mcp-gateway.md)
+- [MCP client setup recipes](mcp-client-recipes.md)
 - [MCP presets](mcp-presets.md)
 - [MCP recorder and replay](mcp-recorder.md)
 - [MCP offline inspection](mcp-recorder.md#inspect-a-captured-replay-or-audit-log-without-a-running-proxy)

@@ -20,6 +20,7 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 - Added policy decision `reason` and `reason_code` conventions across MCP helpers, presets, audit logs, and live console output.
 - Added offline MCP log inspection with `asgi-lua mcp inspect`.
 - Changed MCP record/proxy defaults to redact replay artifacts unless exact logging is explicitly requested.
+- Added MCP client setup recipes for local, tunneled, authenticated, recording, and stdio-only workflows.
 
 ## [0.1.0] - 2026-06-12
 
