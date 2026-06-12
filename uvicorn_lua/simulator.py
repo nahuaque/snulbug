@@ -84,6 +84,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     simulate.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
     simulate.add_argument("--compact", action="store_true", help="emit compact JSON")
 
+    diff = subparsers.add_parser("diff", help="compare two policies against JSON request fixtures")
+    diff.add_argument("old_script", type=Path, help="path to the active Lua policy")
+    diff.add_argument("new_script", type=Path, help="path to the candidate Lua policy")
+    diff.add_argument("fixtures", type=Path, help="JSON fixture file or directory")
+    diff.add_argument("--context", type=Path, help="optional JSON context fixture")
+    diff.add_argument("--instruction-limit", type=int, default=100_000)
+    diff.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
+    diff.add_argument("--compact", action="store_true", help="emit compact JSON")
+    diff.add_argument("--no-fail", action="store_true", help="return exit code 0 even when regressions are found")
+
     args = parser.parse_args(argv)
     if args.command == "simulate":
         request = _read_json(args.request)
@@ -100,6 +110,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stdout.write(json.dumps(result, indent=indent, sort_keys=True))
         sys.stdout.write("\n")
         return 0
+
+    if args.command == "diff":
+        from .promotion import diff_policies
+
+        context = _read_json(args.context) if args.context else None
+        memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
+        result = diff_policies(
+            args.old_script,
+            args.new_script,
+            args.fixtures,
+            context=context,
+            instruction_limit=args.instruction_limit,
+            memory_limit_bytes=memory_limit,
+        )
+        indent = None if args.compact else 2
+        sys.stdout.write(json.dumps(result, indent=indent, sort_keys=True))
+        sys.stdout.write("\n")
+        return 0 if args.no_fail or result["safe_to_promote"] else 1
 
     parser.error(f"unknown command: {args.command}")
     return 2

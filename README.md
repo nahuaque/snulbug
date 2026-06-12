@@ -142,3 +142,90 @@ application = LuaMiddleware(app, lua_script, config=LuaConfig(trace=True))
 ```
 
 The downstream app can read `scope["lua_trace"]`.
+
+## Policy promotion
+
+Compare an active policy and a draft policy against replay fixtures:
+
+```bash
+uv run uvicorn-lua diff active.lua draft.lua fixtures/
+```
+
+The command emits changed decisions and regressions. It exits non-zero when a
+candidate policy introduces a regression, unless `--no-fail` is provided.
+
+You can also shadow a candidate policy in live middleware:
+
+```python
+application = LuaMiddleware(
+    app,
+    active_policy,
+    shadow_script=draft_policy,
+    config=LuaConfig(trace=True),
+)
+```
+
+The active policy still controls the request. The candidate decision and
+comparison are attached to `scope["lua_shadow_trace"]`.
+
+## Bounded policy state
+
+Policies can use small state capabilities when the middleware is configured with
+a state store. Lua does not receive SQL, Redis clients, filesystem access, or raw
+Python objects. It receives only:
+
+```lua
+state.get(key)
+state.put(key, value, { ttl = 3600 })
+state.delete(key)
+state.incr(key, amount, { ttl = 3600 })
+state.cas(key, expected, value, { ttl = 3600 })
+```
+
+Example webhook idempotency policy:
+
+```lua
+return function(request, context, state)
+  local key = "delivery:" .. request.headers["x-github-delivery"]
+
+  if state.get(key) ~= nil then
+    return { action = "reject", status = 409, body = "duplicate webhook" }
+  end
+
+  state.put(key, "seen", { ttl = 86400 })
+  return { action = "continue" }
+end
+```
+
+Configure SQLite-backed state:
+
+```python
+from uvicorn_lua import LuaMiddleware, SQLiteStateStore, StateLimits
+
+application = LuaMiddleware(
+    app,
+    policy,
+    state_store=SQLiteStateStore("policy_state.sqlite3"),
+    state_limits=StateLimits(max_operations=8, max_key_bytes=128, max_value_bytes=1024),
+)
+```
+
+Configure Redis-backed state:
+
+```bash
+uv sync --extra redis
+```
+
+```python
+from uvicorn_lua import RedisStateStore
+
+state_store = RedisStateStore("redis://localhost:6379/0", key_prefix="uvicorn-lua:")
+```
+
+State operations are included in `lua_trace.state_operations`. Shadow policies
+use a dry-run state view: reads see the configured store, but candidate writes
+are traced without mutating live state.
+
+SQLite is appropriate for local, single-node, and small bounded policy state.
+Use WAL mode, short operations, and low write contention. For multi-node
+deployments, use a shared store such as Redis.

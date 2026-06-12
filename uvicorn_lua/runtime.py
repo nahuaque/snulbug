@@ -26,12 +26,14 @@ class LuaDecisionTrace:
     source_name: str
     duration_ms: float
     instruction_count: int
+    state_operations: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "source_name": self.source_name,
             "duration_ms": self.duration_ms,
             "instruction_count": self.instruction_count,
+            "state_operations": self.state_operations,
         }
 
 
@@ -50,13 +52,17 @@ class CompiledLuaScript:
         self,
         request: Mapping[str, Any],
         context: Mapping[str, Any] | None = None,
+        state: Any = None,
     ) -> LuaDecisionTrace:
         request_table = _to_lua(self._runtime, request)
         context_table = _to_lua(self._runtime, context or {})
+        state_table = _to_lua(self._runtime, _state_api(state))
 
         started_at = perf_counter()
         try:
-            result = self._handler(request_table, context_table)
+            result = self._handler(request_table, context_table, state_table)
+        except LuaDecisionError:
+            raise
         except Exception as exc:  # Lupa raises LuaError, but do not import it at module import time.
             raise LuaRuntimeError(f"Lua script {self.source_name!r} failed: {exc}") from exc
         duration_ms = (perf_counter() - started_at) * 1000
@@ -75,6 +81,7 @@ class CompiledLuaScript:
             source_name=self.source_name,
             duration_ms=duration_ms,
             instruction_count=instruction_count,
+            state_operations=[dict(operation) for operation in getattr(state, "operations", [])],
         )
 
 
@@ -104,13 +111,14 @@ def compile_lua_script(
 
     Scripts must return a function with this shape:
 
-        return function(request, context)
+        return function(request, context, state)
           return { action = "continue" }
         end
 
     The script sees only safe standard-library globals and the request/context
-    tables passed to the returned function. Python objects are recursively
-    converted to Lua tables before execution.
+    tables passed to the returned function. When configured, the state argument
+    contains a narrow capability table. Python objects are recursively converted
+    to Lua tables before execution.
     """
 
     try:
@@ -169,6 +177,14 @@ def _to_lua(runtime: Any, value: Any) -> Any:
     if isinstance(value, bytes):
         return value.decode("latin-1")
     return value
+
+
+def _state_api(state: Any) -> Any:
+    if state is None:
+        return {}
+    if hasattr(state, "lua_api"):
+        return state.lua_api()
+    return state
 
 
 def _from_lua(value: Any) -> Any:
@@ -250,7 +266,7 @@ return function(source, source_name, instruction_limit)
     error("Lua script must return a function(request, context)")
   end
 
-  return function(request, context)
+  return function(request, context, state)
     local instruction_count = 0
     local function check_instruction_limit()
       instruction_count = instruction_count + 1000
@@ -263,7 +279,7 @@ return function(source, source_name, instruction_limit)
       debug.sethook(check_instruction_limit, "", 1000)
     end
 
-    local ok, result = pcall(handler, request, context)
+    local ok, result = pcall(handler, request, context, state or {})
 
     if debug and debug.sethook then
       debug.sethook()

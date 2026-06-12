@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlencode
 
+from .promotion import compare_decisions
 from .runtime import CompiledLuaScript, LuaDecisionError, LuaDecisionTrace, LuaRuntimeError, compile_lua_file, compile_lua_script
+from .state import BoundedPolicyState, DryRunStateStore, PolicyStateStore, StateLimits
 
 Scope = dict[str, Any]
 Message = dict[str, Any]
@@ -30,6 +32,7 @@ class LuaConfig:
     context_scope_key: str = "lua"
     trace: bool = False
     trace_scope_key: str = "lua_trace"
+    shadow_trace_scope_key: str = "lua_shadow_trace"
 
 
 class LuaMiddleware:
@@ -41,10 +44,18 @@ class LuaMiddleware:
         script: str | Path | CompiledLuaScript | ScriptLoader,
         *,
         config: LuaConfig | None = None,
+        shadow_script: str | Path | CompiledLuaScript | ScriptLoader | None = None,
+        state_store: PolicyStateStore | None = None,
+        state_limits: StateLimits | None = None,
+        state_key_prefix: str = "",
     ) -> None:
         self.app = app
         self.config = config or LuaConfig()
         self._script = self._coerce_script(script)
+        self._shadow_script = self._coerce_script(shadow_script) if shadow_script is not None else None
+        self.state_store = state_store
+        self.state_limits = state_limits or StateLimits()
+        self.state_key_prefix = state_key_prefix
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http":
@@ -61,11 +72,24 @@ class LuaMiddleware:
 
         request = _scope_to_request(child_scope, body if self.config.read_body else None)
         script = self._script(child_scope)
-        execution = script.decide_with_trace(request, child_scope.get(self.config.context_scope_key, {}))
+        context = child_scope.get(self.config.context_scope_key, {})
+        policy_state = self._state_for_request()
+        execution = script.decide_with_trace(request, context, policy_state)
         decision = execution.decision
         action = _validate_action(decision)
         if self.config.trace:
             _attach_trace(child_scope, self.config.trace_scope_key, execution, body_read=self.config.read_body)
+        if self._shadow_script is not None:
+            _attach_shadow_trace(
+                child_scope,
+                self.config.shadow_trace_scope_key,
+                self._shadow_script,
+                request,
+                context,
+                active_decision=decision,
+                body_read=self.config.read_body,
+                shadow_state=self._shadow_state_for_request(),
+            )
 
         if action in {"continue", "set_context"}:
             _merge_context(child_scope, self.config.context_scope_key, decision.get("context"))
@@ -114,6 +138,24 @@ class LuaMiddleware:
             )
             return lambda scope: compiled
         return script
+
+    def _state_for_request(self) -> BoundedPolicyState | None:
+        if self.state_store is None:
+            return None
+        return BoundedPolicyState(
+            self.state_store,
+            limits=self.state_limits,
+            key_prefix=self.state_key_prefix,
+        )
+
+    def _shadow_state_for_request(self) -> BoundedPolicyState | None:
+        if self.state_store is None:
+            return None
+        return BoundedPolicyState(
+            DryRunStateStore(self.state_store),
+            limits=self.state_limits,
+            key_prefix=self.state_key_prefix,
+        )
 
     async def _read_and_replay_body(self, receive: Receive, send: Send) -> tuple[bytes, Receive | None]:
         messages: list[Message] = []
@@ -195,17 +237,61 @@ def _merge_context(scope: Scope, key: str, context: Any) -> None:
 
 
 def _attach_trace(scope: Scope, key: str, trace: LuaDecisionTrace, *, body_read: bool) -> None:
-    payload = {
-        "action": trace.decision["action"],
-        "decision": trace.decision,
-        "body_read": body_read,
-        **trace.to_dict(),
-    }
+    payload = _trace_payload(trace, body_read=body_read)
     scope[key] = payload
 
     state = scope.get("state")
     if isinstance(state, dict):
         state[key] = payload
+
+
+def _attach_shadow_trace(
+    scope: Scope,
+    key: str,
+    shadow_script: ScriptLoader,
+    request: Mapping[str, Any],
+    context: Mapping[str, Any],
+    *,
+    active_decision: Mapping[str, Any],
+    body_read: bool,
+    shadow_state: BoundedPolicyState | None,
+) -> None:
+    try:
+        shadow_trace = shadow_script(scope).decide_with_trace(request, context, shadow_state)
+        _validate_action(shadow_trace.decision)
+        comparison = compare_decisions(active_decision, shadow_trace.decision)
+        payload = {
+            "ok": True,
+            "active_action": active_decision["action"],
+            "shadow_action": shadow_trace.decision["action"],
+            "shadow": _trace_payload(shadow_trace, body_read=body_read),
+            **comparison,
+        }
+    except Exception as exc:
+        payload = {
+            "ok": False,
+            "active_action": active_decision["action"],
+            "shadow_action": "error",
+            "changed": True,
+            "regression": True,
+            "reason": f"shadow policy failed: {exc}",
+            "differences": [],
+        }
+
+    scope[key] = payload
+
+    state = scope.get("state")
+    if isinstance(state, dict):
+        state[key] = payload
+
+
+def _trace_payload(trace: LuaDecisionTrace, *, body_read: bool) -> dict[str, Any]:
+    return {
+        "action": trace.decision["action"],
+        "decision": trace.decision,
+        "body_read": body_read,
+        **trace.to_dict(),
+    }
 
 
 def _apply_rewrite(scope: Scope, decision: Mapping[str, Any]) -> None:

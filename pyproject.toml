@@ -8,6 +8,11 @@ dependencies = [
     "lupa>=2.5",
 ]
 
+[project.optional-dependencies]
+redis = [
+    "redis>=5.0",
+]
+
 [project.scripts]
 uvicorn-lua = "uvicorn_lua.simulator:main"
 

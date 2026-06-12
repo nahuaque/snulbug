@@ -1,0 +1,8 @@
+{
+  "method": "POST",
+  "path": "/webhooks/raw",
+  "headers": {
+    "x-tenant": "acme"
+  },
+  "body": "{\"event\":\"invoice.created\"}"
+}
