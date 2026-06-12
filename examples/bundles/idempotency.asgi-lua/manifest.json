@@ -1,0 +1,32 @@
+{
+  "name": "webhook-idempotency",
+  "version": "0.1.0",
+  "entrypoint": "policy.lua",
+  "description": "Reject duplicate webhook delivery IDs",
+  "required_capabilities": ["state"],
+  "limits": {
+    "max_state_operations": 2,
+    "max_key_bytes": 128
+  },
+  "fixtures": [
+    {
+      "name": "first delivery is accepted",
+      "request": "fixtures/first-delivery.json",
+      "state": "snapshots/empty.json",
+      "expect": {
+        "action": "continue",
+        "state_snapshot.final_state.delivery:evt-1": "seen"
+      }
+    },
+    {
+      "name": "duplicate delivery is rejected",
+      "request": "fixtures/duplicate-delivery.json",
+      "state": "snapshots/duplicate.json",
+      "expect": {
+        "action": "reject",
+        "status": 409,
+        "body": "duplicate webhook"
+      }
+    }
+  ]
+}

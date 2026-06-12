@@ -81,7 +81,7 @@ def normalize_request(request: Mapping[str, Any]) -> tuple[dict[str, Any], bool]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="uvicorn-lua")
+    parser = argparse.ArgumentParser(prog="asgi-lua")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     simulate = subparsers.add_parser("simulate", help="replay a JSON request against a Lua policy")
@@ -103,6 +103,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     diff.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
     diff.add_argument("--compact", action="store_true", help="emit compact JSON")
     diff.add_argument("--no-fail", action="store_true", help="return exit code 0 even when regressions are found")
+
+    bundle = subparsers.add_parser("bundle", help="validate, test, and pack policy bundles")
+    bundle_subparsers = bundle.add_subparsers(dest="bundle_command", required=True)
+
+    bundle_validate = bundle_subparsers.add_parser("validate", help="validate a policy bundle manifest")
+    bundle_validate.add_argument("bundle", type=Path, help="path to a policy bundle directory")
+    bundle_validate.add_argument("--compact", action="store_true", help="emit compact JSON")
+
+    bundle_test = bundle_subparsers.add_parser("test", help="run bundle fixtures against the bundle policy")
+    bundle_test.add_argument("bundle", type=Path, help="path to a policy bundle directory")
+    bundle_test.add_argument("--instruction-limit", type=int, default=100_000)
+    bundle_test.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
+    bundle_test.add_argument("--compact", action="store_true", help="emit compact JSON")
+
+    bundle_pack = bundle_subparsers.add_parser("pack", help="pack a policy bundle as a tar.gz archive")
+    bundle_pack.add_argument("bundle", type=Path, help="path to a policy bundle directory")
+    bundle_pack.add_argument("output", type=Path, help="output tar.gz path")
+    bundle_pack.add_argument("--compact", action="store_true", help="emit compact JSON")
 
     args = parser.parse_args(argv)
     if args.command == "simulate":
@@ -141,6 +159,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stdout.write(json.dumps(result, indent=indent, sort_keys=True))
         sys.stdout.write("\n")
         return 0 if args.no_fail or result["safe_to_promote"] else 1
+
+    if args.command == "bundle":
+        from .bundle import pack_bundle, test_bundle, validate_bundle
+
+        if args.bundle_command == "validate":
+            result = validate_bundle(args.bundle)
+            status = 0 if result["ok"] else 1
+        elif args.bundle_command == "test":
+            memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
+            result = test_bundle(
+                args.bundle,
+                instruction_limit=args.instruction_limit,
+                memory_limit_bytes=memory_limit,
+            )
+            status = 0 if result["ok"] else 1
+        elif args.bundle_command == "pack":
+            result = pack_bundle(args.bundle, args.output)
+            status = 0 if result["ok"] else 1
+        else:
+            parser.error(f"unknown bundle command: {args.bundle_command}")
+            return 2
+
+        indent = None if args.compact else 2
+        sys.stdout.write(json.dumps(result, indent=indent, sort_keys=True))
+        sys.stdout.write("\n")
+        return status
 
     parser.error(f"unknown command: {args.command}")
     return 2

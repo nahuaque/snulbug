@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from examples.webhook_normalization.app import application
-from uvicorn_lua import simulate_policy
+from asgi_lua import simulate_policy
 
 REQUEST_DIR = Path("examples/webhook_normalization/requests")
 

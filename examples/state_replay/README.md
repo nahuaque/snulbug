@@ -3,7 +3,7 @@
 Replay an idempotency policy with a captured initial state:
 
 ```bash
-uv run uvicorn-lua simulate \
+uv run asgi-lua simulate \
   examples/state_replay/idempotency.lua \
   examples/state_replay/request.json \
   --state examples/state_replay/duplicate-state.json

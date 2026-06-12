@@ -1,4 +1,4 @@
-from uvicorn_lua import LuaMiddleware
+from asgi_lua import LuaMiddleware
 
 
 async def app(scope, receive, send):

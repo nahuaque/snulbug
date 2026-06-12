@@ -1,23 +1,35 @@
-# uvicorn-lua
+# asgi-lua
 
-`uvicorn-lua` is an ASGI middleware that runs a small Lua policy script before
+`asgi-lua` is an ASGI middleware that runs a small Lua policy script before
 your Python app. It is intended for programmable request behavior near the edge:
 header checks, tenant-specific rewrites, normalization, and simple policy
 decisions.
 
-It is deliberately not a Uvicorn fork. Uvicorn still serves ASGI; this package is
-just an ASGI middleware you can wrap around FastAPI, Starlette, or any ASGI app.
+It is not tied to a specific server. It wraps FastAPI, Starlette, or any ASGI
+app and can be served by Uvicorn, Hypercorn, Daphne, or another ASGI server.
 
 ## Install
 
 ```bash
-uv sync
+pip install asgi-lua
+```
+
+For Redis-backed policy state:
+
+```bash
+pip install "asgi-lua[redis]"
+```
+
+For local development from this repository:
+
+```bash
+uv sync --extra dev
 ```
 
 ## Minimal app
 
 ```python
-from uvicorn_lua import LuaMiddleware
+from asgi_lua import LuaMiddleware
 
 
 async def app(scope, receive, send):
@@ -103,7 +115,7 @@ Use the simulator to replay a JSON request fixture against a policy without
 running an ASGI server:
 
 ```bash
-uv run uvicorn-lua simulate policy.lua request.json
+uv run asgi-lua simulate policy.lua request.json
 ```
 
 Example request fixture:
@@ -149,7 +161,7 @@ The downstream app can read `scope["lua_trace"]`.
 Stateful policies can be replayed with an explicit state snapshot:
 
 ```bash
-uv run uvicorn-lua simulate policy.lua request.json --state state.json
+uv run asgi-lua simulate policy.lua request.json --state state.json
 ```
 
 Snapshot input:
@@ -212,7 +224,7 @@ return {
 Compare an active policy and a draft policy against replay fixtures:
 
 ```bash
-uv run uvicorn-lua diff active.lua draft.lua fixtures/
+uv run asgi-lua diff active.lua draft.lua fixtures/
 ```
 
 The command emits changed decisions and regressions. It exits non-zero when a
@@ -235,13 +247,67 @@ comparison are attached to `scope["lua_shadow_trace"]`.
 For stateful promotion gates, pass a snapshot file or a directory of snapshots:
 
 ```bash
-uv run uvicorn-lua diff active.lua draft.lua fixtures/ --state-snapshots snapshots/
+uv run asgi-lua diff active.lua draft.lua fixtures/ --state-snapshots snapshots/
 ```
 
 When `--state-snapshots` points to a directory, the diff command looks for a
 snapshot matching each fixture name, such as `snapshots/github-push.json`.
 Both policies replay from the same initial state; each result includes its own
 final state snapshot.
+
+## Policy bundles
+
+A policy bundle is a portable directory with a manifest, Lua entrypoint,
+fixtures, optional state snapshots, and documentation:
+
+```text
+policy.asgi-lua/
+  manifest.json
+  policy.lua
+  fixtures/
+  snapshots/
+  README.md
+```
+
+Example manifest:
+
+```json
+{
+  "name": "webhook-idempotency",
+  "version": "0.1.0",
+  "entrypoint": "policy.lua",
+  "description": "Reject duplicate webhook delivery IDs",
+  "required_capabilities": ["state"],
+  "limits": {
+    "max_state_operations": 2
+  },
+  "fixtures": [
+    {
+      "name": "duplicate delivery is rejected",
+      "request": "fixtures/duplicate-delivery.json",
+      "state": "snapshots/duplicate.json",
+      "expect": {
+        "action": "reject",
+        "status": 409,
+        "body": "duplicate webhook"
+      }
+    }
+  ]
+}
+```
+
+Validate, test, and pack bundles:
+
+```bash
+uv run asgi-lua bundle validate examples/bundles/idempotency.asgi-lua
+uv run asgi-lua bundle test examples/bundles/idempotency.asgi-lua
+uv run asgi-lua bundle pack examples/bundles/idempotency.asgi-lua dist/idempotency.asgi-lua.tar.gz
+```
+
+Bundle expectations can reference common decision fields directly, such as
+`action`, `status`, `path`, `body`, `headers`, and `context`. Nested fields can
+use dotted paths like `decision.context.tenant` or
+`state_snapshot.final_state.delivery:evt-1`.
 
 ## Bounded policy state
 
@@ -275,7 +341,7 @@ end
 Configure SQLite-backed state:
 
 ```python
-from uvicorn_lua import LuaMiddleware, SQLiteStateStore, StateLimits
+from asgi_lua import LuaMiddleware, SQLiteStateStore, StateLimits
 
 application = LuaMiddleware(
     app,
@@ -288,13 +354,13 @@ application = LuaMiddleware(
 Configure Redis-backed state:
 
 ```bash
-uv sync --extra redis
+pip install "asgi-lua[redis]"
 ```
 
 ```python
-from uvicorn_lua import RedisStateStore
+from asgi_lua import RedisStateStore
 
-state_store = RedisStateStore("redis://localhost:6379/0", key_prefix="uvicorn-lua:")
+state_store = RedisStateStore("redis://localhost:6379/0", key_prefix="asgi-lua:")
 ```
 
 State operations are included in `lua_trace.state_operations`. Shadow policies
@@ -320,3 +386,28 @@ returns HTTP 429 with `Retry-After`, `X-RateLimit-Limit`,
 SQLite is appropriate for local, single-node, and small bounded policy state.
 Use WAL mode, short operations, and low write contention. For multi-node
 deployments, use a shared store such as Redis.
+
+## Packaging
+
+Build local distributions:
+
+```bash
+uv build
+```
+
+Verify before publishing:
+
+```bash
+uv run pytest
+uv run asgi-lua --help
+uv run python -m asgi_lua --help
+```
+
+Publish when ready:
+
+```bash
+uv publish
+```
+
+`asgi-lua` is currently alpha software. Until 1.0, action schemas and trace
+fields may evolve.

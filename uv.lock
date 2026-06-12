@@ -2,6 +2,37 @@ version = 1
 requires-python = ">=3.13"
 
 [[package]]
+name = "asgi-lua"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "lupa" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+]
+redis = [
+    { name = "redis" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "lupa", specifier = ">=2.5" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "redis", marker = "extra == 'redis'", specifier = ">=5.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8.0" }]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -118,30 +149,3 @@ sdist = { url = "https://files.pythonhosted.org/packages/53/ae/ed461cca5780b5fc8
 wheels = [
     { url = "https://files.pythonhosted.org/packages/27/e3/b519734372d305bd547534a9f32e4ce9f98552af753dce72cf3483a0ff0b/redis-8.0.0-py3-none-any.whl", hash = "sha256:c938c18338585009f0bc310f4c7e4e4b4d37639356c4ac072cedf3af570c8dc7", size = 499870 },
 ]
-
-[[package]]
-name = "uvicorn-lua"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "lupa" },
-]
-
-[package.optional-dependencies]
-redis = [
-    { name = "redis" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "lupa", specifier = ">=2.5" },
-    { name = "redis", marker = "extra == 'redis'", specifier = ">=5.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8.0" }]

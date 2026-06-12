@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from uvicorn_lua import LuaConfig, LuaDecisionError, LuaMiddleware, LuaRuntimeError, MemoryStateStore, simulate_policy
-from uvicorn_lua.simulator import main as simulator_main
+from asgi_lua import LuaConfig, LuaDecisionError, LuaMiddleware, LuaRuntimeError, MemoryStateStore, simulate_policy
+from asgi_lua.simulator import main as simulator_main
 
 
 async def app(scope, receive, send):
@@ -344,7 +344,7 @@ def test_middleware_can_attach_trace_to_scope():
     assert sent[0]["status"] == 204
     assert captured["trace"]["action"] == "continue"
     assert captured["trace"]["decision"] == {"action": "continue"}
-    assert captured["trace"]["source_name"] == "<uvicorn-lua>"
+    assert captured["trace"]["source_name"] == "<asgi-lua>"
     assert isinstance(captured["trace"]["duration_ms"], float)
     assert isinstance(captured["trace"]["instruction_count"], int)
 

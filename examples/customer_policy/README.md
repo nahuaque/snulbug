@@ -1,6 +1,6 @@
 # Customer-Owned Request Policy Demo
 
-This demo shows the pattern that makes `uvicorn-lua` useful: Python owns the
+This demo shows the pattern that makes `asgi-lua` useful: Python owns the
 stable ASGI host, while each customer owns a small Lua request policy.
 
 The app selects a policy by the `x-tenant` request header:
@@ -20,7 +20,7 @@ uv run uvicorn examples.customer_policy.app:application
 Replay a policy in CI or during customer onboarding:
 
 ```bash
-uv run uvicorn-lua simulate \
+uv run asgi-lua simulate \
   examples/customer_policy/policies/acme.lua \
   examples/customer_policy/requests/acme-valid.json
 ```

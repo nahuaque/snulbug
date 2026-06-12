@@ -5,7 +5,7 @@ import json
 from typing import Any
 
 from examples.customer_policy.app import application
-from uvicorn_lua import simulate_policy
+from asgi_lua import simulate_policy
 
 
 def run_demo_request(
