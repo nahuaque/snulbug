@@ -55,6 +55,12 @@ def create_mcp_quickstart(
     lease_header: str = "x-snulbug-lease",
     tunnel_provider: str = "auto",
     tunnel_public_url: str | None = None,
+    cloudflare_access: str = "off",
+    cloudflare_access_require_jwt: bool = True,
+    cloudflare_access_require_email: bool = False,
+    cloudflare_access_require_cf_ray: bool = True,
+    cloudflare_access_allowed_emails: Sequence[str] | None = None,
+    cloudflare_access_allowed_domains: Sequence[str] | None = None,
     timeout: float = 30.0,
     force: bool = False,
     validate: bool = True,
@@ -115,6 +121,12 @@ def create_mcp_quickstart(
         "lease_header": lease_header,
         "tunnel_provider": tunnel_provider,
         "tunnel_public_url": tunnel_public_url or "",
+        "cloudflare_access": cloudflare_access,
+        "cloudflare_access_require_jwt": cloudflare_access_require_jwt,
+        "cloudflare_access_require_email": cloudflare_access_require_email,
+        "cloudflare_access_require_cf_ray": cloudflare_access_require_cf_ray,
+        "cloudflare_access_allowed_emails": list(cloudflare_access_allowed_emails or []),
+        "cloudflare_access_allowed_domains": list(cloudflare_access_allowed_domains or []),
         "timeout": timeout,
     }
     _write_mcp_proxy_config(config_path, config_values, force=force)
@@ -171,6 +183,12 @@ def create_mcp_quickstart(
             "lease_header": lease_header,
             "tunnel_provider": tunnel_provider,
             "tunnel_public_url": tunnel_public_url,
+            "cloudflare_access": cloudflare_access,
+            "cloudflare_access_require_jwt": cloudflare_access_require_jwt,
+            "cloudflare_access_require_email": cloudflare_access_require_email,
+            "cloudflare_access_require_cf_ray": cloudflare_access_require_cf_ray,
+            "cloudflare_access_allowed_emails": list(cloudflare_access_allowed_emails or []),
+            "cloudflare_access_allowed_domains": list(cloudflare_access_allowed_domains or []),
         },
         "validation": validation,
         "tests": bundle_tests,
@@ -229,4 +247,6 @@ def _toml_value(value: Any) -> str:
         return "true" if value else "false"
     if isinstance(value, int | float):
         return str(value)
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        return json.dumps([str(item) for item in value])
     return json.dumps(str(value))

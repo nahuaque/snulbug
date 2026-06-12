@@ -52,6 +52,17 @@ snulbug tunnel doctor \
   --token "${SNULBUG_TOKEN}"
 ```
 
+To have snulbug enforce that real origin traffic arrived through Cloudflare
+Access, turn on the origin-side adapter:
+
+```toml
+[mcp.proxy]
+tunnel_provider = "cloudflare"
+cloudflare_access = "enforce"
+cloudflare_access_require_email = true
+cloudflare_access_allowed_domains = ["example.com"]
+```
+
 ## Tailscale Funnel
 
 ```bash

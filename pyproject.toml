@@ -35,6 +35,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
+    "bandit>=1.9.4",
     "lupa>=2.5",
     "tomli>=2.0; python_version < '3.11'",
 ]

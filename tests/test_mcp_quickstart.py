@@ -48,6 +48,12 @@ def test_create_mcp_quickstart_writes_policy_config_and_trace_dir(tmp_path):
     assert proxy_config["lease_header"] == "x-snulbug-lease"
     assert proxy_config["tunnel_provider"] == "auto"
     assert proxy_config["tunnel_public_url"] is None
+    assert proxy_config["cloudflare_access"] == "off"
+    assert proxy_config["cloudflare_access_require_jwt"] is True
+    assert proxy_config["cloudflare_access_require_email"] is False
+    assert proxy_config["cloudflare_access_require_cf_ray"] is True
+    assert proxy_config["cloudflare_access_allowed_emails"] == []
+    assert proxy_config["cloudflare_access_allowed_domains"] == []
     assert validate_bundle(policy)["ok"] is True
     assert run_bundle_tests(policy)["ok"] is True
     assert 'local token = "dev-secret"' in (policy / "policy.lua").read_text(encoding="utf-8")
@@ -80,6 +86,7 @@ def test_mcp_quickstart_cli_writes_compact_result(tmp_path, capsys):
     assert output["config"] == str(tmp_path / "snulbug.toml")
     assert output["client"]["url"] == "http://127.0.0.1:8181/mcp"
     assert output["client"]["headers"]["Authorization"] == "Bearer dev-secret"
+    assert output["proxy"]["cloudflare_access"] == "off"
     assert output["validation"]["ok"] is True
     assert output["tests"]["ok"] is True
 

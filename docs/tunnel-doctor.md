@@ -36,6 +36,11 @@ snulbug tunnel doctor \
   --token local-dev-secret
 ```
 
+If `cloudflare_access = "enforce"` is set in `snulbug.toml`, live proxy
+records and audit events include a `cloudflare_access` object with the Access
+mode, authenticated email when Cloudflare provides it, decision, and
+`reason_code`.
+
 For Tailscale Funnel, snulbug should still enforce bearer auth or leases:
 
 ```bash

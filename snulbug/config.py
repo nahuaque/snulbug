@@ -38,6 +38,12 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "lease_header": "x-snulbug-lease",
     "tunnel_provider": "auto",
     "tunnel_public_url": None,
+    "cloudflare_access": "off",
+    "cloudflare_access_require_jwt": True,
+    "cloudflare_access_require_email": False,
+    "cloudflare_access_require_cf_ray": True,
+    "cloudflare_access_allowed_emails": [],
+    "cloudflare_access_allowed_domains": [],
     "timeout": 30.0,
 }
 
@@ -67,6 +73,12 @@ lease_required = false
 lease_header = "x-snulbug-lease"
 tunnel_provider = "auto"
 tunnel_public_url = ""
+cloudflare_access = "off"
+cloudflare_access_require_jwt = true
+cloudflare_access_require_email = false
+cloudflare_access_require_cf_ray = true
+cloudflare_access_allowed_emails = []
+cloudflare_access_allowed_domains = []
 timeout = 30.0
 
 # Optional MCP facade mode:
@@ -124,6 +136,7 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         "schema_validation_action",
         "lease_header",
         "tunnel_provider",
+        "cloudflare_access",
     ):
         value = normalized.get(field)
         if value is not None and not isinstance(value, str):
@@ -152,6 +165,9 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         "tool_pinning",
         "schema_validation",
         "lease_required",
+        "cloudflare_access_require_jwt",
+        "cloudflare_access_require_email",
+        "cloudflare_access_require_cf_ray",
     ):
         if not isinstance(normalized.get(field), bool):
             raise ValueError(f"mcp.proxy.{field} must be a boolean")
@@ -163,8 +179,18 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         raise ValueError("mcp.proxy.schema_validation_action must be 'warn' or 'block'")
     if normalized["tunnel_provider"] not in {"auto", "generic", "ngrok", "cloudflare", "tailscale"}:
         raise ValueError("mcp.proxy.tunnel_provider must be 'auto', 'generic', 'ngrok', 'cloudflare', or 'tailscale'")
+    if normalized["cloudflare_access"] not in {"off", "audit", "enforce"}:
+        raise ValueError("mcp.proxy.cloudflare_access must be 'off', 'audit', or 'enforce'")
 
     normalized["upstreams"] = _normalize_upstreams(normalized.get("upstreams", []))
+    normalized["cloudflare_access_allowed_emails"] = _normalize_string_list(
+        normalized.get("cloudflare_access_allowed_emails", []),
+        field="cloudflare_access_allowed_emails",
+    )
+    normalized["cloudflare_access_allowed_domains"] = _normalize_string_list(
+        normalized.get("cloudflare_access_allowed_domains", []),
+        field="cloudflare_access_allowed_domains",
+    )
     normalized["policy"] = _resolve_path(base, normalized["policy"])
     for field in ("record_out", "audit_out"):
         if normalized.get(field):
@@ -186,6 +212,14 @@ def merge_mcp_proxy_config(config: Mapping[str, Any], overrides: Mapping[str, An
 def _resolve_path(base_dir: Path, value: str | Path) -> Path:
     path = Path(value)
     return path if path.is_absolute() else base_dir / path
+
+
+def _normalize_string_list(value: Any, *, field: str) -> list[str]:
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"mcp.proxy.{field} must be a list of strings")
+    return list(value)
 
 
 def _normalize_upstreams(value: Any) -> list[dict[str, Any]]:

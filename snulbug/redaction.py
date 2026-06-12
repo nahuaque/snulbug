@@ -17,6 +17,7 @@ DEFAULT_SECRET_KEYS = {
     "authorization",
     "client_secret",
     "cookie",
+    "cf-access-client-secret",
     "cf-access-jwt-assertion",
     "password",
     "refresh_token",
@@ -89,6 +90,9 @@ def build_audit_event(record: Mapping[str, Any], *, redact: bool = True) -> dict
         tunnel = _mapping(metadata.get("tunnel"))
         if tunnel:
             event["tunnel"] = tunnel
+        cloudflare_access = _mapping(metadata.get("cloudflare_access"))
+        if cloudflare_access:
+            event["cloudflare_access"] = cloudflare_access
         event["metadata"] = record["metadata"]
     return redact_secrets(event) if redact else event
 

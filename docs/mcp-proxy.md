@@ -144,6 +144,12 @@ lease_required = false
 lease_header = "x-snulbug-lease"
 tunnel_provider = "auto"
 tunnel_public_url = ""
+cloudflare_access = "off"
+cloudflare_access_require_jwt = true
+cloudflare_access_require_email = false
+cloudflare_access_require_cf_ray = true
+cloudflare_access_allowed_emails = []
+cloudflare_access_allowed_domains = []
 timeout = 30.0
 ```
 
@@ -152,6 +158,38 @@ timeout = 30.0
 the public host when possible. Set `tunnel_public_url` when you want audit logs
 to record the externally shared MCP URL even if the request reaches snulbug
 through a local reverse proxy.
+
+## Cloudflare Access Adapter
+
+When snulbug is the origin behind Cloudflare Access, it can audit or enforce the
+Access headers that Cloudflare forwards after an Access policy succeeds.
+
+```toml
+[mcp.proxy]
+tunnel_provider = "cloudflare"
+tunnel_public_url = "https://mcp.example.com/mcp"
+cloudflare_access = "enforce"
+cloudflare_access_require_jwt = true
+cloudflare_access_require_email = true
+cloudflare_access_allowed_domains = ["example.com"]
+```
+
+`cloudflare_access` can be:
+
+- `off`: ignore Access headers.
+- `audit`: record what would have been blocked but allow the request.
+- `enforce`: reject requests before Lua policy and upstream forwarding when
+  required Access headers or allowlist checks are missing.
+
+The adapter records redacted `cloudflare_access` audit fields including mode,
+email, email domain, `CF-Ray`, country, decision, and `reason_code`. It never
+stores the raw `CF-Access-Jwt-Assertion`, and it strips Access credential
+headers before forwarding to the local upstream.
+
+This is an origin-side defense, not a replacement for Cloudflare Access policy
+configuration. snulbug checks that expected Access headers are present and
+match local allowlists; it does not cryptographically validate the Access JWT in
+this first adapter.
 
 ## Task-Scoped Leases
 

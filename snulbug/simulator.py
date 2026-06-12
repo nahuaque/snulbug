@@ -290,6 +290,42 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="provider label for tunnel-aware audit fields",
     )
     mcp_quickstart.add_argument("--tunnel-public-url", help="public tunnel URL to include in audit fields")
+    mcp_quickstart.add_argument(
+        "--cloudflare-access",
+        choices=("off", "audit", "enforce"),
+        default="off",
+        help="origin-side Cloudflare Access header mode",
+    )
+    mcp_quickstart.add_argument(
+        "--cloudflare-access-require-jwt",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="require CF-Access-Jwt-Assertion when Cloudflare Access enforcement is enabled",
+    )
+    mcp_quickstart.add_argument(
+        "--cloudflare-access-require-email",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="require CF-Access-Authenticated-User-Email when Cloudflare Access enforcement is enabled",
+    )
+    mcp_quickstart.add_argument(
+        "--cloudflare-access-require-cf-ray",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="require a CF-Ray header when Cloudflare Access enforcement is enabled",
+    )
+    mcp_quickstart.add_argument(
+        "--cloudflare-access-allow-email",
+        action="append",
+        default=[],
+        help="allowed Cloudflare Access authenticated user email; repeat for multiple emails",
+    )
+    mcp_quickstart.add_argument(
+        "--cloudflare-access-allow-domain",
+        action="append",
+        default=[],
+        help="allowed Cloudflare Access authenticated email domain; repeat for multiple domains",
+    )
     mcp_quickstart.add_argument("--timeout", type=float, default=30.0, help="upstream timeout in seconds")
     mcp_quickstart.add_argument("--force", action="store_true", help="overwrite generated policy and config")
     mcp_quickstart.add_argument(
@@ -537,6 +573,39 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="provider label for tunnel-aware audit fields",
     )
     mcp_proxy.add_argument("--tunnel-public-url", help="public tunnel URL to include in audit fields")
+    mcp_proxy.add_argument(
+        "--cloudflare-access",
+        choices=("off", "audit", "enforce"),
+        help="origin-side Cloudflare Access header mode",
+    )
+    mcp_proxy.add_argument(
+        "--cloudflare-access-require-jwt",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="require CF-Access-Jwt-Assertion when Cloudflare Access enforcement is enabled",
+    )
+    mcp_proxy.add_argument(
+        "--cloudflare-access-require-email",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="require CF-Access-Authenticated-User-Email when Cloudflare Access enforcement is enabled",
+    )
+    mcp_proxy.add_argument(
+        "--cloudflare-access-require-cf-ray",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="require a CF-Ray header when Cloudflare Access enforcement is enabled",
+    )
+    mcp_proxy.add_argument(
+        "--cloudflare-access-allow-email",
+        action="append",
+        help="allowed Cloudflare Access authenticated user email; repeat for multiple emails",
+    )
+    mcp_proxy.add_argument(
+        "--cloudflare-access-allow-domain",
+        action="append",
+        help="allowed Cloudflare Access authenticated email domain; repeat for multiple domains",
+    )
     mcp_proxy.add_argument("--timeout", type=float, help="upstream timeout in seconds")
 
     args = parser.parse_args(argv)
@@ -733,6 +802,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     lease_header=args.lease_header,
                     tunnel_provider=args.tunnel_provider,
                     tunnel_public_url=args.tunnel_public_url,
+                    cloudflare_access=args.cloudflare_access,
+                    cloudflare_access_require_jwt=args.cloudflare_access_require_jwt,
+                    cloudflare_access_require_email=args.cloudflare_access_require_email,
+                    cloudflare_access_require_cf_ray=args.cloudflare_access_require_cf_ray,
+                    cloudflare_access_allowed_emails=args.cloudflare_access_allow_email,
+                    cloudflare_access_allowed_domains=args.cloudflare_access_allow_domain,
                     timeout=args.timeout,
                     force=args.force,
                     validate=args.validate,
@@ -957,6 +1032,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "lease_header": args.lease_header,
                     "tunnel_provider": args.tunnel_provider,
                     "tunnel_public_url": args.tunnel_public_url,
+                    "cloudflare_access": args.cloudflare_access,
+                    "cloudflare_access_require_jwt": args.cloudflare_access_require_jwt,
+                    "cloudflare_access_require_email": args.cloudflare_access_require_email,
+                    "cloudflare_access_require_cf_ray": args.cloudflare_access_require_cf_ray,
+                    "cloudflare_access_allowed_emails": args.cloudflare_access_allow_email,
+                    "cloudflare_access_allowed_domains": args.cloudflare_access_allow_domain,
                     "timeout": args.timeout,
                 }
                 if args.config is not None:
@@ -997,6 +1078,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     lease_header=proxy_config["lease_header"],
                     tunnel_provider=proxy_config["tunnel_provider"],
                     tunnel_public_url=proxy_config["tunnel_public_url"],
+                    cloudflare_access=proxy_config["cloudflare_access"],
+                    cloudflare_access_require_jwt=proxy_config["cloudflare_access_require_jwt"],
+                    cloudflare_access_require_email=proxy_config["cloudflare_access_require_email"],
+                    cloudflare_access_require_cf_ray=proxy_config["cloudflare_access_require_cf_ray"],
+                    cloudflare_access_allowed_emails=proxy_config["cloudflare_access_allowed_emails"],
+                    cloudflare_access_allowed_domains=proxy_config["cloudflare_access_allowed_domains"],
                 )
             except Exception as exc:
                 sys.stderr.write(f"snulbug proxy failed: {exc}\n")

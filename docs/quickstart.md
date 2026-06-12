@@ -136,6 +136,12 @@ lease_required = false
 lease_header = "x-snulbug-lease"
 tunnel_provider = "auto"
 tunnel_public_url = ""
+cloudflare_access = "off"
+cloudflare_access_require_jwt = true
+cloudflare_access_require_email = false
+cloudflare_access_require_cf_ray = true
+cloudflare_access_allowed_emails = []
+cloudflare_access_allowed_domains = []
 timeout = 30.0
 ```
 
@@ -199,6 +205,19 @@ generic forwarder, audit events also include provider-aware `tunnel` fields such
 as provider, public URL, source IP, forwarding chain, and edge request id when
 available. Set `tunnel_provider` and `tunnel_public_url` in `snulbug.toml` when
 you want explicit values instead of auto-detection.
+
+If the tunnel is protected by Cloudflare Access, enable origin-side checks:
+
+```toml
+[mcp.proxy]
+tunnel_provider = "cloudflare"
+cloudflare_access = "enforce"
+cloudflare_access_require_email = true
+cloudflare_access_allowed_domains = ["example.com"]
+```
+
+Use `cloudflare_access = "audit"` first if you want to see what would be
+blocked before turning on enforcement.
 
 Return-path controls are enabled in the generated config. Tool/resource/prompt
 results are capped by `response_max_bytes`, likely secrets are redacted before

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, TextIO
 from urllib.parse import SplitResult, urlsplit
 
+from .cloudflare_access import CloudflareAccessConfig, evaluate_cloudflare_access
 from .confirm import ConfirmationBroker
 from .leases import LeasePolicyConfig, enforce_mcp_lease_policy, mcp_lease_error_response
 from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
@@ -739,6 +740,52 @@ class ProxyRecorderMiddleware:
         return self.record_out is not None or self.audit_out is not None or self.decision_console is not None
 
 
+class CloudflareAccessMiddleware:
+    """Require Cloudflare Access origin headers before Lua policy and upstream calls."""
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        config: CloudflareAccessConfig | None = None,
+    ) -> None:
+        self.app = app
+        self.config = config or CloudflareAccessConfig()
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http" or self.config.mode == "off":
+            await self.app(scope, receive, send)
+            return
+
+        _ensure_scope_state(scope)
+        decision = evaluate_cloudflare_access(scope, config=self.config)
+        _set_proxy_metadata(scope, {"cloudflare_access": decision.metadata})
+        if decision.allowed:
+            child_scope = dict(scope)
+            child_scope["headers"] = _strip_cloudflare_access_credentials(scope.get("headers", []))
+            await self.app(child_scope, receive, send)
+            return
+
+        _attach_proxy_reject_trace(
+            scope,
+            action="reject",
+            status=decision.status,
+            body=decision.body.decode("utf-8", errors="replace"),
+            reason="request failed Cloudflare Access checks",
+            reason_code=str(decision.metadata.get("reason_code", "cloudflare_access.rejected")),
+            context={"cloudflare_access": decision.metadata},
+        )
+        await _send_response(
+            send,
+            status=decision.status,
+            headers=[
+                (b"content-type", b"text/plain; charset=utf-8"),
+                (b"content-length", str(len(decision.body)).encode("ascii")),
+            ],
+            body=decision.body,
+        )
+
+
 def create_proxy_application(
     upstream: str | None,
     policy: str | Path,
@@ -766,6 +813,12 @@ def create_proxy_application(
     lease_header: str = "x-snulbug-lease",
     tunnel_provider: str = "auto",
     tunnel_public_url: str | None = None,
+    cloudflare_access: str = "off",
+    cloudflare_access_require_jwt: bool = True,
+    cloudflare_access_require_email: bool = False,
+    cloudflare_access_require_cf_ray: bool = True,
+    cloudflare_access_allowed_emails: Sequence[str] = (),
+    cloudflare_access_allowed_domains: Sequence[str] = (),
     confirm: bool = False,
     confirm_handler: Any = None,
 ) -> ASGIApp:
@@ -811,6 +864,16 @@ def create_proxy_application(
         state_limits=state_limits,
         confirm_handler=confirm_handler or (ConfirmationBroker(enabled=True) if confirm else None),
     )
+    cloudflare_access_config = CloudflareAccessConfig(
+        mode=cloudflare_access,
+        require_jwt=cloudflare_access_require_jwt,
+        require_email=cloudflare_access_require_email,
+        require_cf_ray=cloudflare_access_require_cf_ray,
+        allowed_emails=cloudflare_access_allowed_emails,
+        allowed_domains=cloudflare_access_allowed_domains,
+    )
+    if cloudflare_access_config.mode != "off":
+        app = CloudflareAccessMiddleware(app, config=cloudflare_access_config)
     if record_out is None and audit_out is None and not console_enabled:
         return app
     return ProxyRecorderMiddleware(
@@ -853,6 +916,12 @@ def run_proxy(
     lease_header: str = "x-snulbug-lease",
     tunnel_provider: str = "auto",
     tunnel_public_url: str | None = None,
+    cloudflare_access: str = "off",
+    cloudflare_access_require_jwt: bool = True,
+    cloudflare_access_require_email: bool = False,
+    cloudflare_access_require_cf_ray: bool = True,
+    cloudflare_access_allowed_emails: Sequence[str] = (),
+    cloudflare_access_allowed_domains: Sequence[str] = (),
     confirm: bool = False,
 ) -> None:
     """Run the reverse proxy with uvicorn."""
@@ -887,6 +956,12 @@ def run_proxy(
         lease_header=lease_header,
         tunnel_provider=tunnel_provider,
         tunnel_public_url=tunnel_public_url,
+        cloudflare_access=cloudflare_access,
+        cloudflare_access_require_jwt=cloudflare_access_require_jwt,
+        cloudflare_access_require_email=cloudflare_access_require_email,
+        cloudflare_access_require_cf_ray=cloudflare_access_require_cf_ray,
+        cloudflare_access_allowed_emails=cloudflare_access_allowed_emails,
+        cloudflare_access_allowed_domains=cloudflare_access_allowed_domains,
         confirm=confirm,
     )
     uvicorn.run(app, host=host, port=port)
@@ -997,6 +1072,13 @@ def _format_decision_console_line(event: Mapping[str, Any]) -> str:
     metadata = event.get("metadata") if isinstance(event.get("metadata"), Mapping) else {}
     lease = metadata.get("lease") if isinstance(metadata.get("lease"), Mapping) else {}
     tunnel = event.get("tunnel") if isinstance(event.get("tunnel"), Mapping) else {}
+    cloudflare_access = (
+        event.get("cloudflare_access")
+        if isinstance(event.get("cloudflare_access"), Mapping)
+        else metadata.get("cloudflare_access")
+        if isinstance(metadata.get("cloudflare_access"), Mapping)
+        else {}
+    )
     confirmation = decision.get("confirmation") if isinstance(decision.get("confirmation"), Mapping) else {}
 
     parts = [
@@ -1031,6 +1113,13 @@ def _format_decision_console_line(event: Mapping[str, Any]) -> str:
             parts.append(f"tunnel.provider={tunnel['provider']}")
         if tunnel.get("edge_request_id"):
             parts.append(f"tunnel.edge_request_id={tunnel['edge_request_id']}")
+    if cloudflare_access:
+        if cloudflare_access.get("mode"):
+            parts.append(f"cf_access.mode={cloudflare_access['mode']}")
+        if cloudflare_access.get("reason_code"):
+            parts.append(f"cf_access.reason_code={cloudflare_access['reason_code']}")
+        if cloudflare_access.get("email"):
+            parts.append(f"cf_access.email={_console_value(cloudflare_access['email'])}")
     if request.get("query_string"):
         parts.append(f"query={request['query_string']}")
     if mcp.get("method"):
@@ -1147,6 +1236,22 @@ def _request_headers(
     if content_length is not None:
         headers["Content-Length"] = str(content_length)
     return headers
+
+
+def _strip_cloudflare_access_credentials(raw_headers: Any) -> list[tuple[bytes, bytes]]:
+    stripped = []
+    sensitive = {
+        b"cf-access-client-id",
+        b"cf-access-client-secret",
+        b"cf-access-jwt-assertion",
+    }
+    for name, value in raw_headers:
+        raw_name = name if isinstance(name, bytes) else str(name).encode("latin-1")
+        raw_value = value if isinstance(value, bytes) else str(value).encode("latin-1")
+        if raw_name.lower() in sensitive:
+            continue
+        stripped.append((raw_name, raw_value))
+    return stripped
 
 
 def _headers_to_mapping(headers: list[tuple[bytes, bytes]]) -> dict[str, str | list[str]]:
@@ -1312,13 +1417,52 @@ def _record_metadata(scope: Scope, *, tunnel_audit: TunnelAuditConfig) -> dict[s
     return metadata
 
 
-def _set_proxy_metadata(scope: Scope, metadata: Mapping[str, Any]) -> None:
+def _ensure_scope_state(scope: Scope) -> dict[str, Any]:
     state = scope.get("state")
     if isinstance(state, dict):
-        existing = state.get("snulbug_proxy")
-        merged = dict(existing) if isinstance(existing, Mapping) else {}
-        merged.update(metadata)
-        state["snulbug_proxy"] = merged
+        return state
+    state = {}
+    scope["state"] = state
+    return state
+
+
+def _set_proxy_metadata(scope: Scope, metadata: Mapping[str, Any]) -> None:
+    state = _ensure_scope_state(scope)
+    existing = state.get("snulbug_proxy")
+    merged = dict(existing) if isinstance(existing, Mapping) else {}
+    merged.update(metadata)
+    state["snulbug_proxy"] = merged
+
+
+def _attach_proxy_reject_trace(
+    scope: Scope,
+    *,
+    action: str,
+    status: int,
+    body: str,
+    reason: str,
+    reason_code: str,
+    context: Mapping[str, Any] | None = None,
+) -> None:
+    decision = {
+        "action": action,
+        "status": status,
+        "body": body,
+        "reason": reason,
+        "reason_code": reason_code,
+        "context": dict(context or {}),
+    }
+    trace = {
+        "action": action,
+        "decision": decision,
+        "duration_ms": 0.0,
+        "instruction_count": 0,
+        "scopes": [],
+        "body_read": False,
+    }
+    state = _ensure_scope_state(scope)
+    state["lua_trace"] = trace
+    scope["lua_trace"] = trace
 
 
 def _decode_bytes(value: Any) -> str:

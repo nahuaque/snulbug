@@ -113,6 +113,89 @@ def test_reverse_proxy_records_provider_aware_tunnel_audit_fields(tmp_path):
     assert console_event["tunnel"] == audit["tunnel"]
 
 
+def test_reverse_proxy_cloudflare_access_enforce_blocks_before_lua_and_upstream(tmp_path):
+    server, seen = start_upstream()
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+    console = io.StringIO()
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        audit_out=audit_log,
+        decision_console=console,
+        decision_console_format="json",
+        cloudflare_access="enforce",
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    record = load_record_log(record_log)[0]
+    audit = json.loads(audit_log.read_text(encoding="utf-8"))
+    console_event = json.loads(console.getvalue())
+    assert sent[0]["status"] == 403
+    assert b"cloudflare_access.cf_ray_missing" in sent[1]["body"]
+    assert seen["count"] == 0
+    assert record["result"]["action"] == "reject"
+    assert record["result"]["decision"]["reason_code"] == "cloudflare_access.cf_ray_missing"
+    assert record["metadata"]["cloudflare_access"]["blocked"] is True
+    assert record["metadata"]["cloudflare_access"]["jwt_present"] is False
+    assert audit["cloudflare_access"] == record["metadata"]["cloudflare_access"]
+    assert console_event["cloudflare_access"] == audit["cloudflare_access"]
+
+
+def test_reverse_proxy_cloudflare_access_allows_and_strips_credentials_from_upstream(tmp_path):
+    server, seen = start_upstream()
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        cloudflare_access="enforce",
+        cloudflare_access_allowed_domains=("example.com",),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"cf-ray", b"abc123-LHR"),
+                (b"cf-access-jwt-assertion", b"raw.jwt.value"),
+                (b"cf-access-client-secret", b"raw-client-secret"),
+                (b"cf-access-authenticated-user-email", b"dev@example.com"),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    record = load_record_log(record_log)[0]
+    assert sent[0]["status"] == 200
+    assert seen["count"] == 1
+    assert "cf-access-jwt-assertion" not in payload["headers"]
+    assert "cf-access-client-secret" not in payload["headers"]
+    assert payload["headers"]["cf-access-authenticated-user-email"] == "dev@example.com"
+    assert record["request"]["headers"]["cf-access-jwt-assertion"] == "[REDACTED]"
+    assert record["request"]["headers"]["cf-access-client-secret"] == "[REDACTED]"
+    assert record["metadata"]["cloudflare_access"]["allowed"] is True
+    assert record["metadata"]["cloudflare_access"]["reason_code"] == "cloudflare_access.allowed"
+    assert record["metadata"]["cloudflare_access"]["email"] == "dev@example.com"
+    assert "raw.jwt.value" not in str(record["metadata"]["cloudflare_access"])
+
+
 def test_reverse_proxy_does_not_call_upstream_when_policy_rejects(tmp_path):
     server, seen = start_upstream()
     policy = write_policy(tmp_path, "reject")

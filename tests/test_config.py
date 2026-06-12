@@ -37,6 +37,12 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         lease_header = "x-task-lease"
         tunnel_provider = "cloudflare"
         tunnel_public_url = "https://mcp.example.com/mcp"
+        cloudflare_access = "enforce"
+        cloudflare_access_require_jwt = true
+        cloudflare_access_require_email = true
+        cloudflare_access_require_cf_ray = true
+        cloudflare_access_allowed_emails = ["dev@example.com"]
+        cloudflare_access_allowed_domains = ["example.com"]
         timeout = 5.5
         """,
         encoding="utf-8",
@@ -66,6 +72,12 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
     assert result["lease_header"] == "x-task-lease"
     assert result["tunnel_provider"] == "cloudflare"
     assert result["tunnel_public_url"] == "https://mcp.example.com/mcp"
+    assert result["cloudflare_access"] == "enforce"
+    assert result["cloudflare_access_require_jwt"] is True
+    assert result["cloudflare_access_require_email"] is True
+    assert result["cloudflare_access_require_cf_ray"] is True
+    assert result["cloudflare_access_allowed_emails"] == ["dev@example.com"]
+    assert result["cloudflare_access_allowed_domains"] == ["example.com"]
 
 
 def test_load_mcp_proxy_config_supports_facade_upstreams(tmp_path):
@@ -219,6 +231,12 @@ def test_mcp_proxy_cli_loads_config_before_running(monkeypatch, tmp_path):
     assert calls[0]["lease_header"] == "x-snulbug-lease"
     assert calls[0]["tunnel_provider"] == "auto"
     assert calls[0]["tunnel_public_url"] is None
+    assert calls[0]["cloudflare_access"] == "off"
+    assert calls[0]["cloudflare_access_require_jwt"] is True
+    assert calls[0]["cloudflare_access_require_email"] is False
+    assert calls[0]["cloudflare_access_require_cf_ray"] is True
+    assert calls[0]["cloudflare_access_allowed_emails"] == []
+    assert calls[0]["cloudflare_access_allowed_domains"] == []
 
 
 def test_mcp_proxy_cli_passes_facade_upstreams_without_config(monkeypatch, tmp_path):
@@ -406,6 +424,41 @@ def test_mcp_proxy_cli_applies_tunnel_audit_overrides(monkeypatch, tmp_path):
     assert status == 0
     assert calls[0]["tunnel_provider"] == "ngrok"
     assert calls[0]["tunnel_public_url"] == "https://mcp-dev.ngrok.app/mcp"
+
+
+def test_mcp_proxy_cli_applies_cloudflare_access_overrides(monkeypatch, tmp_path):
+    config = write_config(tmp_path)
+    calls = []
+
+    def fake_run_proxy(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("snulbug.proxy.run_proxy", fake_run_proxy)
+
+    status = simulator_main(
+        [
+            "mcp",
+            "proxy",
+            "--config",
+            str(config),
+            "--cloudflare-access",
+            "enforce",
+            "--cloudflare-access-require-email",
+            "--no-cloudflare-access-require-cf-ray",
+            "--cloudflare-access-allow-email",
+            "dev@example.com",
+            "--cloudflare-access-allow-domain",
+            "example.com",
+        ]
+    )
+
+    assert status == 0
+    assert calls[0]["cloudflare_access"] == "enforce"
+    assert calls[0]["cloudflare_access_require_jwt"] is True
+    assert calls[0]["cloudflare_access_require_email"] is True
+    assert calls[0]["cloudflare_access_require_cf_ray"] is False
+    assert calls[0]["cloudflare_access_allowed_emails"] == ["dev@example.com"]
+    assert calls[0]["cloudflare_access_allowed_domains"] == ["example.com"]
 
 
 def write_config(tmp_path):
