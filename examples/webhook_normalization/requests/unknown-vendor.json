@@ -1,0 +1,8 @@
+{
+  "method": "POST",
+  "path": "/webhooks/pagerduty",
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"event\":\"incident.triggered\"}"
+}

@@ -1,0 +1,9 @@
+{
+  "method": "POST",
+  "path": "/webhooks/stripe",
+  "headers": {
+    "content-type": "application/json",
+    "stripe-signature": "demo"
+  },
+  "body": "{\"id\":\"evt_123\",\"type\":\"invoice.payment_succeeded\",\"data\":{\"object\":{\"customer\":\"cus_456\"}}}"
+}

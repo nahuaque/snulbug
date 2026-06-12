@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,8 +73,17 @@ class LuaMiddleware:
             return
 
         if action == "rewrite":
+            replacement_body = _rewrite_body_bytes(decision, body_was_read=self.config.read_body)
             _apply_rewrite(child_scope, decision)
+            if replacement_body is not None:
+                replay_receive = _single_body_receive(replacement_body)
+                child_scope["headers"] = _merge_headers(
+                    child_scope.get("headers", []),
+                    [(b"content-length", str(len(replacement_body)).encode("ascii"))],
+                )
             _merge_context(child_scope, self.config.context_scope_key, decision.get("context"))
+            if self.config.trace and replacement_body is not None:
+                child_scope[self.config.trace_scope_key]["body_rewritten"] = True
             await self.app(child_scope, replay_receive, send)
             return
 
@@ -294,3 +304,33 @@ async def _send_response(send: Send, *, status: int, headers: list[tuple[bytes, 
             "more_body": False,
         }
     )
+
+
+def _rewrite_body_bytes(decision: Mapping[str, Any], *, body_was_read: bool) -> bytes | None:
+    has_body = "body" in decision
+    has_body_base64 = "body_base64" in decision
+    if not has_body and not has_body_base64:
+        return None
+    if has_body and has_body_base64:
+        raise LuaDecisionError("Lua rewrite may set either 'body' or 'body_base64', not both")
+    if not body_was_read:
+        raise LuaDecisionError("Lua rewrite body replacement requires LuaConfig(read_body=True)")
+    if has_body_base64:
+        try:
+            return base64.b64decode(str(decision["body_base64"]), validate=True)
+        except Exception as exc:
+            raise LuaDecisionError("Lua rewrite field 'body_base64' must be valid base64") from exc
+    return _body_bytes(decision.get("body"))
+
+
+def _single_body_receive(body: bytes) -> Receive:
+    sent = False
+
+    async def receive() -> Message:
+        nonlocal sent
+        if sent:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return receive

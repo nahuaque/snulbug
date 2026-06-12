@@ -1,0 +1,8 @@
+{
+  "method": "POST",
+  "path": "/webhooks/stripe",
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"data\":{\"object\":{\"customer\":\"cus_456\"}}}"
+}

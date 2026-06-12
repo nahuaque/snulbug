@@ -72,7 +72,7 @@ Supported actions:
 
 - `continue`: call the downstream ASGI app.
 - `set_context`: merge `context` into `scope["lua"]`, then continue.
-- `rewrite`: update `path`, `query`, `query_string`, and/or request `headers`, then continue.
+- `rewrite`: update `path`, `query`, `query_string`, request `headers`, and/or the bounded request `body`, then continue.
 - `respond`: send a response directly.
 - `reject`: send an error response directly. Defaults to HTTP 403.
 
@@ -87,6 +87,9 @@ database clients.
 - `instruction_limit`, enforced with a Lua debug hook for runaway scripts.
 - `memory_limit_bytes`, passed to Lupa when supported.
 - `read_body` and `max_body_bytes`, so body access is explicit and bounded.
+
+Request body rewrites require `LuaConfig(read_body=True)`. The middleware
+updates `content-length` when a policy replaces the body.
 
 This is still an in-process extension mechanism. Use a separate process or a
 stronger isolation boundary for hostile third-party code.

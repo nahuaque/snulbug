@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "path": "/webhooks/github",
+  "headers": {
+    "content-type": "application/json",
+    "x-github-event": "push",
+    "x-github-delivery": "2f1c2a3b-demo"
+  },
+  "body": "{\"repository\":{\"full_name\":\"octo-org/widgets\"},\"ref\":\"refs/heads/main\"}"
+}

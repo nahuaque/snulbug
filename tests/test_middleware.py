@@ -131,6 +131,42 @@ def test_lua_can_rewrite_request_and_replay_body():
     assert sent[1]["body"] == b"POST /normalized?from=%2Fin hello"
 
 
+def test_lua_can_rewrite_request_body():
+    middleware = LuaMiddleware(
+        app,
+        """
+        return function(request, context)
+          return {
+            action = "rewrite",
+            path = "/normalized",
+            headers = { ["content-type"] = "application/json" },
+            body = '{"normalized":true}'
+          }
+        end
+        """,
+        config=LuaConfig(read_body=True, trace=True),
+    )
+
+    sent = run_asgi(middleware, body=b'{"raw":true}')
+
+    assert sent[0]["status"] == 200
+    assert sent[1]["body"] == b'POST /normalized? {"normalized":true}'
+
+
+def test_lua_body_rewrite_requires_body_reading():
+    middleware = LuaMiddleware(
+        app,
+        """
+        return function(request, context)
+          return { action = "rewrite", body = "normalized" }
+        end
+        """,
+    )
+
+    with pytest.raises(LuaDecisionError, match="requires LuaConfig"):
+        run_asgi(middleware, body=b"raw")
+
+
 def test_body_limit_rejects_before_lua_runs():
     middleware = LuaMiddleware(
         app,
