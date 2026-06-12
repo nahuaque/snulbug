@@ -151,7 +151,7 @@ def _workflows() -> dict[str, dict[str, Any]]:
                 {
                     "id": "expose-proxy",
                     "title": "Expose the proxy, not the upstream",
-                    "command": "ngrok http 8080",
+                    "command": "ngrok http 8080 --traffic-policy-file tunnel.ngrok/ngrok-traffic-policy.yml",
                     "requires": ["proxy listening on port 8080"],
                     "produces": ["public tunnel URL"],
                     "success_signals": ["public URL forwards to snulbug, not directly to the MCP server"],

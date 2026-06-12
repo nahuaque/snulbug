@@ -88,7 +88,7 @@ Expose the proxy, not the upstream server:
 
 ```bash
 uv run snulbug tunnel init --provider ngrok --hostname YOUR-TUNNEL.ngrok.app
-ngrok http 8080
+ngrok http 8080 --url https://YOUR-TUNNEL.ngrok.app --traffic-policy-file ngrok-traffic-policy.yml
 ```
 
 Before sharing the tunnel URL, run the doctor:

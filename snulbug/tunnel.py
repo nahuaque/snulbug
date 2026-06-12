@@ -183,6 +183,7 @@ def init_tunnel_provider(
         "public_url": public_endpoint,
         "token_env": token_env,
         "commands": plan["commands"],
+        "traffic_policy": plan.get("traffic_policy"),
         "client": plan["client"],
         "doctor": plan["doctor"],
         "files": files,
@@ -435,6 +436,11 @@ def _public_endpoint(
     return f"https://{host}{normalized_path}"
 
 
+def _url_origin(value: str) -> str:
+    parsed = urlsplit(value)
+    return urlunsplit(parsed._replace(path="", query="", fragment="")).rstrip("/")
+
+
 def _provider_plan(
     provider: str,
     *,
@@ -446,16 +452,29 @@ def _provider_plan(
     token = f"${{{token_env}}}"
     if provider == "ngrok":
         tunnel_target = _ngrok_target(origin)
-        public_host = urlsplit(public_endpoint).hostname or "YOUR-TUNNEL.ngrok.app"
-        domain_arg = "" if public_host == "YOUR-TUNNEL.ngrok.app" else f" --domain {public_host}"
+        public_origin = _url_origin(public_endpoint)
+        url_arg = "" if public_origin == "https://YOUR-TUNNEL.ngrok.app" else f" --url {public_origin}"
+        traffic_policy_file = "ngrok-traffic-policy.yml"
         commands = [
             {
                 "id": "run-ngrok",
                 "title": "Expose snulbug with ngrok",
-                "description": "Point ngrok at the snulbug proxy origin, not the upstream MCP server.",
-                "command": f"ngrok http{domain_arg} {tunnel_target}",
+                "description": "Point ngrok at the snulbug proxy origin with the generated Traffic Policy guard.",
+                "command": f"ngrok http {tunnel_target}{url_arg} --traffic-policy-file {traffic_policy_file}",
             }
         ]
+        traffic_policy = {
+            "path": traffic_policy_file,
+            "mode": "edge-guard",
+            "checks": [
+                "deny non-MCP paths",
+                "require Authorization header",
+                "require Bearer token shape",
+                "restrict HTTP methods",
+                "require JSON content type on POST",
+                "add snulbug/ngrok audit headers",
+            ],
+        }
     elif provider == "cloudflare":
         public_host = urlsplit(public_endpoint).hostname or "mcp.example.com"
         commands = [
@@ -477,6 +496,7 @@ def _provider_plan(
                 "command": "cloudflared tunnel --config cloudflared.yml run snulbug-mcp",
             },
         ]
+        traffic_policy = None
     elif provider == "tailscale":
         funnel_target = _tailscale_target(origin)
         commands = [
@@ -487,6 +507,7 @@ def _provider_plan(
                 "command": f"sudo tailscale funnel {funnel_target}",
             }
         ]
+        traffic_policy = None
     else:
         commands = [
             {
@@ -496,10 +517,12 @@ def _provider_plan(
                 "command": f"# Configure your tunnel provider to forward public HTTPS traffic to {origin}",
             }
         ]
+        traffic_policy = None
 
     doctor_command = _doctor_command(provider, public_endpoint=public_endpoint, token_env=token_env)
     return {
         "commands": commands,
+        "traffic_policy": traffic_policy,
         "client": {
             "url": public_endpoint,
             "headers": {"Authorization": f"Bearer {token}"},
@@ -576,7 +599,7 @@ def _tunnel_init_files(
             {
                 "path": "ngrok-traffic-policy.yml",
                 "kind": "ngrok-traffic-policy",
-                "contents": _ngrok_traffic_policy(),
+                "contents": _ngrok_traffic_policy(public_endpoint),
             }
         )
     return files
@@ -623,6 +646,7 @@ def _tunnel_readme(
             )
         )
     doctor = plan["doctor"]["command"]
+    provider_notes = _provider_readme_notes(provider, plan)
     commands = "\n\n".join(command_sections)
     return (
         f"# snulbug {provider} tunnel setup\n\n"
@@ -634,11 +658,28 @@ def _tunnel_readme(
         f"export {token_env}=local-dev-secret\n"
         "```\n\n"
         f"{commands}\n\n"
+        f"{provider_notes}"
         "## Verify before sharing\n\n"
         "```bash\n"
         f"{doctor}\n"
         "```\n\n"
         "Point MCP clients at the public MCP URL only after `snulbug tunnel doctor` passes.\n"
+    )
+
+
+def _provider_readme_notes(provider: str, plan: Mapping[str, Any]) -> str:
+    if provider != "ngrok":
+        return ""
+    traffic_policy = plan.get("traffic_policy")
+    if not isinstance(traffic_policy, Mapping):
+        return ""
+    checks = "\n".join(f"- {check}" for check in traffic_policy.get("checks", []))
+    return (
+        "## Ngrok Traffic Policy\n\n"
+        f"The generated `{traffic_policy.get('path')}` file is an edge guard for local-dev MCP traffic:\n\n"
+        f"{checks}\n\n"
+        "Run the ngrok command from this directory, or pass an absolute path to "
+        "`--traffic-policy-file`.\n\n"
     )
 
 
@@ -655,17 +696,72 @@ def _cloudflared_config(origin: str, public_endpoint: str) -> str:
     )
 
 
-def _ngrok_traffic_policy() -> str:
+def _ngrok_traffic_policy(public_endpoint: str) -> str:
+    mcp_path = urlsplit(public_endpoint).path or DEFAULT_MCP_PATH
+    public_url = _normalize_url(public_endpoint, mcp_path)
+    expressions = {
+        "non_mcp_path": f"req.url.path != {json.dumps(mcp_path)}",
+        "missing_authorization": "!hasReqHeader('Authorization')",
+        "invalid_bearer": "!getReqHeader('Authorization').exists(v, v.matches('^Bearer .+'))",
+        "disallowed_method": "!(req.method in ['GET', 'POST', 'OPTIONS', 'DELETE'])",
+        "invalid_post_content_type": (
+            "req.method == 'POST' && "
+            "!getReqHeader('Content-Type').exists(v, v.matches('(?i)^application/json($|[; ])'))"
+        ),
+    }
     return (
+        "# Generated by snulbug. This is a coarse ngrok edge guard; snulbug still\n"
+        "# performs MCP-aware authorization, replay recording, auditing, and response policy.\n"
         "on_http_request:\n"
-        "  - expressions:\n"
-        "      - \"!hasReqHeader('Authorization')\"\n"
+        "  - name: Add snulbug tunnel audit headers\n"
+        "    actions:\n"
+        "      - type: add-headers\n"
+        "        config:\n"
+        "          headers:\n"
+        '            x-snulbug-tunnel-provider: "ngrok"\n'
+        '            x-snulbug-traffic-policy: "ngrok-mcp-v1"\n'
+        f"            x-snulbug-public-url: {_yaml_string(public_url)}\n"
+        '            x-snulbug-edge-client-ip: "${conn.client_ip}"\n'
+        "  - name: Hide non-MCP paths\n"
+        "    expressions:\n"
+        f"      - {_yaml_string(expressions['non_mcp_path'])}\n"
+        "    actions:\n"
+        "      - type: deny\n"
+        "        config:\n"
+        "          status_code: 404\n"
+        "  - name: Require Authorization header\n"
+        "    expressions:\n"
+        f"      - {_yaml_string(expressions['missing_authorization'])}\n"
         "    actions:\n"
         "      - type: deny\n"
         "        config:\n"
         "          status_code: 401\n"
-        '          body: "Authorization required"\n'
+        "  - name: Require Bearer Authorization value\n"
+        "    expressions:\n"
+        f"      - {_yaml_string(expressions['invalid_bearer'])}\n"
+        "    actions:\n"
+        "      - type: deny\n"
+        "        config:\n"
+        "          status_code: 401\n"
+        "  - name: Restrict MCP HTTP methods\n"
+        "    expressions:\n"
+        f"      - {_yaml_string(expressions['disallowed_method'])}\n"
+        "    actions:\n"
+        "      - type: deny\n"
+        "        config:\n"
+        "          status_code: 405\n"
+        "  - name: Require JSON POST bodies\n"
+        "    expressions:\n"
+        f"      - {_yaml_string(expressions['invalid_post_content_type'])}\n"
+        "    actions:\n"
+        "      - type: deny\n"
+        "        config:\n"
+        "          status_code: 415\n"
     )
+
+
+def _yaml_string(value: str) -> str:
+    return json.dumps(value)
 
 
 def _run_target_checks(
@@ -831,7 +927,7 @@ def _scope_client(scope: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 def _source_ip(headers: Mapping[str, str], scope: Mapping[str, Any]) -> str | None:
-    for header in ("cf-connecting-ip", "true-client-ip", "x-real-ip"):
+    for header in ("cf-connecting-ip", "true-client-ip", "x-real-ip", "x-snulbug-edge-client-ip"):
         if headers.get(header):
             return headers[header]
     forwarded = _forwarded_chain(headers.get("x-forwarded-for"))

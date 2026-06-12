@@ -18,11 +18,39 @@ def test_tunnel_init_ngrok_generates_command_doctor_and_policy_snippet():
     assert result["ok"] is True
     assert result["local_origin"] == "http://127.0.0.1:8080"
     assert result["public_url"] == "https://mcp-dev.ngrok.app/mcp"
-    assert result["commands"][0]["command"] == "ngrok http --domain mcp-dev.ngrok.app 8080"
+    assert result["commands"][0]["command"] == (
+        "ngrok http 8080 --url https://mcp-dev.ngrok.app --traffic-policy-file ngrok-traffic-policy.yml"
+    )
+    assert result["traffic_policy"]["path"] == "ngrok-traffic-policy.yml"
+    assert "require Authorization header" in result["traffic_policy"]["checks"]
     assert result["doctor"]["command"].startswith("snulbug tunnel doctor")
     assert "--provider ngrok" in result["doctor"]["command"]
     policy_file = next(file for file in result["files"] if file["path"] == "ngrok-traffic-policy.yml")
+    assert 'x-snulbug-traffic-policy: "ngrok-mcp-v1"' in policy_file["contents"]
+    assert 'req.url.path != \\"/mcp\\"' in policy_file["contents"]
     assert "!hasReqHeader('Authorization')" in policy_file["contents"]
+    assert "!getReqHeader('Authorization').exists(v, v.matches('^Bearer .+'))" in policy_file["contents"]
+    assert "!(req.method in ['GET', 'POST', 'OPTIONS', 'DELETE'])" in policy_file["contents"]
+    assert "req.method == 'POST'" in policy_file["contents"]
+    assert 'body: "Authorization required"' not in policy_file["contents"]
+
+
+def test_tunnel_init_ngrok_writes_readme_and_traffic_policy(tmp_path):
+    output_dir = tmp_path / "ngrok"
+
+    result = init_tunnel_provider(
+        provider="ngrok",
+        local_url="http://127.0.0.1:8080/mcp",
+        hostname="mcp-dev.ngrok.app",
+        output_dir=output_dir,
+    )
+
+    readme = output_dir / "README.md"
+    policy = output_dir / "ngrok-traffic-policy.yml"
+    assert result["written_files"] == [str(readme), str(policy)]
+    assert "--traffic-policy-file ngrok-traffic-policy.yml" in readme.read_text(encoding="utf-8")
+    assert "Ngrok Traffic Policy" in readme.read_text(encoding="utf-8")
+    assert 'x-snulbug-public-url: "https://mcp-dev.ngrok.app/mcp"' in policy.read_text(encoding="utf-8")
 
 
 def test_tunnel_init_cloudflare_writes_generated_files(tmp_path):

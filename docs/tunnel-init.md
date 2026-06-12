@@ -20,9 +20,19 @@ snulbug tunnel init \
 Generated output includes:
 
 - an `ngrok http` command pointed at the snulbug proxy origin
-- an optional `ngrok-traffic-policy.yml` guard that rejects requests missing an
-  `Authorization` header before they reach snulbug
+- an `ngrok-traffic-policy.yml` guard that rejects non-MCP paths, missing or
+  malformed bearer auth, unexpected methods, and non-JSON POSTs before they
+  reach snulbug
 - the `snulbug tunnel doctor --provider ngrok ...` command to run before sharing
+
+Run the generated ngrok command from the output directory, or pass an absolute
+path to `--traffic-policy-file`:
+
+```bash
+ngrok http 8080 \
+  --url https://YOUR-TUNNEL.ngrok.app \
+  --traffic-policy-file ngrok-traffic-policy.yml
+```
 
 ## Cloudflare Tunnel
 
