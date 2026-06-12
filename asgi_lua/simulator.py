@@ -122,6 +122,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     bundle_pack.add_argument("output", type=Path, help="output tar.gz path")
     bundle_pack.add_argument("--compact", action="store_true", help="emit compact JSON")
 
+    mcp = subparsers.add_parser("mcp", help="work with local-dev MCP policy helpers and presets")
+    mcp_subparsers = mcp.add_subparsers(dest="mcp_command", required=True)
+
+    mcp_presets = mcp_subparsers.add_parser("presets", help="list bundled MCP policy presets")
+    mcp_presets.add_argument("--compact", action="store_true", help="emit compact JSON")
+
+    mcp_init = mcp_subparsers.add_parser("init", help="copy a bundled MCP policy preset")
+    mcp_init.add_argument("preset", nargs="?", default="local-dev-safe", help="preset name to copy")
+    mcp_init.add_argument("--output", type=Path, help="output bundle directory")
+    mcp_init.add_argument("--force", action="store_true", help="overwrite the output directory when it exists")
+    mcp_init.add_argument("--compact", action="store_true", help="emit compact JSON")
+
     args = parser.parse_args(argv)
     if args.command == "simulate":
         request = _read_json(args.request)
@@ -179,6 +191,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             status = 0 if result["ok"] else 1
         else:
             parser.error(f"unknown bundle command: {args.bundle_command}")
+            return 2
+
+        indent = None if args.compact else 2
+        sys.stdout.write(json.dumps(result, indent=indent, sort_keys=True))
+        sys.stdout.write("\n")
+        return status
+
+    if args.command == "mcp":
+        from .presets import copy_builtin_preset, list_builtin_presets
+
+        if args.mcp_command == "presets":
+            result = {"presets": list_builtin_presets()}
+            status = 0
+        elif args.mcp_command == "init":
+            output = args.output or Path(f"{args.preset}.asgi-lua")
+            try:
+                result = copy_builtin_preset(args.preset, output, force=args.force)
+                result["next_steps"] = [
+                    f"uv run asgi-lua bundle validate {output}",
+                    f"uv run asgi-lua bundle test {output}",
+                ]
+                status = 0
+            except Exception as exc:
+                result = {"ok": False, "preset": args.preset, "output": str(output), "error": str(exc)}
+                status = 1
+        else:
+            parser.error(f"unknown mcp command: {args.mcp_command}")
             return 2
 
         indent = None if args.compact else 2

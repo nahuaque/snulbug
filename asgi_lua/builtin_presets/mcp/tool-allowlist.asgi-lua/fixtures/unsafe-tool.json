@@ -1,0 +1,8 @@
+{
+  "method": "POST",
+  "path": "/mcp",
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"shell_exec\",\"arguments\":{\"cmd\":\"id\"}}}"
+}

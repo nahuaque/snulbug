@@ -1,0 +1,34 @@
+{
+  "name": "mcp-tool-allowlist",
+  "version": "0.1.0",
+  "entrypoint": "policy.lua",
+  "description": "Allow only named MCP tools while passing non-tool JSON-RPC methods through",
+  "required_capabilities": ["body", "mcp"],
+  "fixtures": [
+    {
+      "name": "safe tool continues",
+      "request": "fixtures/safe-tool.json",
+      "expect": {
+        "action": "continue",
+        "decision.context.tool": "safe_read_file"
+      }
+    },
+    {
+      "name": "unsafe tool is rejected",
+      "request": "fixtures/unsafe-tool.json",
+      "expect": {
+        "action": "reject",
+        "status": 403,
+        "body": "MCP tool not allowed: shell_exec"
+      }
+    },
+    {
+      "name": "tools list continues",
+      "request": "fixtures/tools-list.json",
+      "expect": {
+        "action": "continue",
+        "decision.context.method": "tools/list"
+      }
+    }
+  ]
+}

@@ -8,6 +8,7 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 
 - Added public GitHub project metadata, CI, contribution docs, security docs, issue templates, and reference documentation.
 - Added the basic ASGI middleware example under `examples/basic`.
+- Added bundled MCP policy presets with `asgi-lua mcp presets` and `asgi-lua mcp init`.
 
 ## [0.1.0] - 2026-06-12
 

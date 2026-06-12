@@ -359,6 +359,20 @@ if blocked ~= nil then
 end
 ```
 
+Bundled MCP presets can be copied into a project:
+
+```bash
+uv run asgi-lua mcp presets
+uv run asgi-lua mcp init local-dev-safe --output policy.asgi-lua
+uv run asgi-lua bundle test policy.asgi-lua
+```
+
+Included presets:
+
+- `local-dev-safe`: bearer auth, MCP tool allowlist, and middleware-owned rate limit.
+- `auth-required`: bearer auth only.
+- `tool-allowlist`: MCP `tools/call` allowlist only.
+
 ## Bounded policy state
 
 Policies can use small state capabilities when the middleware is configured with

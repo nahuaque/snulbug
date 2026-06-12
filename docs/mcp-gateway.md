@@ -38,3 +38,10 @@ if blocked ~= nil then
   return blocked
 end
 ```
+
+For a packaged starter policy, use the bundled presets:
+
+```bash
+uv run asgi-lua mcp presets
+uv run asgi-lua mcp init local-dev-safe --output policy.asgi-lua
+```

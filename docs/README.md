@@ -8,5 +8,6 @@ Start here:
 - [State adapters](state.md)
 - [Policy bundles](bundles.md)
 - [MCP gateway example](mcp-gateway.md)
+- [MCP presets](mcp-presets.md)
 - [Security model](security-model.md)
 - [Release process](release.md)

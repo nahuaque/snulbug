@@ -1,0 +1,26 @@
+{
+  "name": "mcp-auth-required",
+  "version": "0.1.0",
+  "entrypoint": "policy.lua",
+  "description": "Require a local bearer token before an MCP request reaches the downstream app",
+  "required_capabilities": [],
+  "fixtures": [
+    {
+      "name": "authenticated request continues",
+      "request": "fixtures/authenticated.json",
+      "expect": {
+        "action": "continue",
+        "decision.context.policy": "mcp-auth-required"
+      }
+    },
+    {
+      "name": "missing token is challenged",
+      "request": "fixtures/missing-token.json",
+      "expect": {
+        "action": "challenge",
+        "body": "MCP bearer token required",
+        "decision.realm": "local-mcp"
+      }
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "name": "mcp-local-dev-safe",
+  "version": "0.1.0",
+  "entrypoint": "policy.lua",
+  "description": "Require bearer auth, allow only safe MCP tools, and apply a fixed-window local-dev rate limit",
+  "required_capabilities": ["body", "mcp", "state", "rate_limit"],
+  "limits": {
+    "max_body_bytes": 16384,
+    "max_state_operations": 4,
+    "max_key_bytes": 128
+  },
+  "fixtures": [
+    {
+      "name": "safe tool call declares rate limit",
+      "request": "fixtures/safe-tool.json",
+      "state": "snapshots/empty.json",
+      "expect": {
+        "action": "rate_limit",
+        "decision.context.policy": "mcp-local-dev-safe",
+        "decision.context.method": "tools/call",
+        "decision.context.tool": "safe_read_file",
+        "decision.limit": 60
+      }
+    },
+    {
+      "name": "unsafe tool call is rejected",
+      "request": "fixtures/unsafe-tool.json",
+      "state": "snapshots/empty.json",
+      "expect": {
+        "action": "reject",
+        "status": 403,
+        "body": "MCP tool not allowed: shell_exec"
+      }
+    },
+    {
+      "name": "missing token is challenged",
+      "request": "fixtures/missing-token.json",
+      "state": "snapshots/empty.json",
+      "expect": {
+        "action": "challenge",
+        "body": "MCP bearer token required",
+        "decision.realm": "local-mcp"
+      }
+    }
+  ]
+}
