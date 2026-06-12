@@ -217,6 +217,79 @@ uv run snulbug tunnel doctor \
   --token local-dev-secret
 ```
 
+### Holepunch peer bridge with Hypertele
+
+Use this when both sides can run a local sidecar and you want a private peer
+bridge instead of a public tunnel URL. The MCP client talks to a local port on
+the client machine; Hypertele carries traffic to snulbug on the developer
+machine.
+
+On the snulbug machine:
+
+```bash
+uv run snulbug mcp quickstart \
+  --preset tunnel-safe \
+  --upstream http://127.0.0.1:9000 \
+  --token local-dev-secret \
+  --allow-tool safe_read_file \
+  --allow-tool list_project_files \
+  --force
+
+uv run snulbug tunnel init \
+  --provider holepunch \
+  --config snulbug.toml \
+  --output-dir tunnel.holepunch
+
+uv run snulbug mcp proxy --config snulbug.toml --decision-console
+hypertele-server -l 8080 --address 127.0.0.1 -c tunnel.holepunch/hypertele-server.json --private
+```
+
+Replace the placeholder seed and peer keys in the generated Hypertele configs,
+then run the client bridge on the MCP client machine:
+
+```bash
+hypertele -p 18080 -c hypertele-client.json --private
+```
+
+Point the MCP client at the local bridge:
+
+```text
+http://127.0.0.1:18080/mcp
+Authorization: Bearer local-dev-secret
+```
+
+Use explicit audit labels in `snulbug.toml`:
+
+```toml
+[mcp.proxy]
+tunnel_provider = "holepunch"
+tunnel_public_url = "http://127.0.0.1:18080/mcp"
+lease_file = "leases.json"
+lease_required = false
+lease_header = "x-snulbug-lease"
+```
+
+Mint a lease the same way as the public tunnel recipes:
+
+```bash
+uv run snulbug mcp lease create \
+  --file leases.json \
+  --task "Holepunch MCP peer session" \
+  --allow-tool safe_read_file \
+  --allow-tool list_project_files \
+  --ttl 30m
+```
+
+Run doctor from a machine where the client-side bridge is listening:
+
+```bash
+uv run snulbug tunnel doctor \
+  --provider holepunch \
+  --url http://127.0.0.1:18080/mcp \
+  --config snulbug.toml \
+  --token local-dev-secret
+```
+
 For public tunnels, treat `tunnel-safe` as the recommended default. Do not expose
 the `tool-allowlist` preset by itself unless another tunnel or network layer
 already authenticates callers and rejects abusive traffic.

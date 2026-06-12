@@ -133,6 +133,74 @@ def test_tunnel_init_tailscale_readme_includes_bearer_and_lease_defaults(tmp_pat
     assert "lease_required = true" in text
 
 
+def test_tunnel_init_holepunch_generates_hypertele_bridge_files(tmp_path):
+    output_dir = tmp_path / "holepunch"
+
+    result = init_tunnel_provider(
+        provider="holepunch",
+        local_url="http://127.0.0.1:8080/mcp",
+        output_dir=output_dir,
+    )
+
+    readme = output_dir / "README.md"
+    server_config = output_dir / "hypertele-server.json"
+    client_config = output_dir / "hypertele-client.json"
+    assert result["provider"] == "holepunch"
+    assert result["public_url"] == "http://127.0.0.1:18080/mcp"
+    assert result["bridge"] == {
+        "transport": "hypertele",
+        "mode": "private",
+        "server_config": "hypertele-server.json",
+        "client_config": "hypertele-client.json",
+        "server_address": "127.0.0.1",
+        "server_port": 8080,
+        "client_url": "http://127.0.0.1:18080/mcp",
+        "client_host": "127.0.0.1",
+        "client_port": 18080,
+    }
+    assert result["commands"][0]["command"] == (
+        "hypertele-server -l 8080 --address 127.0.0.1 -c hypertele-server.json --private"
+    )
+    assert result["commands"][1]["command"] == "hypertele -p 18080 -c hypertele-client.json --private"
+    assert result["written_files"] == [str(readme), str(server_config), str(client_config)]
+    assert json.loads(server_config.read_text(encoding="utf-8")) == {
+        "seed": "REPLACE_WITH_32_BYTE_SERVER_SEED",
+        "allow": ["REPLACE_WITH_CLIENT_PEER_KEY"],
+    }
+    assert json.loads(client_config.read_text(encoding="utf-8")) == {
+        "peer": "REPLACE_WITH_SERVER_PEER_KEY_OR_PRIVATE_SEED"
+    }
+    readme_text = readme.read_text(encoding="utf-8")
+    assert "Holepunch peer bridge" in readme_text
+    assert "Authorization: Bearer ${SNULBUG_TOKEN}" in readme_text
+    assert 'tunnel_provider = "holepunch"' in readme_text
+    assert "snulbug mcp lease create" in readme_text
+
+
+def test_tunnel_init_cli_emits_compact_holepunch_plan(capsys):
+    status = simulator_main(
+        [
+            "tunnel",
+            "init",
+            "--provider",
+            "holepunch",
+            "--local-url",
+            "http://127.0.0.1:8181/mcp",
+            "--url",
+            "http://127.0.0.1:19000/mcp",
+            "--compact",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert status == 0
+    assert output["provider"] == "holepunch"
+    assert output["public_url"] == "http://127.0.0.1:19000/mcp"
+    assert output["bridge"]["server_port"] == 8181
+    assert output["bridge"]["client_port"] == 19000
+    assert output["client"]["headers"]["Authorization"] == "Bearer ${SNULBUG_TOKEN}"
+
+
 def test_format_tunnel_init_report_includes_commands_and_client():
     result = init_tunnel_provider(provider="generic", local_url="http://127.0.0.1:8080/mcp")
 

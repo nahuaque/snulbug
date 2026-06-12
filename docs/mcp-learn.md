@@ -89,9 +89,9 @@ and inspection workflows can explain why enforcement changed.
 ## Review Before Tunnels
 
 Learned policies are intentionally mechanical. Review `LEARNED.md` and
-`policy.lua` before using the result with ngrok, Cloudflare Tunnel, or another
-public tunnel. If the session missed a legitimate workflow, run that workflow
-through the proxy and regenerate the bundle.
+`policy.lua` before using the result with ngrok, Cloudflare Tunnel, Holepunch,
+or another tunnel/peer bridge. If the session missed a legitimate workflow, run
+that workflow through the proxy and regenerate the bundle.
 
 ## Amend a Learned Policy
 

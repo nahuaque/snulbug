@@ -51,6 +51,22 @@ snulbug tunnel doctor \
   --token local-dev-secret
 ```
 
+For a Holepunch/Hypertele peer bridge, run doctor from a machine where the
+client-side bridge is listening:
+
+```bash
+snulbug tunnel doctor \
+  --provider holepunch \
+  --url http://127.0.0.1:18080/mcp \
+  --config snulbug.toml \
+  --token local-dev-secret
+```
+
+Holepunch bridges do not expose a stable public hostname or edge header, so the
+provider-hint check is informational. Use `tunnel_provider = "holepunch"` and
+`tunnel_public_url = "http://127.0.0.1:18080/mcp"` in `snulbug.toml` when you
+want audit events to carry explicit peer-bridge labels.
+
 ## What it checks
 
 - the local URL, inferred from `snulbug.toml` when possible, accepts HTTP

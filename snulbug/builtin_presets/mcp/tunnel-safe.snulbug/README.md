@@ -1,7 +1,7 @@
 # MCP Tunnel Safe
 
 Risk profile for exposing a local MCP HTTP server through ngrok, Cloudflare
-Tunnel, or another public-ish tunnel.
+Tunnel, Tailscale Funnel, Holepunch peer bridges, or another tunnel.
 
 It requires `Authorization: Bearer local-dev-secret`, rejects JSON-RPC batch
 requests, allows only `safe_read_file` and `list_project_files`, and delegates

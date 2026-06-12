@@ -1,11 +1,12 @@
 # Tunnel init
 
 `snulbug tunnel init` generates provider-specific setup commands and optional
-config snippets for exposing the snulbug MCP proxy through a public tunnel.
+config snippets for exposing the snulbug MCP proxy through a public tunnel or
+private peer bridge.
 
-It does not run ngrok, cloudflared, or Tailscale for you. It gives you the
-commands, client URL/header values, and doctor command to run before sharing the
-endpoint.
+It does not run ngrok, cloudflared, Tailscale, or Hypertele for you. It gives
+you the commands, client URL/header values, and doctor command to run before
+sharing the endpoint.
 
 ## Ngrok
 
@@ -129,6 +130,61 @@ x-snulbug-lease: <lease token>
 Set `lease_required = true` when every `tools/call` through the Funnel should
 carry an active lease.
 
+## Holepunch peer bridge
+
+```bash
+snulbug tunnel init \
+  --provider holepunch \
+  --config snulbug.toml \
+  --output-dir tunnel.holepunch
+```
+
+Generated output includes:
+
+- a Hypertele server command for the snulbug machine
+- a Hypertele client command for the MCP client machine
+- `hypertele-server.json` and `hypertele-client.json` placeholder configs
+- a local client-side MCP URL, defaulting to `http://127.0.0.1:18080/mcp`
+- explicit snulbug bearer and lease defaults
+
+Holepunch support is a private peer bridge, not a public HTTPS tunnel. The MCP
+client connects to a local port on the client machine; Hypertele carries that
+traffic over the peer bridge to the snulbug proxy.
+
+On the snulbug machine:
+
+```bash
+uv run snulbug mcp proxy --config snulbug.toml --decision-console
+hypertele-server -l 8080 --address 127.0.0.1 -c hypertele-server.json --private
+```
+
+On the MCP client machine:
+
+```bash
+hypertele -p 18080 -c hypertele-client.json --private
+```
+
+Point the MCP client at:
+
+```text
+http://127.0.0.1:18080/mcp
+Authorization: Bearer ${SNULBUG_TOKEN}
+```
+
+Recommended config labels for audit events:
+
+```toml
+[mcp.proxy]
+tunnel_provider = "holepunch"
+tunnel_public_url = "http://127.0.0.1:18080/mcp"
+lease_file = "leases.json"
+lease_required = false
+lease_header = "x-snulbug-lease"
+```
+
+Set `lease_required = true` when every peer-bridged `tools/call` should carry an
+active task lease.
+
 ## Compact JSON
 
 Agentic harnesses can consume the plan directly:
@@ -138,7 +194,7 @@ snulbug tunnel init --provider ngrok --hostname YOUR-TUNNEL.ngrok.app --compact
 ```
 
 The compact output includes `commands`, `client`, `doctor`, generated `files`,
-and `next_steps`.
+provider-specific `bridge` metadata when present, and `next_steps`.
 
 For explicit audit labels while proxying, copy the generated public URL into
 `snulbug.toml`:

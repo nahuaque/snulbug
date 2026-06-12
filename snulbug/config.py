@@ -177,8 +177,10 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         raise ValueError("mcp.proxy.tool_pinning_action must be 'warn' or 'block'")
     if normalized["schema_validation_action"] not in {"warn", "block"}:
         raise ValueError("mcp.proxy.schema_validation_action must be 'warn' or 'block'")
-    if normalized["tunnel_provider"] not in {"auto", "generic", "ngrok", "cloudflare", "tailscale"}:
-        raise ValueError("mcp.proxy.tunnel_provider must be 'auto', 'generic', 'ngrok', 'cloudflare', or 'tailscale'")
+    if normalized["tunnel_provider"] not in {"auto", "generic", "ngrok", "cloudflare", "tailscale", "holepunch"}:
+        raise ValueError(
+            "mcp.proxy.tunnel_provider must be 'auto', 'generic', 'ngrok', 'cloudflare', 'tailscale', or 'holepunch'"
+        )
     if normalized["cloudflare_access"] not in {"off", "audit", "enforce"}:
         raise ValueError("mcp.proxy.cloudflare_access must be 'off', 'audit', or 'enforce'")
 

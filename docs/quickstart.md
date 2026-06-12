@@ -200,11 +200,12 @@ header.
 With `decision_console = true`, the proxy prints one redacted policy decision
 per request, including the MCP method, operation target, action, and reason
 code.
-When traffic arrives through ngrok, Cloudflare Tunnel, Tailscale Funnel, or a
-generic forwarder, audit events also include provider-aware `tunnel` fields such
-as provider, public URL, source IP, forwarding chain, and edge request id when
-available. Set `tunnel_provider` and `tunnel_public_url` in `snulbug.toml` when
-you want explicit values instead of auto-detection.
+When traffic arrives through ngrok, Cloudflare Tunnel, Tailscale Funnel,
+Holepunch, or a generic forwarder, audit events also include provider-aware
+`tunnel` fields such as provider, public URL or peer bridge URL, source IP,
+forwarding chain, and edge request id when available. Set `tunnel_provider` and
+`tunnel_public_url` in `snulbug.toml` when you want explicit values instead of
+auto-detection.
 
 If the tunnel is protected by Cloudflare Access, enable origin-side checks:
 

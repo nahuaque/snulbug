@@ -44,10 +44,10 @@ For concrete MCP client configuration patterns, see
 For a runnable upstream-plus-proxy walkthrough, see the
 [end-to-end MCP policy proxy demo](../examples/mcp_proxy_demo/README.md).
 
-Point ngrok, Cloudflare Tunnel, or another tunnel at
-`http://127.0.0.1:8080`. The proxy applies the Lua policy before forwarding to
-the upstream server. Use `tunnel-safe` unless you have a stronger external
-access-control layer in front of the tunnel.
+Point ngrok, Cloudflare Tunnel, Tailscale Funnel, or a private Holepunch peer
+bridge at `http://127.0.0.1:8080`. The proxy applies the Lua policy before
+forwarding to the upstream server. Use `tunnel-safe` unless you have a stronger
+external access-control layer in front of the tunnel or peer bridge.
 
 Generate provider-specific tunnel setup snippets first:
 
@@ -71,7 +71,7 @@ snulbug tunnel doctor \
 ```
 
 See [Tunnel init](tunnel-init.md) and [Tunnel doctor](tunnel-doctor.md) for
-Cloudflare Access and Tailscale Funnel variants.
+Cloudflare Access, Tailscale Funnel, and Holepunch peer bridge variants.
 
 `--record-out` writes replayable request records for traffic that passes through
 the proxy. `--audit-out` writes redacted audit events. Rejected/challenged
@@ -153,11 +153,11 @@ cloudflare_access_allowed_domains = []
 timeout = 30.0
 ```
 
-`tunnel_provider` can be `auto`, `generic`, `ngrok`, `cloudflare`, or
-`tailscale`. With `auto`, snulbug infers the provider from request headers and
-the public host when possible. Set `tunnel_public_url` when you want audit logs
-to record the externally shared MCP URL even if the request reaches snulbug
-through a local reverse proxy.
+`tunnel_provider` can be `auto`, `generic`, `ngrok`, `cloudflare`, `tailscale`,
+or `holepunch`. With `auto`, snulbug infers the provider from request headers
+and the public host when possible. Set `tunnel_public_url` when you want audit
+logs to record the externally shared MCP URL or client-side peer bridge URL even
+if the request reaches snulbug through a local reverse proxy.
 
 ## Cloudflare Access Adapter
 

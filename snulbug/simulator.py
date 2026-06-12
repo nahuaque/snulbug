@@ -138,7 +138,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     tunnel_init = tunnel_subparsers.add_parser("init", help="generate provider-specific tunnel setup snippets")
     tunnel_init.add_argument(
         "--provider",
-        choices=("generic", "ngrok", "cloudflare", "tailscale"),
+        choices=("generic", "ngrok", "cloudflare", "tailscale", "holepunch"),
         required=True,
         help="tunnel provider profile",
     )
@@ -155,7 +155,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     tunnel_doctor = tunnel_subparsers.add_parser("doctor", help="verify tunnel-safe MCP proxy exposure")
     tunnel_doctor.add_argument(
         "--provider",
-        choices=("generic", "ngrok", "cloudflare", "tailscale"),
+        choices=("generic", "ngrok", "cloudflare", "tailscale", "holepunch"),
         default="generic",
         help="tunnel provider profile",
     )
@@ -285,7 +285,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     mcp_quickstart.add_argument(
         "--tunnel-provider",
-        choices=("auto", "generic", "ngrok", "cloudflare", "tailscale"),
+        choices=("auto", "generic", "ngrok", "cloudflare", "tailscale", "holepunch"),
         default="auto",
         help="provider label for tunnel-aware audit fields",
     )
@@ -569,7 +569,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_proxy.add_argument("--lease-header", help="HTTP header carrying the task lease token")
     mcp_proxy.add_argument(
         "--tunnel-provider",
-        choices=("auto", "generic", "ngrok", "cloudflare", "tailscale"),
+        choices=("auto", "generic", "ngrok", "cloudflare", "tailscale", "holepunch"),
         help="provider label for tunnel-aware audit fields",
     )
     mcp_proxy.add_argument("--tunnel-public-url", help="public tunnel URL to include in audit fields")

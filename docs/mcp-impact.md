@@ -72,7 +72,8 @@ This is the review step to run before:
 
 - switching `snulbug.toml` to a learned or amended policy
 - setting `lease_required = true`
-- exposing the proxy through ngrok, Cloudflare Tunnel, or another public tunnel
+- exposing the proxy through ngrok, Cloudflare Tunnel, Holepunch, or another
+  tunnel/peer bridge
 
 ## CI Pattern
 

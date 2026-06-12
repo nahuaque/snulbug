@@ -47,6 +47,35 @@ def test_tunnel_audit_metadata_uses_explicit_provider_and_public_url():
     assert metadata["tailscale"] == {"tsnet_host": True}
 
 
+def test_tunnel_audit_metadata_tracks_holepunch_bridge_headers():
+    metadata = build_tunnel_audit_metadata(
+        {
+            "type": "http",
+            "scheme": "http",
+            "path": "/mcp",
+            "headers": [
+                (b"host", b"127.0.0.1:18080"),
+                (b"x-snulbug-tunnel-provider", b"holepunch"),
+                (b"x-snulbug-holepunch-transport", b"hypertele"),
+                (b"x-snulbug-holepunch-peer", b"peer_123"),
+                (b"x-snulbug-bridge-id", b"bridge_abc"),
+            ],
+            "client": ("127.0.0.1", 54321),
+        }
+    )
+
+    assert metadata["provider"] == "holepunch"
+    assert metadata["inferred"] is True
+    assert metadata["public_url"] == "http://127.0.0.1:18080/mcp"
+    assert metadata["edge_request_id"] == "bridge_abc"
+    assert metadata["holepunch"] == {
+        "transport": "hypertele",
+        "peer": "peer_123",
+        "bridge": "bridge_abc",
+        "client_bridge": True,
+    }
+
+
 def test_tunnel_audit_metadata_keeps_generic_forwarded_fields():
     metadata = build_tunnel_audit_metadata(
         {

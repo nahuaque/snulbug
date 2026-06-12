@@ -112,9 +112,10 @@ uv run snulbug mcp init project-path-allowlist \
   --allow-path docs/
 ```
 
-`tunnel-safe` is the recommended default for ngrok, Cloudflare Tunnel, or
-similar public tunnel exposure. It requires bearer auth, rejects JSON-RPC batch
-requests, allows only configured safe tools, and rate-limits traffic.
+`tunnel-safe` is the recommended default for ngrok, Cloudflare Tunnel, Tailscale
+Funnel, Holepunch peer bridges, or similar tunnel exposure. It requires bearer
+auth, rejects JSON-RPC batch requests, allows only configured safe tools, and
+rate-limits traffic.
 
 ```bash
 uv run snulbug mcp quickstart \
