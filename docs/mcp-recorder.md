@@ -67,6 +67,27 @@ The report is built from the redacted inspection summary. It includes counts,
 top methods/tools/targets, findings, and representative examples without
 copying request bodies, headers, params, or tool arguments into the report.
 
+## Learn a policy from a captured session
+
+Compile a replay or audit log into a policy bundle:
+
+```bash
+uv run snulbug mcp learn traces/session.jsonl --out learned-policy.snulbug
+```
+
+The generated bundle contains `policy.lua`, `manifest.json`, and `LEARNED.md`.
+It includes only allowed observed traffic: MCP methods, tool names,
+resource/prompt targets, and tool argument key names. Blocked requests are
+excluded from the allowlist and summarized in the report.
+
+Switch the proxy to the learned policy after review:
+
+```bash
+uv run snulbug mcp proxy \
+  --config snulbug.toml \
+  --policy learned-policy.snulbug/policy.lua
+```
+
 ## Audit logs and redaction
 
 Write a redacted audit log while recording:

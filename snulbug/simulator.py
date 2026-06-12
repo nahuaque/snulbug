@@ -235,6 +235,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     mcp_inspect.add_argument("--compact", action="store_true", help="emit compact JSON")
 
+    mcp_learn = mcp_subparsers.add_parser("learn", help="compile MCP replay or audit logs into a policy bundle")
+    mcp_learn.add_argument("log", type=Path, help="JSONL replay or audit log")
+    mcp_learn.add_argument("--out", "--output", type=Path, required=True, help="output policy bundle directory")
+    mcp_learn.add_argument("--kind", choices=("auto", "record", "audit"), default="auto", help="input log type")
+    mcp_learn.add_argument("--force", action="store_true", help="overwrite files in the output directory")
+    mcp_learn.add_argument(
+        "--validate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="validate the generated policy bundle",
+    )
+    mcp_learn.add_argument("--compact", action="store_true", help="emit compact JSON")
+
     mcp_proxy = mcp_subparsers.add_parser("proxy", help="run a local-dev MCP reverse proxy")
     mcp_proxy.add_argument("--config", type=Path, help="TOML config file")
     mcp_proxy.add_argument("--upstream", help="upstream MCP HTTP server URL")
@@ -475,6 +488,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 status = 0
             except Exception as exc:
                 result = {"ok": False, "log": str(args.log), "error": str(exc)}
+                status = 1
+        elif args.mcp_command == "learn":
+            from .learn import learn_mcp_policy
+
+            try:
+                result = learn_mcp_policy(
+                    args.log,
+                    args.out,
+                    kind=args.kind,
+                    force=args.force,
+                    validate=args.validate,
+                )
+                status = 0 if result["ok"] else 1
+            except Exception as exc:
+                result = {"ok": False, "log": str(args.log), "output": str(args.out), "error": str(exc)}
                 status = 1
         elif args.mcp_command == "proxy":
             from .proxy import run_proxy

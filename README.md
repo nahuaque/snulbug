@@ -451,6 +451,17 @@ uv run snulbug mcp record policy.snulbug/policy.lua request.json \
 Replay records are redacted by default so captured artifacts are safer to keep
 around. Pass `--no-redact` only when you need exact auth-sensitive replay.
 
+Compile a captured session into a least-privilege policy bundle:
+
+```bash
+uv run snulbug mcp learn traces/session.jsonl --out learned-policy.snulbug
+uv run snulbug bundle validate learned-policy.snulbug
+```
+
+The learned bundle contains `policy.lua`, `manifest.json`, and `LEARNED.md`.
+It allows only observed MCP methods, tools, resource/prompt targets, and tool
+argument keys.
+
 Run a local-dev reverse proxy in front of an MCP server:
 
 ```bash

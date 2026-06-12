@@ -26,6 +26,8 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 - Added MCP risk-profile presets for read-only local development, shell-tool denial, project path allowlists, and tunneled servers.
 - Added Markdown MCP session reports with `snulbug mcp inspect --report-out`.
 - Documented `tunnel-safe` as the recommended default for public tunnel use.
+- Added MCP facade mode for serving multiple local MCP HTTP servers through one `snulbug mcp proxy` endpoint.
+- Added MCP learn mode with `snulbug mcp learn` to compile captured replay/audit logs into least-privilege policy bundles.
 
 ## [0.1.0] - 2026-06-12
 
