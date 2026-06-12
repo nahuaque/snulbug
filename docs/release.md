@@ -7,6 +7,7 @@
 ```bash
 uv run ruff format --check .
 uv run ruff check .
+uv run bandit -r snulbug -lll
 PYTHONDONTWRITEBYTECODE=1 uv run pytest
 uv build
 uv run snulbug --help

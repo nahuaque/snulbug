@@ -33,6 +33,10 @@ jobs:
       - name: Lint
         run: uv run ruff check .
 
+      - name: Security scan
+        if: matrix.python-version == '3.13'
+        run: uv run bandit -r snulbug -lll
+
       - name: Test
         run: PYTHONDONTWRITEBYTECODE=1 uv run pytest
 

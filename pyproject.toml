@@ -35,7 +35,6 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "bandit>=1.9.4",
     "lupa>=2.5",
     "tomli>=2.0; python_version < '3.11'",
 ]
@@ -48,6 +47,7 @@ proxy = [
     "uvicorn>=0.30",
 ]
 dev = [
+    "bandit>=1.9.4",
     "pytest>=8.0",
     "ruff>=0.8",
 ]
@@ -63,6 +63,7 @@ snulbug = "snulbug.simulator:main"
 
 [dependency-groups]
 dev = [
+    "bandit>=1.9.4",
     "pytest>=8.0",
     "ruff>=0.8",
 ]
