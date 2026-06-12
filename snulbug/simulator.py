@@ -167,6 +167,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="live decision console output format",
     )
     mcp_quickstart.add_argument("--max-body-bytes", type=int, default=65536)
+    mcp_quickstart.add_argument("--response-max-bytes", type=int, default=262144)
+    mcp_quickstart.add_argument(
+        "--response-redact-secrets",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="redact likely secrets from MCP tool/resource/prompt responses",
+    )
+    mcp_quickstart.add_argument(
+        "--response-block-instructions",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="block MCP responses containing instruction-like text",
+    )
+    mcp_quickstart.add_argument(
+        "--tool-pinning",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="pin tools/list descriptions and schemas on first sight",
+    )
+    mcp_quickstart.add_argument(
+        "--tool-pinning-action",
+        choices=("warn", "block"),
+        default="block",
+        help="what to do when a pinned tool description or schema changes",
+    )
     mcp_quickstart.add_argument("--timeout", type=float, default=30.0, help="upstream timeout in seconds")
     mcp_quickstart.add_argument("--force", action="store_true", help="overwrite generated policy and config")
     mcp_quickstart.add_argument(
@@ -319,6 +344,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="live decision console output format",
     )
     mcp_proxy.add_argument("--max-body-bytes", type=int)
+    mcp_proxy.add_argument("--response-max-bytes", type=int)
+    mcp_proxy.add_argument(
+        "--response-redact-secrets",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="redact likely secrets from MCP tool/resource/prompt responses",
+    )
+    mcp_proxy.add_argument(
+        "--response-block-instructions",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="block MCP responses containing instruction-like text",
+    )
+    mcp_proxy.add_argument(
+        "--tool-pinning",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="pin tools/list descriptions and schemas on first sight",
+    )
+    mcp_proxy.add_argument(
+        "--tool-pinning-action",
+        choices=("warn", "block"),
+        help="what to do when a pinned tool description or schema changes",
+    )
     mcp_proxy.add_argument("--timeout", type=float, help="upstream timeout in seconds")
 
     args = parser.parse_args(argv)
@@ -426,6 +475,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     decision_console=args.decision_console,
                     decision_console_format=args.decision_console_format,
                     max_body_bytes=args.max_body_bytes,
+                    response_max_bytes=args.response_max_bytes,
+                    response_redact_secrets=args.response_redact_secrets,
+                    response_block_instructions=args.response_block_instructions,
+                    tool_pinning=args.tool_pinning,
+                    tool_pinning_action=args.tool_pinning_action,
                     timeout=args.timeout,
                     force=args.force,
                     validate=args.validate,
@@ -591,6 +645,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "decision_console": args.decision_console,
                     "decision_console_format": args.decision_console_format,
                     "max_body_bytes": args.max_body_bytes,
+                    "response_max_bytes": args.response_max_bytes,
+                    "response_redact_secrets": args.response_redact_secrets,
+                    "response_block_instructions": args.response_block_instructions,
+                    "tool_pinning": args.tool_pinning,
+                    "tool_pinning_action": args.tool_pinning_action,
                     "timeout": args.timeout,
                 }
                 if args.config is not None:
@@ -618,6 +677,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     redact_records=proxy_config["redact_records"],
                     decision_console=proxy_config["decision_console"],
                     decision_console_format=proxy_config["decision_console_format"],
+                    response_max_bytes=proxy_config["response_max_bytes"],
+                    response_redact_secrets=proxy_config["response_redact_secrets"],
+                    response_block_instructions=proxy_config["response_block_instructions"],
+                    tool_pinning=proxy_config["tool_pinning"],
+                    tool_pinning_action=proxy_config["tool_pinning_action"],
                 )
             except Exception as exc:
                 sys.stderr.write(f"snulbug proxy failed: {exc}\n")

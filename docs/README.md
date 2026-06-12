@@ -18,4 +18,5 @@ Start here:
 - [MCP offline inspection](mcp-recorder.md#inspect-a-captured-replay-or-audit-log-without-a-running-proxy)
 - [MCP reverse proxy](mcp-proxy.md)
 - [Security model](security-model.md)
+- [Positioning and comparisons](comparison.md)
 - [Release process](release.md)

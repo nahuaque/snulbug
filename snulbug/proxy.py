@@ -15,6 +15,7 @@ from urllib.parse import SplitResult, urlsplit
 from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
 from .recorder import append_record, build_request_record, record_audit_event
 from .redaction import append_audit_event
+from .response_policy import ResponsePolicyConfig, enforce_mcp_response_policy
 from .state import MemoryStateStore, PolicyStateStore, SQLiteStateStore, StateLimits
 
 HOP_BY_HOP_HEADERS = {
@@ -51,12 +52,21 @@ class FacadeUpstream:
 class ReverseProxyApp:
     """Minimal ASGI reverse proxy app for local-dev policy gateways."""
 
-    def __init__(self, upstream: str, *, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        upstream: str,
+        *,
+        timeout: float = 30.0,
+        response_policy: ResponsePolicyConfig | None = None,
+        tool_pin_store: PolicyStateStore | None = None,
+    ) -> None:
         parsed = urlsplit(upstream)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("upstream must be an absolute http:// or https:// URL")
         self.config = ProxyConfig(upstream=upstream.rstrip("/"), timeout=timeout)
         self._upstream = parsed
+        self.response_policy = response_policy or ResponsePolicyConfig()
+        self.tool_pin_store = tool_pin_store
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http":
@@ -64,6 +74,7 @@ class ReverseProxyApp:
             return
 
         body = await _read_body(receive)
+        request = _jsonrpc_request(body)
         try:
             response = await asyncio.to_thread(self._forward, scope, body)
         except Exception as exc:
@@ -75,6 +86,19 @@ class ReverseProxyApp:
             )
             return
 
+        response, response_metadata = enforce_mcp_response_policy(
+            response,
+            request=request,
+            config=self.response_policy,
+            tool_pin_store=self.tool_pin_store,
+        )
+        _set_proxy_metadata(
+            scope,
+            {
+                **_mcp_request_metadata(request),
+                "response_policy": response_metadata,
+            },
+        )
         await _send_response(
             send,
             status=response["status"],
@@ -220,11 +244,20 @@ class ManagedStdioMcpClient:
 class McpFacadeProxyApp:
     """Minimal MCP facade that serves several local MCP HTTP servers as one endpoint."""
 
-    def __init__(self, upstreams: Sequence[FacadeUpstream | Mapping[str, Any]], *, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        upstreams: Sequence[FacadeUpstream | Mapping[str, Any]],
+        *,
+        timeout: float = 30.0,
+        response_policy: ResponsePolicyConfig | None = None,
+        tool_pin_store: PolicyStateStore | None = None,
+    ) -> None:
         self.upstreams = [_coerce_facade_upstream(upstream) for upstream in upstreams]
         if not self.upstreams:
             raise ValueError("facade mode requires at least one upstream")
         self.timeout = timeout
+        self.response_policy = response_policy or ResponsePolicyConfig()
+        self.tool_pin_store = tool_pin_store
         self._parsed = {
             upstream.name: _parse_upstream(_required_url(upstream))
             for upstream in self.upstreams
@@ -327,14 +360,24 @@ class McpFacadeProxyApp:
                 "tool_count": len(tools),
             },
         )
-        await _send_json(
+        response, response_metadata = enforce_mcp_response_policy(
+            _json_response(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id"),
+                    "result": {"tools": tools},
+                }
+            ),
+            request=request,
+            config=self.response_policy,
+            tool_pin_store=self.tool_pin_store,
+        )
+        _set_proxy_metadata(scope, {"response_policy": response_metadata})
+        await _send_response(
             send,
-            status=200,
-            payload={
-                "jsonrpc": "2.0",
-                "id": request.get("id"),
-                "result": {"tools": tools},
-            },
+            status=response["status"],
+            headers=response["headers"],
+            body=response["body"],
         )
 
     async def _call_tool(self, scope: Scope, request: Mapping[str, Any], send: Send) -> None:
@@ -371,6 +414,12 @@ class McpFacadeProxyApp:
             await self._send_upstream_failure(send, upstream, exc)
             return
 
+        response, response_metadata = enforce_mcp_response_policy(
+            response,
+            request=request,
+            config=self.response_policy,
+            tool_pin_store=self.tool_pin_store,
+        )
         _set_proxy_metadata(
             scope,
             {
@@ -379,6 +428,7 @@ class McpFacadeProxyApp:
                 "upstream": upstream.name,
                 "tool": tool_name,
                 "upstream_tool": rewritten_params["name"],
+                "response_policy": response_metadata,
             },
         )
         await _send_response(
@@ -396,12 +446,19 @@ class McpFacadeProxyApp:
             await self._send_upstream_failure(send, self._default, exc)
             return
 
+        response, response_metadata = enforce_mcp_response_policy(
+            response,
+            request=request if isinstance(request, Mapping) else None,
+            config=self.response_policy,
+            tool_pin_store=self.tool_pin_store,
+        )
         _set_proxy_metadata(
             scope,
             {
                 "facade": True,
                 "operation": "default",
                 "upstream": self._default.name,
+                "response_policy": response_metadata,
             },
         )
         await _send_response(
@@ -559,11 +616,30 @@ def create_proxy_application(
     redact_records: bool = True,
     decision_console: bool | TextIO = False,
     decision_console_format: str = "text",
+    response_max_bytes: int | None = 256 * 1024,
+    response_redact_secrets: bool = True,
+    response_block_instructions: bool = False,
+    tool_pinning: bool = True,
+    tool_pinning_action: str = "block",
 ) -> ASGIApp:
     """Create an ASGI app that applies Lua policy before proxying to an upstream."""
 
     console_enabled = _console_enabled(decision_console)
-    proxy = _proxy_app(upstream, upstreams=upstreams, timeout=timeout)
+    effective_state_store = state_store if state_store is not None else MemoryStateStore()
+    response_policy = ResponsePolicyConfig(
+        max_body_bytes=response_max_bytes,
+        redact_secrets=response_redact_secrets,
+        block_instruction_like_content=response_block_instructions,
+        tool_pinning=tool_pinning,
+        tool_pinning_action=tool_pinning_action,
+    )
+    proxy = _proxy_app(
+        upstream,
+        upstreams=upstreams,
+        timeout=timeout,
+        response_policy=response_policy,
+        tool_pin_store=effective_state_store if tool_pinning else None,
+    )
     app = LuaMiddleware(
         proxy,
         Path(policy),
@@ -572,7 +648,7 @@ def create_proxy_application(
             max_body_bytes=max_body_bytes,
             trace=trace or record_out is not None or audit_out is not None or console_enabled,
         ),
-        state_store=state_store if state_store is not None else MemoryStateStore(),
+        state_store=effective_state_store,
         state_limits=state_limits,
     )
     if record_out is None and audit_out is None and not console_enabled:
@@ -604,6 +680,11 @@ def run_proxy(
     redact_records: bool = True,
     decision_console: bool = False,
     decision_console_format: str = "text",
+    response_max_bytes: int | None = 256 * 1024,
+    response_redact_secrets: bool = True,
+    response_block_instructions: bool = False,
+    tool_pinning: bool = True,
+    tool_pinning_action: str = "block",
 ) -> None:
     """Run the reverse proxy with uvicorn."""
 
@@ -625,6 +706,11 @@ def run_proxy(
         redact_records=redact_records,
         decision_console=decision_console,
         decision_console_format=decision_console_format,
+        response_max_bytes=response_max_bytes,
+        response_redact_secrets=response_redact_secrets,
+        response_block_instructions=response_block_instructions,
+        tool_pinning=tool_pinning,
+        tool_pinning_action=tool_pinning_action,
     )
     uvicorn.run(app, host=host, port=port)
 
@@ -634,12 +720,24 @@ def _proxy_app(
     *,
     upstreams: Sequence[FacadeUpstream | Mapping[str, Any]] | None,
     timeout: float,
+    response_policy: ResponsePolicyConfig,
+    tool_pin_store: PolicyStateStore | None,
 ) -> ASGIApp:
     if upstreams:
-        return McpFacadeProxyApp(upstreams, timeout=timeout)
+        return McpFacadeProxyApp(
+            upstreams,
+            timeout=timeout,
+            response_policy=response_policy,
+            tool_pin_store=tool_pin_store,
+        )
     if upstream is None:
         raise ValueError("upstream is required unless facade upstreams are configured")
-    return ReverseProxyApp(upstream, timeout=timeout)
+    return ReverseProxyApp(
+        upstream,
+        timeout=timeout,
+        response_policy=response_policy,
+        tool_pin_store=tool_pin_store,
+    )
 
 
 def _state_store(value: str) -> PolicyStateStore | None:
@@ -860,16 +958,58 @@ def _response_headers(raw_headers: list[tuple[str, str]]) -> list[tuple[bytes, b
 
 
 async def _send_json(send: Send, *, status: int, payload: Mapping[str, Any]) -> None:
-    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    response = _json_response(payload, status=status)
     await _send_response(
         send,
-        status=status,
-        headers=[
+        status=response["status"],
+        headers=response["headers"],
+        body=response["body"],
+    )
+
+
+def _json_response(payload: Mapping[str, Any], *, status: int = 200) -> dict[str, Any]:
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return {
+        "status": status,
+        "headers": [
             (b"content-type", b"application/json"),
             (b"content-length", str(len(body)).encode("ascii")),
         ],
-        body=body,
-    )
+        "body": body,
+    }
+
+
+def _jsonrpc_request(body: bytes) -> Mapping[str, Any] | None:
+    if not body:
+        return None
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, Mapping) and not isinstance(payload, list) else None
+
+
+def _mcp_request_metadata(request: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(request, Mapping):
+        return {}
+    method = request.get("method")
+    if not isinstance(method, str):
+        return {}
+    metadata: dict[str, Any] = {"operation": method}
+    operation, _, operation_detail = method.partition("/")
+    if operation:
+        metadata["mcp_operation"] = operation
+    if operation_detail:
+        metadata["mcp_operation_detail"] = operation_detail
+    params = request.get("params")
+    if isinstance(params, Mapping):
+        target = params.get("name") or params.get("uri")
+        if isinstance(target, str):
+            metadata["target"] = target
+        arguments = params.get("arguments")
+        if isinstance(arguments, Mapping):
+            metadata["argument_keys"] = sorted(str(key) for key in arguments)
+    return metadata
 
 
 async def _read_body(receive: Receive) -> bytes:
@@ -955,7 +1095,10 @@ def _record_metadata(scope: Scope) -> dict[str, Any]:
 def _set_proxy_metadata(scope: Scope, metadata: Mapping[str, Any]) -> None:
     state = scope.get("state")
     if isinstance(state, dict):
-        state["snulbug_proxy"] = dict(metadata)
+        existing = state.get("snulbug_proxy")
+        merged = dict(existing) if isinstance(existing, Mapping) else {}
+        merged.update(metadata)
+        state["snulbug_proxy"] = merged
 
 
 def _decode_bytes(value: Any) -> str:

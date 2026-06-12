@@ -117,6 +117,11 @@ redact_records = true
 decision_console = true
 decision_console_format = "text"
 max_body_bytes = 65536
+response_max_bytes = 262144
+response_redact_secrets = true
+response_block_instructions = false
+tool_pinning = true
+tool_pinning_action = "block"
 timeout = 30.0
 ```
 
@@ -161,6 +166,13 @@ header.
 With `decision_console = true`, the proxy prints one redacted policy decision
 per request, including the MCP method, operation target, action, and reason
 code.
+
+Return-path controls are enabled in the generated config. Tool/resource/prompt
+results are capped by `response_max_bytes`, likely secrets are redacted before
+they reach the client, and `tools/list` descriptions/schemas are pinned on first
+sight so silent upstream tool changes are surfaced. Set
+`response_block_instructions = true` when you want suspicious instruction-like
+tool output to be blocked rather than only recorded in metadata.
 
 After a session, inspect the captured replay and audit logs:
 

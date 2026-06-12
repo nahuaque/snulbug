@@ -1,7 +1,7 @@
 [project]
 name = "snulbug"
 version = "0.1.0"
-description = "A programmable Lua policy layer for ASGI apps and local MCP HTTP gateways"
+description = "A local-dev MCP policy proxy with Lua policies, replay logs, and learned least-privilege bundles"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -11,8 +11,11 @@ authors = [
 keywords = [
     "asgi",
     "lua",
+    "mcp",
     "middleware",
     "policy",
+    "proxy",
+    "security",
     "fastapi",
     "starlette",
     "webhooks",

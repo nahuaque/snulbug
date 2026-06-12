@@ -1,42 +1,23 @@
 # snulbug
 
-`snulbug` is a programmable Lua policy layer for local HTTP and MCP traffic. It
-can run as ASGI middleware in front of your Python app, or as a thin local-dev
-reverse proxy for request policy near the edge: header checks, tenant-specific
-rewrites, normalization, and simple policy decisions.
+`snulbug` is a local-dev MCP policy proxy. Put it between an MCP client and one
+or more local MCP servers before you hand an agent a broad toolset or expose a
+server through a public tunnel.
 
-It is not tied to a specific server. It wraps FastAPI, Starlette, or any ASGI
-app and can be served by Uvicorn, Hypercorn, Daphne, or another ASGI server.
+It gives you a tight loop for agent-tool safety:
 
-## Install
+- start with a conservative `tunnel-safe` policy
+- watch live allow/block decisions while traffic flows
+- record redacted replay and audit logs
+- learn a least-privilege policy from observed traffic
+- amend blocked requests into reviewable candidate policy bundles
 
-```bash
-pip install snulbug
-```
+The standalone ASGI Lua middleware is still available, but it is an
+implementation surface. The main use case is protecting local MCP traffic.
 
-For Redis-backed policy state:
+## One-command lab
 
-```bash
-pip install "snulbug[redis]"
-```
-
-For the built-in reverse proxy runner:
-
-```bash
-pip install "snulbug[proxy]"
-```
-
-For local development from this repository:
-
-```bash
-uv sync --extra dev
-```
-
-`snulbug` supports Python 3.10 through 3.13.
-
-## Quickstart
-
-To see the full local MCP policy lifecycle in one command:
+Run the full MCP policy lifecycle without wiring up a real server:
 
 ```bash
 uv run snulbug mcp lab
@@ -44,14 +25,11 @@ uv run snulbug mcp lab
 
 The lab creates two fake MCP upstreams behind one facade, records traffic,
 learns a least-privilege policy, amends a blocked request into a candidate
-policy, and writes artifacts under `.snulbug-lab/`.
+policy, and writes replay/audit/report artifacts under `.snulbug-lab/`.
 
-For the local-dev MCP policy gateway path, start with the
-[quickstart](docs/quickstart.md). It walks through generating a safe MCP policy,
-creating proxy config, running the reverse proxy, pointing an MCP client at it,
-and inspecting redacted replay/audit logs.
+## Quickstart
 
-The minimal flow is:
+For a tunnel-exposed local MCP server, `tunnel-safe` is the recommended default:
 
 ```bash
 uv run snulbug mcp quickstart \
@@ -62,10 +40,72 @@ uv run snulbug mcp quickstart \
 uv run snulbug mcp proxy --config snulbug.toml
 ```
 
-Then point the MCP client at `http://127.0.0.1:8080/mcp` with
-`Authorization: Bearer local-dev-secret`.
+Point the MCP client at `http://127.0.0.1:8080/mcp` with:
 
-## Minimal app
+```text
+Authorization: Bearer local-dev-secret
+```
+
+Expose the proxy, not the upstream server:
+
+```bash
+ngrok http 8080
+```
+
+See the [local MCP policy gateway quickstart](docs/quickstart.md) for client
+setup, facade mode, recording, replay, and offline inspection.
+For positioning against raw proxies, client allowlists, and general policy
+engines, see [docs/comparison.md](docs/comparison.md).
+
+## What It Enforces
+
+Request-side policy:
+
+- bearer challenges and auth checks
+- MCP method and tool allowlists
+- JSON-RPC batch rejection
+- project path constraints for tool arguments
+- small stateful policies such as rate limits and idempotency keys
+
+Response-side policy:
+
+- redaction of likely secrets from tool/resource/prompt results
+- maximum MCP response body size
+- optional blocking for instruction-like tool output
+- `tools/list` description and schema pinning to catch silent upstream changes
+
+Workflow:
+
+- redacted replay logs for deterministic policy testing
+- audit JSONL with MCP-aware fields
+- learned least-privilege bundles from observed traffic
+- candidate amendments for blocked legitimate requests
+- a decision console for live local tunnel traffic
+
+## Install
+
+```bash
+pip install "snulbug[proxy]"
+```
+
+For Redis-backed policy state:
+
+```bash
+pip install "snulbug[redis]"
+```
+
+For local development from this repository:
+
+```bash
+uv sync --extra dev
+```
+
+`snulbug` supports Python 3.10 through 3.13.
+
+## Standalone ASGI Middleware
+
+The same Lua policy engine can wrap FastAPI, Starlette, or any ASGI app and can
+be served by Uvicorn, Hypercorn, Daphne, or another ASGI server.
 
 ```python
 from snulbug import LuaMiddleware
@@ -98,7 +138,8 @@ Run it with:
 uv run uvicorn examples.basic.app:application --host 127.0.0.1 --port 8000
 ```
 
-Additional reference docs live in [docs/](docs/README.md).
+Additional reference docs live in [docs/](docs/README.md). The generic ASGI
+path starts at [docs/getting-started.md](docs/getting-started.md).
 
 ## Lua contract
 

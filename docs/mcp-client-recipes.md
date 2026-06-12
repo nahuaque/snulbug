@@ -41,6 +41,10 @@ port = 8080
 record_out = "traces/session.jsonl"
 audit_out = "traces/audit.jsonl"
 redact_records = true
+response_max_bytes = 262144
+response_redact_secrets = true
+tool_pinning = true
+tool_pinning_action = "block"
 ```
 
 Run the proxy:
@@ -207,6 +211,10 @@ host = "127.0.0.1"
 port = 8080
 record_out = "traces/session.jsonl"
 audit_out = "traces/audit.jsonl"
+response_max_bytes = 262144
+response_redact_secrets = true
+tool_pinning = true
+tool_pinning_action = "block"
 
 [[mcp.proxy.upstreams]]
 name = "files"

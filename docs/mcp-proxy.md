@@ -106,7 +106,48 @@ redact_records = true
 decision_console = false
 decision_console_format = "text"
 max_body_bytes = 65536
+response_max_bytes = 262144
+response_redact_secrets = true
+response_block_instructions = false
+tool_pinning = true
+tool_pinning_action = "block"
 timeout = 30.0
+```
+
+## Response Controls
+
+Request policy runs before upstream calls. The proxy also applies MCP-aware
+return-path controls to successful JSON-RPC responses:
+
+- `response_max_bytes` blocks oversized `tools/call`, `resources/read`, and
+  `prompts/get` responses with a JSON-RPC error.
+- `response_redact_secrets` redacts high-confidence bearer tokens, API keys,
+  GitHub tokens, AWS access keys, and secret-shaped JSON fields from MCP
+  results before they reach the client.
+- `response_block_instructions` blocks tool/resource/prompt results that contain
+  instruction-like phrases such as "ignore previous instructions". It is off by
+  default because local files may legitimately contain security examples or
+  prompt text.
+- `tool_pinning` hashes `tools/list` names, descriptions, and input schemas on
+  first sight. With `tool_pinning_action = "block"`, a later silent description
+  or schema change is rejected until the proxy state is reset or reviewed.
+
+Tool pins live in the configured state adapter. The default in-memory state pins
+for the current proxy process. SQLite-backed state keeps pins across restarts:
+
+```toml
+[mcp.proxy]
+state = "sqlite:policy-state.sqlite3"
+tool_pinning = true
+tool_pinning_action = "block"
+```
+
+CLI overrides:
+
+```bash
+snulbug mcp proxy --config snulbug.toml --response-max-bytes 131072
+snulbug mcp proxy --config snulbug.toml --response-block-instructions
+snulbug mcp proxy --config snulbug.toml --tool-pinning-action warn
 ```
 
 ## MCP Facade Mode

@@ -1,4 +1,4 @@
-"""Programmable Lua policy for ASGI apps and local MCP gateways."""
+"""Local-dev MCP policy proxy and programmable Lua ASGI policy layer."""
 
 __version__ = "0.1.0"
 
@@ -21,6 +21,7 @@ from .proxy import (
 from .quickstart import create_mcp_quickstart
 from .recorder import append_record, load_record_log, record_audit_event, record_policy_request, replay_record_log
 from .redaction import RedactionConfig, append_audit_event, build_audit_event, redact_secrets
+from .response_policy import ResponsePolicyConfig
 from .runtime import LuaDecisionError, LuaDecisionTrace, LuaRuntimeError
 from .simulator import simulate_policy
 from .state import (
@@ -46,6 +47,7 @@ __all__ = [
     "McpFacadeProxyApp",
     "RedisStateStore",
     "RedactionConfig",
+    "ResponsePolicyConfig",
     "ReverseProxyApp",
     "SQLiteStateStore",
     "SnapshotStateStore",

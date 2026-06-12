@@ -25,6 +25,11 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "decision_console": False,
     "decision_console_format": "text",
     "max_body_bytes": 65536,
+    "response_max_bytes": 262144,
+    "response_redact_secrets": True,
+    "response_block_instructions": False,
+    "tool_pinning": True,
+    "tool_pinning_action": "block",
     "timeout": 30.0,
 }
 
@@ -41,6 +46,11 @@ redact_records = true
 decision_console = false
 decision_console_format = "text"
 max_body_bytes = 65536
+response_max_bytes = 262144
+response_redact_secrets = true
+response_block_instructions = false
+tool_pinning = true
+tool_pinning_action = "block"
 timeout = 30.0
 
 # Optional MCP facade mode:
@@ -89,7 +99,7 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
     normalized.update({key: value for key, value in config.items() if value is not None})
     base = Path(base_dir)
 
-    for field in ("upstream", "host", "state", "decision_console_format"):
+    for field in ("upstream", "host", "state", "decision_console_format", "tool_pinning_action"):
         value = normalized.get(field)
         if value is not None and not isinstance(value, str):
             raise ValueError(f"mcp.proxy.{field} must be a string")
@@ -97,17 +107,26 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         value = normalized.get(field)
         if value is not None and not isinstance(value, str | Path):
             raise ValueError(f"mcp.proxy.{field} must be a string path")
-    for field in ("port", "max_body_bytes"):
+    for field in ("port", "max_body_bytes", "response_max_bytes"):
         value = normalized.get(field)
         if not isinstance(value, int) or value <= 0:
             raise ValueError(f"mcp.proxy.{field} must be a positive integer")
     if not isinstance(normalized.get("timeout"), int | float) or float(normalized["timeout"]) <= 0:
         raise ValueError("mcp.proxy.timeout must be a positive number")
-    for field in ("trace", "redact_records", "decision_console"):
+    for field in (
+        "trace",
+        "redact_records",
+        "decision_console",
+        "response_redact_secrets",
+        "response_block_instructions",
+        "tool_pinning",
+    ):
         if not isinstance(normalized.get(field), bool):
             raise ValueError(f"mcp.proxy.{field} must be a boolean")
     if normalized["decision_console_format"] not in {"text", "json"}:
         raise ValueError("mcp.proxy.decision_console_format must be 'text' or 'json'")
+    if normalized["tool_pinning_action"] not in {"warn", "block"}:
+        raise ValueError("mcp.proxy.tool_pinning_action must be 'warn' or 'block'")
 
     normalized["upstreams"] = _normalize_upstreams(normalized.get("upstreams", []))
     normalized["policy"] = _resolve_path(base, normalized["policy"])
