@@ -462,6 +462,19 @@ The learned bundle contains `policy.lua`, `manifest.json`, and `LEARNED.md`.
 It allows only observed MCP methods, tools, resource/prompt targets, and tool
 argument keys.
 
+When a learned policy blocks a legitimate request, generate a candidate
+amendment instead of mutating the active bundle:
+
+```bash
+uv run snulbug mcp amend \
+  learned-policy.snulbug \
+  traces/audit.jsonl \
+  --out candidate-policy.snulbug
+```
+
+The candidate bundle includes `AMEND.md` with added, rejected, and ignored
+changes. Risky shell/exec-style tools are rejected by default.
+
 Run a local-dev reverse proxy in front of an MCP server:
 
 ```bash

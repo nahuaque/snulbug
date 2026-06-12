@@ -83,3 +83,45 @@ Learned policies are intentionally mechanical. Review `LEARNED.md` and
 `policy.lua` before using the result with ngrok, Cloudflare Tunnel, or another
 public tunnel. If the session missed a legitimate workflow, run that workflow
 through the proxy and regenerate the bundle.
+
+## Amend a Learned Policy
+
+When a learned policy blocks a legitimate request, capture the blocked decision
+and generate a candidate amendment instead of editing the active policy in
+place:
+
+```bash
+uv run snulbug mcp amend \
+  learned-policy.snulbug \
+  traces/audit.jsonl \
+  --out candidate-policy.snulbug
+```
+
+Amend mode reads blocked `mcp.learn.*` decisions and proposes the smallest
+matching expansion:
+
+- `mcp.learn.path_not_observed` adds the observed path.
+- `mcp.learn.method_not_observed` adds the observed MCP method.
+- `mcp.learn.tool_not_observed` adds the observed tool and its observed
+  argument keys.
+- `mcp.learn.argument_not_observed` adds observed argument keys for an already
+  learned tool.
+- `mcp.learn.target_not_observed` adds observed resource or prompt targets.
+
+The output is a new bundle with `policy.lua`, `manifest.json`, and `AMEND.md`.
+The source bundle is not modified.
+
+By default, amend mode rejects risky shell/exec-style tool names such as
+`shell_exec` into the report instead of adding them to the candidate policy. Use
+`--allow-risky` only when you want those names included in the candidate bundle.
+
+Validate and review the candidate:
+
+```bash
+uv run snulbug bundle validate candidate-policy.snulbug
+uv run snulbug bundle test candidate-policy.snulbug
+```
+
+If the source learned bundle points at a replayable `generated_from` record log,
+amend mode also checks that previously allowed records still pass against the
+candidate policy.

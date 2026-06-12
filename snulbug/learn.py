@@ -6,8 +6,10 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .bundle import validate_bundle
+from .bundle import load_bundle, validate_bundle
 from .inspection import _load_events
+from .recorder import RECORD_TYPE, load_record_log
+from .simulator import simulate_policy
 
 
 def learn_mcp_policy(
@@ -23,19 +25,15 @@ def learn_mcp_policy(
     events = _load_events(log, kind=kind)
     model = _LearnedPolicy.from_events(events)
     output_path = Path(output)
-    if output_path.exists() and not force:
-        raise FileExistsError(f"learn output already exists: {output_path}")
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    policy_path = output_path / "policy.lua"
-    manifest_path = output_path / "manifest.json"
-    report_path = output_path / "LEARNED.md"
-    policy_path.write_text(model.to_lua(), encoding="utf-8")
-    manifest_path.write_text(
-        json.dumps(model.manifest(log), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    policy_path, manifest_path, report_path = _write_policy_bundle(
+        model,
+        output_path,
+        manifest=model.manifest(log),
+        report=model.report(log),
+        force=force,
+        exists_label="learn output",
+        report_name="LEARNED.md",
     )
-    report_path.write_text(model.report(log), encoding="utf-8")
 
     validation = validate_bundle(output_path) if validate else None
     return {
@@ -53,6 +51,70 @@ def learn_mcp_policy(
         "resources": sorted(model.resources),
         "prompts": sorted(model.prompts),
         "validation": validation,
+        "next_steps": [
+            f"uv run snulbug bundle validate {output_path}",
+            f"uv run snulbug bundle test {output_path}",
+            f"uv run snulbug mcp proxy --policy {policy_path} --upstream http://127.0.0.1:9000",
+        ],
+    }
+
+
+def amend_mcp_policy(
+    bundle: str | Path,
+    log: str | Path,
+    output: str | Path,
+    *,
+    kind: str = "auto",
+    force: bool = False,
+    validate: bool = True,
+    allow_risky: bool = False,
+) -> dict[str, Any]:
+    """Propose a narrow candidate amendment from blocked MCP audit/replay events."""
+
+    source = load_bundle(bundle)
+    model = _LearnedPolicy.from_manifest(source.manifest)
+    events = _load_events(log, kind=kind)
+    amendment = _Amendment(allow_risky=allow_risky)
+    for event in events:
+        amendment.add_event(model, event)
+
+    output_path = Path(output)
+    manifest = model.manifest(source.manifest.get("generated_from", str(bundle)))
+    manifest["generated_by"] = "snulbug mcp amend"
+    manifest["amended_from"] = str(source.root)
+    manifest["amendment_log"] = str(log)
+    manifest["amendment"] = {
+        "additions": amendment.additions,
+        "rejected": amendment.rejected,
+        "ignored": amendment.ignored,
+    }
+    policy_path, manifest_path, report_path = _write_policy_bundle(
+        model,
+        output_path,
+        manifest=manifest,
+        report=amendment.report(source.root, log, model),
+        force=force,
+        exists_label="amend output",
+        report_name="AMEND.md",
+    )
+
+    validation = validate_bundle(output_path) if validate else None
+    baseline = _verify_baseline_records(policy_path, source.manifest.get("generated_from"))
+    ok = bool(validation["ok"]) if validation is not None else True
+    ok = ok and bool(baseline["ok"])
+    return {
+        "ok": ok,
+        "bundle": str(source.root),
+        "log": str(log),
+        "output": str(output_path),
+        "policy": str(policy_path),
+        "manifest": str(manifest_path),
+        "report": str(report_path),
+        "additions": amendment.additions,
+        "rejected": amendment.rejected,
+        "ignored": amendment.ignored,
+        "validation": validation,
+        "baseline": baseline,
         "next_steps": [
             f"uv run snulbug bundle validate {output_path}",
             f"uv run snulbug bundle test {output_path}",
@@ -83,6 +145,26 @@ class _LearnedPolicy:
         model = cls()
         for event in events:
             model.add(event)
+        if not model.paths:
+            model.paths.add("/mcp")
+        return model
+
+    @classmethod
+    def from_manifest(cls, manifest: Mapping[str, Any]) -> _LearnedPolicy:
+        learned = _mapping(manifest.get("learned"))
+        if not learned:
+            raise ValueError("policy bundle manifest does not contain learned policy metadata")
+        model = cls()
+        model.event_count = int(learned.get("event_count", 0))
+        model.allowed_event_count = int(learned.get("allowed_event_count", 0))
+        model.blocked_event_count = int(learned.get("blocked_event_count", 0))
+        model.paths = set(_string_sequence(learned.get("paths")))
+        model.methods = set(_string_sequence(learned.get("methods")))
+        model.tools = set(_string_sequence(learned.get("tools")))
+        model.resources = set(_string_sequence(learned.get("resources")))
+        model.prompts = set(_string_sequence(learned.get("prompts")))
+        for tool, keys in _mapping(learned.get("tool_argument_keys")).items():
+            model.tool_argument_keys[str(tool)] = set(_string_sequence(keys))
         if not model.paths:
             model.paths.add("/mcp")
         return model
@@ -152,6 +234,11 @@ class _LearnedPolicy:
                 "tools": sorted(self.tools),
                 "resources": sorted(self.resources),
                 "prompts": sorted(self.prompts),
+                "tool_argument_keys": {
+                    tool: sorted(keys)
+                    for tool, keys in sorted(self.tool_argument_keys.items())
+                    if keys or tool in self.tools
+                },
             },
         }
 
@@ -289,6 +376,247 @@ end
 """
 
 
+class _Amendment:
+    def __init__(self, *, allow_risky: bool) -> None:
+        self.allow_risky = allow_risky
+        self.additions: list[dict[str, Any]] = []
+        self.rejected: list[dict[str, Any]] = []
+        self.ignored: list[dict[str, Any]] = []
+        self._seen_additions: set[tuple[str, str, str | None]] = set()
+        self._seen_rejections: set[tuple[str, str, str | None]] = set()
+        self._seen_ignored: set[tuple[str, str, str | None]] = set()
+
+    def add_event(self, model: _LearnedPolicy, event: Mapping[str, Any]) -> None:
+        decision = _mapping(event.get("decision"))
+        if decision.get("allowed") is not False:
+            return
+        reason_code = str(decision.get("reason_code") or "")
+        if not reason_code.startswith("mcp.learn."):
+            self._ignore("unsupported_reason_code", reason_code or "missing", event)
+            return
+
+        request = _mapping(event.get("request"))
+        mcp = _mapping(event.get("mcp"))
+        path = request.get("path")
+        method = mcp.get("method")
+        tool = mcp.get("tool")
+        target = mcp.get("target")
+
+        if reason_code == "mcp.learn.path_not_observed":
+            if isinstance(path, str) and path:
+                self._add_scalar(model.paths, "path", path, reason_code)
+            else:
+                self._ignore("missing_path", reason_code, event)
+            return
+
+        if reason_code == "mcp.learn.method_not_observed":
+            if isinstance(method, str) and method:
+                self._add_scalar(model.methods, "method", method, reason_code)
+            else:
+                self._ignore("missing_method", reason_code, event)
+            return
+
+        if reason_code == "mcp.learn.tool_not_observed":
+            if not isinstance(tool, str) or not tool:
+                self._ignore("missing_tool", reason_code, event)
+                return
+            if _risky_tool(tool) and not self.allow_risky:
+                self._reject("risky_tool", "tool", tool, reason_code)
+                return
+            self._add_scalar(model.methods, "method", "tools/call", reason_code)
+            self._add_scalar(model.tools, "tool", tool, reason_code)
+            for key in _string_sequence(mcp.get("argument_keys")):
+                self._add_argument_key(model, tool, key, reason_code)
+            return
+
+        if reason_code in {"mcp.learn.argument_not_observed", "mcp.learn.arguments_missing"}:
+            if not isinstance(tool, str) or not tool:
+                self._ignore("missing_tool", reason_code, event)
+                return
+            if tool not in model.tools:
+                if _risky_tool(tool) and not self.allow_risky:
+                    self._reject("risky_tool", "tool", tool, reason_code)
+                    return
+                self._add_scalar(model.tools, "tool", tool, reason_code)
+            keys = _string_sequence(mcp.get("argument_keys"))
+            if not keys:
+                self._ignore("missing_argument_keys", reason_code, event)
+                return
+            for key in keys:
+                self._add_argument_key(model, tool, key, reason_code)
+            return
+
+        if reason_code == "mcp.learn.target_not_observed":
+            if not isinstance(method, str) or not isinstance(target, str) or not target:
+                self._ignore("missing_target", reason_code, event)
+                return
+            if method in {"resources/read", "resources/subscribe", "resources/unsubscribe"}:
+                self._add_scalar(model.resources, "resource", target, reason_code)
+            elif method == "prompts/get":
+                self._add_scalar(model.prompts, "prompt", target, reason_code)
+            else:
+                self._ignore("unsupported_target_method", method, event)
+            return
+
+        self._ignore("unsupported_learn_reason_code", reason_code, event)
+
+    def report(self, source_bundle: Path, log: str | Path, model: _LearnedPolicy) -> str:
+        return "\n".join(
+            [
+                "# MCP Policy Amendment",
+                "",
+                f"- Source bundle: `{source_bundle}`",
+                f"- Amendment log: `{log}`",
+                f"- Additions: {len(self.additions)}",
+                f"- Rejected: {len(self.rejected)}",
+                f"- Ignored: {len(self.ignored)}",
+                "",
+                "## Added",
+                "",
+                _items_table(self.additions, ["kind", "value", "parent", "reason_code"]),
+                "",
+                "## Rejected",
+                "",
+                _items_table(self.rejected, ["kind", "value", "parent", "reason_code", "reason"]),
+                "",
+                "## Ignored",
+                "",
+                _items_table(self.ignored, ["kind", "value", "parent", "reason_code", "reason"]),
+                "",
+                "## Candidate Surface",
+                "",
+                _markdown_list("HTTP paths", sorted(model.paths)),
+                "",
+                _markdown_list("MCP methods", sorted(model.methods)),
+                "",
+                _markdown_list("Tools", sorted(model.tools)),
+                "",
+                _argument_key_table(model.tool_argument_keys),
+                "",
+            ]
+        )
+
+    def _add_scalar(self, values: set[str], kind: str, value: str, reason_code: str) -> None:
+        if value not in values:
+            values.add(value)
+            self._record_addition(kind, value, None, reason_code)
+
+    def _add_argument_key(self, model: _LearnedPolicy, tool: str, key: str, reason_code: str) -> None:
+        if key not in model.tool_argument_keys[tool]:
+            model.tool_argument_keys[tool].add(key)
+            self._record_addition("argument_key", key, tool, reason_code)
+
+    def _record_addition(self, kind: str, value: str, parent: str | None, reason_code: str) -> None:
+        key = (kind, value, parent)
+        if key in self._seen_additions:
+            return
+        self._seen_additions.add(key)
+        item = {"kind": kind, "value": value, "reason_code": reason_code}
+        if parent is not None:
+            item["parent"] = parent
+        self.additions.append(item)
+
+    def _reject(self, reason: str, kind: str, value: str, reason_code: str, parent: str | None = None) -> None:
+        key = (kind, value, parent)
+        if key in self._seen_rejections:
+            return
+        self._seen_rejections.add(key)
+        item = {"kind": kind, "value": value, "reason": reason, "reason_code": reason_code}
+        if parent is not None:
+            item["parent"] = parent
+        self.rejected.append(item)
+
+    def _ignore(self, reason: str, value: str, event: Mapping[str, Any]) -> None:
+        line = event.get("line")
+        parent = str(line) if line is not None else None
+        key = (reason, value, parent)
+        if key in self._seen_ignored:
+            return
+        self._seen_ignored.add(key)
+        item = {"kind": reason, "value": value, "reason": reason, "reason_code": value}
+        if parent is not None:
+            item["parent"] = parent
+        self.ignored.append(item)
+
+
+def _write_policy_bundle(
+    model: _LearnedPolicy,
+    output_path: Path,
+    *,
+    manifest: Mapping[str, Any],
+    report: str,
+    force: bool,
+    exists_label: str,
+    report_name: str,
+) -> tuple[Path, Path, Path]:
+    if output_path.exists() and not force:
+        raise FileExistsError(f"{exists_label} already exists: {output_path}")
+    output_path.mkdir(parents=True, exist_ok=True)
+    policy_path = output_path / "policy.lua"
+    manifest_path = output_path / "manifest.json"
+    report_path = output_path / report_name
+    policy_path.write_text(model.to_lua(), encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    report_path.write_text(report, encoding="utf-8")
+    return policy_path, manifest_path, report_path
+
+
+def _verify_baseline_records(policy_path: Path, source_log: Any) -> dict[str, Any]:
+    if not isinstance(source_log, str) or not source_log:
+        return {"ok": True, "checked": 0, "skipped": True, "reason": "no generated_from log"}
+    log_path = Path(source_log)
+    if not log_path.is_file():
+        return {"ok": True, "checked": 0, "skipped": True, "reason": "generated_from log not found"}
+
+    try:
+        records = load_record_log(log_path)
+    except Exception as exc:
+        return {"ok": True, "checked": 0, "skipped": True, "reason": f"generated_from is not replayable: {exc}"}
+
+    failures = []
+    checked = 0
+    for index, record in enumerate(records, start=1):
+        if record.get("type") != RECORD_TYPE:
+            continue
+        recorded = _mapping(record.get("result"))
+        if recorded.get("action") not in {"continue", "set_context", "rewrite", "rate_limit"}:
+            continue
+        checked += 1
+        result = simulate_policy(
+            policy_path,
+            _mapping(record.get("request")),
+            context=_optional_mapping(record.get("context")),
+            state_snapshot=_record_state_input(record),
+        )
+        if result.get("action") not in {"continue", "set_context", "rewrite", "rate_limit"}:
+            failures.append(
+                {
+                    "line": index,
+                    "recorded_action": recorded.get("action"),
+                    "actual_action": result.get("action"),
+                    "reason_code": _mapping(result.get("decision")).get("reason_code"),
+                }
+            )
+    return {"ok": not failures, "checked": checked, "failures": failures}
+
+
+def _record_state_input(record: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    state = record.get("state")
+    if not isinstance(state, Mapping):
+        return None
+    return _optional_mapping(state.get("input"))
+
+
+def _optional_mapping(value: Any) -> Mapping[str, Any] | None:
+    return value if isinstance(value, Mapping) else None
+
+
+def _risky_tool(tool: str) -> bool:
+    normalized = tool.lower().replace("-", "_")
+    risky_terms = ("shell", "exec", "command", "terminal", "subprocess", "process_spawn")
+    return any(term in normalized for term in risky_terms)
+
+
 def _lua_set(values: set[str]) -> str:
     if not values:
         return "{}"
@@ -333,6 +661,21 @@ def _counter_table(label: str, counter: Counter[str]) -> str:
         return "\n".join(lines)
     for value, count in counter.most_common():
         lines.append(f"| `{value}` | {count} |")
+    return "\n".join(lines)
+
+
+def _items_table(items: Sequence[Mapping[str, Any]], fields: Sequence[str]) -> str:
+    headers = [field.replace("_", " ").title() for field in fields]
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join("---" for _field in fields) + " |",
+    ]
+    if not items:
+        lines.append("| " + " | ".join("-" for _field in fields) + " |")
+        return "\n".join(lines)
+    for item in items:
+        values = [str(item.get(field, "-")) for field in fields]
+        lines.append("| " + " | ".join(values) + " |")
     return "\n".join(lines)
 
 

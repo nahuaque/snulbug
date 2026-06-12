@@ -13,7 +13,7 @@ Start here:
 - [MCP client setup recipes](mcp-client-recipes.md)
 - [MCP presets](mcp-presets.md)
 - [MCP recorder and replay](mcp-recorder.md)
-- [MCP learn mode](mcp-learn.md)
+- [MCP learn and amend mode](mcp-learn.md)
 - [MCP offline inspection](mcp-recorder.md#inspect-a-captured-replay-or-audit-log-without-a-running-proxy)
 - [MCP reverse proxy](mcp-proxy.md)
 - [Security model](security-model.md)

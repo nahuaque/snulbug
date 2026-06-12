@@ -248,6 +248,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     mcp_learn.add_argument("--compact", action="store_true", help="emit compact JSON")
 
+    mcp_amend = mcp_subparsers.add_parser("amend", help="propose a candidate amendment for a learned MCP policy")
+    mcp_amend.add_argument("bundle", type=Path, help="source learned policy bundle")
+    mcp_amend.add_argument("log", type=Path, help="JSONL replay or audit log containing blocked decisions")
+    mcp_amend.add_argument(
+        "--out",
+        "--output",
+        type=Path,
+        required=True,
+        help="candidate output policy bundle directory",
+    )
+    mcp_amend.add_argument("--kind", choices=("auto", "record", "audit"), default="auto", help="input log type")
+    mcp_amend.add_argument("--force", action="store_true", help="overwrite files in the output directory")
+    mcp_amend.add_argument(
+        "--allow-risky",
+        action="store_true",
+        help="allow risky shell/exec-style tool names into the candidate policy",
+    )
+    mcp_amend.add_argument(
+        "--validate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="validate the generated policy bundle",
+    )
+    mcp_amend.add_argument("--compact", action="store_true", help="emit compact JSON")
+
     mcp_proxy = mcp_subparsers.add_parser("proxy", help="run a local-dev MCP reverse proxy")
     mcp_proxy.add_argument("--config", type=Path, help="TOML config file")
     mcp_proxy.add_argument("--upstream", help="upstream MCP HTTP server URL")
@@ -503,6 +528,29 @@ def main(argv: Sequence[str] | None = None) -> int:
                 status = 0 if result["ok"] else 1
             except Exception as exc:
                 result = {"ok": False, "log": str(args.log), "output": str(args.out), "error": str(exc)}
+                status = 1
+        elif args.mcp_command == "amend":
+            from .learn import amend_mcp_policy
+
+            try:
+                result = amend_mcp_policy(
+                    args.bundle,
+                    args.log,
+                    args.out,
+                    kind=args.kind,
+                    force=args.force,
+                    validate=args.validate,
+                    allow_risky=args.allow_risky,
+                )
+                status = 0 if result["ok"] else 1
+            except Exception as exc:
+                result = {
+                    "ok": False,
+                    "bundle": str(args.bundle),
+                    "log": str(args.log),
+                    "output": str(args.out),
+                    "error": str(exc),
+                }
                 status = 1
         elif args.mcp_command == "proxy":
             from .proxy import run_proxy

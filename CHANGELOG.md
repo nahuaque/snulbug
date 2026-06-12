@@ -28,6 +28,7 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 - Documented `tunnel-safe` as the recommended default for public tunnel use.
 - Added MCP facade mode for serving multiple local MCP HTTP servers through one `snulbug mcp proxy` endpoint.
 - Added MCP learn mode with `snulbug mcp learn` to compile captured replay/audit logs into least-privilege policy bundles.
+- Added MCP amend mode with `snulbug mcp amend` to produce candidate patches from blocked learned-policy decisions.
 
 ## [0.1.0] - 2026-06-12
 
