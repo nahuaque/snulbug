@@ -45,3 +45,10 @@ For a packaged starter policy, use the bundled presets:
 uv run asgi-lua mcp presets
 uv run asgi-lua mcp init local-dev-safe --output policy.asgi-lua
 ```
+
+Record request decisions and replay them later:
+
+```bash
+uv run asgi-lua mcp record policy.asgi-lua/policy.lua request.json --out traces/session.jsonl
+uv run asgi-lua mcp replay traces/session.jsonl
+```

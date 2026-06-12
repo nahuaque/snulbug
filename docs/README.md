@@ -9,5 +9,6 @@ Start here:
 - [Policy bundles](bundles.md)
 - [MCP gateway example](mcp-gateway.md)
 - [MCP presets](mcp-presets.md)
+- [MCP recorder and replay](mcp-recorder.md)
 - [Security model](security-model.md)
 - [Release process](release.md)

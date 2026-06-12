@@ -134,6 +134,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_init.add_argument("--force", action="store_true", help="overwrite the output directory when it exists")
     mcp_init.add_argument("--compact", action="store_true", help="emit compact JSON")
 
+    mcp_record = mcp_subparsers.add_parser("record", help="record one replayable MCP request decision")
+    mcp_record.add_argument("script", type=Path, help="path to a Lua policy file")
+    mcp_record.add_argument("request", type=Path, help="path to a JSON request fixture")
+    mcp_record.add_argument("--out", type=Path, required=True, help="JSONL log path to append to")
+    mcp_record.add_argument("--context", type=Path, help="optional JSON context fixture")
+    mcp_record.add_argument("--state", type=Path, help="optional JSON state snapshot")
+    mcp_record.add_argument("--response", type=Path, help="optional JSON response metadata to store with the record")
+    mcp_record.add_argument("--metadata", type=Path, help="optional JSON metadata to store with the record")
+    mcp_record.add_argument("--instruction-limit", type=int, default=100_000)
+    mcp_record.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
+    mcp_record.add_argument("--compact", action="store_true", help="emit compact JSON")
+
+    mcp_replay = mcp_subparsers.add_parser("replay", help="replay an MCP request JSONL log")
+    mcp_replay.add_argument("log", type=Path, help="JSONL request log")
+    mcp_replay.add_argument("--script", type=Path, help="override policy script for all records")
+    mcp_replay.add_argument("--instruction-limit", type=int, default=100_000)
+    mcp_replay.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
+    mcp_replay.add_argument("--compact", action="store_true", help="emit compact JSON")
+
     args = parser.parse_args(argv)
     if args.command == "simulate":
         request = _read_json(args.request)
@@ -200,6 +219,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "mcp":
         from .presets import copy_builtin_preset, list_builtin_presets
+        from .recorder import append_record, record_policy_request, replay_record_log
 
         if args.mcp_command == "presets":
             result = {"presets": list_builtin_presets()}
@@ -216,6 +236,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             except Exception as exc:
                 result = {"ok": False, "preset": args.preset, "output": str(output), "error": str(exc)}
                 status = 1
+        elif args.mcp_command == "record":
+            memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
+            request = _read_json(args.request)
+            result = record_policy_request(
+                args.script,
+                request,
+                context=_read_json(args.context) if args.context else None,
+                state_snapshot=_read_json(args.state) if args.state else None,
+                response=_read_json(args.response) if args.response else None,
+                metadata=_read_json(args.metadata) if args.metadata else None,
+                instruction_limit=args.instruction_limit,
+                memory_limit_bytes=memory_limit,
+            )
+            append_record(args.out, result)
+            result = {
+                "ok": True,
+                "out": str(args.out),
+                "action": result["action"] if "action" in result else result["result"]["action"],
+                "record": result,
+            }
+            status = 0
+        elif args.mcp_command == "replay":
+            memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
+            result = replay_record_log(
+                args.log,
+                script_path=args.script,
+                instruction_limit=args.instruction_limit,
+                memory_limit_bytes=memory_limit,
+            )
+            status = 0 if result["ok"] else 1
         else:
             parser.error(f"unknown mcp command: {args.mcp_command}")
             return 2

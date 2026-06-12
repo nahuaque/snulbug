@@ -373,6 +373,14 @@ Included presets:
 - `auth-required`: bearer auth only.
 - `tool-allowlist`: MCP `tools/call` allowlist only.
 
+Record and replay MCP request decisions as JSONL:
+
+```bash
+uv run asgi-lua mcp record policy.asgi-lua/policy.lua request.json --out traces/session.jsonl
+uv run asgi-lua mcp replay traces/session.jsonl
+uv run asgi-lua mcp replay traces/session.jsonl --script candidate.lua
+```
+
 ## Bounded policy state
 
 Policies can use small state capabilities when the middleware is configured with

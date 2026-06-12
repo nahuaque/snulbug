@@ -27,6 +27,13 @@ uv run asgi-lua bundle validate policy.asgi-lua
 uv run asgi-lua bundle test policy.asgi-lua
 ```
 
+Record and replay decisions while tuning the copied policy:
+
+```bash
+uv run asgi-lua mcp record policy.asgi-lua/policy.lua request.json --out traces/session.jsonl
+uv run asgi-lua mcp replay traces/session.jsonl
+```
+
 ## Included presets
 
 `local-dev-safe` is the default. It requires bearer auth, allows only
