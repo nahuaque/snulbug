@@ -1,0 +1,64 @@
+{
+  "name": "mcp-workspace-firewall",
+  "version": "0.1.0",
+  "entrypoint": "policy.lua",
+  "description": "Require auth, allow configured MCP tools, and classify/block workspace path arguments for coding agents",
+  "risk_profile": "workspace-firewall",
+  "required_capabilities": ["body", "mcp"],
+  "fixtures": [
+    {
+      "name": "allowlisted workspace path continues with path class",
+      "request": "fixtures/allowed-read.json",
+      "expect": {
+        "action": "continue",
+        "decision.context.policy": "mcp-workspace-firewall",
+        "decision.context.method": "tools/call",
+        "decision.context.tool": "safe_read_file",
+        "decision.context.workspace.path_class": "allowed",
+        "decision.context.workspace.path": "README.md",
+        "decision.reason_code": "mcp.workspace_allowed"
+      }
+    },
+    {
+      "name": "secret-looking path is rejected",
+      "request": "fixtures/secret-path.json",
+      "expect": {
+        "action": "reject",
+        "status": 403,
+        "body": "MCP workspace path blocked (secret): .env",
+        "decision.context.workspace.path_class": "secret",
+        "decision.reason_code": "mcp.workspace_secret_blocked"
+      }
+    },
+    {
+      "name": "traversal path is rejected",
+      "request": "fixtures/traversal-path.json",
+      "expect": {
+        "action": "reject",
+        "status": 403,
+        "body": "MCP workspace path blocked (outside): ../secrets.env",
+        "decision.context.workspace.path_class": "outside",
+        "decision.reason_code": "mcp.workspace_path_outside"
+      }
+    },
+    {
+      "name": "unsafe tool is rejected",
+      "request": "fixtures/unsafe-tool.json",
+      "expect": {
+        "action": "reject",
+        "status": 403,
+        "body": "MCP tool not allowed: shell_exec",
+        "decision.reason_code": "mcp.tool_not_allowed"
+      }
+    },
+    {
+      "name": "missing token is challenged",
+      "request": "fixtures/missing-token.json",
+      "expect": {
+        "action": "challenge",
+        "body": "MCP bearer token required",
+        "decision.reason_code": "mcp.auth_required"
+      }
+    }
+  ]
+}

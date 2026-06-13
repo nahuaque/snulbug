@@ -247,6 +247,7 @@ Request-side policy:
 - MCP method and tool allowlists
 - JSON-RPC batch rejection
 - project path constraints for tool arguments
+- agent workspace firewalling with path classification and secret/generated path blocks
 - schema-aware validation of `tools/call` arguments from MCP `inputSchema`
 - task-scoped capability leases with expiring tool/path grants
 - small stateful policies such as rate limits and idempotency keys

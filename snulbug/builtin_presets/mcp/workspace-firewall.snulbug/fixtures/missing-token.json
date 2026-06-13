@@ -1,0 +1,8 @@
+{
+  "method": "POST",
+  "path": "/mcp",
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"safe_read_file\",\"arguments\":{\"path\":\"README.md\"}}}"
+}

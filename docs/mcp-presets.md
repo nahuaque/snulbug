@@ -112,6 +112,23 @@ uv run snulbug mcp init project-path-allowlist \
   --allow-path docs/
 ```
 
+`workspace-firewall` is designed for coding agents using local filesystem-like
+MCP tools. It requires bearer auth, applies a tool allowlist, inspects common
+path-like arguments, blocks absolute/traversal/outside paths, blocks
+secret-looking paths such as `.env`, `.ssh/`, `secrets/`, `*.pem`, and `*.key`,
+and blocks write-like tools from targeting generated/cache paths such as
+`.git/`, `node_modules/`, `.venv/`, `__pycache__/`, `dist/`, or `build/`.
+Allowed decisions include `context.workspace.path_class` for audit/reporting.
+
+```bash
+uv run snulbug mcp init workspace-firewall \
+  --output policy.snulbug \
+  --allow-tool safe_read_file \
+  --allow-tool list_project_files \
+  --allow-path README.md \
+  --allow-path docs/
+```
+
 `tunnel-safe` is the recommended default for ngrok, Cloudflare Tunnel,
 Tailscale Funnel, LocalXpose, Pinggy, Holepunch peer bridges, or similar tunnel
 exposure. It requires bearer auth, rejects JSON-RPC batch requests, allows only

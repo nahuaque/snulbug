@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import json
 
-from snulbug import McpPolicyOptions, copy_builtin_preset, generate_mcp_preset, list_builtin_presets, validate_bundle
+from snulbug import (
+    McpPolicyOptions,
+    copy_builtin_preset,
+    generate_mcp_preset,
+    list_builtin_presets,
+    simulate_policy,
+    validate_bundle,
+)
 from snulbug import test_bundle as run_bundle_tests
 from snulbug.simulator import main as simulator_main
 
@@ -18,9 +25,11 @@ def test_builtin_mcp_presets_are_listed():
         "read-only-local-dev",
         "tool-allowlist",
         "tunnel-safe",
+        "workspace-firewall",
     }
     assert presets["local-dev-safe"]["required_capabilities"] == ["body", "mcp", "state", "rate_limit"]
     assert presets["tunnel-safe"]["risk_profile"] == "tunnel-safe"
+    assert presets["workspace-firewall"]["risk_profile"] == "workspace-firewall"
 
 
 def test_builtin_mcp_presets_copy_validate_and_test(tmp_path):
@@ -51,6 +60,7 @@ def test_mcp_presets_cli_lists_presets(capsys):
         "read-only-local-dev",
         "tool-allowlist",
         "tunnel-safe",
+        "workspace-firewall",
     ]
 
 
@@ -144,6 +154,61 @@ def test_generate_project_path_profile_renders_custom_paths(tmp_path):
     assert "src/" in fixture["body"]
     assert validate_bundle(output_path)["ok"] is True
     assert run_bundle_tests(output_path)["ok"] is True
+
+
+def test_generate_workspace_firewall_profile_blocks_generated_write_paths(tmp_path):
+    output_path = tmp_path / "policy.snulbug"
+
+    result = generate_mcp_preset(
+        "workspace-firewall",
+        output_path,
+        options=McpPolicyOptions(
+            token="custom-secret",
+            allowed_tools=["safe_read_file", "write_file"],
+            allowed_paths=["README.md", "docs/", "dist/"],
+        ),
+    )
+
+    policy = (output_path / "policy.lua").read_text(encoding="utf-8")
+    allowed = simulate_policy(
+        output_path / "policy.lua",
+        {
+            "method": "POST",
+            "path": "/mcp",
+            "headers": {"authorization": "Bearer custom-secret", "content-type": "application/json"},
+            "body": (
+                '{"jsonrpc":"2.0","id":1,"method":"tools/call",'
+                '"params":{"name":"safe_read_file","arguments":{"path":"docs/guide.md"}}}'
+            ),
+        },
+    )
+    generated_write = simulate_policy(
+        output_path / "policy.lua",
+        {
+            "method": "POST",
+            "path": "/mcp",
+            "headers": {"authorization": "Bearer custom-secret", "content-type": "application/json"},
+            "body": (
+                '{"jsonrpc":"2.0","id":2,"method":"tools/call",'
+                '"params":{"name":"write_file","arguments":{"path":"dist/app.js","content":"new"}}}'
+            ),
+        },
+    )
+
+    assert result["generated"] is True
+    assert '"write_file",' in policy
+    assert '"dist/",' in policy
+    assert allowed["action"] == "continue"
+    assert allowed["decision"]["context"]["workspace"]["path_class"] == "allowed"
+    assert generated_write["action"] == "reject"
+    assert generated_write["decision"]["reason_code"] == "mcp.workspace_generated_write_blocked"
+    assert generated_write["decision"]["context"]["workspace"] == {
+        "argument": "path",
+        "path": "dist/app.js",
+        "path_class": "generated",
+        "write_intent": True,
+    }
+    assert validate_bundle(output_path)["ok"] is True
 
 
 def test_mcp_init_cli_generates_custom_policy(tmp_path, capsys):
