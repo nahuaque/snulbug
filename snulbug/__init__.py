@@ -6,6 +6,12 @@ from .bundle import pack_bundle, test_bundle, validate_bundle
 from .cloudflare_access import CloudflareAccessConfig, evaluate_cloudflare_access
 from .config import load_mcp_fabric_config, load_mcp_proxy_config, write_sample_config
 from .confirm import ConfirmationBroker
+from .controller import (
+    FabricControllerStatusServer,
+    format_fabric_controller_report,
+    reconcile_fabric_controller,
+    run_fabric_controller,
+)
 from .discovery import discovery_provider_types, register_discovery_provider
 from .fabric import (
     annotate_topology_audit,
@@ -78,6 +84,7 @@ __all__ = [
     "MemoryStateStore",
     "McpPolicyOptions",
     "FacadeUpstream",
+    "FabricControllerStatusServer",
     "ManagedHolepunchBridge",
     "ManagedStdioMcpClient",
     "MCP_GUIDE_WORKFLOWS",
@@ -117,6 +124,7 @@ __all__ = [
     "fabric_status",
     "format_fabric_discovery_report",
     "format_fabric_doctor_report",
+    "format_fabric_controller_report",
     "format_fabric_learn_report",
     "format_fabric_status_report",
     "format_mcp_inspection_report",
@@ -140,11 +148,13 @@ __all__ = [
     "parse_tunnel_headers",
     "record_audit_event",
     "record_policy_request",
+    "reconcile_fabric_controller",
     "register_discovery_provider",
     "redact_secrets",
     "replay_record_log",
     "revoke_lease",
     "run_mcp_lab",
+    "run_fabric_controller",
     "run_proxy",
     "simulate_policy",
     "sign_upstream_manifest",

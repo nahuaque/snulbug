@@ -456,6 +456,43 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     mcp_fabric_learn.add_argument("--force", action="store_true", help="overwrite the output directory")
     mcp_fabric_learn.add_argument("--compact", action="store_true", help="emit compact JSON")
+    mcp_fabric_controller = mcp_fabric_subparsers.add_parser(
+        "controller",
+        help="reconcile declarative MCP fabric config into a controller state snapshot",
+    )
+    mcp_fabric_controller.add_argument(
+        "--config",
+        type=Path,
+        default=Path("snulbug.toml"),
+        help="snulbug.toml config file",
+    )
+    mcp_fabric_controller.add_argument(
+        "--state",
+        type=Path,
+        default=Path(".snulbug/fabric-state.json"),
+        help="controller state snapshot path",
+    )
+    mcp_fabric_controller.add_argument(
+        "--event-log",
+        type=Path,
+        default=Path(".snulbug/fabric-events.jsonl"),
+        help="controller change event JSONL path",
+    )
+    mcp_fabric_controller.add_argument(
+        "--no-event-log",
+        action="store_true",
+        help="do not append reconcile change events",
+    )
+    mcp_fabric_controller.add_argument("--interval", type=float, default=2.0, help="reconcile interval in seconds")
+    mcp_fabric_controller.add_argument("--once", action="store_true", help="run one reconcile and exit")
+    mcp_fabric_controller.add_argument(
+        "--status-server",
+        action="store_true",
+        help="serve local /healthz, /status, and /metrics endpoints while running",
+    )
+    mcp_fabric_controller.add_argument("--status-host", default="127.0.0.1", help="status server bind host")
+    mcp_fabric_controller.add_argument("--status-port", type=int, default=0, help="status server bind port")
+    mcp_fabric_controller.add_argument("--compact", action="store_true", help="emit compact JSON")
 
     mcp_manifest = mcp_subparsers.add_parser("manifest", help="sign and verify MCP upstream manifests")
     mcp_manifest_subparsers = mcp_manifest.add_subparsers(dest="manifest_command", required=True)
@@ -1015,6 +1052,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 parser.error(f"unknown mcp config command: {args.config_command}")
                 return 2
         elif args.mcp_command == "fabric":
+            from .controller import (
+                FabricControllerStatusServer,
+                format_fabric_controller_report,
+                run_fabric_controller,
+            )
             from .fabric import (
                 discover_fabric_upstreams,
                 doctor_fabric,
@@ -1062,6 +1104,44 @@ def main(argv: Sequence[str] | None = None) -> int:
                         sys.stdout.write(format_fabric_learn_report(result))
                         sys.stdout.write("\n")
                         return status
+                elif args.fabric_command == "controller":
+                    event_log = None if args.no_event_log else args.event_log
+                    status_server = None
+                    if args.status_server:
+                        status_server = FabricControllerStatusServer(host=args.status_host, port=args.status_port)
+                        status_server.start()
+
+                    def emit_controller_result(payload: Mapping[str, Any]) -> None:
+                        if status_server is not None:
+                            payload = {**dict(payload), "status_server": status_server_url(status_server)}
+                        if args.compact:
+                            sys.stdout.write(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+                            sys.stdout.write("\n")
+                        else:
+                            sys.stdout.write(format_fabric_controller_report(payload))
+                            if status_server is not None:
+                                sys.stdout.write("\n\n## Status server\n")
+                                sys.stdout.write(f"- health: `{status_server_url(status_server)}/healthz`\n")
+                                sys.stdout.write(f"- status: `{status_server_url(status_server)}/status`\n")
+                                sys.stdout.write(f"- metrics: `{status_server_url(status_server)}/metrics`\n")
+                            sys.stdout.write("\n")
+                        sys.stdout.flush()
+
+                    try:
+                        result = run_fabric_controller(
+                            args.config,
+                            state_path=args.state,
+                            event_log=event_log,
+                            interval=args.interval,
+                            once=args.once,
+                            emit=emit_controller_result,
+                            status_server=status_server,
+                        )
+                    finally:
+                        if status_server is not None and args.once:
+                            status_server.stop()
+                    status = 0 if result["ok"] else 1
+                    return status
                 else:
                     parser.error(f"unknown mcp fabric command: {args.fabric_command}")
                     return 2
@@ -1389,6 +1469,10 @@ def _parse_facade_upstreams(values: Sequence[str] | None) -> list[dict[str, Any]
             raise ValueError("--facade-upstream must use NAME=URL")
         upstreams.append({"name": name, "url": url, "tool_prefix": f"{name}."})
     return upstreams
+
+
+def status_server_url(status_server: Any) -> str:
+    return f"http://{status_server.host}:{status_server.port}"
 
 
 def _normalize_headers(headers: Any) -> dict[str, str | list[str]]:

@@ -267,6 +267,58 @@ It reports:
 - manifest presence and declared signed metadata
 - transport and manifest counts
 
+## Controller
+
+`controller` turns the declarative fabric into a lightweight reconciliation
+loop. It repeatedly loads `snulbug.toml`, resolves discovery providers, computes
+a deterministic desired-state fingerprint, writes a state snapshot, and appends
+change events when the fabric changes.
+
+Run one reconcile for CI or an agentic harness:
+
+```bash
+snulbug mcp fabric controller \
+  --config snulbug.toml \
+  --once \
+  --compact
+```
+
+Run it as a local control-plane loop:
+
+```bash
+snulbug mcp fabric controller \
+  --config snulbug.toml \
+  --interval 2 \
+  --state .snulbug/fabric-state.json \
+  --event-log .snulbug/fabric-events.jsonl
+```
+
+The state snapshot includes the current fabric, gateway, proxy, discovery
+providers, upstreams, summary counters, recommendations, fingerprint, and
+detected changes. Change events are JSONL records with
+`type = "snulbug.fabric.reconcile"` and are written only when the desired fabric
+changes.
+
+The controller can also expose local read-only status endpoints:
+
+```bash
+snulbug mcp fabric controller \
+  --config snulbug.toml \
+  --status-server \
+  --status-port 8765
+```
+
+Endpoints:
+
+- `/healthz`: last reconcile health as JSON
+- `/status`: latest controller snapshot as JSON
+- `/metrics`: Prometheus-style gauges for fabric health, changes, upstreams,
+  discovery errors, and missing required manifests
+
+This is the control-plane foundation. It does not hot-swap a running proxy route
+table yet; use it today to keep declarative topology, discovery, manifest state,
+and audit metadata observable while the data plane runs.
+
 ## Doctor
 
 `doctor` is the active readiness gate. It verifies configured manifests, checks
