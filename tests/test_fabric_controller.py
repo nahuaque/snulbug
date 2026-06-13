@@ -307,6 +307,8 @@ def test_fabric_data_plane_runner_starts_controller_and_proxy(tmp_path):
     started = []
     proxy_calls = []
     health_checks = []
+    status_checks = []
+    metric_checks = []
 
     def emit(payload):
         started.append(payload)
@@ -315,6 +317,8 @@ def test_fabric_data_plane_runner_starts_controller_and_proxy(tmp_path):
         proxy_calls.append(kwargs)
         status = started[0]["status_server"]
         health_checks.append(read_http(status["host"], status["port"], "/healthz"))
+        status_checks.append(read_http(status["host"], status["port"], "/status"))
+        metric_checks.append(read_http(status["host"], status["port"], "/metrics"))
 
     result = run_fabric_data_plane(
         config,
@@ -333,13 +337,64 @@ def test_fabric_data_plane_runner_starts_controller_and_proxy(tmp_path):
     assert started[0]["generated_by"] == "snulbug mcp fabric run"
     assert started[0]["proxy"]["upstream_count"] == 1
     assert started[0]["proxy"]["reload_enabled"] is True
+    assert started[0]["runtime"]["data_plane"]["status"] == "running"
+    assert started[0]["runtime"]["conformance"]["status"] == "not_configured"
+    assert started[0]["share_gate"]["ok"] is True
+    assert started[0]["share_gate"]["warnings"] == ["conformance_not_configured"]
+    assert result["runtime"]["data_plane"]["status"] == "stopped"
+    assert result["share_gate"]["ok"] is False
+    assert result["share_gate"]["blocked_by"] == ["data_plane_stopped"]
     assert proxy_calls[0]["fabric_reload_config"] == config
     assert proxy_calls[0]["fabric_reload_interval"] == 0.02
     assert proxy_calls[0]["upstreams"][0]["name"] == "files"
     assert health_checks[0]["status"] == 200
     assert json.loads(health_checks[0]["body"]) == {"ok": True}
+    status_payload = json.loads(status_checks[0]["body"])
+    assert status_checks[0]["status"] == 200
+    assert status_payload["runtime"]["data_plane"]["status"] == "running"
+    assert status_payload["share_gate"]["ok"] is True
+    assert metric_checks[0]["status"] == 200
+    assert "snulbug_fabric_data_plane_running 1" in metric_checks[0]["body"]
+    assert "snulbug_fabric_shareable 1" in metric_checks[0]["body"]
     assert snapshot["initialized"] is True
     assert event_log.is_file()
+
+
+def test_fabric_data_plane_runner_blocks_when_required_conformance_fails(monkeypatch, tmp_path):
+    config = write_fabric_run_config(tmp_path)
+    conformance_pack = tmp_path / ".snulbug/fabric-conformance"
+    proxy_calls = []
+
+    def fake_conformance(pack):
+        assert pack == conformance_pack
+        return {
+            "ok": False,
+            "summary": {"failed": 1},
+            "checks": [
+                {
+                    "id": "config.fingerprint",
+                    "status": "fail",
+                    "message": "fabric config changed",
+                }
+            ],
+        }
+
+    monkeypatch.setattr("snulbug.controller.run_fabric_conformance_pack", fake_conformance)
+
+    try:
+        run_fabric_data_plane(
+            config,
+            status_port=0,
+            conformance_pack=conformance_pack,
+            require_conformance=True,
+            proxy_runner=lambda **kwargs: proxy_calls.append(kwargs),
+        )
+    except ValueError as exc:
+        assert "conformance gate failed" in str(exc)
+    else:  # pragma: no cover - assertion guard.
+        raise AssertionError("expected conformance gate to block data plane startup")
+
+    assert proxy_calls == []
 
 
 def test_fabric_data_plane_runner_requires_facade_upstreams(tmp_path):
@@ -366,6 +421,7 @@ def test_fabric_data_plane_runner_requires_facade_upstreams(tmp_path):
 
 def test_mcp_fabric_run_cli_emits_compact_startup(monkeypatch, tmp_path, capsys):
     config = write_fabric_run_config(tmp_path)
+    conformance_pack = tmp_path / ".snulbug/fabric-conformance"
     calls = []
 
     def fake_run_fabric_data_plane(config_path, **kwargs):
@@ -399,6 +455,9 @@ def test_mcp_fabric_run_cli_emits_compact_startup(monkeypatch, tmp_path, capsys)
             "0.25",
             "--status-port",
             "0",
+            "--conformance-pack",
+            str(conformance_pack),
+            "--require-conformance",
             "--compact",
         ]
     )
@@ -410,6 +469,8 @@ def test_mcp_fabric_run_cli_emits_compact_startup(monkeypatch, tmp_path, capsys)
     assert calls[0][1]["controller_interval"] == 0.5
     assert calls[0][1]["reload_interval"] == 0.25
     assert calls[0][1]["status_port"] == 0
+    assert calls[0][1]["conformance_pack"] == conformance_pack
+    assert calls[0][1]["require_conformance"] is True
 
 
 def write_controller_config(tmp_path: Path, *, discovery_registry: Path | None = None) -> Path:

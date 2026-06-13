@@ -386,6 +386,26 @@ Agent-friendly startup output:
 snulbug mcp fabric run --config snulbug.toml --compact
 ```
 
+The managed status endpoint includes runtime state alongside controller state:
+
+- `runtime.data_plane` reports whether the managed proxy is `running`,
+  `stopped`, or `blocked`, plus bind address, policy, trace outputs, reload
+  interval, and upstream names.
+- `runtime.conformance` reports whether a conformance pack was checked and
+  whether it passed.
+- `share_gate` is the agent-readable readiness decision. It is blocked when the
+  controller is unhealthy, the data plane is not running, or required
+  conformance is not passing.
+
+To gate public sharing on a generated conformance pack:
+
+```bash
+snulbug mcp fabric run \
+  --config snulbug.toml \
+  --conformance-pack .snulbug/fabric-conformance \
+  --require-conformance
+```
+
 `fabric run` requires facade upstreams from `[[mcp.proxy.upstreams]]` or
 discovery providers. For a single upstream reverse proxy, use
 `snulbug mcp proxy --config snulbug.toml`.

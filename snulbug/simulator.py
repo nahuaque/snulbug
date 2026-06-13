@@ -646,6 +646,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     mcp_fabric_run.add_argument("--status-host", default="127.0.0.1", help="status server bind host")
     mcp_fabric_run.add_argument("--status-port", type=int, default=8765, help="status server bind port")
+    mcp_fabric_run.add_argument(
+        "--conformance-pack",
+        type=Path,
+        help="generated fabric conformance pack to check before starting the data plane",
+    )
+    mcp_fabric_run.add_argument(
+        "--require-conformance",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="block data-plane startup unless the configured conformance pack passes",
+    )
     mcp_fabric_run.add_argument("--compact", action="store_true", help="emit compact JSON startup output")
 
     mcp_manifest = mcp_subparsers.add_parser("manifest", help="sign and verify MCP upstream manifests")
@@ -1451,6 +1462,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         reload_interval=args.reload_interval,
                         status_host=args.status_host,
                         status_port=args.status_port,
+                        conformance_pack=args.conformance_pack,
+                        require_conformance=args.require_conformance,
                         emit=emit_fabric_run_started,
                     )
                     status = 0 if result["ok"] else 1

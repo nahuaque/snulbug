@@ -24,7 +24,7 @@ from .control_events import (
     event_types,
     make_control_event,
 )
-from .fabric import build_fabric_audit_metadata, fabric_status
+from .fabric import build_fabric_audit_metadata, fabric_status, run_fabric_conformance_pack
 
 DEFAULT_CONTROLLER_STATE_PATH = Path(".snulbug/fabric-state.json")
 DEFAULT_CONTROLLER_EVENT_LOG_PATH = Path(".snulbug/fabric-events.jsonl")
@@ -153,6 +153,8 @@ def run_fabric_data_plane(
     reload_interval: float = 2.0,
     status_host: str = "127.0.0.1",
     status_port: int = DEFAULT_CONTROLLER_STATUS_PORT,
+    conformance_pack: str | Path | None = None,
+    require_conformance: bool = False,
     emit: Callable[[Mapping[str, Any]], None] | None = None,
     proxy_runner: FabricProxyRunner | None = None,
 ) -> dict[str, Any]:
@@ -162,6 +164,8 @@ def run_fabric_data_plane(
         raise ValueError("controller_interval must be positive")
     if reload_interval <= 0:
         raise ValueError("reload_interval must be positive")
+    if require_conformance and conformance_pack is None:
+        raise ValueError("require_conformance requires conformance_pack")
 
     config_path = Path(config)
     status_server = FabricControllerStatusServer(host=status_host, port=status_port)
@@ -181,6 +185,24 @@ def run_fabric_data_plane(
         )
         if not initial.get("ok"):
             raise ValueError(f"fabric controller reconcile failed: {initial.get('error') or 'fabric is not healthy'}")
+
+        conformance_result = None
+        if conformance_pack is not None:
+            conformance_result = run_fabric_conformance_pack(conformance_pack)
+            if require_conformance and not conformance_result.get("ok"):
+                proxy_config = load_mcp_proxy_config(config_path)
+                status_server.update_runtime(
+                    _fabric_runtime_state(
+                        status="blocked",
+                        proxy_config=proxy_config,
+                        reload_interval=reload_interval,
+                        conformance_pack=conformance_pack,
+                        conformance=conformance_result,
+                        require_conformance=require_conformance,
+                        error="fabric conformance gate failed",
+                    )
+                )
+                raise ValueError("fabric conformance gate failed; data plane was not started")
 
         def reconcile_loop() -> None:
             try:
@@ -222,7 +244,11 @@ def run_fabric_data_plane(
             controller_interval=controller_interval,
             reload_interval=reload_interval,
             initial=initial,
+            conformance_pack=conformance_pack,
+            conformance=conformance_result,
+            require_conformance=require_conformance,
         )
+        status_server.update_runtime(started["runtime"])
         if emit is not None:
             emit(started)
 
@@ -270,11 +296,16 @@ def run_fabric_data_plane(
             fabric_reload_interval=reload_interval,
             fabric_reload_overrides={},
         )
-        return {
-            **started,
-            "stopped": True,
-            "controller_errors": controller_errors,
-        }
+        stopped_runtime = _fabric_runtime_state(
+            status="stopped",
+            proxy_config=proxy_config,
+            reload_interval=reload_interval,
+            conformance_pack=conformance_pack,
+            conformance=conformance_result,
+            require_conformance=require_conformance,
+        )
+        stopped = _attach_share_gate({**started, "runtime": stopped_runtime, "stopped": True})
+        return {**stopped, "controller_errors": controller_errors}
     finally:
         stop_event.set()
         if controller_thread is not None:
@@ -345,6 +376,10 @@ def format_fabric_run_report(result: Mapping[str, Any]) -> str:
     proxy = _mapping(result.get("proxy"))
     controller = _mapping(result.get("controller"))
     status_server = _mapping(result.get("status_server"))
+    runtime = _mapping(result.get("runtime"))
+    data_plane = _mapping(runtime.get("data_plane"))
+    conformance = _mapping(runtime.get("conformance"))
+    share_gate = _mapping(result.get("share_gate"))
     lines = [
         "# snulbug fabric run",
         "",
@@ -364,9 +399,12 @@ def format_fabric_run_report(result: Mapping[str, Any]) -> str:
             "",
             "## Data plane",
             f"- bind: `{proxy.get('host')}:{proxy.get('port')}`",
+            f"- runtime: `{data_plane.get('status', 'unknown')}`",
             f"- upstreams: {proxy.get('upstream_count', 0)}",
             f"- live reload: {str(bool(proxy.get('reload_enabled'))).lower()}",
             f"- reload interval: {proxy.get('reload_interval')}s",
+            f"- share gate: `{'ok' if share_gate.get('ok') else 'blocked'}`",
+            f"- conformance: `{conformance.get('status', 'not_configured')}`",
             "",
             "## Endpoints",
             f"- health: `{status_server.get('url')}/healthz`",
@@ -437,7 +475,18 @@ class FabricControllerStatusServer:
 
     def update(self, result: Mapping[str, Any]) -> None:
         with self._lock:
-            self._latest = _copy_jsonish(result)
+            latest = _copy_jsonish(result)
+            previous_runtime = _mapping(self._latest.get("runtime"))
+            if "runtime" not in latest and previous_runtime:
+                latest["runtime"] = _copy_jsonish(previous_runtime)
+            latest = _attach_share_gate(latest)
+            self._latest = latest
+
+    def update_runtime(self, runtime: Mapping[str, Any]) -> None:
+        with self._lock:
+            latest = _copy_jsonish(self._latest)
+            latest["runtime"] = _copy_jsonish(runtime)
+            self._latest = _attach_share_gate(latest)
 
     def latest(self) -> dict[str, Any]:
         with self._lock:
@@ -936,10 +985,21 @@ def _controller_metrics(result: Mapping[str, Any]) -> str:
     summary = _mapping(result.get("summary"))
     changed = 1 if result.get("changed") else 0
     ok = 1 if result.get("ok") else 0
+    runtime = _mapping(result.get("runtime"))
+    data_plane = _mapping(runtime.get("data_plane"))
+    share_gate = _mapping(result.get("share_gate"))
+    data_plane_running = 1 if data_plane.get("status") == "running" else 0
+    shareable = 1 if share_gate.get("ok") is True else 0
     lines = [
         "# HELP snulbug_fabric_controller_ok Whether the last fabric reconcile was healthy.",
         "# TYPE snulbug_fabric_controller_ok gauge",
         f"snulbug_fabric_controller_ok {ok}",
+        "# HELP snulbug_fabric_data_plane_running Whether the managed data plane is running.",
+        "# TYPE snulbug_fabric_data_plane_running gauge",
+        f"snulbug_fabric_data_plane_running {data_plane_running}",
+        "# HELP snulbug_fabric_shareable Whether controller and runtime gates allow sharing the gateway.",
+        "# TYPE snulbug_fabric_shareable gauge",
+        f"snulbug_fabric_shareable {shareable}",
         "# HELP snulbug_fabric_controller_changed Whether the last reconcile changed desired state.",
         "# TYPE snulbug_fabric_controller_changed gauge",
         f"snulbug_fabric_controller_changed {changed}",
@@ -956,6 +1016,107 @@ def _controller_metrics(result: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _fabric_runtime_state(
+    *,
+    status: str,
+    proxy_config: Mapping[str, Any],
+    reload_interval: float,
+    conformance_pack: str | Path | None = None,
+    conformance: Mapping[str, Any] | None = None,
+    require_conformance: bool = False,
+    error: str | None = None,
+) -> dict[str, Any]:
+    host = proxy_config.get("host")
+    port = proxy_config.get("port")
+    data_plane = _drop_empty(
+        {
+            "managed": True,
+            "status": status,
+            "updated_at": _utc_now(),
+            "gateway_url": f"http://{host}:{port}/mcp",
+            "host": host,
+            "port": port,
+            "policy": str(proxy_config.get("policy")) if proxy_config.get("policy") else None,
+            "state": proxy_config.get("state"),
+            "record_out": str(proxy_config.get("record_out")) if proxy_config.get("record_out") else None,
+            "audit_out": str(proxy_config.get("audit_out")) if proxy_config.get("audit_out") else None,
+            "upstream_count": len(proxy_config.get("upstreams", [])),
+            "upstreams": [upstream.get("name") for upstream in _sequence_mappings(proxy_config.get("upstreams"))],
+            "reload_enabled": True,
+            "reload_interval": reload_interval,
+            "error": error,
+        }
+    )
+    return _drop_empty(
+        {
+            "data_plane": data_plane,
+            "conformance": _runtime_conformance_summary(
+                conformance_pack,
+                conformance,
+                required=require_conformance,
+            ),
+        }
+    )
+
+
+def _runtime_conformance_summary(
+    pack: str | Path | None,
+    result: Mapping[str, Any] | None,
+    *,
+    required: bool,
+) -> dict[str, Any]:
+    if pack is None:
+        return _drop_empty({"required": required, "status": "not_configured"})
+    if result is None:
+        return _drop_empty({"required": required, "pack": str(pack), "status": "not_checked"})
+    failed_checks = [
+        check.get("id")
+        for check in _sequence_mappings(result.get("checks"))
+        if check.get("status") == "fail" and check.get("id")
+    ]
+    return _drop_empty(
+        {
+            "required": required,
+            "pack": str(pack),
+            "status": "passed" if result.get("ok") else "failed",
+            "ok": bool(result.get("ok")),
+            "summary": _copy_jsonish(result.get("summary", {})),
+            "failed_checks": failed_checks,
+        }
+    )
+
+
+def _attach_share_gate(result: Mapping[str, Any]) -> dict[str, Any]:
+    latest = _copy_jsonish(result)
+    runtime = _mapping(latest.get("runtime"))
+    if not runtime:
+        return latest
+    blocks = []
+    warnings = []
+    if not latest.get("ok"):
+        blocks.append("controller_not_healthy")
+    data_plane = _mapping(runtime.get("data_plane"))
+    if data_plane and data_plane.get("status") != "running":
+        blocks.append(f"data_plane_{data_plane.get('status', 'unknown')}")
+    conformance = _mapping(runtime.get("conformance"))
+    if conformance:
+        if conformance.get("required") and conformance.get("ok") is not True:
+            blocks.append("conformance_not_passing")
+        elif conformance.get("status") == "not_configured":
+            warnings.append("conformance_not_configured")
+        elif conformance.get("ok") is False:
+            warnings.append("conformance_failed")
+    latest["share_gate"] = _drop_empty(
+        {
+            "ok": not blocks,
+            "blocked_by": blocks,
+            "warnings": warnings,
+            "updated_at": _utc_now(),
+        }
+    )
+    return latest
+
+
 def _fabric_run_started_result(
     *,
     config: Path,
@@ -966,39 +1127,53 @@ def _fabric_run_started_result(
     controller_interval: float,
     reload_interval: float,
     initial: Mapping[str, Any],
+    conformance_pack: str | Path | None,
+    conformance: Mapping[str, Any] | None,
+    require_conformance: bool,
 ) -> dict[str, Any]:
     host = proxy_config.get("host")
     port = proxy_config.get("port")
     gateway_url = _mapping(initial.get("fabric")).get("gateway_url") or f"http://{host}:{port}/mcp"
-    return {
-        "ok": True,
-        "generated_by": "snulbug mcp fabric run",
-        "config": str(config),
-        "status_server": {
-            "host": status_server.host,
-            "port": status_server.port,
-            "url": _status_server_url(status_server),
-        },
-        "controller": {
-            "state": str(state_path),
-            "event_log": str(event_log) if event_log is not None else None,
-            "interval": controller_interval,
-            "fingerprint": initial.get("fingerprint"),
-            "summary": _copy_jsonish(initial.get("summary", {})),
-        },
-        "proxy": {
-            "host": host,
-            "port": port,
-            "url": gateway_url,
-            "policy": str(proxy_config.get("policy")),
-            "record_out": str(proxy_config.get("record_out")) if proxy_config.get("record_out") else None,
-            "audit_out": str(proxy_config.get("audit_out")) if proxy_config.get("audit_out") else None,
-            "upstream_count": len(proxy_config.get("upstreams", [])),
-            "reload_enabled": True,
-            "reload_interval": reload_interval,
-        },
-        "stopped": False,
-    }
+    runtime = _fabric_runtime_state(
+        status="running",
+        proxy_config=proxy_config,
+        reload_interval=reload_interval,
+        conformance_pack=conformance_pack,
+        conformance=conformance,
+        require_conformance=require_conformance,
+    )
+    return _attach_share_gate(
+        {
+            "ok": True,
+            "generated_by": "snulbug mcp fabric run",
+            "config": str(config),
+            "status_server": {
+                "host": status_server.host,
+                "port": status_server.port,
+                "url": _status_server_url(status_server),
+            },
+            "controller": {
+                "state": str(state_path),
+                "event_log": str(event_log) if event_log is not None else None,
+                "interval": controller_interval,
+                "fingerprint": initial.get("fingerprint"),
+                "summary": _copy_jsonish(initial.get("summary", {})),
+            },
+            "proxy": {
+                "host": host,
+                "port": port,
+                "url": gateway_url,
+                "policy": str(proxy_config.get("policy")),
+                "record_out": str(proxy_config.get("record_out")) if proxy_config.get("record_out") else None,
+                "audit_out": str(proxy_config.get("audit_out")) if proxy_config.get("audit_out") else None,
+                "upstream_count": len(proxy_config.get("upstreams", [])),
+                "reload_enabled": True,
+                "reload_interval": reload_interval,
+            },
+            "runtime": runtime,
+            "stopped": False,
+        }
+    )
 
 
 def _status_server_url(status_server: FabricControllerStatusServer) -> str:
@@ -1068,6 +1243,10 @@ def _sequence_mappings(value: Any) -> list[Mapping[str, Any]]:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _drop_empty(value: Mapping[str, Any]) -> dict[str, Any]:
+    return {str(key): item for key, item in value.items() if item not in (None, "", [], {})}
 
 
 def _copy_jsonish(value: Any) -> Any:
