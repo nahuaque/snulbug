@@ -83,6 +83,7 @@ include = [
     "snulbug",
     "docs",
     "examples",
+    "features",
     "tests",
     "CHANGELOG.md",
     "CODE_OF_CONDUCT.md",

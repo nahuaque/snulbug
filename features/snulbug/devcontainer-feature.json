@@ -1,0 +1,96 @@
+{
+  "id": "snulbug",
+  "version": "0.1.0",
+  "name": "snulbug",
+  "description": "Install snulbug and optional helpers for MCP policy gateways and remote fabric members in devcontainers.",
+  "documentationURL": "https://github.com/lbruhacs/snulbug/blob/main/docs/devcontainers.md",
+  "licenseURL": "https://github.com/lbruhacs/snulbug/blob/main/LICENSE",
+  "options": {
+    "install_source": {
+      "type": "string",
+      "enum": ["pypi", "github"],
+      "default": "pypi",
+      "description": "Install snulbug from PyPI or directly from GitHub."
+    },
+    "version": {
+      "type": "string",
+      "default": "latest",
+      "description": "snulbug version to install when install_source is pypi."
+    },
+    "github_ref": {
+      "type": "string",
+      "default": "main",
+      "description": "GitHub ref to install when install_source is github."
+    },
+    "package_spec": {
+      "type": "string",
+      "default": "",
+      "description": "Override the generated pip package spec, for example a local wheel URL or git URL."
+    },
+    "extras": {
+      "type": "string",
+      "default": "proxy,discovery",
+      "description": "Comma-separated snulbug extras to install."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["cli", "gateway", "member-agent"],
+      "default": "cli",
+      "description": "Runtime helper mode for snulbug-devcontainer-agent."
+    },
+    "policy_profile": {
+      "type": "string",
+      "enum": ["none", "local-dev-safe", "tunnel-safe", "read-only-local-dev", "tool-allowlist"],
+      "default": "tunnel-safe",
+      "description": "Policy preset copied by snulbug-devcontainer-init."
+    },
+    "upstream": {
+      "type": "string",
+      "default": "http://127.0.0.1:9000/mcp",
+      "description": "Default upstream MCP URL for generated snulbug.toml."
+    },
+    "gateway_port": {
+      "type": "string",
+      "default": "8080",
+      "description": "Default snulbug gateway port for generated snulbug.toml."
+    },
+    "registry": {
+      "type": "string",
+      "default": ".snulbug/fabric-members.json",
+      "description": "Fabric member registry path, sqlite state spec, or Redis URL."
+    },
+    "registry_key": {
+      "type": "string",
+      "default": "snulbug:fabric:members",
+      "description": "Fabric member registry key when registry uses SQLite or Redis state."
+    },
+    "member_id": {
+      "type": "string",
+      "default": "devcontainer",
+      "description": "Fabric member id used by member-agent mode."
+    },
+    "member_upstream": {
+      "type": "string",
+      "default": "workspace=http://127.0.0.1:9000/mcp",
+      "description": "Fabric member upstream as NAME=URL; repeat manually in a wrapper for multiple upstreams."
+    },
+    "ttl_seconds": {
+      "type": "string",
+      "default": "60",
+      "description": "Fabric member heartbeat TTL in seconds."
+    },
+    "heartbeat_interval": {
+      "type": "string",
+      "default": "20",
+      "description": "Fabric member heartbeat interval in seconds."
+    },
+    "write_config": {
+      "type": "boolean",
+      "default": true,
+      "description": "Allow snulbug-devcontainer-init to create snulbug.toml and policy.snulbug when missing."
+    }
+  },
+  "installsAfter": [
+    "ghcr.io/devcontainers/features/python:1"
+  ]
+}

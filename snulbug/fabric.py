@@ -501,6 +501,7 @@ def format_fabric_status_report(result: Mapping[str, Any]) -> str:
         lines.append("- none")
     for upstream in upstreams:
         manifest = _mapping(upstream.get("manifest"))
+        member = _mapping(upstream.get("member"))
         manifest_text = "none"
         if manifest:
             manifest_text = f"{manifest.get('path')} ({'exists' if manifest.get('exists') else 'missing'})"
@@ -509,6 +510,7 @@ def format_fabric_status_report(result: Mapping[str, Any]) -> str:
             f"{upstream.get('name')} [{upstream.get('transport')}] "
             f"prefix=`{upstream.get('tool_prefix')}` "
             f"url=`{upstream.get('url') or '-'}` "
+            f"member=`{member.get('id') or '-'}` "
             f"manifest=`{manifest_text}`"
         )
 
@@ -564,6 +566,7 @@ def format_fabric_discovery_report(result: Mapping[str, Any]) -> str:
             f"{upstream.get('name')} [{upstream.get('transport')}] "
             f"prefix=`{upstream.get('tool_prefix') or '-'}` "
             f"provider=`{upstream.get('discovery_provider') or '-'}` "
+            f"member=`{upstream.get('fabric_member_id') or '-'}` "
             f"source=`{upstream.get('discovery_source') or '-'}`"
         )
 
@@ -1877,6 +1880,11 @@ def _discovered_upstream_status(upstreams: Sequence[Mapping[str, Any]]) -> list[
                     "discovery_provider": upstream.get("discovery_provider"),
                     "discovery_type": upstream.get("discovery_type"),
                     "discovery_source": upstream.get("discovery_source"),
+                    "fabric_member_id": upstream.get("fabric_member_id"),
+                    "fabric_member_role": upstream.get("fabric_member_role"),
+                    "fabric_member_status": upstream.get("fabric_member_status"),
+                    "fabric_member_heartbeat_at": upstream.get("fabric_member_heartbeat_at"),
+                    "fabric_member_expires_at": upstream.get("fabric_member_expires_at"),
                     "manifest": str(upstream.get("manifest"))
                     if upstream.get("manifest") is not None
                     else upstream.get("manifest"),
@@ -1930,6 +1938,9 @@ def _upstream_status(upstream: Mapping[str, Any]) -> dict[str, Any]:
     discovery = _upstream_discovery(upstream)
     if discovery:
         status["discovery"] = discovery
+    member = _upstream_member(upstream)
+    if member:
+        status["member"] = member
     for field_name in ("url", "command", "cwd", "peer", "local_port", "bridge_command", "bridge_config"):
         if upstream.get(field_name) is not None:
             status[field_name] = str(upstream[field_name])
@@ -1974,6 +1985,7 @@ def _topology_upstream(upstream: Mapping[str, Any]) -> dict[str, Any]:
             "command": command,
             "cwd": str(upstream.get("cwd")) if upstream.get("cwd") is not None else None,
             "discovery": _upstream_discovery(upstream),
+            "member": _upstream_member(upstream),
             "bridge": _holepunch_topology(upstream) if transport == "holepunch" else None,
             "manifest": manifest_summary,
         }
@@ -1988,6 +2000,21 @@ def _upstream_discovery(upstream: Mapping[str, Any]) -> dict[str, Any]:
             "provider": upstream.get("discovery_provider"),
             "type": upstream.get("discovery_type"),
             "source": upstream.get("discovery_source"),
+        }
+    )
+
+
+def _upstream_member(upstream: Mapping[str, Any]) -> dict[str, Any]:
+    member_id = upstream.get("fabric_member_id")
+    if not member_id:
+        return {}
+    return _drop_empty(
+        {
+            "id": member_id,
+            "role": upstream.get("fabric_member_role"),
+            "status": upstream.get("fabric_member_status"),
+            "heartbeat_at": upstream.get("fabric_member_heartbeat_at"),
+            "expires_at": upstream.get("fabric_member_expires_at"),
         }
     )
 
@@ -2067,6 +2094,7 @@ def _fabric_summary(
         "discovered_upstream_count": sum(
             1 for upstream in upstreams if upstream.get("discovered") or upstream.get("discovery")
         ),
+        "remote_member_upstream_count": sum(1 for upstream in upstreams if upstream.get("member")),
         "transports": transports,
         "manifest_count": sum(1 for upstream in upstreams if upstream.get("manifest")),
         "missing_required_manifests": missing_required_manifests,

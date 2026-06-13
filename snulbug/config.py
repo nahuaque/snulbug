@@ -419,6 +419,11 @@ def _normalize_upstreams(value: Any, *, base_dir: Path = Path(".")) -> list[dict
         discovery_provider = item.get("discovery_provider")
         discovery_type = item.get("discovery_type")
         discovery_source = item.get("discovery_source")
+        fabric_member_id = item.get("fabric_member_id")
+        fabric_member_role = item.get("fabric_member_role")
+        fabric_member_status = item.get("fabric_member_status")
+        fabric_member_heartbeat_at = item.get("fabric_member_heartbeat_at")
+        fabric_member_expires_at = item.get("fabric_member_expires_at")
         peer = item.get("peer")
         local_port = item.get("local_port")
         bridge_config = item.get("bridge_config")
@@ -509,6 +514,11 @@ def _normalize_upstreams(value: Any, *, base_dir: Path = Path(".")) -> list[dict
             ("discovery_provider", discovery_provider),
             ("discovery_type", discovery_type),
             ("discovery_source", discovery_source),
+            ("fabric_member_id", fabric_member_id),
+            ("fabric_member_role", fabric_member_role),
+            ("fabric_member_status", fabric_member_status),
+            ("fabric_member_heartbeat_at", fabric_member_heartbeat_at),
+            ("fabric_member_expires_at", fabric_member_expires_at),
         ):
             if discovery_value is not None and not isinstance(discovery_value, str):
                 raise ValueError(f"mcp.proxy.upstreams[{index}].{discovery_field} must be a string")
@@ -577,8 +587,21 @@ def _normalize_upstreams(value: Any, *, base_dir: Path = Path(".")) -> list[dict
                         **({"discovery_provider": discovery_provider} if discovery_provider is not None else {}),
                         **({"discovery_type": discovery_type} if discovery_type is not None else {}),
                         **({"discovery_source": discovery_source} if discovery_source is not None else {}),
+                        **({"fabric_member_id": fabric_member_id} if fabric_member_id is not None else {}),
+                        **({"fabric_member_role": fabric_member_role} if fabric_member_role is not None else {}),
+                        **({"fabric_member_status": fabric_member_status} if fabric_member_status is not None else {}),
+                        **(
+                            {"fabric_member_heartbeat_at": fabric_member_heartbeat_at}
+                            if fabric_member_heartbeat_at is not None
+                            else {}
+                        ),
+                        **(
+                            {"fabric_member_expires_at": fabric_member_expires_at}
+                            if fabric_member_expires_at is not None
+                            else {}
+                        ),
                     }
-                    if discovered
+                    if discovered or fabric_member_id is not None
                     else {}
                 ),
             }

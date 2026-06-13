@@ -58,3 +58,17 @@ snulbug mcp fabric control pause-sharing \
 snulbug mcp fabric control list --compact
 snulbug mcp fabric control clear --id ctrl_...
 ```
+
+Remote fabric membership can also use the same SQLite/Redis state vocabulary.
+This lets remote data-plane containers register MCP upstreams without sharing a
+filesystem with the gateway:
+
+```bash
+snulbug mcp fabric member agent remote-a \
+  --registry redis://127.0.0.1:6379/0 \
+  --registry-key snulbug:fabric:dev:members \
+  --upstream files=http://127.0.0.1:9001/mcp
+```
+
+Use the matching `members` discovery provider on the gateway to route only
+active, unexpired member upstreams.

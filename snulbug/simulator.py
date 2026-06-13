@@ -4,6 +4,7 @@ import argparse
 import base64
 import json
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -673,6 +674,130 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_fabric_control_clear.add_argument("--target", help="clear active controls for this upstream target")
     mcp_fabric_control_clear.add_argument("--actor", help="actor recorded on the clear event")
     _add_fabric_control_store_args(mcp_fabric_control_clear)
+    mcp_fabric_member = mcp_fabric_subparsers.add_parser(
+        "member",
+        help="register or inspect remote fabric members",
+    )
+    mcp_fabric_member_subparsers = mcp_fabric_member.add_subparsers(dest="member_command", required=True)
+    mcp_fabric_member_list = mcp_fabric_member_subparsers.add_parser(
+        "list",
+        help="list registered remote fabric members",
+    )
+    _add_fabric_member_registry_args(mcp_fabric_member_list)
+    mcp_fabric_member_register = mcp_fabric_member_subparsers.add_parser(
+        "register",
+        help="register or refresh a remote fabric member",
+    )
+    mcp_fabric_member_register.add_argument("member_id", help="stable member/node id")
+    mcp_fabric_member_register.add_argument(
+        "--role",
+        choices=("data-plane", "data_plane", "control-plane", "control_plane", "observer"),
+        default="data-plane",
+        help="member role",
+    )
+    mcp_fabric_member_register.add_argument(
+        "--status",
+        choices=("active", "draining"),
+        default="active",
+        help="member routing status",
+    )
+    mcp_fabric_member_register.add_argument(
+        "--upstream",
+        action="append",
+        default=[],
+        help="member MCP upstream as NAME=URL; repeat for multiple upstreams",
+    )
+    mcp_fabric_member_register.add_argument(
+        "--ttl-seconds",
+        type=float,
+        default=60.0,
+        help="seconds until the member expires without another heartbeat",
+    )
+    mcp_fabric_member_register.add_argument("--label", action="append", default=[], help="member label as KEY=VALUE")
+    mcp_fabric_member_register.add_argument(
+        "--metadata",
+        action="append",
+        default=[],
+        help="member metadata as KEY=VALUE",
+    )
+    _add_fabric_member_registry_args(mcp_fabric_member_register)
+    mcp_fabric_member_agent = mcp_fabric_member_subparsers.add_parser(
+        "agent",
+        help="register a remote fabric member and keep its heartbeat fresh",
+    )
+    mcp_fabric_member_agent.add_argument("member_id", help="stable member/node id")
+    mcp_fabric_member_agent.add_argument(
+        "--role",
+        choices=("data-plane", "data_plane", "control-plane", "control_plane", "observer"),
+        default="data-plane",
+        help="member role",
+    )
+    mcp_fabric_member_agent.add_argument(
+        "--status",
+        choices=("active", "draining"),
+        default="active",
+        help="member routing status",
+    )
+    mcp_fabric_member_agent.add_argument(
+        "--upstream",
+        action="append",
+        default=[],
+        help="member MCP upstream as NAME=URL; repeat for multiple upstreams",
+    )
+    mcp_fabric_member_agent.add_argument(
+        "--ttl-seconds",
+        type=float,
+        default=60.0,
+        help="seconds until the member expires without another heartbeat",
+    )
+    mcp_fabric_member_agent.add_argument(
+        "--interval",
+        type=float,
+        default=20.0,
+        help="seconds between heartbeat refreshes",
+    )
+    mcp_fabric_member_agent.add_argument(
+        "--once",
+        action="store_true",
+        help="register once and exit after emitting the agent result",
+    )
+    mcp_fabric_member_agent.add_argument(
+        "--unregister-on-exit",
+        action="store_true",
+        help="mark the member left when the agent receives Ctrl-C",
+    )
+    mcp_fabric_member_agent.add_argument("--label", action="append", default=[], help="member label as KEY=VALUE")
+    mcp_fabric_member_agent.add_argument(
+        "--metadata",
+        action="append",
+        default=[],
+        help="member metadata as KEY=VALUE",
+    )
+    _add_fabric_member_registry_args(mcp_fabric_member_agent)
+    mcp_fabric_member_heartbeat = mcp_fabric_member_subparsers.add_parser(
+        "heartbeat",
+        help="refresh an existing member heartbeat",
+    )
+    mcp_fabric_member_heartbeat.add_argument("member_id", help="registered member id")
+    mcp_fabric_member_heartbeat.add_argument(
+        "--ttl-seconds",
+        type=float,
+        default=60.0,
+        help="seconds until the member expires without another heartbeat",
+    )
+    mcp_fabric_member_heartbeat.add_argument(
+        "--status",
+        choices=("active", "draining", "left"),
+        default="active",
+        help="member status to record",
+    )
+    _add_fabric_member_registry_args(mcp_fabric_member_heartbeat)
+    mcp_fabric_member_unregister = mcp_fabric_member_subparsers.add_parser(
+        "unregister",
+        help="mark a remote fabric member as left",
+    )
+    mcp_fabric_member_unregister.add_argument("member_id", help="registered member id")
+    _add_fabric_member_registry_args(mcp_fabric_member_unregister)
     mcp_fabric_controller = mcp_fabric_subparsers.add_parser(
         "controller",
         help="reconcile declarative MCP fabric config into a controller state snapshot",
@@ -1458,6 +1583,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 issue_fabric_control_action,
                 load_fabric_control_state,
             )
+            from .fabric_members import (
+                format_fabric_member_report,
+                heartbeat_fabric_member,
+                load_fabric_member_registry,
+                register_fabric_member,
+                summarize_fabric_members,
+                unregister_fabric_member,
+            )
             from .fabric_runtime import (
                 clear_fabric_runtime_status,
                 format_fabric_runtime_report,
@@ -1604,6 +1737,108 @@ def main(argv: Sequence[str] | None = None) -> int:
                     status = 0 if result["ok"] else 1
                     if not args.compact:
                         sys.stdout.write(format_fabric_control_report(result))
+                        sys.stdout.write("\n")
+                        return status
+                elif args.fabric_command == "member":
+                    if args.member_command == "list":
+                        registry = load_fabric_member_registry(args.registry, key=args.registry_key)
+                        result = {
+                            "ok": True,
+                            "registry": str(args.registry),
+                            "registry_key": args.registry_key,
+                            "registry_state": registry,
+                            "summary": summarize_fabric_members(registry),
+                        }
+                    elif args.member_command == "register":
+                        result = register_fabric_member(
+                            args.registry,
+                            key=args.registry_key,
+                            member_id=args.member_id,
+                            role=args.role,
+                            status=args.status,
+                            upstreams=_parse_member_upstreams(args.upstream),
+                            ttl_seconds=args.ttl_seconds,
+                            labels=_parse_key_values(args.label),
+                            metadata=_parse_key_values(args.metadata),
+                        )
+                    elif args.member_command == "agent":
+                        if args.interval <= 0:
+                            raise ValueError("--interval must be positive")
+                        result = register_fabric_member(
+                            args.registry,
+                            key=args.registry_key,
+                            member_id=args.member_id,
+                            role=args.role,
+                            status=args.status,
+                            upstreams=_parse_member_upstreams(args.upstream),
+                            ttl_seconds=args.ttl_seconds,
+                            labels=_parse_key_values(args.label),
+                            metadata={
+                                **_parse_key_values(args.metadata),
+                                "agent": "snulbug mcp fabric member agent",
+                            },
+                        )
+                        result["agent"] = {
+                            "running": not args.once,
+                            "interval_seconds": args.interval,
+                            "ttl_seconds": args.ttl_seconds,
+                            "unregister_on_exit": bool(args.unregister_on_exit),
+                        }
+                        if not args.once and result["ok"]:
+                            if not args.compact:
+                                sys.stdout.write(format_fabric_member_report(result))
+                                sys.stdout.write("\n")
+                                sys.stdout.flush()
+                            try:
+                                while True:
+                                    time.sleep(args.interval)
+                                    result = heartbeat_fabric_member(
+                                        args.registry,
+                                        key=args.registry_key,
+                                        member_id=args.member_id,
+                                        ttl_seconds=args.ttl_seconds,
+                                        status=args.status,
+                                    )
+                                    result["agent"] = {
+                                        "running": True,
+                                        "interval_seconds": args.interval,
+                                        "ttl_seconds": args.ttl_seconds,
+                                        "unregister_on_exit": bool(args.unregister_on_exit),
+                                    }
+                                    if not result["ok"]:
+                                        break
+                            except KeyboardInterrupt:
+                                if args.unregister_on_exit:
+                                    result = unregister_fabric_member(
+                                        args.registry,
+                                        key=args.registry_key,
+                                        member_id=args.member_id,
+                                    )
+                                result["agent"] = {
+                                    "running": False,
+                                    "interrupted": True,
+                                    "interval_seconds": args.interval,
+                                    "ttl_seconds": args.ttl_seconds,
+                                    "unregister_on_exit": bool(args.unregister_on_exit),
+                                }
+                    elif args.member_command == "heartbeat":
+                        result = heartbeat_fabric_member(
+                            args.registry,
+                            key=args.registry_key,
+                            member_id=args.member_id,
+                            ttl_seconds=args.ttl_seconds,
+                            status=args.status,
+                        )
+                    elif args.member_command == "unregister":
+                        result = unregister_fabric_member(
+                            args.registry, key=args.registry_key, member_id=args.member_id
+                        )
+                    else:
+                        parser.error(f"unknown mcp fabric member command: {args.member_command}")
+                        return 2
+                    status = 0 if result["ok"] else 1
+                    if not args.compact:
+                        sys.stdout.write(format_fabric_member_report(result))
                         sys.stdout.write("\n")
                         return status
                 elif args.fabric_command == "controller":
@@ -2015,6 +2250,40 @@ def _add_fabric_control_issue_args(parser: argparse.ArgumentParser, *, default_t
         default=default_ttl,
         help="seconds before the control expires; omit for persistent controls",
     )
+
+
+def _add_fabric_member_registry_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--registry",
+        default=".snulbug/fabric-members.json",
+        help="fabric member registry path, sqlite:/path/to/state.sqlite3, or redis://...",
+    )
+    parser.add_argument(
+        "--registry-key",
+        default="snulbug:fabric:members",
+        help="fabric member registry key when --registry uses SQLite or Redis state",
+    )
+    parser.add_argument("--compact", action="store_true", help="emit compact JSON")
+
+
+def _parse_member_upstreams(values: Sequence[str]) -> list[dict[str, Any]]:
+    upstreams = []
+    for value in values:
+        name, separator, url = str(value).partition("=")
+        if not separator or not name or not url:
+            raise ValueError("--upstream must use NAME=URL")
+        upstreams.append({"name": name, "url": url, "tool_prefix": f"{name}."})
+    return upstreams
+
+
+def _parse_key_values(values: Sequence[str]) -> dict[str, str]:
+    parsed = {}
+    for value in values:
+        key, separator, item = str(value).partition("=")
+        if not separator or not key:
+            raise ValueError("key/value options must use KEY=VALUE")
+        parsed[key] = item
+    return parsed
 
 
 def _read_json(path: Path) -> Any:

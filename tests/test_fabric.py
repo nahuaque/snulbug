@@ -16,8 +16,10 @@ from snulbug import (
     fabric_status,
     generate_fabric_conformance_pack,
     learn_fabric_profile,
+    load_fabric_member_registry,
     load_mcp_fabric_config,
     record_policy_request,
+    register_fabric_member,
     run_fabric_conformance_pack,
     sign_upstream_manifest,
 )
@@ -222,6 +224,47 @@ def test_fabric_discover_resolves_directory_provider(tmp_path):
     }
 
 
+def test_fabric_status_includes_remote_member_identity(tmp_path):
+    registry = tmp_path / "fabric-members.json"
+    register_fabric_member(
+        registry,
+        member_id="remote-a",
+        upstreams=[{"name": "files", "url": "http://127.0.0.1:9009/mcp"}],
+        ttl_seconds=120,
+    )
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.fabric]
+        name = "member-fabric"
+
+        [mcp.fabric.discovery]
+
+        [[mcp.fabric.discovery.providers]]
+        name = "remote-members"
+        type = "members"
+        path = "fabric-members.json"
+
+        [mcp.proxy]
+        host = "127.0.0.1"
+        port = 8181
+        """,
+        encoding="utf-8",
+    )
+
+    status = fabric_status(config)
+    topology = build_fabric_audit_metadata(load_mcp_fabric_config(config))
+
+    assert status["summary"]["remote_member_upstream_count"] == 1
+    member = status["upstreams"][0]["member"]
+    assert member["id"] == "remote-a"
+    assert member["role"] == "data_plane"
+    assert member["status"] == "active"
+    assert member["heartbeat_at"]
+    assert member["expires_at"]
+    assert topology["upstreams"][0]["member"]["id"] == "remote-a"
+
+
 def test_mcp_fabric_discover_cli_emits_compact_result(tmp_path, capsys):
     registry = tmp_path / "upstreams.json"
     registry.write_text(json.dumps([{"name": "git", "url": "http://127.0.0.1:9002/mcp"}]), encoding="utf-8")
@@ -249,6 +292,96 @@ def test_mcp_fabric_discover_cli_emits_compact_result(tmp_path, capsys):
     assert output["summary"]["upstream_count"] == 1
     assert output["providers"][0]["name"] == "registry"
     assert output["upstreams"][0]["name"] == "git"
+
+
+def test_mcp_fabric_member_cli_registers_heartbeats_and_unregisters(tmp_path, capsys):
+    registry = tmp_path / "fabric-members.json"
+
+    register_status = simulator_main(
+        [
+            "mcp",
+            "fabric",
+            "member",
+            "register",
+            "remote-a",
+            "--registry",
+            str(registry),
+            "--upstream",
+            "files=http://127.0.0.1:9009/mcp",
+            "--ttl-seconds",
+            "120",
+            "--compact",
+        ]
+    )
+    register_payload = json.loads(capsys.readouterr().out)
+    heartbeat_status = simulator_main(
+        [
+            "mcp",
+            "fabric",
+            "member",
+            "heartbeat",
+            "remote-a",
+            "--registry",
+            str(registry),
+            "--ttl-seconds",
+            "120",
+            "--compact",
+        ]
+    )
+    heartbeat_payload = json.loads(capsys.readouterr().out)
+    unregister_status = simulator_main(
+        [
+            "mcp",
+            "fabric",
+            "member",
+            "unregister",
+            "remote-a",
+            "--registry",
+            str(registry),
+            "--compact",
+        ]
+    )
+    unregister_payload = json.loads(capsys.readouterr().out)
+
+    assert register_status == 0
+    assert register_payload["member"]["id"] == "remote-a"
+    assert register_payload["summary"]["active_count"] == 1
+    assert heartbeat_status == 0
+    assert heartbeat_payload["member"]["status"] == "active"
+    assert unregister_status == 0
+    assert unregister_payload["unregistered"] is True
+    assert unregister_payload["summary"]["active_count"] == 0
+
+
+def test_mcp_fabric_member_agent_once_registers_shared_sqlite_registry(tmp_path, capsys):
+    registry = f"sqlite:{tmp_path / 'fabric-members.sqlite3'}"
+
+    status_code = simulator_main(
+        [
+            "mcp",
+            "fabric",
+            "member",
+            "agent",
+            "container-a",
+            "--registry",
+            registry,
+            "--registry-key",
+            "snulbug:test:members",
+            "--upstream",
+            "git=http://127.0.0.1:9011/mcp",
+            "--ttl-seconds",
+            "120",
+            "--once",
+            "--compact",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    loaded = load_fabric_member_registry(registry, key="snulbug:test:members")
+
+    assert status_code == 0
+    assert payload["registry_key"] == "snulbug:test:members"
+    assert payload["agent"]["running"] is False
+    assert loaded["members"]["container-a"]["upstreams"][0]["name"] == "git"
 
 
 def test_fabric_learn_profile_from_topology_audit_log(tmp_path):

@@ -231,6 +231,7 @@ Start with:
 - [Tunnel doctor](docs/tunnel-doctor.md)
 - [MCP reverse proxy](docs/mcp-proxy.md)
 - [MCP fabric config, discovery, and conformance](docs/mcp-fabric.md)
+- [Codespaces and devcontainers](docs/devcontainers.md)
 - [MCP client setup recipes](docs/mcp-client-recipes.md)
 - [MCP learn and amend mode](docs/mcp-learn.md)
 - [MCP impact preview](docs/mcp-impact.md)

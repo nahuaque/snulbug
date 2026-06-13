@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from snulbug import load_mcp_proxy_config
+from snulbug import load_mcp_proxy_config, register_fabric_member
 from snulbug.discovery import discovery_provider_types, register_discovery_provider
 
 
@@ -264,6 +264,59 @@ def test_supervisor_discovery_provider_reads_ready_process_registry(tmp_path):
     assert [upstream["name"] for upstream in result["upstreams"]] == ["ready-mcp"]
     assert result["upstreams"][0]["url"] == "http://127.0.0.1:9007/mcp"
     assert result["upstreams"][0]["discovery_type"] == "supervisor"
+
+
+def test_members_discovery_provider_reads_active_member_registry(tmp_path):
+    registry = tmp_path / "fabric-members.json"
+    register_fabric_member(
+        registry,
+        member_id="remote-a",
+        upstreams=[{"name": "files", "url": "http://127.0.0.1:9009/mcp"}],
+        ttl_seconds=120,
+    )
+    config = discovery_config(
+        tmp_path,
+        """
+        [[mcp.fabric.discovery.providers]]
+        name = "remote-members"
+        type = "members"
+        path = "fabric-members.json"
+        """,
+    )
+
+    result = load_mcp_proxy_config(config)
+
+    assert result["upstreams"][0]["name"] == "remote-a-files"
+    assert result["upstreams"][0]["url"] == "http://127.0.0.1:9009/mcp"
+    assert result["upstreams"][0]["tool_prefix"] == "remote-a.files."
+    assert result["upstreams"][0]["discovery_type"] == "members"
+    assert result["upstreams"][0]["fabric_member_id"] == "remote-a"
+
+
+def test_members_discovery_provider_can_read_shared_sqlite_registry(tmp_path):
+    registry = f"sqlite:{tmp_path / 'fabric-members.sqlite3'}"
+    register_fabric_member(
+        registry,
+        key="snulbug:test:members",
+        member_id="container-a",
+        upstreams=[{"name": "git", "url": "http://127.0.0.1:9011/mcp"}],
+        ttl_seconds=120,
+    )
+    config = discovery_config(
+        tmp_path,
+        f"""
+        [[mcp.fabric.discovery.providers]]
+        name = "remote-members"
+        type = "members"
+        state = "{registry}"
+        state_key = "snulbug:test:members"
+        """,
+    )
+
+    result = load_mcp_proxy_config(config)
+
+    assert result["upstreams"][0]["name"] == "container-a-git"
+    assert result["upstreams"][0]["fabric_member_id"] == "container-a"
 
 
 def test_custom_discovery_provider_can_be_registered(tmp_path):

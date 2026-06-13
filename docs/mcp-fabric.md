@@ -91,6 +91,8 @@ Supported provider types:
   `customizations.snulbug.upstreams`
 - `supervisor` / `process_registry`: reads a local process supervisor registry
   and exposes ready/running MCP processes
+- `members` / `member_registry` / `remote_members`: reads active remote
+  data-plane member registrations from a file, SQLite state, or Redis state
 
 YAML Compose/Kubernetes files are supported when PyYAML is installed, for
 example with `snulbug[discovery]`. JSON and TOML registries work without extra
@@ -129,6 +131,64 @@ layer: external systems such as Docker Compose, a peer bridge supervisor, or a
 future Hyperswarm watcher can write registry files or env JSON, and snulbug
 consumes them through the same validation path as local config. Providers only
 contact a network when an explicit `api_url` is configured.
+
+## Remote Fabric Members
+
+Remote data-plane containers can register themselves as fabric members and
+publish the MCP upstreams they serve. The control plane consumes that registry
+through the `members` discovery provider, applies normal upstream validation,
+and carries member identity into status, topology, replay, and audit metadata.
+
+For a simple local demo, use a file-backed registry:
+
+```bash
+snulbug mcp fabric member register remote-a \
+  --registry .snulbug/fabric-members.json \
+  --upstream files=http://127.0.0.1:9001/mcp \
+  --ttl-seconds 60
+
+snulbug mcp fabric member heartbeat remote-a \
+  --registry .snulbug/fabric-members.json \
+  --ttl-seconds 60
+```
+
+For a remote container, run a lightweight member agent. It registers once, then
+heartbeats until the process exits:
+
+```bash
+snulbug mcp fabric member agent remote-a \
+  --registry redis://127.0.0.1:6379/0 \
+  --registry-key snulbug:fabric:dev:members \
+  --upstream files=http://127.0.0.1:9001/mcp \
+  --ttl-seconds 60 \
+  --interval 20 \
+  --unregister-on-exit
+```
+
+The gateway side discovers active data-plane members:
+
+```toml
+[[mcp.fabric.discovery.providers]]
+name = "remote-members"
+type = "members"
+path = ".snulbug/fabric-members.json"
+```
+
+Shared state registries use the same SQLite/Redis vocabulary as runtime state:
+
+```toml
+[[mcp.fabric.discovery.providers]]
+name = "remote-members"
+type = "members"
+state = "redis://127.0.0.1:6379/0"
+state_key = "snulbug:fabric:dev:members"
+```
+
+Only `active` `data_plane` members are routed by default, and expired members
+are ignored. Member upstream names and tool prefixes are prefixed by default
+(`remote-a-files`, `remote-a.files.`) so independently managed containers do not
+collide in a shared facade. Set `prefix_member_names = false` only when another
+registry layer already guarantees global names.
 
 ## Control-Plane Events
 
@@ -239,6 +299,8 @@ records = [
 
 `codespaces` converts configured forwarded ports into Codespaces URLs when
 `CODESPACE_NAME` and `GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN` are present.
+See [Codespaces and devcontainers](devcontainers.md) for the devcontainer
+Feature and member-agent workflow.
 
 ```toml
 [[mcp.fabric.discovery.providers]]

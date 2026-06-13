@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import SplitResult, urlsplit
 
+from .fabric_members import DEFAULT_FABRIC_MEMBER_REGISTRY_KEY, load_fabric_member_registry, member_upstreams
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10.
@@ -215,6 +217,8 @@ def _provider_type_alias(provider_type: str) -> str:
         "process_registry": "supervisor",
         "process-supervisor": "supervisor",
         "process_supervisor": "supervisor",
+        "member_registry": "members",
+        "remote_members": "members",
         "toml": "static_toml",
     }
     return aliases.get(provider_type, provider_type)
@@ -477,6 +481,23 @@ def _resolve_supervisor_provider(provider: Mapping[str, Any]) -> list[Mapping[st
             }
         )
     return upstreams
+
+
+def _resolve_members_provider(provider: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    registry_spec = provider.get("registry", provider.get("state", provider.get("path")))
+    if registry_spec is None:
+        raise FileNotFoundError(f"discovery provider {provider.get('name')} has no path, registry, or state")
+    registry_key = str(provider.get("registry_key", provider.get("state_key", DEFAULT_FABRIC_MEMBER_REGISTRY_KEY)))
+    registry = load_fabric_member_registry(registry_spec, key=registry_key)
+    roles = [str(role).replace("-", "_") for role in _sequence(provider.get("roles", ["data_plane"]))]
+    statuses = [str(status).replace("-", "_") for status in _sequence(provider.get("statuses", ["active"]))]
+    return member_upstreams(
+        registry,
+        roles=roles,
+        statuses=statuses,
+        include_expired=provider.get("include_expired") is True,
+        prefix_member_names=provider.get("prefix_member_names", True) is not False,
+    )
 
 
 def _load_provider_document(provider: Mapping[str, Any]) -> Any:
@@ -930,6 +951,7 @@ for _provider_type, _resolver in {
     "codespaces": _resolve_codespaces_provider,
     "devcontainer": _resolve_devcontainer_provider,
     "supervisor": _resolve_supervisor_provider,
+    "members": _resolve_members_provider,
 }.items():
     register_discovery_provider(_provider_type, _resolver)
 
