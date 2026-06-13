@@ -395,8 +395,11 @@ url = "http://127.0.0.1:9002/mcp"
 tool_prefix = "git."
 ```
 
-Replay records and audit logs include facade metadata such as selected upstream,
-original tool name, and upstream tool name for routed calls.
+Replay records include facade metadata such as selected upstream, upstream
+transport, original tool name, and upstream tool name for routed calls. Audit
+events promote the same upstream identity into a top-level `facade` field so a
+session report can show which local, stdio, or peer-bridged server handled each
+decision.
 
 ### Managed stdio upstreams
 
@@ -445,6 +448,11 @@ Use `transport = "holepunch"` when an upstream MCP server is reachable through a
 Holepunch/Hypertele peer bridge. `snulbug` supervises the local bridge process,
 waits for the local bridge URL to answer HTTP, then routes facade traffic through
 that URL like any other HTTP upstream.
+
+When the ASGI runner sends lifespan events, facade startup starts all configured
+Holepunch bridges and waits for their local URLs before reporting startup
+complete. If a runner does not use lifespan, snulbug performs the same readiness
+check before the first request routed to that upstream.
 
 ```toml
 [mcp.proxy]

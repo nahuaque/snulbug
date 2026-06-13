@@ -93,6 +93,9 @@ def build_audit_event(record: Mapping[str, Any], *, redact: bool = True) -> dict
         cloudflare_access = _mapping(metadata.get("cloudflare_access"))
         if cloudflare_access:
             event["cloudflare_access"] = cloudflare_access
+        facade = _facade_summary(metadata)
+        if facade:
+            event["facade"] = facade
         event["metadata"] = record["metadata"]
     return redact_secrets(event) if redact else event
 
@@ -183,6 +186,22 @@ def _mcp_summary(request: Mapping[str, Any], decision: Mapping[str, Any]) -> dic
 
     summary["body_kind"] = "object"
     _merge_jsonrpc_summary(summary, parsed)
+    return _drop_empty(summary)
+
+
+def _facade_summary(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    if not metadata.get("facade"):
+        return {}
+    summary: dict[str, Any] = {
+        "operation": metadata.get("operation"),
+        "upstream": metadata.get("upstream"),
+        "upstream_transport": metadata.get("upstream_transport"),
+        "upstream_tool": metadata.get("upstream_tool"),
+        "tool": metadata.get("tool"),
+        "upstream_metadata": metadata.get("upstream_metadata"),
+        "upstreams": metadata.get("upstreams"),
+        "upstream_transports": metadata.get("upstream_transports"),
+    }
     return _drop_empty(summary)
 
 

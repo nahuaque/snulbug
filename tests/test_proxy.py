@@ -550,6 +550,7 @@ def test_mcp_facade_can_route_to_managed_holepunch_upstream(tmp_path):
     bridge_port = unused_tcp_port()
     policy = write_policy(tmp_path, "continue")
     record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
     app = create_proxy_application(
         None,
         policy,
@@ -566,6 +567,7 @@ def test_mcp_facade_can_route_to_managed_holepunch_upstream(tmp_path):
             }
         ],
         record_out=record_log,
+        audit_out=audit_log,
     )
 
     listed, called = run_asgi_sequence(
@@ -579,6 +581,7 @@ def test_mcp_facade_can_route_to_managed_holepunch_upstream(tmp_path):
     list_payload = json.loads(listed[1]["body"])
     call_payload = json.loads(called[1]["body"])
     records = load_record_log(record_log)
+    audits = [json.loads(line) for line in audit_log.read_text(encoding="utf-8").splitlines()]
     assert listed[0]["status"] == 200
     assert [tool["name"] for tool in list_payload["result"]["tools"]] == ["remote.status"]
     assert called[0]["status"] == 200
@@ -587,6 +590,38 @@ def test_mcp_facade_can_route_to_managed_holepunch_upstream(tmp_path):
     assert records[1]["metadata"]["upstream_transport"] == "holepunch"
     assert records[1]["metadata"]["upstream_metadata"]["bridge"]["peer"] == "peer_123"
     assert records[1]["metadata"]["upstream_metadata"]["bridge"]["local_port"] == bridge_port
+    assert audits[1]["facade"]["operation"] == "tools/call"
+    assert audits[1]["facade"]["upstream"] == "remote"
+    assert audits[1]["facade"]["upstream_transport"] == "holepunch"
+    assert audits[1]["facade"]["upstream_metadata"]["bridge"]["local_port"] == bridge_port
+
+
+def test_mcp_facade_lifespan_waits_for_holepunch_bridge_before_requests(tmp_path):
+    bridge_server = write_http_mcp_bridge_server(tmp_path)
+    bridge_port = unused_tcp_port()
+    policy = write_policy(tmp_path, "continue")
+    app = create_proxy_application(
+        None,
+        policy,
+        upstreams=[
+            {
+                "name": "remote",
+                "transport": "holepunch",
+                "url": f"http://127.0.0.1:{bridge_port}/mcp",
+                "peer": "peer_123",
+                "local_port": bridge_port,
+                "bridge_command": sys.executable,
+                "bridge_args": [str(bridge_server), str(bridge_port)],
+                "bridge_ready_timeout": 5.0,
+            }
+        ],
+    )
+
+    sent, reachable_before_shutdown = run_lifespan_startup_shutdown(app, bridge_port)
+
+    assert sent[0]["type"] == "lifespan.startup.complete"
+    assert reachable_before_shutdown is True
+    assert sent[-1]["type"] == "lifespan.shutdown.complete"
 
 
 def test_mcp_response_policy_redacts_tool_result_secrets_and_records_metadata(tmp_path):
@@ -1183,6 +1218,14 @@ def unused_tcp_port():
         return int(sock.getsockname()[1])
 
 
+def tcp_port_open(port: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1.0):
+            return True
+    except OSError:
+        return False
+
+
 def start_mcp_upstream(
     tools: dict[str, str],
     *,
@@ -1301,6 +1344,37 @@ def run_asgi_sequence(app, requests: list[dict[str, Any]]) -> list[list[dict[str
         return results
 
     return asyncio.run(run_all())
+
+
+def run_lifespan_startup_shutdown(app, bridge_port: int):
+    async def run_all():
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        sent = []
+
+        async def receive():
+            return await queue.get()
+
+        async def send(message):
+            sent.append(message)
+
+        scope = {"type": "lifespan", "asgi": {"version": "3.0"}}
+        await queue.put({"type": "lifespan.startup"})
+        task = asyncio.create_task(app(scope, receive, send))
+        await wait_for_message(sent, "lifespan.startup.complete")
+        reachable_before_shutdown = await asyncio.to_thread(tcp_port_open, bridge_port)
+        await queue.put({"type": "lifespan.shutdown"})
+        await asyncio.wait_for(task, timeout=5.0)
+        return sent, reachable_before_shutdown
+
+    return asyncio.run(run_all())
+
+
+async def wait_for_message(messages: list[dict[str, Any]], message_type: str) -> None:
+    for _ in range(100):
+        if any(message.get("type") == message_type for message in messages):
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"timed out waiting for {message_type}")
 
 
 async def run_asgi_once(app, *, path="/mcp", headers=None, body=b"", query_string=b"") -> list[dict[str, Any]]:

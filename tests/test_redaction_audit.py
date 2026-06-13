@@ -171,6 +171,58 @@ def test_build_audit_event_promotes_cloudflare_access_metadata(tmp_path):
     assert audit["metadata"]["cloudflare_access"] == audit["cloudflare_access"]
 
 
+def test_build_audit_event_promotes_facade_upstream_identity(tmp_path):
+    policy = write_policy(tmp_path)
+    request = {
+        "method": "POST",
+        "path": "/mcp",
+        "body": json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "call-1",
+                "method": "tools/call",
+                "params": {"name": "remote.status"},
+            }
+        ),
+    }
+
+    record = record_policy_request(
+        policy,
+        request,
+        metadata={
+            "source": "proxy",
+            "facade": True,
+            "operation": "tools/call",
+            "upstream": "remote",
+            "upstream_transport": "holepunch",
+            "tool": "remote.status",
+            "upstream_tool": "status",
+            "upstream_metadata": {
+                "name": "remote",
+                "transport": "holepunch",
+                "tool_prefix": "remote.",
+                "bridge": {"transport": "hypertele", "peer": "peer_123", "local_port": 19100},
+            },
+        },
+    )
+    audit = build_audit_event(record)
+
+    assert audit["facade"] == {
+        "operation": "tools/call",
+        "upstream": "remote",
+        "upstream_transport": "holepunch",
+        "tool": "remote.status",
+        "upstream_tool": "status",
+        "upstream_metadata": {
+            "name": "remote",
+            "transport": "holepunch",
+            "tool_prefix": "remote.",
+            "bridge": {"transport": "hypertele", "peer": "peer_123", "local_port": 19100},
+        },
+    }
+    assert audit["metadata"]["upstream_metadata"] == audit["facade"]["upstream_metadata"]
+
+
 def test_build_audit_event_marks_batch_and_invalid_mcp_bodies(tmp_path):
     policy = write_policy(tmp_path)
     batch_request = {

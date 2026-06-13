@@ -94,6 +94,9 @@ class ReverseProxyApp:
         self.lease_policy = lease_policy or LeasePolicyConfig()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") == "lifespan":
+            await self._lifespan(receive, send)
+            return
         if scope.get("type") != "http":
             await _send_response(send, status=404, headers=[], body=b"unsupported scope type")
             return
@@ -210,6 +213,16 @@ class ReverseProxyApp:
         else:
             query = str(query_string)
         return f"{path}?{query}" if query else path
+
+    async def _lifespan(self, receive: Receive, send: Send) -> None:
+        while True:
+            message = await receive()
+            message_type = message.get("type")
+            if message_type == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message_type == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
 
 
 class ManagedStdioMcpClient:
@@ -459,6 +472,9 @@ class McpFacadeProxyApp:
         self._prefixes = sorted(self.upstreams, key=lambda upstream: len(upstream.tool_prefix), reverse=True)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") == "lifespan":
+            await self._lifespan(receive, send)
+            return
         if scope.get("type") != "http":
             await _send_response(send, status=404, headers=[], body=b"unsupported scope type")
             return
@@ -763,6 +779,32 @@ class McpFacadeProxyApp:
             await client.aclose()
         for bridge in self._holepunch_bridges.values():
             await bridge.aclose()
+
+    async def startup(self) -> None:
+        if not self._holepunch_bridges:
+            return
+        await asyncio.gather(*(bridge.ensure_ready() for bridge in self._holepunch_bridges.values()))
+
+    async def _lifespan(self, receive: Receive, send: Send) -> None:
+        while True:
+            message = await receive()
+            message_type = message.get("type")
+            if message_type == "lifespan.startup":
+                try:
+                    await self.startup()
+                except Exception as exc:
+                    await send(
+                        {
+                            "type": "lifespan.startup.failed",
+                            "message": f"snulbug facade startup failed: {exc}",
+                        }
+                    )
+                    return
+                await send({"type": "lifespan.startup.complete"})
+            elif message_type == "lifespan.shutdown":
+                await self.aclose()
+                await send({"type": "lifespan.shutdown.complete"})
+                return
 
     async def _send_upstream_failure(self, send: Send, upstream: FacadeUpstream, exc: Exception) -> None:
         await self._send_jsonrpc_error(
