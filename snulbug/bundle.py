@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import tarfile
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +15,13 @@ from .runtime import LuaRuntimeError, compile_lua_file
 from .simulator import simulate_policy
 
 MANIFEST_NAME = "manifest.json"
+LIFECYCLE_FIELD = "snulbug_lifecycle"
+LIFECYCLE_SIGNATURE_FIELD = "signature"
+LIFECYCLE_SCHEMA = "snulbug.policy-lifecycle.v1"
+LIFECYCLE_DIGEST_SCHEMA = "snulbug.policy-bundle-digest.v1"
+LIFECYCLE_SIGNATURE_ALGORITHM = "hmac-sha256"
+LIFECYCLE_STATES = ("observed", "proposed", "approved", "active")
+_NEXT_STATE = {"observed": "proposed", "proposed": "approved", "approved": "active"}
 
 
 @dataclass(frozen=True)
@@ -91,6 +102,8 @@ def validate_bundle(path: str | Path, *, compile_policy: bool = True) -> dict[st
             if not isinstance(value, int) or value <= 0:
                 errors.append(f"manifest limit {field!r} must be a positive integer")
 
+    errors.extend(_validate_lifecycle(manifest.get(LIFECYCLE_FIELD)))
+
     return {
         "ok": not errors,
         "errors": errors,
@@ -161,6 +174,363 @@ def pack_bundle(path: str | Path, output_path: str | Path) -> dict[str, Any]:
     }
 
 
+def inspect_bundle_lifecycle(path: str | Path) -> dict[str, Any]:
+    bundle = load_bundle(path)
+    lifecycle = _normalized_lifecycle(bundle.manifest.get(LIFECYCLE_FIELD))
+    signature = lifecycle.get(LIFECYCLE_SIGNATURE_FIELD)
+    return {
+        "ok": True,
+        "bundle": str(bundle.root),
+        "name": bundle.name,
+        "version": bundle.version,
+        "state": lifecycle["state"],
+        "next_state": _NEXT_STATE.get(str(lifecycle["state"])),
+        "signed": isinstance(signature, Mapping),
+        "signature": _signature_summary(signature),
+        "validation": lifecycle.get("validation"),
+        "history": lifecycle.get("history", []),
+    }
+
+
+def promote_bundle_lifecycle(
+    path: str | Path,
+    *,
+    to_state: str = "next",
+    secret: str,
+    key_id: str,
+    actor: str | None = None,
+    note: str | None = None,
+    instruction_limit: int = 100_000,
+    memory_limit_bytes: int | None = 8 * 1024 * 1024,
+) -> dict[str, Any]:
+    """Advance a policy bundle through observed -> proposed -> approved -> active."""
+
+    if not secret:
+        raise ValueError("bundle signing secret must be non-empty")
+    if not key_id:
+        raise ValueError("bundle key_id must be non-empty")
+
+    bundle = load_bundle(path)
+    lifecycle = _normalized_lifecycle(bundle.manifest.get(LIFECYCLE_FIELD))
+    current_state = str(lifecycle["state"])
+    target_state = _target_state(current_state, to_state)
+
+    if target_state in {"approved", "active"}:
+        required_state = "proposed" if target_state == "approved" else "approved"
+        verify_bundle_lifecycle(bundle.root, secrets={key_id: secret}, required_state=required_state)
+
+    validation = _run_promotion_validation(
+        bundle.root,
+        instruction_limit=instruction_limit,
+        memory_limit_bytes=memory_limit_bytes,
+    )
+    if not validation["ok"]:
+        return {
+            "ok": False,
+            "bundle": str(bundle.root),
+            "from_state": current_state,
+            "to_state": target_state,
+            "validation": validation,
+            "error": "bundle validation or fixture tests failed",
+        }
+
+    unsigned_manifest = dict(bundle.manifest)
+    history = _lifecycle_history(lifecycle)
+    now = _utc_now()
+    if not history:
+        history.append(_history_event("observed", now=now, actor=actor, note="initial observed state"))
+    history.append(_history_event(target_state, now=now, actor=actor, note=note))
+    unsigned_manifest[LIFECYCLE_FIELD] = {
+        "schema": LIFECYCLE_SCHEMA,
+        "state": target_state,
+        "updated_at": now,
+        "history": history,
+        "validation": validation,
+    }
+    _write_manifest(bundle.root, unsigned_manifest)
+
+    signed_manifest = _sign_bundle_manifest(bundle.root, secret=secret, key_id=key_id, signed_at=now)
+    _write_manifest(bundle.root, signed_manifest)
+    signed_lifecycle = _normalized_lifecycle(signed_manifest.get(LIFECYCLE_FIELD))
+    signature = signed_lifecycle[LIFECYCLE_SIGNATURE_FIELD]
+    return {
+        "ok": True,
+        "bundle": str(bundle.root),
+        "name": signed_manifest.get("name"),
+        "version": signed_manifest.get("version"),
+        "from_state": current_state,
+        "to_state": target_state,
+        "state": target_state,
+        "validation": validation,
+        "signature": _signature_summary(signature),
+        "next_state": _NEXT_STATE.get(target_state),
+    }
+
+
+def sign_bundle_lifecycle(
+    path: str | Path,
+    *,
+    secret: str,
+    key_id: str,
+    state: str | None = None,
+    actor: str | None = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Sign the current lifecycle metadata without changing lifecycle state."""
+
+    if not secret:
+        raise ValueError("bundle signing secret must be non-empty")
+    if not key_id:
+        raise ValueError("bundle key_id must be non-empty")
+    if state is not None and state not in LIFECYCLE_STATES:
+        raise ValueError(f"unknown policy bundle lifecycle state: {state}")
+
+    bundle = load_bundle(path)
+    lifecycle = _normalized_lifecycle(bundle.manifest.get(LIFECYCLE_FIELD))
+    current_state = str(lifecycle["state"])
+    target_state = state or current_state
+    if target_state != current_state:
+        raise ValueError("bundle sign does not change lifecycle state; use bundle promote")
+    now = _utc_now()
+    manifest = dict(bundle.manifest)
+    history = _lifecycle_history(lifecycle)
+    if not history:
+        history.append(_history_event(target_state, now=now, actor=actor, note=note))
+    manifest[LIFECYCLE_FIELD] = {
+        "schema": LIFECYCLE_SCHEMA,
+        "state": target_state,
+        "updated_at": now,
+        "history": history,
+        **({"validation": lifecycle["validation"]} if "validation" in lifecycle else {}),
+    }
+    _write_manifest(bundle.root, manifest)
+
+    signed_manifest = _sign_bundle_manifest(bundle.root, secret=secret, key_id=key_id, signed_at=now)
+    _write_manifest(bundle.root, signed_manifest)
+    signature = _normalized_lifecycle(signed_manifest[LIFECYCLE_FIELD])[LIFECYCLE_SIGNATURE_FIELD]
+    return {
+        "ok": True,
+        "bundle": str(bundle.root),
+        "state": target_state,
+        "signature": _signature_summary(signature),
+    }
+
+
+def verify_bundle_lifecycle(
+    path: str | Path,
+    *,
+    secrets: Mapping[str, str],
+    required_state: str | None = None,
+) -> dict[str, Any]:
+    bundle = load_bundle(path)
+    lifecycle = _normalized_lifecycle(bundle.manifest.get(LIFECYCLE_FIELD))
+    state = str(lifecycle["state"])
+    if required_state is not None and state != required_state:
+        raise ValueError(f"policy bundle lifecycle state {state!r} does not match required {required_state!r}")
+
+    signature = lifecycle.get(LIFECYCLE_SIGNATURE_FIELD)
+    if not isinstance(signature, Mapping):
+        raise ValueError("policy bundle lifecycle is missing signature")
+    algorithm = signature.get("algorithm")
+    if algorithm != LIFECYCLE_SIGNATURE_ALGORITHM:
+        raise ValueError(f"unsupported policy bundle signature algorithm: {algorithm!r}")
+    key_id = signature.get("key_id")
+    if not isinstance(key_id, str) or not key_id:
+        raise ValueError("policy bundle signature key_id must be a non-empty string")
+    secret = secrets.get(key_id)
+    if not secret:
+        raise ValueError(f"no secret configured for policy bundle key_id {key_id!r}")
+
+    payload = _bundle_signature_payload(bundle.root, bundle.manifest)
+    expected_digest = _payload_digest(payload)
+    if signature.get("digest") != expected_digest:
+        raise ValueError("policy bundle digest does not match payload")
+    expected_signature = _sign_bytes(_canonical_json(payload), secret)
+    actual_signature = signature.get("value")
+    if not isinstance(actual_signature, str) or not hmac.compare_digest(actual_signature, expected_signature):
+        raise ValueError("policy bundle signature verification failed")
+
+    return {
+        "ok": True,
+        "bundle": str(bundle.root),
+        "name": bundle.name,
+        "version": bundle.version,
+        "state": state,
+        "digest": expected_digest,
+        "algorithm": algorithm,
+        "key_id": key_id,
+        "signed_at": signature.get("signed_at"),
+    }
+
+
+def bundle_lifecycle_digest(path: str | Path) -> str:
+    bundle = load_bundle(path)
+    return _payload_digest(_bundle_signature_payload(bundle.root, bundle.manifest))
+
+
+def _normalized_lifecycle(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {"schema": LIFECYCLE_SCHEMA, "state": "observed", "history": []}
+    if not isinstance(value, Mapping):
+        raise ValueError(f"manifest field {LIFECYCLE_FIELD!r} must be an object")
+    state = value.get("state")
+    if state not in LIFECYCLE_STATES:
+        raise ValueError(f"manifest field {LIFECYCLE_FIELD!r}.state must be one of {', '.join(LIFECYCLE_STATES)}")
+    lifecycle = {str(key): item for key, item in value.items()}
+    lifecycle.setdefault("schema", LIFECYCLE_SCHEMA)
+    history = lifecycle.get("history", [])
+    lifecycle["history"] = history if isinstance(history, list) else []
+    return lifecycle
+
+
+def _target_state(current_state: str, requested_state: str) -> str:
+    if requested_state != "next" and requested_state not in LIFECYCLE_STATES:
+        raise ValueError(f"unknown policy bundle lifecycle state: {requested_state}")
+    next_state = _NEXT_STATE.get(current_state)
+    if next_state is None:
+        raise ValueError("policy bundle lifecycle is already active")
+    target_state = next_state if requested_state == "next" else requested_state
+    if target_state != next_state:
+        raise ValueError(f"cannot move policy bundle lifecycle from {current_state!r} to {target_state!r}")
+    return target_state
+
+
+def _run_promotion_validation(
+    path: Path,
+    *,
+    instruction_limit: int,
+    memory_limit_bytes: int | None,
+) -> dict[str, Any]:
+    validation = validate_bundle(path)
+    if not validation["ok"]:
+        return {
+            "ok": False,
+            "validated_at": _utc_now(),
+            "fixture_count": validation.get("fixture_count", 0),
+            "errors": validation["errors"],
+        }
+    tests = test_bundle(path, instruction_limit=instruction_limit, memory_limit_bytes=memory_limit_bytes)
+    return {
+        "ok": bool(tests["ok"]),
+        "validated_at": _utc_now(),
+        "fixture_count": tests["fixture_count"],
+        "passed": tests["passed"],
+        "failed": tests["failed"],
+        "errors": [],
+        "test_failures": [
+            {
+                "name": result.get("name"),
+                "request": result.get("request"),
+                "failures": result.get("failures", []),
+            }
+            for result in tests.get("results", [])
+            if not result.get("ok")
+        ],
+    }
+
+
+def _sign_bundle_manifest(root: Path, *, secret: str, key_id: str, signed_at: str) -> dict[str, Any]:
+    bundle = load_bundle(root)
+    manifest = _manifest_without_lifecycle_signature(bundle.manifest)
+    lifecycle = _normalized_lifecycle(manifest.get(LIFECYCLE_FIELD))
+    manifest[LIFECYCLE_FIELD] = lifecycle
+    payload = _bundle_signature_payload(root, manifest)
+    digest = _payload_digest(payload)
+    lifecycle[LIFECYCLE_SIGNATURE_FIELD] = {
+        "algorithm": LIFECYCLE_SIGNATURE_ALGORITHM,
+        "key_id": key_id,
+        "digest": digest,
+        "signed_at": signed_at,
+        "value": _sign_bytes(_canonical_json(payload), secret),
+    }
+    return manifest
+
+
+def _bundle_signature_payload(root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "schema": LIFECYCLE_DIGEST_SCHEMA,
+        "manifest": _manifest_without_lifecycle_signature(manifest),
+        "files": _bundle_file_digests(root),
+    }
+
+
+def _bundle_file_digests(root: Path) -> list[dict[str, Any]]:
+    root = root.resolve()
+    files = []
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"policy bundle contains a symlink: {path.relative_to(root).as_posix()}")
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if relative == MANIFEST_NAME:
+            continue
+        data = path.read_bytes()
+        files.append(
+            {
+                "path": relative,
+                "sha256": "sha256:" + hashlib.sha256(data).hexdigest(),
+                "size": len(data),
+            }
+        )
+    return files
+
+
+def _manifest_without_lifecycle_signature(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    unsigned = _json_copy(manifest)
+    lifecycle = unsigned.get(LIFECYCLE_FIELD)
+    if isinstance(lifecycle, dict):
+        lifecycle.pop(LIFECYCLE_SIGNATURE_FIELD, None)
+    return unsigned
+
+
+def _payload_digest(payload: Mapping[str, Any]) -> str:
+    return "sha256:" + hashlib.sha256(_canonical_json(payload)).hexdigest()
+
+
+def _canonical_json(value: Mapping[str, Any]) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def _sign_bytes(value: bytes, secret: str) -> str:
+    digest = hmac.new(secret.encode("utf-8"), value, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _write_manifest(root: Path, manifest: Mapping[str, Any]) -> None:
+    (root / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _lifecycle_history(lifecycle: Mapping[str, Any]) -> list[dict[str, Any]]:
+    history = lifecycle.get("history", [])
+    if not isinstance(history, list):
+        return []
+    return [_json_copy(event) for event in history if isinstance(event, Mapping)]
+
+
+def _history_event(state: str, *, now: str, actor: str | None, note: str | None) -> dict[str, str]:
+    event = {"state": state, "updated_at": now}
+    if actor:
+        event["actor"] = actor
+    if note:
+        event["note"] = note
+    return event
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _signature_summary(signature: Any) -> dict[str, Any] | None:
+    if not isinstance(signature, Mapping):
+        return None
+    return {str(key): signature[key] for key in ("algorithm", "key_id", "digest", "signed_at") if key in signature}
+
+
+def _json_copy(value: Any) -> Any:
+    return json.loads(json.dumps(value, sort_keys=True))
+
+
 def _validate_fixture(root: Path, fixture: Any, index: int) -> list[str]:
     errors: list[str] = []
     if not isinstance(fixture, Mapping):
@@ -182,6 +552,40 @@ def _validate_fixture(root: Path, fixture: Any, index: int) -> list[str]:
     expect = fixture.get("expect", {})
     if expect is not None and not isinstance(expect, Mapping):
         errors.append(f"fixture #{index} field 'expect' must be an object")
+    return errors
+
+
+def _validate_lifecycle(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, Mapping):
+        return [f"manifest field {LIFECYCLE_FIELD!r} must be an object"]
+
+    errors: list[str] = []
+    schema = value.get("schema")
+    if schema is not None and schema != LIFECYCLE_SCHEMA:
+        errors.append(f"manifest field {LIFECYCLE_FIELD!r}.schema must be {LIFECYCLE_SCHEMA!r}")
+    state = value.get("state")
+    if state not in LIFECYCLE_STATES:
+        errors.append(f"manifest field {LIFECYCLE_FIELD!r}.state must be one of {', '.join(LIFECYCLE_STATES)}")
+    history = value.get("history", [])
+    if history is not None and not isinstance(history, list):
+        errors.append(f"manifest field {LIFECYCLE_FIELD!r}.history must be a list")
+    signature = value.get(LIFECYCLE_SIGNATURE_FIELD)
+    if signature is not None:
+        if not isinstance(signature, Mapping):
+            errors.append(f"manifest field {LIFECYCLE_FIELD!r}.signature must be an object")
+        else:
+            if signature.get("algorithm") != LIFECYCLE_SIGNATURE_ALGORITHM:
+                errors.append(
+                    f"manifest field {LIFECYCLE_FIELD!r}.signature.algorithm must be {LIFECYCLE_SIGNATURE_ALGORITHM!r}"
+                )
+            if not isinstance(signature.get("key_id"), str) or not signature["key_id"]:
+                errors.append(f"manifest field {LIFECYCLE_FIELD!r}.signature.key_id must be a non-empty string")
+            if not isinstance(signature.get("digest"), str) or not str(signature["digest"]).startswith("sha256:"):
+                errors.append(f"manifest field {LIFECYCLE_FIELD!r}.signature.digest must be a sha256 digest")
+            if not isinstance(signature.get("value"), str) or not signature["value"]:
+                errors.append(f"manifest field {LIFECYCLE_FIELD!r}.signature.value must be a non-empty string")
     return errors
 
 

@@ -132,6 +132,58 @@ def main(argv: Sequence[str] | None = None) -> int:
     bundle_pack.add_argument("output", type=Path, help="output tar.gz path")
     bundle_pack.add_argument("--compact", action="store_true", help="emit compact JSON")
 
+    bundle_states = ("observed", "proposed", "approved", "active")
+    bundle_lifecycle = bundle_subparsers.add_parser("lifecycle", help="inspect policy bundle lifecycle metadata")
+    bundle_lifecycle.add_argument("bundle", type=Path, help="path to a policy bundle directory")
+    bundle_lifecycle.add_argument("--compact", action="store_true", help="emit compact JSON")
+
+    bundle_sign = bundle_subparsers.add_parser("sign", help="sign current policy bundle lifecycle metadata")
+    bundle_sign.add_argument("bundle", type=Path, help="path to a policy bundle directory")
+    bundle_sign.add_argument("--state", choices=bundle_states, help="current lifecycle state to require before signing")
+    bundle_sign.add_argument("--key-id", required=True, help="bundle signing key id")
+    bundle_sign.add_argument(
+        "--secret-env",
+        default="SNULBUG_BUNDLE_SECRET",
+        help="environment variable containing the bundle signing secret",
+    )
+    bundle_sign.add_argument("--actor", help="actor to record in lifecycle history")
+    bundle_sign.add_argument("--note", help="note to record in lifecycle history")
+    bundle_sign.add_argument("--compact", action="store_true", help="emit compact JSON")
+
+    bundle_verify = bundle_subparsers.add_parser("verify", help="verify signed policy bundle lifecycle metadata")
+    bundle_verify.add_argument("bundle", type=Path, help="path to a policy bundle directory")
+    bundle_verify.add_argument("--state", choices=bundle_states, help="required lifecycle state")
+    bundle_verify.add_argument("--key-id", help="bundle signing key id; defaults to lifecycle signature key_id")
+    bundle_verify.add_argument(
+        "--secret-env",
+        default="SNULBUG_BUNDLE_SECRET",
+        help="environment variable containing the bundle signing secret",
+    )
+    bundle_verify.add_argument("--compact", action="store_true", help="emit compact JSON")
+
+    bundle_promote = bundle_subparsers.add_parser(
+        "promote",
+        help="advance a signed policy bundle through observed, proposed, approved, and active",
+    )
+    bundle_promote.add_argument("bundle", type=Path, help="path to a policy bundle directory")
+    bundle_promote.add_argument(
+        "--to",
+        choices=("next", "proposed", "approved", "active"),
+        default="next",
+        help="target lifecycle state; defaults to the next valid state",
+    )
+    bundle_promote.add_argument("--key-id", required=True, help="bundle signing key id")
+    bundle_promote.add_argument(
+        "--secret-env",
+        default="SNULBUG_BUNDLE_SECRET",
+        help="environment variable containing the bundle signing secret",
+    )
+    bundle_promote.add_argument("--actor", help="actor to record in lifecycle history")
+    bundle_promote.add_argument("--note", help="note to record in lifecycle history")
+    bundle_promote.add_argument("--instruction-limit", type=int, default=100_000)
+    bundle_promote.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
+    bundle_promote.add_argument("--compact", action="store_true", help="emit compact JSON")
+
     tunnel = subparsers.add_parser("tunnel", help="work with public tunnel interop checks")
     tunnel_subparsers = tunnel.add_subparsers(dest="tunnel_command", required=True)
 
@@ -854,25 +906,84 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0 if args.no_fail or result["safe_to_promote"] else 1
 
     if args.command == "bundle":
-        from .bundle import pack_bundle, test_bundle, validate_bundle
+        from .bundle import (
+            inspect_bundle_lifecycle,
+            pack_bundle,
+            promote_bundle_lifecycle,
+            sign_bundle_lifecycle,
+            test_bundle,
+            validate_bundle,
+            verify_bundle_lifecycle,
+        )
 
-        if args.bundle_command == "validate":
-            result = validate_bundle(args.bundle)
-            status = 0 if result["ok"] else 1
-        elif args.bundle_command == "test":
-            memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
-            result = test_bundle(
-                args.bundle,
-                instruction_limit=args.instruction_limit,
-                memory_limit_bytes=memory_limit,
-            )
-            status = 0 if result["ok"] else 1
-        elif args.bundle_command == "pack":
-            result = pack_bundle(args.bundle, args.output)
-            status = 0 if result["ok"] else 1
-        else:
-            parser.error(f"unknown bundle command: {args.bundle_command}")
-            return 2
+        try:
+            if args.bundle_command == "validate":
+                result = validate_bundle(args.bundle)
+                status = 0 if result["ok"] else 1
+            elif args.bundle_command == "test":
+                memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
+                result = test_bundle(
+                    args.bundle,
+                    instruction_limit=args.instruction_limit,
+                    memory_limit_bytes=memory_limit,
+                )
+                status = 0 if result["ok"] else 1
+            elif args.bundle_command == "pack":
+                result = pack_bundle(args.bundle, args.output)
+                status = 0 if result["ok"] else 1
+            elif args.bundle_command == "lifecycle":
+                result = inspect_bundle_lifecycle(args.bundle)
+                status = 0
+            elif args.bundle_command == "sign":
+                result = sign_bundle_lifecycle(
+                    args.bundle,
+                    secret=_read_required_env(args.secret_env),
+                    key_id=args.key_id,
+                    state=args.state,
+                    actor=args.actor,
+                    note=args.note,
+                )
+                status = 0
+            elif args.bundle_command == "verify":
+                lifecycle = inspect_bundle_lifecycle(args.bundle)
+                signature = lifecycle.get("signature") if isinstance(lifecycle, Mapping) else None
+                signature_key_id = signature.get("key_id") if isinstance(signature, Mapping) else None
+                key_id = args.key_id or signature_key_id
+                if not isinstance(key_id, str) or not key_id:
+                    raise ValueError("bundle key_id is required; pass --key-id or include a lifecycle signature key_id")
+                result = {
+                    "ok": True,
+                    "bundle": str(args.bundle),
+                    "verified": verify_bundle_lifecycle(
+                        args.bundle,
+                        secrets={key_id: _read_required_env(args.secret_env)},
+                        required_state=args.state,
+                    ),
+                }
+                status = 0
+            elif args.bundle_command == "promote":
+                memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
+                result = promote_bundle_lifecycle(
+                    args.bundle,
+                    to_state=args.to,
+                    secret=_read_required_env(args.secret_env),
+                    key_id=args.key_id,
+                    actor=args.actor,
+                    note=args.note,
+                    instruction_limit=args.instruction_limit,
+                    memory_limit_bytes=memory_limit,
+                )
+                status = 0 if result["ok"] else 1
+            else:
+                parser.error(f"unknown bundle command: {args.bundle_command}")
+                return 2
+        except Exception as exc:
+            result = {
+                "ok": False,
+                "bundle": str(getattr(args, "bundle", "")),
+                "error": str(exc),
+            }
+            status = 1
 
         indent = None if args.compact else 2
         sys.stdout.write(json.dumps(result, indent=indent, sort_keys=True))

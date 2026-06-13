@@ -2,7 +2,17 @@
 
 __version__ = "0.1.0"
 
-from .bundle import pack_bundle, test_bundle, validate_bundle
+from .bundle import (
+    LIFECYCLE_STATES,
+    bundle_lifecycle_digest,
+    inspect_bundle_lifecycle,
+    pack_bundle,
+    promote_bundle_lifecycle,
+    sign_bundle_lifecycle,
+    test_bundle,
+    validate_bundle,
+    verify_bundle_lifecycle,
+)
 from .cloudflare_access import CloudflareAccessConfig, evaluate_cloudflare_access
 from .config import load_mcp_fabric_config, load_mcp_proxy_config, write_sample_config
 from .confirm import ConfirmationBroker
@@ -84,6 +94,7 @@ __all__ = [
     "LuaMiddleware",
     "LuaRuntimeError",
     "LeasePolicyConfig",
+    "LIFECYCLE_STATES",
     "MemoryStateStore",
     "McpPolicyOptions",
     "FacadeUpstream",
@@ -112,6 +123,7 @@ __all__ = [
     "build_audit_event",
     "build_fabric_audit_metadata",
     "build_tunnel_audit_metadata",
+    "bundle_lifecycle_digest",
     "compare_decisions",
     "copy_builtin_preset",
     "create_lease",
@@ -139,6 +151,7 @@ __all__ = [
     "format_tunnel_init_report",
     "generate_mcp_preset",
     "inspect_mcp_log",
+    "inspect_bundle_lifecycle",
     "init_tunnel_provider",
     "learn_mcp_policy",
     "learn_fabric_profile",
@@ -163,9 +176,12 @@ __all__ = [
     "run_fabric_data_plane",
     "run_proxy",
     "simulate_policy",
+    "promote_bundle_lifecycle",
+    "sign_bundle_lifecycle",
     "sign_upstream_manifest",
     "test_bundle",
     "validate_bundle",
+    "verify_bundle_lifecycle",
     "verify_upstream_manifest",
     "write_manifest",
     "write_sample_config",
