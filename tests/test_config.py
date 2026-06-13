@@ -172,6 +172,47 @@ def test_load_mcp_proxy_config_supports_stdio_facade_upstreams(tmp_path):
     ]
 
 
+def test_load_mcp_proxy_config_supports_holepunch_facade_upstreams(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.proxy]
+        policy = "policy.snulbug/policy.lua"
+
+        [[mcp.proxy.upstreams]]
+        name = "remote"
+        transport = "holepunch"
+        peer = "SERVER_PEER_KEY"
+        local_port = 19100
+        bridge_config = "hypertele-client.json"
+        bridge_command = "hypertele"
+        bridge_private = true
+        bridge_ready_timeout = 3.5
+        tool_prefix = "remote."
+        """,
+        encoding="utf-8",
+    )
+
+    result = load_mcp_proxy_config(config)
+
+    assert result["upstreams"] == [
+        {
+            "name": "remote",
+            "transport": "holepunch",
+            "url": "http://127.0.0.1:19100/mcp",
+            "peer": "SERVER_PEER_KEY",
+            "local_port": 19100,
+            "bridge_config": "hypertele-client.json",
+            "bridge_command": "hypertele",
+            "bridge_args": ["-p", "19100", "-c", "hypertele-client.json", "--private"],
+            "bridge_private": True,
+            "bridge_ready_timeout": 3.5,
+            "tool_prefix": "remote.",
+            "default": False,
+        }
+    ]
+
+
 def test_merge_mcp_proxy_config_ignores_none_and_applies_overrides(tmp_path):
     config = load_mcp_proxy_config(write_config(tmp_path))
 

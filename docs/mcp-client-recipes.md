@@ -391,7 +391,8 @@ binding or another trusted access-control layer.
 ## 7. Upstream server only supports stdio
 
 Use this when the MCP server you want to protect is normally launched as a stdio
-process. Configure it as a managed facade upstream:
+process, or when it is reachable through a supervised Holepunch peer bridge.
+Configure it as a managed facade upstream:
 
 ```toml
 [mcp.proxy]
@@ -422,6 +423,13 @@ name = "git"
 transport = "stdio"
 command = "uvx"
 args = ["mcp-server-git"]
+
+[[mcp.proxy.upstreams]]
+name = "remote-devbox"
+transport = "holepunch"
+peer = "SERVER_PEER_KEY"
+local_port = 19100
+tool_prefix = "devbox."
 ```
 
 Run the proxy:
@@ -436,6 +444,6 @@ Point the client at the single facade endpoint:
 http://127.0.0.1:8080/mcp
 ```
 
-The client sees namespaced tools such as `files.read_file` and `git.status`.
-`tools/list` is aggregated across the configured upstreams and `tools/call` is
-routed back to the matching stdio process.
+The client sees namespaced tools such as `files.read_file`, `git.status`, and
+`devbox.read_file`. `tools/list` is aggregated across the configured upstreams
+and `tools/call` is routed back to the matching local process or peer bridge.

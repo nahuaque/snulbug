@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import socket
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -544,6 +545,50 @@ def test_mcp_facade_can_route_to_managed_stdio_upstream(tmp_path):
     assert call_payload["result"]["content"][0]["text"] == "called status"
 
 
+def test_mcp_facade_can_route_to_managed_holepunch_upstream(tmp_path):
+    bridge_server = write_http_mcp_bridge_server(tmp_path)
+    bridge_port = unused_tcp_port()
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        None,
+        policy,
+        upstreams=[
+            {
+                "name": "remote",
+                "transport": "holepunch",
+                "url": f"http://127.0.0.1:{bridge_port}/mcp",
+                "peer": "peer_123",
+                "local_port": bridge_port,
+                "bridge_command": sys.executable,
+                "bridge_args": [str(bridge_server), str(bridge_port)],
+                "bridge_ready_timeout": 5.0,
+            }
+        ],
+        record_out=record_log,
+    )
+
+    listed, called = run_asgi_sequence(
+        app,
+        [
+            {"body": b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}'},
+            {"body": (b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"remote.status"}}')},
+        ],
+    )
+
+    list_payload = json.loads(listed[1]["body"])
+    call_payload = json.loads(called[1]["body"])
+    records = load_record_log(record_log)
+    assert listed[0]["status"] == 200
+    assert [tool["name"] for tool in list_payload["result"]["tools"]] == ["remote.status"]
+    assert called[0]["status"] == 200
+    assert call_payload["result"]["content"][0]["text"] == "called status"
+    assert records[1]["metadata"]["upstream"] == "remote"
+    assert records[1]["metadata"]["upstream_transport"] == "holepunch"
+    assert records[1]["metadata"]["upstream_metadata"]["bridge"]["peer"] == "peer_123"
+    assert records[1]["metadata"]["upstream_metadata"]["bridge"]["local_port"] == bridge_port
+
+
 def test_mcp_response_policy_redacts_tool_result_secrets_and_records_metadata(tmp_path):
     server, _seen = start_mcp_upstream({"read_secret": "Read a secret"}, call_text="token is Bearer local-dev-secret")
     policy = write_policy(tmp_path, "continue")
@@ -1081,6 +1126,61 @@ for line in sys.stdin:
         encoding="utf-8",
     )
     return server
+
+
+def write_http_mcp_bridge_server(tmp_path):
+    server = tmp_path / "http_mcp_bridge.py"
+    server.write_text(
+        """
+import json
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(204)
+        self.send_header("content-length", "0")
+        self.end_headers()
+
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("content-length", "0")))
+        request = json.loads(body.decode("utf-8"))
+        request_id = request.get("id")
+        method = request.get("method")
+        params = request.get("params") if isinstance(request.get("params"), dict) else {}
+        if method == "tools/list":
+            result = {
+                "tools": [{"name": "status", "description": "Show status", "inputSchema": {"type": "object"}}]
+            }
+            response = {"jsonrpc": "2.0", "id": request_id, "result": result}
+        elif method == "tools/call":
+            result = {"content": [{"type": "text", "text": "called " + params.get("name", "")}]}
+            response = {"jsonrpc": "2.0", "id": request_id, "result": result}
+        else:
+            response = {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "not found"}}
+        payload = json.dumps(response).encode("utf-8")
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, format, *args):
+        return
+
+
+ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
+        """,
+        encoding="utf-8",
+    )
+    return server
+
+
+def unused_tcp_port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 def start_mcp_upstream(

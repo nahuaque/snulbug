@@ -345,8 +345,9 @@ request. Replay and audit records include the confirmation result.
 
 ## MCP Facade Mode
 
-Facade mode lets one `snulbug` proxy present several local MCP HTTP or stdio
-servers as a single client-facing HTTP endpoint. It is intentionally small:
+Facade mode lets one `snulbug` proxy present several local MCP HTTP, stdio, or
+Holepunch-bridged MCP servers as a single client-facing HTTP endpoint. It is
+intentionally small:
 `tools/list` is fanned out to every upstream and returned as one list with tool
 names prefixed by upstream name; `tools/call` is routed by that prefix and the
 prefix is stripped before the call reaches the upstream server. Other JSON-RPC
@@ -437,6 +438,61 @@ tool_prefix = "repo."
 
 Only configure commands you trust. The process runs locally with the configured
 command, arguments, working directory, and environment.
+
+### Holepunch upstreams
+
+Use `transport = "holepunch"` when an upstream MCP server is reachable through a
+Holepunch/Hypertele peer bridge. `snulbug` supervises the local bridge process,
+waits for the local bridge URL to answer HTTP, then routes facade traffic through
+that URL like any other HTTP upstream.
+
+```toml
+[mcp.proxy]
+policy = "policy.snulbug/policy.lua"
+host = "127.0.0.1"
+port = 8080
+
+[[mcp.proxy.upstreams]]
+name = "remote-devbox"
+transport = "holepunch"
+peer = "SERVER_PEER_KEY"
+local_port = 19100
+tool_prefix = "devbox."
+```
+
+This expands to a local upstream URL of `http://127.0.0.1:19100/mcp` and starts
+Hypertele with:
+
+```bash
+hypertele -p 19100 -s SERVER_PEER_KEY --private
+```
+
+You can use a generated Hypertele config instead of a peer argument:
+
+```toml
+[[mcp.proxy.upstreams]]
+name = "remote-files"
+transport = "holepunch"
+local_port = 19101
+bridge_config = "hypertele-client.json"
+tool_prefix = "remote_files."
+```
+
+Advanced bridge fields:
+
+```toml
+bridge_command = "hypertele"
+bridge_args = ["-p", "19101", "-c", "hypertele-client.json", "--private"]
+bridge_cwd = "/path/to/bridge/config"
+bridge_env = { HYPERDHT_BOOTSTRAP = "..." }
+bridge_private = true
+bridge_ready_timeout = 10.0
+url = "http://127.0.0.1:19101/mcp"
+```
+
+Replay records and audit logs include the selected upstream transport and
+Holepunch bridge metadata, including upstream name, tool prefix, local URL,
+peer key when configured, local bridge port, and bridge readiness settings.
 
 ## State
 

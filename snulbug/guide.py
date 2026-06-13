@@ -384,12 +384,12 @@ def _workflows() -> dict[str, dict[str, Any]]:
             "id": "facade",
             "title": "Thin Facade for Multiple Local MCP Servers",
             "purpose": (
-                "Expose several local MCP servers through one snulbug URL while preserving namespaced tool identities "
-                "for policy, recording, and learning."
+                "Expose several local, stdio, or Holepunch-bridged MCP servers through one snulbug URL while "
+                "preserving namespaced tool identities for policy, recording, and learning."
             ),
-            "when_to_use": "A developer runs multiple local MCP servers and wants one protected client endpoint.",
+            "when_to_use": "A developer runs multiple local or peer-bridged MCP servers and wants one endpoint.",
             "safety_default": (
-                "Namespace upstream tools and learn policies from facade traffic before public tunnel use."
+                "Namespace upstream tools and learn policies from facade traffic before tunnel or peer-bridge use."
             ),
             "steps": [
                 {

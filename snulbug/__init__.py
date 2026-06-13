@@ -17,6 +17,7 @@ from .presets import McpPolicyOptions, copy_builtin_preset, generate_mcp_preset,
 from .promotion import compare_decisions, diff_policies
 from .proxy import (
     FacadeUpstream,
+    ManagedHolepunchBridge,
     ManagedStdioMcpClient,
     McpFacadeProxyApp,
     ReverseProxyApp,
@@ -63,6 +64,7 @@ __all__ = [
     "MemoryStateStore",
     "McpPolicyOptions",
     "FacadeUpstream",
+    "ManagedHolepunchBridge",
     "ManagedStdioMcpClient",
     "MCP_GUIDE_WORKFLOWS",
     "McpFacadeProxyApp",

@@ -95,6 +95,12 @@ timeout = 30.0
 # transport = "stdio"
 # command = "npx"
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+#
+# [[mcp.proxy.upstreams]]
+# name = "remote-devbox"
+# transport = "holepunch"
+# peer = "SERVER_PEER_KEY"
+# local_port = 19100
 """
 
 
@@ -244,16 +250,57 @@ def _normalize_upstreams(value: Any) -> list[dict[str, Any]]:
         args = item.get("args", [])
         cwd = item.get("cwd")
         env = item.get("env")
+        peer = item.get("peer")
+        local_port = item.get("local_port")
+        bridge_config = item.get("bridge_config")
+        bridge_command = item.get("bridge_command", "hypertele")
+        bridge_args = item.get("bridge_args")
+        bridge_cwd = item.get("bridge_cwd")
+        bridge_env = item.get("bridge_env")
+        bridge_private = item.get("bridge_private", True)
+        bridge_ready_timeout = item.get("bridge_ready_timeout", 10.0)
         tool_prefix = item.get("tool_prefix", f"{name}.")
         default = bool(item.get("default", False))
         if not isinstance(name, str) or not name:
             raise ValueError(f"mcp.proxy.upstreams[{index}].name must be a non-empty string")
-        if transport not in {"http", "stdio"}:
-            raise ValueError(f"mcp.proxy.upstreams[{index}].transport must be 'http' or 'stdio'")
+        if transport not in {"http", "stdio", "holepunch"}:
+            raise ValueError(f"mcp.proxy.upstreams[{index}].transport must be 'http', 'stdio', or 'holepunch'")
         if transport == "http" and (not isinstance(url, str) or not url):
             raise ValueError(f"mcp.proxy.upstreams[{index}].url must be a non-empty string")
         if transport == "stdio" and (not isinstance(command, str) or not command):
             raise ValueError(f"mcp.proxy.upstreams[{index}].command must be a non-empty string")
+        if transport == "holepunch":
+            if local_port is not None and (not isinstance(local_port, int) or local_port <= 0):
+                raise ValueError(f"mcp.proxy.upstreams[{index}].local_port must be a positive integer")
+            if not isinstance(url, str) or not url:
+                if local_port is None:
+                    raise ValueError(f"mcp.proxy.upstreams[{index}].url or local_port is required")
+                url = f"http://127.0.0.1:{local_port}/mcp"
+            if peer is not None and not isinstance(peer, str):
+                raise ValueError(f"mcp.proxy.upstreams[{index}].peer must be a string")
+            if bridge_config is not None and not isinstance(bridge_config, str):
+                raise ValueError(f"mcp.proxy.upstreams[{index}].bridge_config must be a string")
+            if not isinstance(bridge_command, str) or not bridge_command:
+                raise ValueError(f"mcp.proxy.upstreams[{index}].bridge_command must be a non-empty string")
+            if bridge_args is not None and (
+                not isinstance(bridge_args, list) or not all(isinstance(arg, str) for arg in bridge_args)
+            ):
+                raise ValueError(f"mcp.proxy.upstreams[{index}].bridge_args must be a list of strings")
+            if bridge_args is None and not peer and not bridge_config:
+                raise ValueError(f"mcp.proxy.upstreams[{index}].peer, bridge_config, or bridge_args is required")
+            if bridge_cwd is not None and not isinstance(bridge_cwd, str):
+                raise ValueError(f"mcp.proxy.upstreams[{index}].bridge_cwd must be a string")
+            if bridge_env is not None:
+                if not isinstance(bridge_env, Mapping):
+                    raise ValueError(f"mcp.proxy.upstreams[{index}].bridge_env must be a table of strings")
+                if not all(
+                    isinstance(key, str) and isinstance(item_value, str) for key, item_value in bridge_env.items()
+                ):
+                    raise ValueError(f"mcp.proxy.upstreams[{index}].bridge_env must be a table of strings")
+            if not isinstance(bridge_private, bool):
+                raise ValueError(f"mcp.proxy.upstreams[{index}].bridge_private must be a boolean")
+            if not isinstance(bridge_ready_timeout, int | float) or float(bridge_ready_timeout) <= 0:
+                raise ValueError(f"mcp.proxy.upstreams[{index}].bridge_ready_timeout must be a positive number")
         if not isinstance(tool_prefix, str) or not tool_prefix:
             raise ValueError(f"mcp.proxy.upstreams[{index}].tool_prefix must be a non-empty string")
         if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
@@ -272,13 +319,21 @@ def _normalize_upstreams(value: Any) -> list[dict[str, Any]]:
         names.add(name)
         prefixes.add(tool_prefix)
         default_count += int(default)
+        if transport == "holepunch" and bridge_args is None:
+            bridge_args = _holepunch_bridge_args(
+                url=str(url),
+                local_port=local_port,
+                peer=peer,
+                bridge_config=bridge_config,
+                bridge_private=bridge_private,
+            )
         upstreams.append(
             {
                 "name": name,
                 "transport": transport,
                 "tool_prefix": tool_prefix,
                 "default": default,
-                **({"url": url} if transport == "http" else {}),
+                **({"url": url} if transport in {"http", "holepunch"} else {}),
                 **(
                     {
                         "command": command,
@@ -289,8 +344,51 @@ def _normalize_upstreams(value: Any) -> list[dict[str, Any]]:
                     if transport == "stdio"
                     else {}
                 ),
+                **(
+                    {
+                        **({"peer": peer} if peer is not None else {}),
+                        **({"local_port": local_port} if local_port is not None else {}),
+                        **({"bridge_config": bridge_config} if bridge_config is not None else {}),
+                        "bridge_command": bridge_command,
+                        "bridge_args": list(bridge_args),
+                        **({"bridge_cwd": bridge_cwd} if bridge_cwd is not None else {}),
+                        **({"bridge_env": dict(bridge_env)} if isinstance(bridge_env, Mapping) else {}),
+                        "bridge_private": bridge_private,
+                        "bridge_ready_timeout": float(bridge_ready_timeout),
+                    }
+                    if transport == "holepunch"
+                    else {}
+                ),
             }
         )
     if default_count > 1:
         raise ValueError("only one mcp.proxy.upstreams entry may set default = true")
     return upstreams
+
+
+def _holepunch_bridge_args(
+    *,
+    url: str,
+    local_port: int | None,
+    peer: str | None,
+    bridge_config: str | None,
+    bridge_private: bool,
+) -> list[str]:
+    port = local_port
+    if port is None:
+        try:
+            from urllib.parse import urlsplit
+
+            port = urlsplit(url).port
+        except Exception:
+            port = None
+    if port is None:
+        raise ValueError("holepunch upstream url must include a port when local_port is omitted")
+    args = ["-p", str(port)]
+    if bridge_config:
+        args.extend(["-c", bridge_config])
+    elif peer:
+        args.extend(["-s", peer])
+    if bridge_private:
+        args.append("--private")
+    return args

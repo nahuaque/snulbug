@@ -57,6 +57,15 @@ class FacadeUpstream:
     args: tuple[str, ...] = ()
     cwd: str | None = None
     env: Mapping[str, str] | None = None
+    peer: str | None = None
+    local_port: int | None = None
+    bridge_config: str | None = None
+    bridge_command: str | None = None
+    bridge_args: tuple[str, ...] = ()
+    bridge_cwd: str | None = None
+    bridge_env: Mapping[str, str] | None = None
+    bridge_private: bool = True
+    bridge_ready_timeout: float = 10.0
 
 
 class ReverseProxyApp:
@@ -307,6 +316,93 @@ class ManagedStdioMcpClient:
                 return response
 
 
+class ManagedHolepunchBridge:
+    """Managed local Hypertele bridge for remote Holepunch MCP upstreams."""
+
+    def __init__(
+        self,
+        command: str,
+        args: Sequence[str],
+        *,
+        url: str,
+        cwd: str | None = None,
+        env: Mapping[str, str] | None = None,
+        ready_timeout: float = 10.0,
+        probe_timeout: float = 1.0,
+    ) -> None:
+        self.command = command
+        self.args = tuple(args)
+        self.url = url
+        self.cwd = cwd
+        self.env = dict(env) if env is not None else None
+        self.ready_timeout = ready_timeout
+        self.probe_timeout = probe_timeout
+        self._process: asyncio.subprocess.Process | None = None
+        self._process_loop: asyncio.AbstractEventLoop | None = None
+        self._lock: asyncio.Lock | None = None
+        self._lock_loop: asyncio.AbstractEventLoop | None = None
+
+    async def ensure_ready(self) -> None:
+        lock = self._lock_for_loop()
+        async with lock:
+            if await self._is_ready():
+                return
+            process = await self._ensure_process()
+            deadline = asyncio.get_running_loop().time() + self.ready_timeout
+            while True:
+                if process.returncode is not None:
+                    self._process = None
+                    self._process_loop = None
+                    raise RuntimeError(f"holepunch bridge exited with status {process.returncode}")
+                if await self._is_ready():
+                    return
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise RuntimeError(f"holepunch bridge did not become ready at {self.url}")
+                await asyncio.sleep(0.1)
+
+    async def aclose(self) -> None:
+        process = self._process
+        self._process = None
+        self._process_loop = None
+        if process is None or process.returncode is not None:
+            return
+        process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=2.0)
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+
+    def _lock_for_loop(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._lock_loop is not loop:
+            self._lock = asyncio.Lock()
+            self._lock_loop = loop
+        return self._lock
+
+    async def _ensure_process(self) -> asyncio.subprocess.Process:
+        loop = asyncio.get_running_loop()
+        if self._process is not None and self._process_loop is not loop:
+            await self.aclose()
+        if self._process is not None and self._process.returncode is None:
+            return self._process
+        env = None if self.env is None else {**os.environ, **self.env}
+        self._process = await asyncio.create_subprocess_exec(
+            self.command,
+            *self.args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=self.cwd,
+            env=env,
+        )
+        self._process_loop = loop
+        return self._process
+
+    async def _is_ready(self) -> bool:
+        return await asyncio.to_thread(_http_endpoint_reachable, self.url, self.probe_timeout)
+
+
 class McpFacadeProxyApp:
     """Minimal MCP facade that serves several local MCP HTTP servers as one endpoint."""
 
@@ -333,7 +429,20 @@ class McpFacadeProxyApp:
         self._parsed = {
             upstream.name: _parse_upstream(_required_url(upstream))
             for upstream in self.upstreams
-            if upstream.transport == "http"
+            if upstream.transport in {"http", "holepunch"}
+        }
+        self._holepunch_bridges = {
+            upstream.name: ManagedHolepunchBridge(
+                _required_bridge_command(upstream),
+                upstream.bridge_args,
+                url=_required_url(upstream),
+                cwd=upstream.bridge_cwd,
+                env=upstream.bridge_env,
+                ready_timeout=upstream.bridge_ready_timeout,
+                probe_timeout=min(timeout, 1.0),
+            )
+            for upstream in self.upstreams
+            if upstream.transport == "holepunch"
         }
         self._stdio_clients = {
             upstream.name: ManagedStdioMcpClient(
@@ -429,6 +538,7 @@ class McpFacadeProxyApp:
                 "facade": True,
                 "operation": "tools/list",
                 "upstreams": [upstream.name for upstream in self.upstreams],
+                "upstream_transports": [_upstream_metadata(upstream) for upstream in self.upstreams],
                 "tool_count": len(tools),
             },
         )
@@ -500,6 +610,8 @@ class McpFacadeProxyApp:
                     "facade": True,
                     "operation": "tools/call",
                     "upstream": upstream.name,
+                    "upstream_transport": upstream.transport,
+                    "upstream_metadata": _upstream_metadata(upstream),
                     "tool": tool_name,
                     "lease": lease_metadata,
                 },
@@ -525,6 +637,8 @@ class McpFacadeProxyApp:
                     "facade": True,
                     "operation": "tools/call",
                     "upstream": upstream.name,
+                    "upstream_transport": upstream.transport,
+                    "upstream_metadata": _upstream_metadata(upstream),
                     "tool": tool_name,
                     "lease": lease_metadata,
                     "schema_validation": schema_request_metadata,
@@ -561,6 +675,8 @@ class McpFacadeProxyApp:
                 "facade": True,
                 "operation": "tools/call",
                 "upstream": upstream.name,
+                "upstream_transport": upstream.transport,
+                "upstream_metadata": _upstream_metadata(upstream),
                 "tool": tool_name,
                 "upstream_tool": rewritten_params["name"],
                 "lease": lease_metadata,
@@ -595,6 +711,8 @@ class McpFacadeProxyApp:
                 "facade": True,
                 "operation": "default",
                 "upstream": self._default.name,
+                "upstream_transport": self._default.transport,
+                "upstream_metadata": _upstream_metadata(self._default),
                 "response_policy": response_metadata,
             },
         )
@@ -614,6 +732,8 @@ class McpFacadeProxyApp:
     ) -> dict[str, Any]:
         if upstream.transport == "stdio":
             return await self._stdio_clients[upstream.name].request(request)
+        if upstream.transport == "holepunch":
+            await self._holepunch_bridges[upstream.name].ensure_ready()
         return await asyncio.to_thread(self._forward_http, upstream, scope, body)
 
     def _forward_http(self, upstream: FacadeUpstream, scope: Scope, body: bytes) -> dict[str, Any]:
@@ -641,6 +761,8 @@ class McpFacadeProxyApp:
     async def aclose(self) -> None:
         for client in self._stdio_clients.values():
             await client.aclose()
+        for bridge in self._holepunch_bridges.values():
+            await bridge.aclose()
 
     async def _send_upstream_failure(self, send: Send, upstream: FacadeUpstream, exc: Exception) -> None:
         await self._send_jsonrpc_error(
@@ -1148,14 +1270,54 @@ def _coerce_facade_upstream(upstream: FacadeUpstream | Mapping[str, Any]) -> Fac
     if not isinstance(name, str) or not name:
         raise ValueError("facade upstream name must be a non-empty string")
     transport = str(upstream.get("transport") or ("stdio" if upstream.get("command") else "http"))
-    if transport not in {"http", "stdio"}:
-        raise ValueError(f"facade upstream {name!r} transport must be 'http' or 'stdio'")
+    if transport not in {"http", "stdio", "holepunch"}:
+        raise ValueError(f"facade upstream {name!r} transport must be 'http', 'stdio', or 'holepunch'")
     url = upstream.get("url", upstream.get("upstream"))
     command = upstream.get("command")
-    if transport == "http" and (not isinstance(url, str) or not url):
+    if transport in {"http", "holepunch"} and (not isinstance(url, str) or not url):
         raise ValueError(f"facade upstream {name!r} url must be a non-empty string")
     if transport == "stdio" and (not isinstance(command, str) or not command):
         raise ValueError(f"facade upstream {name!r} command must be a non-empty string")
+    peer = upstream.get("peer")
+    if peer is not None and not isinstance(peer, str):
+        raise ValueError(f"facade upstream {name!r} peer must be a string")
+    local_port = upstream.get("local_port")
+    if local_port is not None and (not isinstance(local_port, int) or local_port <= 0):
+        raise ValueError(f"facade upstream {name!r} local_port must be a positive integer")
+    bridge_config = upstream.get("bridge_config")
+    if bridge_config is not None and not isinstance(bridge_config, str):
+        raise ValueError(f"facade upstream {name!r} bridge_config must be a string")
+    bridge_command = upstream.get("bridge_command")
+    if transport == "holepunch" and (not isinstance(bridge_command, str) or not bridge_command):
+        raise ValueError(f"facade upstream {name!r} bridge_command must be a non-empty string")
+    bridge_args = upstream.get("bridge_args", ())
+    if not isinstance(bridge_args, Sequence) or isinstance(bridge_args, str | bytes | bytearray):
+        raise ValueError(f"facade upstream {name!r} bridge_args must be a list of strings")
+    if not all(isinstance(arg, str) for arg in bridge_args):
+        raise ValueError(f"facade upstream {name!r} bridge_args must be a list of strings")
+    bridge_cwd = upstream.get("bridge_cwd")
+    if bridge_cwd is not None and not isinstance(bridge_cwd, str):
+        raise ValueError(f"facade upstream {name!r} bridge_cwd must be a string")
+    bridge_env = upstream.get("bridge_env")
+    if bridge_env is not None:
+        if not isinstance(bridge_env, Mapping) or not all(isinstance(key, str) for key in bridge_env):
+            raise ValueError(f"facade upstream {name!r} bridge_env must be a string table")
+        if not all(isinstance(value, str) for value in bridge_env.values()):
+            raise ValueError(f"facade upstream {name!r} bridge_env must be a string table")
+    bridge_private = upstream.get("bridge_private", True)
+    if not isinstance(bridge_private, bool):
+        raise ValueError(f"facade upstream {name!r} bridge_private must be a boolean")
+    bridge_ready_timeout = upstream.get("bridge_ready_timeout", 10.0)
+    if not isinstance(bridge_ready_timeout, int | float) or float(bridge_ready_timeout) <= 0:
+        raise ValueError(f"facade upstream {name!r} bridge_ready_timeout must be a positive number")
+    if transport == "holepunch" and not bridge_args:
+        bridge_args = _holepunch_bridge_args(
+            url=str(url),
+            local_port=local_port,
+            peer=peer,
+            bridge_config=bridge_config,
+            bridge_private=bridge_private,
+        )
     tool_prefix = upstream.get("tool_prefix", f"{name}.")
     if not isinstance(tool_prefix, str) or not tool_prefix:
         raise ValueError(f"facade upstream {name!r} tool_prefix must be a non-empty string")
@@ -1183,6 +1345,15 @@ def _coerce_facade_upstream(upstream: FacadeUpstream | Mapping[str, Any]) -> Fac
         args=tuple(args),
         cwd=cwd,
         env=dict(env) if isinstance(env, Mapping) else None,
+        peer=peer,
+        local_port=local_port,
+        bridge_config=bridge_config,
+        bridge_command=bridge_command if isinstance(bridge_command, str) else None,
+        bridge_args=tuple(bridge_args),
+        bridge_cwd=bridge_cwd,
+        bridge_env=dict(bridge_env) if isinstance(bridge_env, Mapping) else None,
+        bridge_private=bridge_private,
+        bridge_ready_timeout=float(bridge_ready_timeout),
     )
 
 
@@ -1196,6 +1367,54 @@ def _required_command(upstream: FacadeUpstream) -> str:
     if not upstream.command:
         raise ValueError(f"facade upstream {upstream.name!r} command is required")
     return upstream.command
+
+
+def _required_bridge_command(upstream: FacadeUpstream) -> str:
+    if not upstream.bridge_command:
+        raise ValueError(f"facade upstream {upstream.name!r} bridge_command is required")
+    return upstream.bridge_command
+
+
+def _holepunch_bridge_args(
+    *,
+    url: str,
+    local_port: int | None,
+    peer: str | None,
+    bridge_config: str | None,
+    bridge_private: bool,
+) -> list[str]:
+    port = local_port or urlsplit(url).port
+    if port is None:
+        raise ValueError("holepunch upstream url must include a port when local_port is omitted")
+    args = ["-p", str(port)]
+    if bridge_config:
+        args.extend(["-c", bridge_config])
+    elif peer:
+        args.extend(["-s", peer])
+    if bridge_private:
+        args.append("--private")
+    return args
+
+
+def _upstream_metadata(upstream: FacadeUpstream) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "name": upstream.name,
+        "transport": upstream.transport,
+        "tool_prefix": upstream.tool_prefix,
+    }
+    if upstream.transport in {"http", "holepunch"}:
+        metadata["url"] = upstream.url
+    if upstream.transport == "holepunch":
+        metadata["bridge"] = {
+            "transport": "hypertele",
+            "peer": upstream.peer,
+            "local_port": upstream.local_port,
+            "config": upstream.bridge_config,
+            "command": upstream.bridge_command,
+            "private": upstream.bridge_private,
+            "ready_timeout": upstream.bridge_ready_timeout,
+        }
+    return _drop_empty(metadata)
 
 
 def _parse_upstream(upstream: str) -> SplitResult:
@@ -1213,6 +1432,24 @@ def _connection(upstream: SplitResult, timeout: float) -> http.client.HTTPConnec
     if upstream.scheme == "https":
         return http.client.HTTPSConnection(host, port=port, timeout=timeout)
     return http.client.HTTPConnection(host, port=port, timeout=timeout)
+
+
+def _http_endpoint_reachable(url: str, timeout: float) -> bool:
+    parsed = _parse_upstream(url)
+    connection = _connection(parsed, timeout)
+    try:
+        connection.request("GET", _exact_target(parsed), headers={"host": parsed.netloc})
+        response = connection.getresponse()
+        response.read()
+        return True
+    except OSError:
+        return False
+    finally:
+        connection.close()
+
+
+def _drop_empty(value: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: item for key, item in value.items() if item not in (None, "", [], {})}
 
 
 def _exact_target(upstream: SplitResult) -> str:
