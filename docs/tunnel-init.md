@@ -1,25 +1,32 @@
 # Tunnel init
 
-`snulbug tunnel init` generates provider-specific setup commands and optional
-config snippets for exposing the snulbug MCP proxy through a public tunnel or
-private peer bridge.
+`snulbug tunnel init` writes provider-specific setup files under
+`.snulbug/configs` by default and prints copy-pasteable commands for exposing
+the snulbug MCP proxy through a public tunnel or private peer bridge. Pass
+`--output-dir` when you want those files somewhere else.
 
 It does not run ngrok, cloudflared, Tailscale, or Hypertele for you. It gives
 you the commands, client URL/header values, and doctor command to run before
 sharing the endpoint.
 
+If no `snulbug.toml` is present, init also creates a safe starter under
+`.snulbug/configs/`: `snulbug.toml`, `policy.snulbug/`, and `traces/`. The
+starter points at `http://127.0.0.1:9000`; edit the generated `upstream` value
+if your local MCP server uses another URL.
+
 ## Ngrok
 
 ```bash
 snulbug tunnel init \
-  --provider ngrok \
-  --hostname YOUR-TUNNEL.ngrok.app \
-  --config snulbug.toml \
-  --output-dir tunnel.ngrok
+  --provider ngrok
+export SNULBUG_TOKEN=local-dev-secret
+snulbug mcp proxy --config .snulbug/configs/snulbug.toml --decision-console
 ```
 
 Generated output includes:
 
+- `.snulbug/configs/snulbug.toml` and a starter `policy.snulbug/` when no
+  config exists
 - an `ngrok http` command pointed at the snulbug proxy origin
 - an `ngrok-traffic-policy.yml` guard that rejects non-MCP paths, missing or
   malformed bearer auth, unexpected methods, and non-JSON POSTs before they
@@ -31,8 +38,21 @@ path to `--traffic-policy-file`:
 
 ```bash
 ngrok http 8080 \
-  --url https://YOUR-TUNNEL.ngrok.app \
-  --traffic-policy-file ngrok-traffic-policy.yml
+  --traffic-policy-file .snulbug/configs/ngrok-traffic-policy.yml
+```
+
+Copy the exact `Forwarding` HTTPS URL printed by ngrok. Random free ngrok URLs
+commonly use `ngrok-free.app`; do not rewrite them as `ngrok-free.ngrok.app`.
+
+Then test the tunnel with a JSON-RPC MCP `tools/list` request:
+
+```bash
+NGROK_URL=https://YOUR-NGROK-FORWARDING-DOMAIN
+curl -sS "${NGROK_URL}/mcp" \
+  -H "Authorization: Bearer ${SNULBUG_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":"tools-list","method":"tools/list","params":{}}'
 ```
 
 ## Cloudflare Tunnel

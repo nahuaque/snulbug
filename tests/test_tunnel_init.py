@@ -8,7 +8,9 @@ from snulbug import format_tunnel_init_report, init_tunnel_provider
 from snulbug.simulator import main as simulator_main
 
 
-def test_tunnel_init_ngrok_generates_command_doctor_and_policy_snippet():
+def test_tunnel_init_ngrok_generates_command_doctor_and_policy_snippet(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
     result = init_tunnel_provider(
         provider="ngrok",
         local_url="http://127.0.0.1:8080/mcp",
@@ -16,12 +18,18 @@ def test_tunnel_init_ngrok_generates_command_doctor_and_policy_snippet():
     )
 
     assert result["ok"] is True
+    assert result["config_generated"] is True
+    assert result["output_dir"] == ".snulbug/configs"
+    assert (tmp_path / ".snulbug/configs/snulbug.toml").is_file()
+    assert (tmp_path / ".snulbug/configs/policy.snulbug/policy.lua").is_file()
+    assert (tmp_path / ".snulbug/configs/ngrok-traffic-policy.yml").is_file()
     assert result["local_origin"] == "http://127.0.0.1:8080"
     assert result["public_url"] == "https://mcp-dev.ngrok.app/mcp"
     assert result["commands"][0]["command"] == (
-        "ngrok http 8080 --url https://mcp-dev.ngrok.app --traffic-policy-file ngrok-traffic-policy.yml"
+        "ngrok http 8080 --url https://mcp-dev.ngrok.app "
+        "--traffic-policy-file .snulbug/configs/ngrok-traffic-policy.yml"
     )
-    assert result["traffic_policy"]["path"] == "ngrok-traffic-policy.yml"
+    assert result["traffic_policy"]["path"] == ".snulbug/configs/ngrok-traffic-policy.yml"
     assert "require Authorization header" in result["traffic_policy"]["checks"]
     assert result["doctor"]["command"].startswith("snulbug tunnel doctor")
     assert "--provider ngrok" in result["doctor"]["command"]
@@ -33,6 +41,34 @@ def test_tunnel_init_ngrok_generates_command_doctor_and_policy_snippet():
     assert "!(req.method in ['GET', 'POST', 'OPTIONS', 'DELETE'])" in policy_file["contents"]
     assert "req.method == 'POST'" in policy_file["contents"]
     assert 'body: "Authorization required"' not in policy_file["contents"]
+
+
+def test_tunnel_init_ngrok_without_config_writes_default_config_dir(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    result = init_tunnel_provider(provider="ngrok")
+    report = format_tunnel_init_report(result)
+
+    assert result["initial_config_missing"] is True
+    assert result["config_generated"] is True
+    assert result["config"] == ".snulbug/configs/snulbug.toml"
+    assert result["output_dir"] == ".snulbug/configs"
+    assert result["written_files"] == [
+        ".snulbug/configs/snulbug.toml",
+        ".snulbug/configs/policy.snulbug",
+        ".snulbug/configs/traces",
+        ".snulbug/configs/README.md",
+        ".snulbug/configs/ngrok-traffic-policy.yml",
+    ]
+    assert (tmp_path / ".snulbug/configs/snulbug.toml").is_file()
+    assert (tmp_path / ".snulbug/configs/policy.snulbug/policy.lua").is_file()
+    assert (tmp_path / ".snulbug/configs/ngrok-traffic-policy.yml").is_file()
+    assert "Generated snulbug config" in report
+    assert "Config: `.snulbug/configs/snulbug.toml`" in report
+    assert "export SNULBUG_TOKEN=local-dev-secret" in report
+    assert "Do not rewrite `ngrok-free.app` as `ngrok-free.ngrok.app`" in report
+    assert "--traffic-policy-file .snulbug/configs/ngrok-traffic-policy.yml" in report
+    assert "snulbug mcp proxy --config .snulbug/configs/snulbug.toml" in result["next_steps"][1]
 
 
 def test_tunnel_init_ngrok_writes_readme_and_traffic_policy(tmp_path):
@@ -47,8 +83,14 @@ def test_tunnel_init_ngrok_writes_readme_and_traffic_policy(tmp_path):
 
     readme = output_dir / "README.md"
     policy = output_dir / "ngrok-traffic-policy.yml"
-    assert result["written_files"] == [str(readme), str(policy)]
-    assert "--traffic-policy-file ngrok-traffic-policy.yml" in readme.read_text(encoding="utf-8")
+    assert result["written_files"] == [
+        str(output_dir / "snulbug.toml"),
+        str(output_dir / "policy.snulbug"),
+        str(output_dir / "traces"),
+        str(readme),
+        str(policy),
+    ]
+    assert f"--traffic-policy-file {policy}" in readme.read_text(encoding="utf-8")
     assert "Ngrok Traffic Policy" in readme.read_text(encoding="utf-8")
     assert 'x-snulbug-public-url: "https://mcp-dev.ngrok.app/mcp"' in policy.read_text(encoding="utf-8")
 
@@ -65,10 +107,18 @@ def test_tunnel_init_cloudflare_writes_generated_files(tmp_path):
 
     config = output_dir / "cloudflared.yml"
     readme = output_dir / "README.md"
-    assert result["written_files"] == [str(readme), str(config)]
+    assert result["written_files"] == [
+        str(output_dir / "snulbug.toml"),
+        str(output_dir / "policy.snulbug"),
+        str(output_dir / "traces"),
+        str(readme),
+        str(config),
+    ]
     assert "hostname: mcp.example.com" in config.read_text(encoding="utf-8")
     assert "service: http://127.0.0.1:8080" in config.read_text(encoding="utf-8")
-    assert "cloudflared tunnel route dns snulbug-mcp mcp.example.com" in readme.read_text(encoding="utf-8")
+    readme_text = readme.read_text(encoding="utf-8")
+    assert "cloudflared tunnel route dns snulbug-mcp mcp.example.com" in readme_text
+    assert f"cloudflared tunnel --config {config} run snulbug-mcp" in readme_text
 
 
 def test_tunnel_init_refuses_to_overwrite_without_force(tmp_path):
@@ -84,10 +134,17 @@ def test_tunnel_init_refuses_to_overwrite_without_force(tmp_path):
         output_dir=output_dir,
         force=True,
     )
-    assert result["written_files"] == [str(output_dir / "README.md")]
+    assert result["written_files"] == [
+        str(output_dir / "snulbug.toml"),
+        str(output_dir / "policy.snulbug"),
+        str(output_dir / "traces"),
+        str(output_dir / "README.md"),
+    ]
 
 
-def test_tunnel_init_cli_emits_compact_tailscale_plan(capsys):
+def test_tunnel_init_cli_emits_compact_tailscale_plan(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+
     status = simulator_main(
         [
             "tunnel",
@@ -108,6 +165,8 @@ def test_tunnel_init_cli_emits_compact_tailscale_plan(capsys):
     assert output["public_url"] == "https://dev.tailnet.ts.net/mcp"
     assert output["commands"][0]["command"] == "sudo tailscale funnel 8080"
     assert output["client"]["headers"]["Authorization"] == "Bearer ${SNULBUG_TOKEN}"
+    assert output["config"] == ".snulbug/configs/snulbug.toml"
+    assert (tmp_path / ".snulbug/configs/snulbug.toml").is_file()
 
 
 def test_tunnel_init_tailscale_readme_includes_bearer_and_lease_defaults(tmp_path):
@@ -122,7 +181,12 @@ def test_tunnel_init_tailscale_readme_includes_bearer_and_lease_defaults(tmp_pat
 
     readme = output_dir / "README.md"
     text = readme.read_text(encoding="utf-8")
-    assert result["written_files"] == [str(readme)]
+    assert result["written_files"] == [
+        str(output_dir / "snulbug.toml"),
+        str(output_dir / "policy.snulbug"),
+        str(output_dir / "traces"),
+        str(readme),
+    ]
     assert "Tailscale Funnel bearer + lease recipe" in text
     assert "Authorization: Bearer ${SNULBUG_TOKEN}" in text
     assert 'lease_file = "leases.json"' in text
@@ -159,10 +223,17 @@ def test_tunnel_init_holepunch_generates_hypertele_bridge_files(tmp_path):
         "client_port": 18080,
     }
     assert result["commands"][0]["command"] == (
-        "hypertele-server -l 8080 --address 127.0.0.1 -c hypertele-server.json --private"
+        f"hypertele-server -l 8080 --address 127.0.0.1 -c {server_config} --private"
     )
-    assert result["commands"][1]["command"] == "hypertele -p 18080 -c hypertele-client.json --private"
-    assert result["written_files"] == [str(readme), str(server_config), str(client_config)]
+    assert result["commands"][1]["command"] == f"hypertele -p 18080 -c {client_config} --private"
+    assert result["written_files"] == [
+        str(output_dir / "snulbug.toml"),
+        str(output_dir / "policy.snulbug"),
+        str(output_dir / "traces"),
+        str(readme),
+        str(server_config),
+        str(client_config),
+    ]
     assert json.loads(server_config.read_text(encoding="utf-8")) == {
         "seed": "REPLACE_WITH_32_BYTE_SERVER_SEED",
         "allow": ["REPLACE_WITH_CLIENT_PEER_KEY"],
@@ -177,7 +248,9 @@ def test_tunnel_init_holepunch_generates_hypertele_bridge_files(tmp_path):
     assert "snulbug mcp lease create" in readme_text
 
 
-def test_tunnel_init_cli_emits_compact_holepunch_plan(capsys):
+def test_tunnel_init_cli_emits_compact_holepunch_plan(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+
     status = simulator_main(
         [
             "tunnel",
@@ -199,9 +272,12 @@ def test_tunnel_init_cli_emits_compact_holepunch_plan(capsys):
     assert output["bridge"]["server_port"] == 8181
     assert output["bridge"]["client_port"] == 19000
     assert output["client"]["headers"]["Authorization"] == "Bearer ${SNULBUG_TOKEN}"
+    assert output["config"] == ".snulbug/configs/snulbug.toml"
 
 
-def test_format_tunnel_init_report_includes_commands_and_client():
+def test_format_tunnel_init_report_includes_commands_and_client(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
     result = init_tunnel_provider(provider="generic", local_url="http://127.0.0.1:8080/mcp")
 
     report = format_tunnel_init_report(result)

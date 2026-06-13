@@ -59,14 +59,43 @@ bridge at `http://127.0.0.1:8080`. The proxy applies the Lua policy before
 forwarding to the upstream server. Use `tunnel-safe` unless you have a stronger
 external access-control layer in front of the tunnel or peer bridge.
 
-Generate provider-specific tunnel setup snippets first:
+Generate provider-specific tunnel setup files first. If no config exists,
+snulbug writes a starter config, policy bundle, traces directory, and provider
+files under `.snulbug/configs`:
 
 ```bash
 uv run snulbug tunnel init \
-  --provider ngrok \
-  --hostname YOUR-TUNNEL.ngrok.app \
-  --config snulbug.toml \
-  --output-dir tunnel.ngrok
+  --provider ngrok
+export SNULBUG_TOKEN=local-dev-secret
+uv run snulbug mcp proxy --config .snulbug/configs/snulbug.toml --decision-console
+ngrok http 8080 --traffic-policy-file .snulbug/configs/ngrok-traffic-policy.yml
+```
+
+Copy the exact `Forwarding` HTTPS URL printed by ngrok. Random free ngrok URLs
+commonly use `ngrok-free.app`; do not rewrite them as `ngrok-free.ngrok.app`.
+
+```bash
+NGROK_URL=https://YOUR-NGROK-FORWARDING-DOMAIN
+```
+
+Use curl as a minimal MCP client to check the local proxy before exposing it:
+
+```bash
+curl -sS http://127.0.0.1:8080/mcp \
+  -H "Authorization: Bearer ${SNULBUG_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":"tools-list","method":"tools/list","params":{}}'
+```
+
+Then check the public tunnel:
+
+```bash
+curl -sS "${NGROK_URL}/mcp" \
+  -H "Authorization: Bearer ${SNULBUG_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":"tools-list","method":"tools/list","params":{}}'
 ```
 
 Before sharing the public URL, verify that the tunnel reaches snulbug and that
@@ -75,9 +104,9 @@ unauthenticated MCP traffic is blocked:
 ```bash
 snulbug tunnel doctor \
   --provider ngrok \
-  --url https://YOUR-TUNNEL.ngrok.app/mcp \
-  --config snulbug.toml \
-  --token local-dev-secret
+  --url "${NGROK_URL}/mcp" \
+  --config .snulbug/configs/snulbug.toml \
+  --token "${SNULBUG_TOKEN}"
 ```
 
 See [Tunnel init](tunnel-init.md) and [Tunnel doctor](tunnel-doctor.md) for

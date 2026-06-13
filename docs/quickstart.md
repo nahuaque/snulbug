@@ -193,10 +193,24 @@ upstream MCP server:
 
 ```bash
 uv run snulbug tunnel init \
-  --provider ngrok \
-  --hostname YOUR-TUNNEL.ngrok.app \
-  --config snulbug.toml
-ngrok http 8080 --url https://YOUR-TUNNEL.ngrok.app --traffic-policy-file ngrok-traffic-policy.yml
+  --provider ngrok
+export SNULBUG_TOKEN=local-dev-secret
+uv run snulbug mcp proxy --config .snulbug/configs/snulbug.toml --decision-console
+ngrok http 8080 --traffic-policy-file .snulbug/configs/ngrok-traffic-policy.yml
+```
+
+Copy the exact `Forwarding` HTTPS URL printed by ngrok. Random free ngrok URLs
+commonly use `ngrok-free.app`; do not rewrite them as `ngrok-free.ngrok.app`.
+
+Use curl as a minimal MCP client to verify `tools/list` through the tunnel:
+
+```bash
+NGROK_URL=https://YOUR-NGROK-FORWARDING-DOMAIN
+curl -sS "${NGROK_URL}/mcp" \
+  -H "Authorization: Bearer ${SNULBUG_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":"tools-list","method":"tools/list","params":{}}'
 ```
 
 Before sharing the tunnel URL, verify the boundary:
@@ -204,9 +218,9 @@ Before sharing the tunnel URL, verify the boundary:
 ```bash
 uv run snulbug tunnel doctor \
   --provider ngrok \
-  --url https://YOUR-TUNNEL.ngrok.app/mcp \
-  --config snulbug.toml \
-  --token local-dev-secret
+  --url "${NGROK_URL}/mcp" \
+  --config .snulbug/configs/snulbug.toml \
+  --token "${SNULBUG_TOKEN}"
 ```
 
 Then point the client at the tunnel URL plus `/mcp` and keep the same bearer

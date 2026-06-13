@@ -78,6 +78,7 @@ def create_mcp_share(
         public_url=public_url,
         hostname=hostname,
         token_env=DEFAULT_SHARE_TOKEN_ENV,
+        write=False,
     )
 
     quickstart = create_mcp_quickstart(
