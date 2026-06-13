@@ -5,9 +5,9 @@
 the snulbug MCP proxy through a public tunnel or private peer bridge. Pass
 `--output-dir` when you want those files somewhere else.
 
-It does not run ngrok, cloudflared, Tailscale, or Hypertele for you. It gives
-you the commands, client URL/header values, and doctor command to run before
-sharing the endpoint.
+It does not run ngrok, cloudflared, Tailscale, LocalXpose, or Hypertele for
+you. It gives you the commands, client URL/header values, and doctor command to
+run before sharing the endpoint.
 
 If no `snulbug.toml` is present, init also creates a safe starter under
 `.snulbug/configs/`: `snulbug.toml`, `policy.snulbug/`, and `traces/`. The
@@ -160,6 +160,49 @@ x-snulbug-lease: <lease token>
 
 Set `lease_required = true` when every `tools/call` through the Funnel should
 carry an active lease.
+
+## LocalXpose
+
+```bash
+snulbug tunnel init \
+  --provider localxpose \
+  --config snulbug.toml \
+  --output-dir tunnel.localxpose
+```
+
+Generated output includes:
+
+- a `loclx tunnel http` command pointed at the snulbug proxy port
+- the public MCP URL for client setup
+- a doctor command that verifies snulbug still blocks unauthenticated public
+  traffic
+
+LocalXpose's basic HTTP tunnel command forwards to `localhost:8080`, which
+matches snulbug's default proxy port. After starting the tunnel, set the exact
+HTTPS URL printed by `loclx`:
+
+```bash
+loclx tunnel http
+export LOCALXPOSE_URL=https://YOUR-LOCALXPOSE-FORWARDING-DOMAIN
+```
+
+Then run doctor before sharing the URL:
+
+```bash
+snulbug tunnel doctor \
+  --provider localxpose \
+  --url "${LOCALXPOSE_URL}/mcp" \
+  --config snulbug.toml \
+  --token "${SNULBUG_TOKEN}"
+```
+
+If you have a reserved LocalXpose domain, pass it to init:
+
+```bash
+snulbug tunnel init \
+  --provider localxpose \
+  --hostname mcp-dev.loclx.io
+```
 
 ## Holepunch peer bridge
 

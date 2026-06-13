@@ -58,6 +58,17 @@ snulbug tunnel doctor \
   --token local-dev-secret
 ```
 
+For LocalXpose, use the exact HTTPS URL printed by `loclx tunnel http`:
+
+```bash
+export LOCALXPOSE_URL=https://YOUR-LOCALXPOSE-FORWARDING-DOMAIN
+snulbug tunnel doctor \
+  --provider localxpose \
+  --url "${LOCALXPOSE_URL}/mcp" \
+  --config snulbug.toml \
+  --token local-dev-secret
+```
+
 For a Holepunch/Hypertele peer bridge, run doctor from a machine where the
 client-side bridge is listening:
 

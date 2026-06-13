@@ -12,7 +12,7 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 from .config import DEFAULT_CONFIG_PATH, DEFAULT_MCP_PROXY_CONFIG, load_mcp_proxy_config
 from .quickstart import create_mcp_quickstart
 
-TUNNEL_PROVIDERS = ("generic", "ngrok", "cloudflare", "tailscale", "holepunch")
+TUNNEL_PROVIDERS = ("generic", "ngrok", "cloudflare", "tailscale", "localxpose", "holepunch")
 DEFAULT_MCP_PATH = "/mcp"
 DEFAULT_AUTH_FAILURE_STATUSES = (401, 403)
 DEFAULT_TUNNEL_TOKEN_ENV = "SNULBUG_TOKEN"
@@ -21,18 +21,21 @@ DEFAULT_GENERIC_TUNNEL_HOST = "YOUR-TUNNEL-FORWARDING-DOMAIN"
 DEFAULT_NGROK_FORWARDING_HOST = "YOUR-NGROK-FORWARDING-DOMAIN"
 DEFAULT_CLOUDFLARE_TUNNEL_HOST = "YOUR-CLOUDFLARE-TUNNEL-HOSTNAME"
 DEFAULT_TAILSCALE_FUNNEL_HOST = "YOUR-HOST.YOUR-TAILNET.ts.net"
+DEFAULT_LOCALXPOSE_FORWARDING_HOST = "YOUR-LOCALXPOSE-FORWARDING-DOMAIN"
 DEFAULT_HOLEPUNCH_CLIENT_ORIGIN = "http://127.0.0.1:18080"
 DEFAULT_PUBLIC_URL_ENVS = {
     "generic": "TUNNEL_URL",
     "ngrok": "NGROK_URL",
     "cloudflare": "CLOUDFLARE_TUNNEL_URL",
     "tailscale": "TAILSCALE_FUNNEL_URL",
+    "localxpose": "LOCALXPOSE_URL",
 }
 DEFAULT_PUBLIC_HOSTS = {
     "generic": DEFAULT_GENERIC_TUNNEL_HOST,
     "ngrok": DEFAULT_NGROK_FORWARDING_HOST,
     "cloudflare": DEFAULT_CLOUDFLARE_TUNNEL_HOST,
     "tailscale": DEFAULT_TAILSCALE_FUNNEL_HOST,
+    "localxpose": DEFAULT_LOCALXPOSE_FORWARDING_HOST,
 }
 
 _DOCTOR_REQUEST = {
@@ -73,7 +76,8 @@ class TunnelAuditConfig:
     def __post_init__(self) -> None:
         if self.provider not in {"auto", *TUNNEL_PROVIDERS}:
             raise ValueError(
-                "tunnel provider must be 'auto', 'generic', 'ngrok', 'cloudflare', 'tailscale', or 'holepunch'"
+                "tunnel provider must be 'auto', 'generic', 'ngrok', 'cloudflare', "
+                "'tailscale', 'localxpose', or 'holepunch'"
             )
 
 
@@ -145,6 +149,13 @@ def build_tunnel_audit_metadata(
         metadata["tailscale"] = _drop_empty(
             {
                 "tsnet_host": bool((metadata.get("public_host") or "").endswith(".ts.net")),
+            }
+        )
+    elif provider == "localxpose":
+        metadata["localxpose"] = _drop_empty(
+            {
+                "real_ip": headers.get("x-real-ip"),
+                "request_id": headers.get("x-request-id") or headers.get("x-correlation-id"),
             }
         )
     elif provider == "holepunch":
@@ -543,6 +554,8 @@ def _public_endpoint(
         host = hostname or DEFAULT_CLOUDFLARE_TUNNEL_HOST
     elif provider == "tailscale":
         host = hostname or DEFAULT_TAILSCALE_FUNNEL_HOST
+    elif provider == "localxpose":
+        host = hostname or DEFAULT_LOCALXPOSE_FORWARDING_HOST
     elif provider == "holepunch":
         origin = f"http://{hostname}" if hostname else DEFAULT_HOLEPUNCH_CLIENT_ORIGIN
         return _normalize_url(origin, path)
@@ -624,6 +637,23 @@ def _provider_plan(
                 "title": "Expose snulbug with Tailscale Funnel",
                 "description": "Funnel exposes the snulbug proxy URL publicly; snulbug still enforces MCP policy.",
                 "command": f"sudo tailscale funnel {funnel_target}",
+            }
+        ]
+        traffic_policy = None
+    elif provider == "localxpose":
+        public_host = urlsplit(public_endpoint).hostname or DEFAULT_LOCALXPOSE_FORWARDING_HOST
+        reserved_domain_arg = (
+            "" if _is_default_public_endpoint("localxpose", public_endpoint) else f" --reserved-domain {public_host}"
+        )
+        commands = [
+            {
+                "id": "run-localxpose",
+                "title": "Expose snulbug with LocalXpose",
+                "description": (
+                    "Point a LocalXpose HTTP tunnel at the snulbug proxy origin. "
+                    "The basic LocalXpose HTTP tunnel defaults to localhost:8080."
+                ),
+                "command": f"loclx tunnel http{reserved_domain_arg}",
             }
         ]
         traffic_policy = None
@@ -778,6 +808,7 @@ def _default_public_url_report_lines(provider: str) -> list[str]:
         "ngrok": "Ngrok forwarding URL",
         "cloudflare": "Cloudflare Tunnel URL",
         "tailscale": "Tailscale Funnel URL",
+        "localxpose": "LocalXpose forwarding URL",
     }[provider]
     note = {
         "generic": "Set this to the exact public HTTPS origin printed or assigned by your tunnel provider.",
@@ -793,6 +824,10 @@ def _default_public_url_report_lines(provider: str) -> list[str]:
         ),
         "tailscale": (
             "Set this to the public Funnel HTTPS origin for this machine, usually `https://HOST.TAILNET.ts.net`."
+        ),
+        "localxpose": (
+            "Set this to the exact LocalXpose HTTPS URL printed by `loclx tunnel http`. "
+            "Pass `--hostname` when you want the generated command to use a reserved LocalXpose domain."
         ),
     }[provider]
     return [
@@ -1301,6 +1336,8 @@ def _infer_tunnel_provider(headers: Mapping[str, str], public_url: str | None) -
         return "ngrok"
     if host.endswith(".ts.net") or ".ts.net" in host:
         return "tailscale"
+    if host.endswith(".loclx.io") or "localxpose" in header_blob or "loclx" in header_blob:
+        return "localxpose"
     if "holepunch" in header_blob or "hypertele" in header_blob:
         return "holepunch"
     return "generic"
@@ -1340,6 +1377,8 @@ def _edge_request_id(provider: str, headers: Mapping[str, str]) -> str | None:
         return headers.get("cf-ray")
     if provider == "ngrok":
         return headers.get("x-ngrok-request-id") or headers.get("ngrok-request-id")
+    if provider == "localxpose":
+        return headers.get("x-request-id") or headers.get("x-correlation-id")
     if provider == "holepunch":
         return headers.get("x-snulbug-bridge-id")
     return (
@@ -1500,6 +1539,9 @@ def _provider_hint_check(
     elif provider == "cloudflare":
         ok = "cf-ray" in headers or "cloudflare" in header_blob
         message = "public response includes Cloudflare edge hints"
+    elif provider == "localxpose":
+        ok = hostname.endswith(".loclx.io") or "localxpose" in header_blob or "loclx" in header_blob
+        message = "public URL or response headers look like LocalXpose"
     else:
         ok = hostname.endswith(".ts.net") or ".ts.net" in hostname
         message = "public URL looks like a Tailscale Funnel hostname"

@@ -233,6 +233,62 @@ def test_tunnel_init_tailscale_without_hostname_uses_url_env(tmp_path, monkeypat
     assert "URL: `${TAILSCALE_FUNNEL_URL}/mcp`" in report
 
 
+def test_tunnel_init_localxpose_generates_command_and_url_env(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    result = init_tunnel_provider(provider="localxpose")
+    report = format_tunnel_init_report(result)
+
+    assert result["public_url"] == "https://YOUR-LOCALXPOSE-FORWARDING-DOMAIN/mcp"
+    assert result["commands"][0]["command"] == "loclx tunnel http"
+    assert result["commands"][0]["title"] == "Expose snulbug with LocalXpose"
+    assert "  --provider localxpose \\" in result["doctor"]["command"]
+    assert '  --url "${LOCALXPOSE_URL}/mcp" \\' in result["doctor"]["command"]
+    assert "Public MCP URL: ${LOCALXPOSE_URL}/mcp" in report
+    assert "export LOCALXPOSE_URL=https://YOUR-LOCALXPOSE-FORWARDING-DOMAIN" in report
+    assert "URL: `${LOCALXPOSE_URL}/mcp`" in report
+
+
+def test_tunnel_init_localxpose_reserved_domain_uses_hostname(tmp_path):
+    output_dir = tmp_path / "localxpose"
+
+    result = init_tunnel_provider(
+        provider="localxpose",
+        local_url="http://127.0.0.1:8080/mcp",
+        hostname="mcp-dev.loclx.io",
+        output_dir=output_dir,
+    )
+
+    readme = output_dir / "README.md"
+    assert result["public_url"] == "https://mcp-dev.loclx.io/mcp"
+    assert result["commands"][0]["command"] == "loclx tunnel http --reserved-domain mcp-dev.loclx.io"
+    assert str(readme) in result["written_files"]
+    assert "loclx tunnel http --reserved-domain mcp-dev.loclx.io" in readme.read_text(encoding="utf-8")
+
+
+def test_tunnel_init_cli_emits_compact_localxpose_plan(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+
+    status = simulator_main(
+        [
+            "tunnel",
+            "init",
+            "--provider",
+            "localxpose",
+            "--hostname",
+            "mcp-dev.loclx.io",
+            "--compact",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert status == 0
+    assert output["provider"] == "localxpose"
+    assert output["public_url"] == "https://mcp-dev.loclx.io/mcp"
+    assert output["commands"][0]["command"] == "loclx tunnel http --reserved-domain mcp-dev.loclx.io"
+    assert output["config"] == ".snulbug/configs/snulbug.toml"
+
+
 def test_tunnel_init_holepunch_generates_hypertele_bridge_files(tmp_path):
     output_dir = tmp_path / "holepunch"
 

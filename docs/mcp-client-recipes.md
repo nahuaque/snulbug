@@ -256,6 +256,40 @@ uv run snulbug tunnel doctor \
   --token local-dev-secret
 ```
 
+### LocalXpose with bearer auth
+
+LocalXpose's basic HTTP tunnel forwards to `localhost:8080`, which matches the
+default snulbug proxy port. Start snulbug first, then expose snulbug rather than
+the upstream MCP server:
+
+```bash
+uv run snulbug tunnel init \
+  --provider localxpose \
+  --config snulbug.toml \
+  --output-dir tunnel.localxpose
+
+uv run snulbug mcp proxy --config snulbug.toml --decision-console
+loclx tunnel http
+export LOCALXPOSE_URL=https://YOUR-LOCALXPOSE-FORWARDING-DOMAIN
+```
+
+The MCP client should use the LocalXpose URL and bearer header:
+
+```text
+${LOCALXPOSE_URL}/mcp
+Authorization: Bearer local-dev-secret
+```
+
+Before sharing the LocalXpose URL, run:
+
+```bash
+uv run snulbug tunnel doctor \
+  --provider localxpose \
+  --url "${LOCALXPOSE_URL}/mcp" \
+  --config snulbug.toml \
+  --token local-dev-secret
+```
+
 ### Holepunch peer bridge with Hypertele
 
 Use this when both sides can run a local sidecar and you want a private peer

@@ -47,6 +47,30 @@ def test_tunnel_audit_metadata_uses_explicit_provider_and_public_url():
     assert metadata["tailscale"] == {"tsnet_host": True}
 
 
+def test_tunnel_audit_metadata_infers_localxpose_from_forwarded_host():
+    metadata = build_tunnel_audit_metadata(
+        {
+            "type": "http",
+            "scheme": "http",
+            "path": "/mcp",
+            "headers": [
+                (b"host", b"127.0.0.1:8080"),
+                (b"x-forwarded-host", b"dev.loclx.io"),
+                (b"x-forwarded-proto", b"https"),
+                (b"x-real-ip", b"198.51.100.10"),
+            ],
+            "client": ("127.0.0.1", 1234),
+        }
+    )
+
+    assert metadata["provider"] == "localxpose"
+    assert metadata["inferred"] is True
+    assert metadata["public_url"] == "https://dev.loclx.io/mcp"
+    assert metadata["public_host"] == "dev.loclx.io"
+    assert metadata["source_ip"] == "198.51.100.10"
+    assert metadata["localxpose"] == {"real_ip": "198.51.100.10"}
+
+
 def test_tunnel_audit_metadata_tracks_holepunch_bridge_headers():
     metadata = build_tunnel_audit_metadata(
         {
