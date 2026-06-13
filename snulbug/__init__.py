@@ -4,8 +4,9 @@ __version__ = "0.1.0"
 
 from .bundle import pack_bundle, test_bundle, validate_bundle
 from .cloudflare_access import CloudflareAccessConfig, evaluate_cloudflare_access
-from .config import load_mcp_proxy_config, write_sample_config
+from .config import load_mcp_fabric_config, load_mcp_proxy_config, write_sample_config
 from .confirm import ConfirmationBroker
+from .fabric import doctor_fabric, fabric_status, format_fabric_doctor_report, format_fabric_status_report
 from .guide import MCP_GUIDE_WORKFLOWS, build_mcp_guide, format_mcp_guide
 from .impact import analyze_mcp_impact, format_mcp_impact_report
 from .inspection import format_mcp_inspection_report, inspect_mcp_log
@@ -95,7 +96,11 @@ __all__ = [
     "diff_policies",
     "build_mcp_guide",
     "doctor_tunnel",
+    "doctor_fabric",
     "evaluate_cloudflare_access",
+    "fabric_status",
+    "format_fabric_doctor_report",
+    "format_fabric_status_report",
     "format_mcp_inspection_report",
     "format_mcp_impact_report",
     "format_mcp_guide",
@@ -106,6 +111,7 @@ __all__ = [
     "init_tunnel_provider",
     "learn_mcp_policy",
     "load_mcp_proxy_config",
+    "load_mcp_fabric_config",
     "load_manifest",
     "load_record_log",
     "manifest_digest",

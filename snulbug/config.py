@@ -47,6 +47,16 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "timeout": 30.0,
 }
 
+DEFAULT_MCP_FABRIC_CONFIG = {
+    "name": "local-dev",
+    "description": "",
+    "gateway_url": None,
+    "require_manifests": False,
+    "probe_gateway": True,
+    "probe_upstreams": True,
+    "timeout": 5.0,
+}
+
 SAMPLE_CONFIG = """[mcp.proxy]
 upstream = "http://127.0.0.1:9000"
 policy = "policy.snulbug/policy.lua"
@@ -80,6 +90,16 @@ cloudflare_access_require_cf_ray = true
 cloudflare_access_allowed_emails = []
 cloudflare_access_allowed_domains = []
 timeout = 30.0
+
+[mcp.fabric]
+name = "local-dev"
+description = ""
+# Inferred from [mcp.proxy] host/port when empty.
+gateway_url = ""
+require_manifests = false
+probe_gateway = true
+probe_upstreams = true
+timeout = 5.0
 
 # Optional MCP facade mode:
 # [[mcp.proxy.upstreams]]
@@ -126,6 +146,25 @@ def load_mcp_proxy_config(path: str | Path) -> dict[str, Any]:
     if not isinstance(proxy, Mapping):
         raise ValueError("config section [mcp.proxy] must be a table")
     return normalize_mcp_proxy_config(proxy, base_dir=config_path.parent)
+
+
+def load_mcp_fabric_config(path: str | Path) -> dict[str, Any]:
+    config_path = Path(path)
+    with config_path.open("rb") as file:
+        raw_config = tomllib.load(file)
+    if not isinstance(raw_config, Mapping):
+        raise ValueError("config file must contain a TOML object")
+    mcp = raw_config.get("mcp", {})
+    if not isinstance(mcp, Mapping):
+        raise ValueError("config section [mcp] must be a table")
+    fabric = mcp.get("fabric", {})
+    if not isinstance(fabric, Mapping):
+        raise ValueError("config section [mcp.fabric] must be a table")
+    proxy = mcp.get("proxy", {})
+    if not isinstance(proxy, Mapping):
+        raise ValueError("config section [mcp.proxy] must be a table")
+    proxy_config = normalize_mcp_proxy_config(proxy, base_dir=config_path.parent)
+    return normalize_mcp_fabric_config(fabric, proxy_config=proxy_config, base_dir=config_path.parent)
 
 
 def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Path = ".") -> dict[str, Any]:
@@ -206,6 +245,41 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
     if normalized.get("lease_file"):
         normalized["lease_file"] = _resolve_path(base, normalized["lease_file"])
     normalized["timeout"] = float(normalized["timeout"])
+    return normalized
+
+
+def normalize_mcp_fabric_config(
+    config: Mapping[str, Any],
+    *,
+    proxy_config: Mapping[str, Any] | None = None,
+    base_dir: str | Path = ".",
+) -> dict[str, Any]:
+    normalized = dict(DEFAULT_MCP_FABRIC_CONFIG)
+    normalized.update({key: value for key, value in config.items() if value is not None})
+
+    for field in ("name", "description"):
+        value = normalized.get(field)
+        if not isinstance(value, str):
+            raise ValueError(f"mcp.fabric.{field} must be a string")
+    if not normalized["name"].strip():
+        raise ValueError("mcp.fabric.name must be a non-empty string")
+    if normalized.get("gateway_url") is not None and not isinstance(normalized.get("gateway_url"), str):
+        raise ValueError("mcp.fabric.gateway_url must be a string")
+    if normalized.get("gateway_url") == "":
+        normalized["gateway_url"] = None
+    for field in ("require_manifests", "probe_gateway", "probe_upstreams"):
+        if not isinstance(normalized.get(field), bool):
+            raise ValueError(f"mcp.fabric.{field} must be a boolean")
+    if not isinstance(normalized.get("timeout"), int | float) or float(normalized["timeout"]) <= 0:
+        raise ValueError("mcp.fabric.timeout must be a positive number")
+    normalized["timeout"] = float(normalized["timeout"])
+
+    if normalized["gateway_url"] is None and proxy_config is not None:
+        host = proxy_config.get("host")
+        port = proxy_config.get("port")
+        if isinstance(host, str) and isinstance(port, int):
+            normalized["gateway_url"] = f"http://{host}:{port}/mcp"
+    normalized["proxy"] = dict(proxy_config or {})
     return normalized
 
 

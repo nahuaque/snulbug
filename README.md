@@ -115,8 +115,17 @@ uv run snulbug tunnel doctor \
   --token local-dev-secret
 ```
 
+For multi-upstream facade setups, inspect the declared fabric before handing it
+to an agent:
+
+```bash
+uv run snulbug mcp fabric status --config snulbug.toml
+uv run snulbug mcp fabric doctor --config snulbug.toml --token local-dev-secret
+```
+
 See the full [local MCP policy gateway quickstart](docs/quickstart.md) for
-client setup, facade mode, recording, replay, inspection, and tunnel notes.
+client setup, facade mode, fabric checks, recording, replay, inspection, and
+tunnel notes.
 
 ## Live Use
 

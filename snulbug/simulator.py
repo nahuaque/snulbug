@@ -402,6 +402,39 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_config_init.add_argument("--force", action="store_true", help="overwrite the config file when it exists")
     mcp_config_init.add_argument("--compact", action="store_true", help="emit compact JSON")
 
+    mcp_fabric = mcp_subparsers.add_parser("fabric", help="inspect and verify declarative MCP fabric config")
+    mcp_fabric_subparsers = mcp_fabric.add_subparsers(dest="fabric_command", required=True)
+    mcp_fabric_status = mcp_fabric_subparsers.add_parser("status", help="summarize declared MCP fabric topology")
+    mcp_fabric_status.add_argument("--config", type=Path, default=Path("snulbug.toml"), help="snulbug.toml config file")
+    mcp_fabric_status.add_argument("--compact", action="store_true", help="emit compact JSON")
+    mcp_fabric_doctor = mcp_fabric_subparsers.add_parser(
+        "doctor",
+        help="verify declared MCP fabric config, manifests, and reachable endpoints",
+    )
+    mcp_fabric_doctor.add_argument("--config", type=Path, default=Path("snulbug.toml"), help="snulbug.toml config file")
+    mcp_fabric_doctor.add_argument(
+        "--header",
+        "--auth-header",
+        action="append",
+        default=[],
+        help="authenticated probe header as 'Name: value'; repeat for multiple headers",
+    )
+    mcp_fabric_doctor.add_argument("--token", help="bearer token for authenticated MCP probes")
+    mcp_fabric_doctor.add_argument("--timeout", type=float, help="HTTP probe timeout in seconds")
+    mcp_fabric_doctor.add_argument(
+        "--probe-gateway",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="actively probe the client-facing snulbug gateway",
+    )
+    mcp_fabric_doctor.add_argument(
+        "--probe-upstreams",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="actively probe declared HTTP/Holepunch upstream URLs",
+    )
+    mcp_fabric_doctor.add_argument("--compact", action="store_true", help="emit compact JSON")
+
     mcp_manifest = mcp_subparsers.add_parser("manifest", help="sign and verify MCP upstream manifests")
     mcp_manifest_subparsers = mcp_manifest.add_subparsers(dest="manifest_command", required=True)
     mcp_manifest_sign = mcp_manifest_subparsers.add_parser("sign", help="sign an upstream manifest JSON file")
@@ -957,6 +990,42 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 parser.error(f"unknown mcp config command: {args.config_command}")
                 return 2
+        elif args.mcp_command == "fabric":
+            from .fabric import (
+                doctor_fabric,
+                fabric_status,
+                format_fabric_doctor_report,
+                format_fabric_status_report,
+            )
+            from .tunnel import parse_tunnel_headers
+
+            try:
+                if args.fabric_command == "status":
+                    result = fabric_status(args.config)
+                    status = 0 if result["ok"] else 1
+                    if not args.compact:
+                        sys.stdout.write(format_fabric_status_report(result))
+                        sys.stdout.write("\n")
+                        return status
+                elif args.fabric_command == "doctor":
+                    result = doctor_fabric(
+                        args.config,
+                        headers=parse_tunnel_headers(args.header, token=args.token),
+                        timeout=args.timeout,
+                        probe_gateway=args.probe_gateway,
+                        probe_upstreams=args.probe_upstreams,
+                    )
+                    status = 0 if result["ok"] else 1
+                    if not args.compact:
+                        sys.stdout.write(format_fabric_doctor_report(result))
+                        sys.stdout.write("\n")
+                        return status
+                else:
+                    parser.error(f"unknown mcp fabric command: {args.fabric_command}")
+                    return 2
+            except Exception as exc:
+                result = {"ok": False, "config": str(args.config), "error": str(exc)}
+                status = 1
         elif args.mcp_command == "manifest":
             from .manifests import load_manifest, sign_upstream_manifest, verify_upstream_manifest, write_manifest
 
