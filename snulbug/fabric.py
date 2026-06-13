@@ -1219,6 +1219,10 @@ def _proxy_status(proxy: Mapping[str, Any]) -> dict[str, Any]:
         "lease_required": proxy.get("lease_required"),
         "cloudflare_access": proxy.get("cloudflare_access"),
         "facade": bool(proxy.get("upstreams")),
+        "facade_health_routing": proxy.get("facade_health_routing"),
+        "facade_health_failure_threshold": proxy.get("facade_health_failure_threshold"),
+        "facade_health_cooldown_seconds": proxy.get("facade_health_cooldown_seconds"),
+        "facade_health_exclude_unhealthy": proxy.get("facade_health_exclude_unhealthy"),
     }
 
 

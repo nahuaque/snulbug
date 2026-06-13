@@ -33,6 +33,10 @@ def test_fabric_status_summarizes_declarative_config(tmp_path):
         port = 8181
         record_out = "traces/session.jsonl"
         audit_out = "traces/audit.jsonl"
+        facade_health_routing = true
+        facade_health_failure_threshold = 3
+        facade_health_cooldown_seconds = 1.5
+        facade_health_exclude_unhealthy = true
 
         [[mcp.proxy.upstreams]]
         name = "files"
@@ -57,6 +61,10 @@ def test_fabric_status_summarizes_declarative_config(tmp_path):
     assert result["name"] == "dev-fabric"
     assert result["gateway_url"] == "http://127.0.0.1:8181/mcp"
     assert result["proxy"]["facade"] is True
+    assert result["proxy"]["facade_health_routing"] is True
+    assert result["proxy"]["facade_health_failure_threshold"] == 3
+    assert result["proxy"]["facade_health_cooldown_seconds"] == 1.5
+    assert result["proxy"]["facade_health_exclude_unhealthy"] is True
     assert result["summary"]["upstream_count"] == 2
     assert result["summary"]["transports"] == {"http": 1, "stdio": 1}
     assert result["upstreams"][0]["manifest"]["exists"] is True

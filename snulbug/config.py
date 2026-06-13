@@ -35,6 +35,10 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "tool_pinning_action": "block",
     "schema_validation": True,
     "schema_validation_action": "block",
+    "facade_health_routing": False,
+    "facade_health_failure_threshold": 2,
+    "facade_health_cooldown_seconds": 30.0,
+    "facade_health_exclude_unhealthy": True,
     "lease_file": "leases.json",
     "lease_required": False,
     "lease_header": "x-snulbug-lease",
@@ -80,6 +84,10 @@ tool_pinning = true
 tool_pinning_action = "block"
 schema_validation = true
 schema_validation_action = "block"
+facade_health_routing = false
+facade_health_failure_threshold = 2
+facade_health_cooldown_seconds = 30.0
+facade_health_exclude_unhealthy = true
 lease_file = "leases.json"
 lease_required = false
 lease_header = "x-snulbug-lease"
@@ -232,6 +240,16 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
             raise ValueError(f"mcp.proxy.{field} must be a positive integer")
     if not isinstance(normalized.get("timeout"), int | float) or float(normalized["timeout"]) <= 0:
         raise ValueError("mcp.proxy.timeout must be a positive number")
+    if (
+        not isinstance(normalized.get("facade_health_failure_threshold"), int)
+        or normalized["facade_health_failure_threshold"] <= 0
+    ):
+        raise ValueError("mcp.proxy.facade_health_failure_threshold must be a positive integer")
+    if (
+        not isinstance(normalized.get("facade_health_cooldown_seconds"), int | float)
+        or float(normalized["facade_health_cooldown_seconds"]) <= 0
+    ):
+        raise ValueError("mcp.proxy.facade_health_cooldown_seconds must be a positive number")
     for field in (
         "trace",
         "redact_records",
@@ -241,6 +259,8 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         "response_block_instructions",
         "tool_pinning",
         "schema_validation",
+        "facade_health_routing",
+        "facade_health_exclude_unhealthy",
         "lease_required",
         "cloudflare_access_require_jwt",
         "cloudflare_access_require_email",
@@ -277,6 +297,7 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
     if normalized.get("lease_file"):
         normalized["lease_file"] = _resolve_path(base, normalized["lease_file"])
     normalized["timeout"] = float(normalized["timeout"])
+    normalized["facade_health_cooldown_seconds"] = float(normalized["facade_health_cooldown_seconds"])
     return normalized
 
 

@@ -21,6 +21,9 @@ from .control_events import (
     EVENT_RELOAD_FAILED,
     EVENT_RELOAD_RECOVERED,
     EVENT_ROUTE_CHANGED,
+    EVENT_UPSTREAM_DEGRADED,
+    EVENT_UPSTREAM_RECOVERED,
+    EVENT_UPSTREAM_UNHEALTHY,
     event_types,
     make_control_event,
 )
@@ -85,6 +88,56 @@ class FacadeUpstream:
     manifest_key_id: str | None = None
     manifest_identity: str | None = None
     manifest_metadata: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class FacadeHealthPolicy:
+    enabled: bool = False
+    failure_threshold: int = 2
+    cooldown_seconds: float = 30.0
+    exclude_unhealthy: bool = True
+
+    def __post_init__(self) -> None:
+        if self.failure_threshold <= 0:
+            raise ValueError("facade health failure_threshold must be positive")
+        if self.cooldown_seconds <= 0:
+            raise ValueError("facade health cooldown_seconds must be positive")
+
+
+@dataclass
+class FacadeUpstreamHealth:
+    name: str
+    fingerprint: str
+    status: str = "healthy"
+    consecutive_failures: int = 0
+    failure_count: int = 0
+    success_count: int = 0
+    reason: str | None = None
+    last_error: str | None = None
+    last_failure_at: str | None = None
+    last_success_at: str | None = None
+    unhealthy_since: str | None = None
+    retry_after: float | None = None
+
+    def to_dict(self, *, now: float | None = None) -> dict[str, Any]:
+        retry_in = None
+        if self.retry_after is not None and now is not None:
+            retry_in = max(0.0, self.retry_after - now)
+        return _drop_empty(
+            {
+                "name": self.name,
+                "status": self.status,
+                "consecutive_failures": self.consecutive_failures,
+                "failure_count": self.failure_count,
+                "success_count": self.success_count,
+                "reason": self.reason,
+                "last_error": self.last_error,
+                "last_failure_at": self.last_failure_at,
+                "last_success_at": self.last_success_at,
+                "unhealthy_since": self.unhealthy_since,
+                "retry_in_seconds": round(retry_in, 3) if retry_in is not None else None,
+            }
+        )
 
 
 class ReverseProxyApp:
@@ -479,6 +532,7 @@ class McpFacadeProxyApp:
         schema_policy: SchemaPolicyConfig | None = None,
         tool_schema_store: PolicyStateStore | None = None,
         lease_policy: LeasePolicyConfig | None = None,
+        health_policy: FacadeHealthPolicy | None = None,
     ) -> None:
         self.timeout = timeout
         self.response_policy = response_policy or ResponsePolicyConfig()
@@ -486,7 +540,10 @@ class McpFacadeProxyApp:
         self.schema_policy = schema_policy or SchemaPolicyConfig()
         self.tool_schema_store = tool_schema_store
         self.lease_policy = lease_policy or LeasePolicyConfig()
+        self.health_policy = health_policy or FacadeHealthPolicy()
+        self._health: dict[str, FacadeUpstreamHealth] = {}
         self._routes = _build_facade_route_table(upstreams, timeout=timeout, revision=1)
+        self._sync_health_upstreams(self._routes)
         self._next_revision = 2
         self._retired_routes: list[FacadeRouteTable] = []
 
@@ -508,6 +565,7 @@ class McpFacadeProxyApp:
             "revision": routes.revision,
             "fingerprint": routes.fingerprint,
             "upstreams": [_upstream_metadata(upstream) for upstream in routes.upstreams],
+            "health": self._health_metadata(routes),
         }
 
     async def reload_upstreams(
@@ -534,6 +592,7 @@ class McpFacadeProxyApp:
 
         self._next_revision += 1
         self._routes = new_routes
+        self._sync_health_upstreams(new_routes)
         await self._retire_routes(current)
         control_events = [
             make_control_event(
@@ -569,6 +628,155 @@ class McpFacadeProxyApp:
             "control_events": control_events,
             "event_types": event_types(control_events),
         }
+
+    def _sync_health_upstreams(self, routes: FacadeRouteTable) -> None:
+        if not self.health_policy.enabled:
+            self._health = {}
+            return
+        active = {upstream.name: _health_upstream_fingerprint(upstream) for upstream in routes.upstreams}
+        for name in list(self._health):
+            if name not in active:
+                del self._health[name]
+        for name, fingerprint in active.items():
+            current = self._health.get(name)
+            if current is None or current.fingerprint != fingerprint:
+                self._health[name] = FacadeUpstreamHealth(name=name, fingerprint=fingerprint)
+
+    def _health_metadata(
+        self,
+        routes: FacadeRouteTable,
+        *,
+        skipped: Sequence[str] = (),
+        failures: Sequence[Mapping[str, Any]] = (),
+        control_events: Sequence[Mapping[str, Any]] = (),
+    ) -> dict[str, Any]:
+        if not self.health_policy.enabled:
+            return {"enabled": False}
+        now = time.monotonic()
+        return _drop_empty(
+            {
+                "enabled": True,
+                "failure_threshold": self.health_policy.failure_threshold,
+                "cooldown_seconds": self.health_policy.cooldown_seconds,
+                "exclude_unhealthy": self.health_policy.exclude_unhealthy,
+                "upstreams": {
+                    upstream.name: self._health_state(upstream).to_dict(now=now) for upstream in routes.upstreams
+                },
+                "skipped": list(skipped),
+                "failures": list(failures),
+                "control_events": list(control_events),
+                "event_types": event_types(list(control_events)),
+            }
+        )
+
+    def _health_metadata_field(
+        self,
+        routes: FacadeRouteTable,
+        *,
+        skipped: Sequence[str] = (),
+        failures: Sequence[Mapping[str, Any]] = (),
+        control_events: Sequence[Mapping[str, Any]] = (),
+    ) -> dict[str, Any]:
+        if not self.health_policy.enabled:
+            return {}
+        return {
+            "upstream_health": self._health_metadata(
+                routes,
+                skipped=skipped,
+                failures=failures,
+                control_events=control_events,
+            )
+        }
+
+    def _health_state(self, upstream: FacadeUpstream) -> FacadeUpstreamHealth:
+        state = self._health.get(upstream.name)
+        fingerprint = _health_upstream_fingerprint(upstream)
+        if state is None or state.fingerprint != fingerprint:
+            state = FacadeUpstreamHealth(name=upstream.name, fingerprint=fingerprint)
+            if self.health_policy.enabled:
+                self._health[upstream.name] = state
+        return state
+
+    def _should_route_upstream(self, upstream: FacadeUpstream) -> bool:
+        if not self.health_policy.enabled or not self.health_policy.exclude_unhealthy:
+            return True
+        state = self._health_state(upstream)
+        if state.status != "unhealthy":
+            return True
+        return state.retry_after is None or time.monotonic() >= state.retry_after
+
+    def _record_upstream_success(self, upstream: FacadeUpstream, *, operation: str) -> list[dict[str, Any]]:
+        if not self.health_policy.enabled:
+            return []
+        state = self._health_state(upstream)
+        previous_status = state.status
+        state.success_count += 1
+        state.consecutive_failures = 0
+        state.status = "healthy"
+        state.reason = None
+        state.last_error = None
+        state.last_success_at = _utc_timestamp()
+        state.unhealthy_since = None
+        state.retry_after = None
+        if previous_status == "healthy":
+            return []
+        return [
+            make_control_event(
+                EVENT_UPSTREAM_RECOVERED,
+                time=state.last_success_at,
+                severity="info",
+                reason_code="fabric.upstream.recovered",
+                message=f"upstream {upstream.name!r} recovered",
+                subject={"kind": "upstream", "name": upstream.name},
+                previous={"status": previous_status},
+                current=state.to_dict(now=time.monotonic()),
+                details={"operation": operation},
+            )
+        ]
+
+    def _record_upstream_failure(
+        self,
+        upstream: FacadeUpstream,
+        *,
+        operation: str,
+        reason: str,
+        error: str,
+    ) -> list[dict[str, Any]]:
+        if not self.health_policy.enabled:
+            return []
+        state = self._health_state(upstream)
+        previous_status = state.status
+        state.failure_count += 1
+        state.consecutive_failures += 1
+        state.reason = reason
+        state.last_error = error
+        state.last_failure_at = _utc_timestamp()
+        if state.consecutive_failures >= self.health_policy.failure_threshold:
+            state.status = "unhealthy"
+            if state.unhealthy_since is None:
+                state.unhealthy_since = state.last_failure_at
+            state.retry_after = time.monotonic() + self.health_policy.cooldown_seconds
+        else:
+            state.status = "degraded"
+            state.retry_after = None
+
+        if state.status == previous_status:
+            return []
+        event_type = EVENT_UPSTREAM_UNHEALTHY if state.status == "unhealthy" else EVENT_UPSTREAM_DEGRADED
+        reason_code = "fabric.upstream.unhealthy" if state.status == "unhealthy" else "fabric.upstream.degraded"
+        return [
+            make_control_event(
+                event_type,
+                time=state.last_failure_at,
+                severity="warning",
+                reason_code=reason_code,
+                message=f"upstream {upstream.name!r} marked {state.status}",
+                subject={"kind": "upstream", "name": upstream.name},
+                previous={"status": previous_status},
+                current=state.to_dict(now=time.monotonic()),
+                details={"operation": operation, "reason": reason, "error": error},
+            )
+        ]
 
     def _acquire_routes(self) -> FacadeRouteTable:
         routes = self._routes
@@ -635,13 +843,47 @@ class McpFacadeProxyApp:
         send: Send,
     ) -> None:
         responses = []
+        skipped: list[str] = []
+        failures: list[dict[str, Any]] = []
+        health_events: list[dict[str, Any]] = []
         for upstream in routes.upstreams:
+            if not self._should_route_upstream(upstream):
+                skipped.append(upstream.name)
+                continue
             try:
                 response = await self._forward(routes, upstream, scope, body, request)
             except Exception as exc:
-                await self._send_upstream_failure(send, upstream, exc)
-                return
+                if not self.health_policy.enabled:
+                    await self._send_upstream_failure(send, upstream, exc)
+                    return
+                failures.append({"upstream": upstream.name, "reason": "exception", "error": str(exc)})
+                health_events.extend(
+                    self._record_upstream_failure(
+                        upstream,
+                        operation="tools/list",
+                        reason="exception",
+                        error=str(exc),
+                    )
+                )
+                continue
             if response["status"] < 200 or response["status"] >= 300:
+                if self.health_policy.enabled:
+                    failures.append(
+                        {
+                            "upstream": upstream.name,
+                            "reason": "http_status",
+                            "status": response["status"],
+                        }
+                    )
+                    health_events.extend(
+                        self._record_upstream_failure(
+                            upstream,
+                            operation="tools/list",
+                            reason="http_status",
+                            error=f"HTTP {response['status']}",
+                        )
+                    )
+                    continue
                 await self._send_jsonrpc_error(
                     send,
                     request_id=request.get("id"),
@@ -652,16 +894,65 @@ class McpFacadeProxyApp:
                 return
             responses.append((upstream, response))
 
+        if not responses and (skipped or failures):
+            _set_proxy_metadata(
+                scope,
+                {
+                    "facade": True,
+                    "operation": "tools/list",
+                    "upstreams": [upstream.name for upstream in routes.upstreams],
+                    "route_revision": routes.revision,
+                    "route_fingerprint": routes.fingerprint,
+                    **self._health_metadata_field(
+                        routes,
+                        skipped=skipped,
+                        failures=failures,
+                        control_events=health_events,
+                    ),
+                },
+            )
+            await self._send_jsonrpc_error(
+                send,
+                request_id=request.get("id"),
+                code=-32000,
+                message="no healthy facade upstreams available",
+                status=503,
+            )
+            return
+
         tools = []
+        successful_upstreams = []
         for upstream, response in responses:
             try:
                 payload = json.loads(response["body"].decode("utf-8"))
                 result = payload.get("result") if isinstance(payload, Mapping) else None
                 upstream_tools = result.get("tools") if isinstance(result, Mapping) else None
             except Exception as exc:
-                await self._send_upstream_failure(send, upstream, exc)
-                return
+                if not self.health_policy.enabled:
+                    await self._send_upstream_failure(send, upstream, exc)
+                    return
+                failures.append({"upstream": upstream.name, "reason": "invalid_tools_list", "error": str(exc)})
+                health_events.extend(
+                    self._record_upstream_failure(
+                        upstream,
+                        operation="tools/list",
+                        reason="invalid_tools_list",
+                        error=str(exc),
+                    )
+                )
+                continue
             if not isinstance(upstream_tools, list):
+                if self.health_policy.enabled:
+                    failures.append({"upstream": upstream.name, "reason": "missing_result_tools"})
+                    health_events.extend(
+                        self._record_upstream_failure(
+                            upstream,
+                            operation="tools/list",
+                            reason="missing_result_tools",
+                            error="upstream did not return result.tools",
+                        )
+                    )
+                    continue
                 await self._send_jsonrpc_error(
                     send,
                     request_id=request.get("id"),
@@ -670,6 +961,8 @@ class McpFacadeProxyApp:
                     status=502,
                 )
                 return
+            successful_upstreams.append(upstream.name)
+            health_events.extend(self._record_upstream_success(upstream, operation="tools/list"))
             for tool in upstream_tools:
                 if not isinstance(tool, Mapping) or not isinstance(tool.get("name"), str):
                     continue
@@ -677,16 +970,50 @@ class McpFacadeProxyApp:
                 decorated["name"] = f"{upstream.tool_prefix}{tool['name']}"
                 tools.append(decorated)
 
+        if self.health_policy.enabled and not successful_upstreams and (skipped or failures):
+            _set_proxy_metadata(
+                scope,
+                {
+                    "facade": True,
+                    "operation": "tools/list",
+                    "upstreams": [upstream.name for upstream in routes.upstreams],
+                    "route_revision": routes.revision,
+                    "route_fingerprint": routes.fingerprint,
+                    **self._health_metadata_field(
+                        routes,
+                        skipped=skipped,
+                        failures=failures,
+                        control_events=health_events,
+                    ),
+                },
+            )
+            await self._send_jsonrpc_error(
+                send,
+                request_id=request.get("id"),
+                code=-32000,
+                message="no healthy facade upstreams available",
+                status=503,
+            )
+            return
+
         _set_proxy_metadata(
             scope,
             {
                 "facade": True,
                 "operation": "tools/list",
                 "upstreams": [upstream.name for upstream in routes.upstreams],
+                "fanout_upstreams": [upstream.name for upstream, _response in responses],
+                "available_upstreams": successful_upstreams,
                 "upstream_transports": [_upstream_metadata(upstream) for upstream in routes.upstreams],
                 "tool_count": len(tools),
                 "route_revision": routes.revision,
                 "route_fingerprint": routes.fingerprint,
+                **self._health_metadata_field(
+                    routes,
+                    skipped=skipped,
+                    failures=failures,
+                    control_events=health_events,
+                ),
             },
         )
         response, response_metadata = enforce_mcp_response_policy(
@@ -747,6 +1074,30 @@ class McpFacadeProxyApp:
                 code=-32602,
                 message=f"unknown facade tool prefix for {tool_name!r}",
                 status=404,
+            )
+            return
+
+        if not self._should_route_upstream(upstream):
+            _set_proxy_metadata(
+                scope,
+                {
+                    "facade": True,
+                    "operation": "tools/call",
+                    "upstream": upstream.name,
+                    "upstream_transport": upstream.transport,
+                    "upstream_metadata": _upstream_metadata(upstream),
+                    "tool": tool_name,
+                    "route_revision": routes.revision,
+                    "route_fingerprint": routes.fingerprint,
+                    **self._health_metadata_field(routes, skipped=[upstream.name]),
+                },
+            )
+            await self._send_jsonrpc_error(
+                send,
+                request_id=request.get("id"),
+                code=-32000,
+                message=f"facade upstream {upstream.name!r} is unhealthy",
+                status=503,
             )
             return
 
@@ -814,11 +1165,54 @@ class McpFacadeProxyApp:
         rewritten_params["name"] = tool_name.removeprefix(upstream.tool_prefix)
         rewritten["params"] = rewritten_params
         body = json.dumps(rewritten, separators=(",", ":")).encode("utf-8")
+        health_events: list[dict[str, Any]] = []
+        health_failures: list[dict[str, Any]] = []
         try:
             response = await self._forward(routes, upstream, scope, body, rewritten)
         except Exception as exc:
+            if self.health_policy.enabled:
+                health_failures.append({"upstream": upstream.name, "reason": "exception", "error": str(exc)})
+                health_events.extend(
+                    self._record_upstream_failure(
+                        upstream,
+                        operation="tools/call",
+                        reason="exception",
+                        error=str(exc),
+                    )
+                )
+                _set_proxy_metadata(
+                    scope,
+                    {
+                        "facade": True,
+                        "operation": "tools/call",
+                        "upstream": upstream.name,
+                        "upstream_transport": upstream.transport,
+                        "upstream_metadata": _upstream_metadata(upstream),
+                        "tool": tool_name,
+                        "upstream_tool": rewritten_params["name"],
+                        "route_revision": routes.revision,
+                        "route_fingerprint": routes.fingerprint,
+                        **self._health_metadata_field(
+                            routes,
+                            failures=health_failures,
+                            control_events=health_events,
+                        ),
+                    },
+                )
             await self._send_upstream_failure(send, upstream, exc)
             return
+        if response["status"] >= 500:
+            health_failures.append({"upstream": upstream.name, "reason": "http_status", "status": response["status"]})
+            health_events.extend(
+                self._record_upstream_failure(
+                    upstream,
+                    operation="tools/call",
+                    reason="http_status",
+                    error=f"HTTP {response['status']}",
+                )
+            )
+        else:
+            health_events.extend(self._record_upstream_success(upstream, operation="tools/call"))
 
         response, response_metadata = enforce_mcp_response_policy(
             response,
@@ -841,6 +1235,11 @@ class McpFacadeProxyApp:
                 "response_policy": response_metadata,
                 "route_revision": routes.revision,
                 "route_fingerprint": routes.fingerprint,
+                **self._health_metadata_field(
+                    routes,
+                    failures=health_failures,
+                    control_events=health_events,
+                ),
             },
         )
         await _send_response(
@@ -851,6 +1250,30 @@ class McpFacadeProxyApp:
         )
 
     async def _forward_to_default(self, routes: FacadeRouteTable, scope: Scope, body: bytes, send: Send) -> None:
+        if not self._should_route_upstream(routes.default):
+            _set_proxy_metadata(
+                scope,
+                {
+                    "facade": True,
+                    "operation": "default",
+                    "upstream": routes.default.name,
+                    "upstream_transport": routes.default.transport,
+                    "upstream_metadata": _upstream_metadata(routes.default),
+                    "route_revision": routes.revision,
+                    "route_fingerprint": routes.fingerprint,
+                    **self._health_metadata_field(routes, skipped=[routes.default.name]),
+                },
+            )
+            await self._send_jsonrpc_error(
+                send,
+                request_id=None,
+                code=-32000,
+                message=f"facade upstream {routes.default.name!r} is unhealthy",
+                status=503,
+            )
+            return
+        health_events: list[dict[str, Any]] = []
+        health_failures: list[dict[str, Any]] = []
         try:
             request = json.loads(body.decode("utf-8")) if body else {}
             response = await self._forward(
@@ -861,8 +1284,49 @@ class McpFacadeProxyApp:
                 request if isinstance(request, Mapping) else {},
             )
         except Exception as exc:
+            if self.health_policy.enabled:
+                health_failures.append({"upstream": routes.default.name, "reason": "exception", "error": str(exc)})
+                health_events.extend(
+                    self._record_upstream_failure(
+                        routes.default,
+                        operation="default",
+                        reason="exception",
+                        error=str(exc),
+                    )
+                )
+                _set_proxy_metadata(
+                    scope,
+                    {
+                        "facade": True,
+                        "operation": "default",
+                        "upstream": routes.default.name,
+                        "upstream_transport": routes.default.transport,
+                        "upstream_metadata": _upstream_metadata(routes.default),
+                        "route_revision": routes.revision,
+                        "route_fingerprint": routes.fingerprint,
+                        **self._health_metadata_field(
+                            routes,
+                            failures=health_failures,
+                            control_events=health_events,
+                        ),
+                    },
+                )
             await self._send_upstream_failure(send, routes.default, exc)
             return
+        if response["status"] >= 500:
+            health_failures.append(
+                {"upstream": routes.default.name, "reason": "http_status", "status": response["status"]}
+            )
+            health_events.extend(
+                self._record_upstream_failure(
+                    routes.default,
+                    operation="default",
+                    reason="http_status",
+                    error=f"HTTP {response['status']}",
+                )
+            )
+        else:
+            health_events.extend(self._record_upstream_success(routes.default, operation="default"))
 
         response, response_metadata = enforce_mcp_response_policy(
             response,
@@ -881,6 +1345,11 @@ class McpFacadeProxyApp:
                 "response_policy": response_metadata,
                 "route_revision": routes.revision,
                 "route_fingerprint": routes.fingerprint,
+                **self._health_metadata_field(
+                    routes,
+                    failures=health_failures,
+                    control_events=health_events,
+                ),
             },
         )
         await _send_response(
@@ -1250,6 +1719,10 @@ def create_proxy_application(
     tool_pinning_action: str = "block",
     schema_validation: bool = True,
     schema_validation_action: str = "block",
+    facade_health_routing: bool = False,
+    facade_health_failure_threshold: int = 2,
+    facade_health_cooldown_seconds: float = 30.0,
+    facade_health_exclude_unhealthy: bool = True,
     lease_file: str | Path | None = None,
     lease_required: bool = False,
     lease_header: str = "x-snulbug-lease",
@@ -1283,6 +1756,12 @@ def create_proxy_application(
         enabled=schema_validation,
         action=schema_validation_action,
     )
+    facade_health_policy = FacadeHealthPolicy(
+        enabled=facade_health_routing,
+        failure_threshold=facade_health_failure_threshold,
+        cooldown_seconds=facade_health_cooldown_seconds,
+        exclude_unhealthy=facade_health_exclude_unhealthy,
+    )
     lease_policy = LeasePolicyConfig(
         lease_file=Path(lease_file) if lease_file else None,
         required=lease_required,
@@ -1297,6 +1776,7 @@ def create_proxy_application(
         schema_policy=schema_policy,
         tool_schema_store=effective_state_store if schema_validation else None,
         lease_policy=lease_policy,
+        health_policy=facade_health_policy,
     )
     facade_proxy = proxy if isinstance(proxy, McpFacadeProxyApp) else None
     app = LuaMiddleware(
@@ -1370,6 +1850,10 @@ def run_proxy(
     tool_pinning_action: str = "block",
     schema_validation: bool = True,
     schema_validation_action: str = "block",
+    facade_health_routing: bool = False,
+    facade_health_failure_threshold: int = 2,
+    facade_health_cooldown_seconds: float = 30.0,
+    facade_health_exclude_unhealthy: bool = True,
     lease_file: str | Path | None = None,
     lease_required: bool = False,
     lease_header: str = "x-snulbug-lease",
@@ -1414,6 +1898,10 @@ def run_proxy(
         tool_pinning_action=tool_pinning_action,
         schema_validation=schema_validation,
         schema_validation_action=schema_validation_action,
+        facade_health_routing=facade_health_routing,
+        facade_health_failure_threshold=facade_health_failure_threshold,
+        facade_health_cooldown_seconds=facade_health_cooldown_seconds,
+        facade_health_exclude_unhealthy=facade_health_exclude_unhealthy,
         lease_file=lease_file,
         lease_required=lease_required,
         lease_header=lease_header,
@@ -1444,6 +1932,7 @@ def _proxy_app(
     schema_policy: SchemaPolicyConfig,
     tool_schema_store: PolicyStateStore | None,
     lease_policy: LeasePolicyConfig,
+    health_policy: FacadeHealthPolicy,
 ) -> ASGIApp:
     if upstreams:
         return McpFacadeProxyApp(
@@ -1454,6 +1943,7 @@ def _proxy_app(
             schema_policy=schema_policy,
             tool_schema_store=tool_schema_store,
             lease_policy=lease_policy,
+            health_policy=health_policy,
         )
     if upstream is None:
         raise ValueError("upstream is required unless facade upstreams are configured")
@@ -1566,6 +2056,12 @@ def _facade_upstream_reload_fingerprint(upstream: FacadeUpstream) -> dict[str, A
         "manifest_identity": upstream.manifest_identity,
         "manifest_metadata": _copy_jsonish(upstream.manifest_metadata or {}),
     }
+
+
+def _health_upstream_fingerprint(upstream: FacadeUpstream) -> str:
+    payload = _facade_upstream_reload_fingerprint(upstream)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def _utc_timestamp() -> str:

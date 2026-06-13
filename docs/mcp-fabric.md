@@ -143,6 +143,7 @@ Current event types:
 - `snulbug.fabric.policy.changed`
 - `snulbug.fabric.discovery.degraded`
 - `snulbug.fabric.discovery.recovered`
+- `snulbug.fabric.upstream.degraded`
 - `snulbug.fabric.upstream.unhealthy`
 - `snulbug.fabric.upstream.recovered`
 - `snulbug.fabric.reload.failed`
@@ -151,6 +152,12 @@ Current event types:
 Live fabric reloads attach the same `control_events` and `event_types` fields
 to replay/audit metadata under `metadata.fabric_reload`, so session logs show
 route reloads, reload failures, and recovery after a bad config edit.
+
+Facade health routing uses the same event schema in replay/audit metadata under
+`metadata.upstream_health.control_events`. When enabled, the data plane emits
+`upstream.degraded`, `upstream.unhealthy`, and `upstream.recovered` events as it
+removes unhealthy upstreams from fanout/tool routing and probes them again after
+the configured cooldown.
 
 ### Docker Compose Labels
 

@@ -806,6 +806,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=("warn", "block"),
         help="what to do when tools/call arguments violate the cached inputSchema",
     )
+    mcp_proxy.add_argument(
+        "--facade-health-routing",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="track facade upstream health and skip unhealthy upstreams during routing",
+    )
+    mcp_proxy.add_argument(
+        "--facade-health-failure-threshold",
+        type=int,
+        help="consecutive facade upstream failures before marking unhealthy",
+    )
+    mcp_proxy.add_argument(
+        "--facade-health-cooldown-seconds",
+        type=float,
+        help="seconds before an unhealthy facade upstream is probed again",
+    )
+    mcp_proxy.add_argument(
+        "--facade-health-exclude-unhealthy",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="remove unhealthy facade upstreams from tools/list and tools/call routing",
+    )
     mcp_proxy.add_argument("--lease-file", type=Path, help="task lease JSON file")
     mcp_proxy.add_argument(
         "--lease-required",
@@ -1547,6 +1569,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "tool_pinning_action": args.tool_pinning_action,
                     "schema_validation": args.schema_validation,
                     "schema_validation_action": args.schema_validation_action,
+                    "facade_health_routing": args.facade_health_routing,
+                    "facade_health_failure_threshold": args.facade_health_failure_threshold,
+                    "facade_health_cooldown_seconds": args.facade_health_cooldown_seconds,
+                    "facade_health_exclude_unhealthy": args.facade_health_exclude_unhealthy,
                     "lease_file": args.lease_file,
                     "lease_required": args.lease_required,
                     "lease_header": args.lease_header,
@@ -1600,6 +1626,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     tool_pinning_action=proxy_config["tool_pinning_action"],
                     schema_validation=proxy_config["schema_validation"],
                     schema_validation_action=proxy_config["schema_validation_action"],
+                    facade_health_routing=proxy_config["facade_health_routing"],
+                    facade_health_failure_threshold=proxy_config["facade_health_failure_threshold"],
+                    facade_health_cooldown_seconds=proxy_config["facade_health_cooldown_seconds"],
+                    facade_health_exclude_unhealthy=proxy_config["facade_health_exclude_unhealthy"],
                     lease_file=proxy_config["lease_file"],
                     lease_required=proxy_config["lease_required"],
                     lease_header=proxy_config["lease_header"],

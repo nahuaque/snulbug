@@ -32,6 +32,10 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         tool_pinning_action = "warn"
         schema_validation = true
         schema_validation_action = "warn"
+        facade_health_routing = true
+        facade_health_failure_threshold = 3
+        facade_health_cooldown_seconds = 1.5
+        facade_health_exclude_unhealthy = false
         lease_file = "leases.json"
         lease_required = true
         lease_header = "x-task-lease"
@@ -67,6 +71,10 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
     assert result["tool_pinning_action"] == "warn"
     assert result["schema_validation"] is True
     assert result["schema_validation_action"] == "warn"
+    assert result["facade_health_routing"] is True
+    assert result["facade_health_failure_threshold"] == 3
+    assert result["facade_health_cooldown_seconds"] == 1.5
+    assert result["facade_health_exclude_unhealthy"] is False
     assert result["lease_file"] == tmp_path / "leases.json"
     assert result["lease_required"] is True
     assert result["lease_header"] == "x-task-lease"
@@ -420,6 +428,10 @@ def test_mcp_proxy_cli_loads_config_before_running(monkeypatch, tmp_path):
     assert calls[0]["tool_pinning_action"] == "block"
     assert calls[0]["schema_validation"] is True
     assert calls[0]["schema_validation_action"] == "block"
+    assert calls[0]["facade_health_routing"] is False
+    assert calls[0]["facade_health_failure_threshold"] == 2
+    assert calls[0]["facade_health_cooldown_seconds"] == 30.0
+    assert calls[0]["facade_health_exclude_unhealthy"] is True
     assert calls[0]["lease_file"] == tmp_path / "leases.json"
     assert calls[0]["lease_required"] is False
     assert calls[0]["lease_header"] == "x-snulbug-lease"
@@ -454,6 +466,12 @@ def test_mcp_proxy_cli_passes_facade_upstreams_without_config(monkeypatch, tmp_p
             "files=http://127.0.0.1:9001/mcp",
             "--facade-upstream",
             "git=http://127.0.0.1:9002/mcp",
+            "--facade-health-routing",
+            "--facade-health-failure-threshold",
+            "1",
+            "--facade-health-cooldown-seconds",
+            "0.25",
+            "--no-facade-health-exclude-unhealthy",
         ]
     )
 
@@ -474,6 +492,10 @@ def test_mcp_proxy_cli_passes_facade_upstreams_without_config(monkeypatch, tmp_p
             "default": False,
         },
     ]
+    assert calls[0]["facade_health_routing"] is True
+    assert calls[0]["facade_health_failure_threshold"] == 1
+    assert calls[0]["facade_health_cooldown_seconds"] == 0.25
+    assert calls[0]["facade_health_exclude_unhealthy"] is False
 
 
 def test_mcp_proxy_cli_can_enable_fabric_reload(monkeypatch, tmp_path):

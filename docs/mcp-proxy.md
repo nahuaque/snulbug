@@ -394,13 +394,35 @@ url = "http://127.0.0.1:9002/mcp"
 The client sees tools such as `files.read_file` and `git.status`. A call to
 `git.status` is forwarded to the `git` upstream as `status`.
 
+Enable health-driven routing when one facade fronts optional or remote
+upstreams and a failing member should not break the whole tool surface:
+
+```toml
+[mcp.proxy]
+facade_health_routing = true
+facade_health_failure_threshold = 2
+facade_health_cooldown_seconds = 30.0
+facade_health_exclude_unhealthy = true
+```
+
+With health routing enabled, facade mode tracks upstream failures from
+`tools/list`, `tools/call`, default routed methods, connection errors, invalid
+tool-list responses, and HTTP 5xx responses. An upstream moves from `healthy` to
+`degraded`, then to `unhealthy` after the configured consecutive failure
+threshold. Unhealthy upstreams are skipped for fanout and tool routing until the
+cooldown expires, at which point the next request probes the upstream and marks
+it recovered on success. Replay and audit metadata include `upstream_health`
+with the skipped upstreams, failures, current status, and control-plane event
+types.
+
 You can also start facade mode directly from the CLI:
 
 ```bash
 snulbug mcp proxy \
   --policy policy.snulbug/policy.lua \
   --facade-upstream files=http://127.0.0.1:9001/mcp \
-  --facade-upstream git=http://127.0.0.1:9002/mcp
+  --facade-upstream git=http://127.0.0.1:9002/mcp \
+  --facade-health-routing
 ```
 
 Use `tool_prefix` when you want a different namespace:

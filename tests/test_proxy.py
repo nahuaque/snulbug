@@ -14,6 +14,9 @@ from snulbug import (
     EVENT_RELOAD_FAILED,
     EVENT_RELOAD_RECOVERED,
     EVENT_ROUTE_CHANGED,
+    EVENT_UPSTREAM_DEGRADED,
+    EVENT_UPSTREAM_RECOVERED,
+    EVENT_UPSTREAM_UNHEALTHY,
     ConfirmationBroker,
     McpFacadeProxyApp,
     build_fabric_audit_metadata,
@@ -648,6 +651,114 @@ def test_proxy_can_hot_reload_fabric_config_routes_and_records_metadata(tmp_path
     assert EVENT_ROUTE_CHANGED in records[1]["metadata"]["fabric_reload"]["event_types"]
     assert records[1]["metadata"]["topology"]["fabric"]["name"] == "hot-reload-fabric"
     assert records[1]["metadata"]["topology"]["route"]["upstream"] == "git"
+
+
+def test_mcp_facade_health_routing_degrades_unhealthy_and_skips_fanout(tmp_path):
+    files_server, files_seen = start_mcp_upstream({"read_file": "Read a file"})
+    bad_port = unused_tcp_port()
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        None,
+        policy,
+        upstreams=[
+            {"name": "files", "url": f"http://127.0.0.1:{files_server.server_port}/mcp"},
+            {"name": "git", "url": f"http://127.0.0.1:{bad_port}/mcp"},
+        ],
+        record_out=record_log,
+        timeout=0.1,
+        facade_health_routing=True,
+        facade_health_failure_threshold=2,
+        facade_health_cooldown_seconds=60.0,
+    )
+
+    async def run_all():
+        requests = [
+            b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}',
+            b'{"jsonrpc":"2.0","id":"list-2","method":"tools/list"}',
+            b'{"jsonrpc":"2.0","id":"list-3","method":"tools/list"}',
+        ]
+        results = [await run_asgi_once(app, body=body) for body in requests]
+        await close_app(app)
+        return results
+
+    try:
+        results = asyncio.run(run_all())
+    finally:
+        files_server.shutdown()
+        files_server.server_close()
+
+    payloads = [json.loads(result[1]["body"]) for result in results]
+    records = load_record_log(record_log)
+    assert [[tool["name"] for tool in payload["result"]["tools"]] for payload in payloads] == [
+        ["files.read_file"],
+        ["files.read_file"],
+        ["files.read_file"],
+    ]
+    assert files_seen["calls"] == [
+        {"method": "tools/list", "tool": None},
+        {"method": "tools/list", "tool": None},
+        {"method": "tools/list", "tool": None},
+    ]
+    assert records[0]["metadata"]["upstream_health"]["upstreams"]["git"]["status"] == "degraded"
+    assert EVENT_UPSTREAM_DEGRADED in records[0]["metadata"]["upstream_health"]["event_types"]
+    assert records[1]["metadata"]["upstream_health"]["upstreams"]["git"]["status"] == "unhealthy"
+    assert EVENT_UPSTREAM_UNHEALTHY in records[1]["metadata"]["upstream_health"]["event_types"]
+    assert records[2]["metadata"]["upstream_health"]["skipped"] == ["git"]
+    assert records[2]["metadata"]["upstream_health"]["upstreams"]["git"]["status"] == "unhealthy"
+
+
+def test_mcp_facade_health_routing_blocks_unhealthy_tool_until_recovered(tmp_path):
+    git_server, git_state = start_flaky_mcp_upstream()
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        None,
+        policy,
+        upstreams=[{"name": "git", "url": f"http://127.0.0.1:{git_server.server_port}/mcp"}],
+        record_out=record_log,
+        facade_health_routing=True,
+        facade_health_failure_threshold=1,
+        facade_health_cooldown_seconds=0.01,
+    )
+
+    async def run_all():
+        first = await run_asgi_once(
+            app,
+            body=b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"git.status"}}',
+        )
+        blocked = await run_asgi_once(
+            app,
+            body=b'{"jsonrpc":"2.0","id":"call-2","method":"tools/call","params":{"name":"git.status"}}',
+        )
+        await asyncio.sleep(0.02)
+        recovered = await run_asgi_once(
+            app,
+            body=b'{"jsonrpc":"2.0","id":"call-3","method":"tools/call","params":{"name":"git.status"}}',
+        )
+        await close_app(app)
+        return first, blocked, recovered
+
+    try:
+        first, blocked, recovered = asyncio.run(run_all())
+    finally:
+        git_server.shutdown()
+        git_server.server_close()
+
+    first_payload = json.loads(first[1]["body"])
+    blocked_payload = json.loads(blocked[1]["body"])
+    recovered_payload = json.loads(recovered[1]["body"])
+    records = load_record_log(record_log)
+    assert first[0]["status"] == 503
+    assert first_payload["error"]["message"] == "temporary upstream failure"
+    assert blocked[0]["status"] == 503
+    assert "unhealthy" in blocked_payload["error"]["message"]
+    assert recovered[0]["status"] == 200
+    assert recovered_payload["result"]["content"][0]["text"] == "called status"
+    assert git_state["calls"] == 2
+    assert EVENT_UPSTREAM_UNHEALTHY in records[0]["metadata"]["upstream_health"]["event_types"]
+    assert records[1]["metadata"]["upstream_health"]["skipped"] == ["git"]
+    assert EVENT_UPSTREAM_RECOVERED in records[2]["metadata"]["upstream_health"]["event_types"]
 
 
 def test_proxy_fabric_reload_keeps_previous_routes_when_config_is_invalid(tmp_path):
@@ -1592,6 +1703,45 @@ def start_mcp_upstream(
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, seen
+
+
+def start_flaky_mcp_upstream():
+    state: dict[str, Any] = {"calls": 0}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            body = self.rfile.read(int(self.headers.get("content-length", "0")))
+            request = json.loads(body.decode("utf-8"))
+            state["calls"] += 1
+            if state["calls"] == 1:
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id"),
+                    "error": {"code": -32000, "message": "temporary upstream failure"},
+                }
+                response = json.dumps(payload).encode("utf-8")
+                self.send_response(503)
+            else:
+                params = request.get("params") if isinstance(request.get("params"), dict) else {}
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id"),
+                    "result": {"content": [{"type": "text", "text": f"called {params.get('name')}"}]},
+                }
+                response = json.dumps(payload).encode("utf-8")
+                self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+        def log_message(self, format, *args):  # noqa: A002
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, state
 
 
 def start_mutating_tools_upstream():
