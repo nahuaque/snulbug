@@ -15,14 +15,14 @@ MCP client
 `snulbug` is not published on PyPI yet. Use `uv` from the source tree:
 
 ```bash
-uv sync --extra proxy --extra discovery
+uv sync
 uv run snulbug --help
 ```
 
 From another `uv` project, install from GitHub:
 
 ```bash
-uv add "snulbug[proxy,discovery] @ git+https://github.com/lbruhacs/snulbug"
+uv add "snulbug[discovery] @ git+https://github.com/lbruhacs/snulbug"
 ```
 
 The commands below use `uv run` from this repository.

@@ -29,7 +29,7 @@ from GitHub.
 From this repository:
 
 ```bash
-uv sync --extra proxy --extra discovery
+uv sync
 uv run snulbug --help
 ```
 
@@ -43,13 +43,13 @@ uv run pytest
 From another `uv` project:
 
 ```bash
-uv add "snulbug[proxy,discovery] @ git+https://github.com/lbruhacs/snulbug"
+uv add "snulbug[discovery] @ git+https://github.com/lbruhacs/snulbug"
 ```
 
 Add the Redis extra when you need Redis-backed policy, runtime, or member state:
 
 ```bash
-uv add "snulbug[proxy,discovery,redis] @ git+https://github.com/lbruhacs/snulbug"
+uv add "snulbug[discovery,redis] @ git+https://github.com/lbruhacs/snulbug"
 ```
 
 `snulbug` supports Python 3.10 through 3.13.

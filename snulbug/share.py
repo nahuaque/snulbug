@@ -675,7 +675,9 @@ WORKDIR /src
 
 COPY snulbug-src/ /src/
 
-RUN python -m pip install --no-cache-dir ".[proxy]"
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+RUN uv pip install --system --no-cache "."
 
 WORKDIR /share
 """

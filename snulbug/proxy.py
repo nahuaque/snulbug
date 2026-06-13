@@ -1927,7 +1927,7 @@ def run_proxy(
     try:
         import uvicorn  # type: ignore[import-not-found]
     except Exception as exc:
-        raise RuntimeError('reverse proxy mode requires uvicorn; install with `pip install "snulbug[proxy]"`') from exc
+        raise RuntimeError("reverse proxy mode requires uvicorn; run `uv sync` from the source repository") from exc
 
     app = create_proxy_application(
         upstream,

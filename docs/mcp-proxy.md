@@ -6,14 +6,14 @@ server is not a Python ASGI app.
 Install the proxy runner from this repository with `uv`:
 
 ```bash
-uv sync --extra proxy --extra discovery
+uv sync
 uv run snulbug --help
 ```
 
 Or add the current GitHub source to another `uv` project:
 
 ```bash
-uv add "snulbug[proxy,discovery] @ git+https://github.com/lbruhacs/snulbug"
+uv add "snulbug[discovery] @ git+https://github.com/lbruhacs/snulbug"
 ```
 
 Copy a starter policy. For public tunnel use, `tunnel-safe` is the recommended

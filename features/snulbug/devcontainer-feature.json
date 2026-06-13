@@ -29,7 +29,7 @@
     },
     "extras": {
       "type": "string",
-      "default": "proxy,discovery",
+      "default": "discovery",
       "description": "Comma-separated snulbug extras to install."
     },
     "mode": {

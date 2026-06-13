@@ -326,6 +326,7 @@ source = { editable = "." }
 dependencies = [
     { name = "lupa" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
+    { name = "uvicorn" },
 ]
 
 [package.optional-dependencies]
@@ -336,9 +337,6 @@ dev = [
 ]
 discovery = [
     { name = "pyyaml" },
-]
-proxy = [
-    { name = "uvicorn" },
 ]
 redis = [
     { name = "redis" },
@@ -360,7 +358,7 @@ requires-dist = [
     { name = "redis", marker = "extra == 'redis'", specifier = ">=5.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
-    { name = "uvicorn", marker = "extra == 'proxy'", specifier = ">=0.30" },
+    { name = "uvicorn", specifier = ">=0.30" },
 ]
 
 [package.metadata.requires-dev]

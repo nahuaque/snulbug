@@ -37,14 +37,12 @@ classifiers = [
 dependencies = [
     "lupa>=2.5",
     "tomli>=2.0; python_version < '3.11'",
+    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
 redis = [
     "redis>=5.0",
-]
-proxy = [
-    "uvicorn>=0.30",
 ]
 discovery = [
     "pyyaml>=6.0",
