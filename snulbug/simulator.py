@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .fabric_runtime import DEFAULT_FABRIC_RUNTIME_STATE, DEFAULT_FABRIC_RUNTIME_STATE_KEY
 from .runtime import LuaDecisionError, compile_lua_file
 from .state import BoundedPolicyState, SnapshotStateStore
 
@@ -577,6 +578,41 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_fabric_conformance_run.add_argument("--instruction-limit", type=int, default=100_000)
     mcp_fabric_conformance_run.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
     mcp_fabric_conformance_run.add_argument("--compact", action="store_true", help="emit compact JSON")
+    mcp_fabric_runtime = mcp_fabric_subparsers.add_parser(
+        "runtime",
+        help="inspect or clear persisted managed data-plane runtime state",
+    )
+    mcp_fabric_runtime_subparsers = mcp_fabric_runtime.add_subparsers(dest="runtime_command", required=True)
+    mcp_fabric_runtime_status = mcp_fabric_runtime_subparsers.add_parser(
+        "status",
+        help="read the latest persisted managed data-plane runtime state",
+    )
+    mcp_fabric_runtime_status.add_argument(
+        "--runtime-state",
+        default=DEFAULT_FABRIC_RUNTIME_STATE,
+        help="'memory', 'none', 'sqlite:/path/to/state.sqlite3', or 'redis://...'",
+    )
+    mcp_fabric_runtime_status.add_argument(
+        "--runtime-state-key",
+        default=DEFAULT_FABRIC_RUNTIME_STATE_KEY,
+        help="runtime state key for shared stores",
+    )
+    mcp_fabric_runtime_status.add_argument("--compact", action="store_true", help="emit compact JSON")
+    mcp_fabric_runtime_clear = mcp_fabric_runtime_subparsers.add_parser(
+        "clear",
+        help="delete the persisted managed data-plane runtime state",
+    )
+    mcp_fabric_runtime_clear.add_argument(
+        "--runtime-state",
+        default=DEFAULT_FABRIC_RUNTIME_STATE,
+        help="'memory', 'none', 'sqlite:/path/to/state.sqlite3', or 'redis://...'",
+    )
+    mcp_fabric_runtime_clear.add_argument(
+        "--runtime-state-key",
+        default=DEFAULT_FABRIC_RUNTIME_STATE_KEY,
+        help="runtime state key for shared stores",
+    )
+    mcp_fabric_runtime_clear.add_argument("--compact", action="store_true", help="emit compact JSON")
     mcp_fabric_controller = mcp_fabric_subparsers.add_parser(
         "controller",
         help="reconcile declarative MCP fabric config into a controller state snapshot",
@@ -656,6 +692,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         action=argparse.BooleanOptionalAction,
         default=False,
         help="block data-plane startup unless the configured conformance pack passes",
+    )
+    mcp_fabric_run.add_argument(
+        "--runtime-state",
+        default=DEFAULT_FABRIC_RUNTIME_STATE,
+        help="'memory', 'none', 'sqlite:/path/to/state.sqlite3', or 'redis://...'",
+    )
+    mcp_fabric_run.add_argument(
+        "--runtime-state-key",
+        default=DEFAULT_FABRIC_RUNTIME_STATE_KEY,
+        help="runtime state key for shared stores",
+    )
+    mcp_fabric_run.add_argument(
+        "--runtime-heartbeat-ttl",
+        type=float,
+        default=15.0,
+        help="seconds before persisted running runtime state is considered stale",
     )
     mcp_fabric_run.add_argument("--compact", action="store_true", help="emit compact JSON startup output")
 
@@ -1330,6 +1382,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 learn_fabric_profile,
                 run_fabric_conformance_pack,
             )
+            from .fabric_runtime import (
+                clear_fabric_runtime_status,
+                format_fabric_runtime_report,
+                load_fabric_runtime_status,
+            )
             from .tunnel import parse_tunnel_headers
 
             try:
@@ -1404,6 +1461,33 @@ def main(argv: Sequence[str] | None = None) -> int:
                     else:
                         parser.error(f"unknown mcp fabric conformance command: {args.conformance_command}")
                         return 2
+                elif args.fabric_command == "runtime":
+                    if args.runtime_command == "status":
+                        result = load_fabric_runtime_status(
+                            args.runtime_state,
+                            key=args.runtime_state_key,
+                        )
+                        status = 0 if result["ok"] else 1
+                        if not args.compact:
+                            sys.stdout.write(format_fabric_runtime_report(result))
+                            sys.stdout.write("\n")
+                            return status
+                    elif args.runtime_command == "clear":
+                        result = clear_fabric_runtime_status(
+                            args.runtime_state,
+                            key=args.runtime_state_key,
+                        )
+                        status = 0 if result["ok"] else 1
+                        if not args.compact:
+                            verb = "cleared" if result.get("cleared") else "empty"
+                            sys.stdout.write("# snulbug fabric runtime clear\n\n")
+                            sys.stdout.write(f"Store: {result.get('runtime_state')}\n")
+                            sys.stdout.write(f"Key: {result.get('runtime_state_key')}\n")
+                            sys.stdout.write(f"Status: {verb}\n")
+                            return status
+                    else:
+                        parser.error(f"unknown mcp fabric runtime command: {args.runtime_command}")
+                        return 2
                 elif args.fabric_command == "controller":
                     event_log = None if args.no_event_log else args.event_log
                     status_server = None
@@ -1464,6 +1548,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         status_port=args.status_port,
                         conformance_pack=args.conformance_pack,
                         require_conformance=args.require_conformance,
+                        runtime_state=args.runtime_state,
+                        runtime_state_key=args.runtime_state_key,
+                        runtime_heartbeat_ttl=args.runtime_heartbeat_ttl,
                         emit=emit_fabric_run_started,
                     )
                     status = 0 if result["ok"] else 1

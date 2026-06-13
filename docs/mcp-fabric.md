@@ -395,7 +395,32 @@ The managed status endpoint includes runtime state alongside controller state:
   whether it passed.
 - `share_gate` is the agent-readable readiness decision. It is blocked when the
   controller is unhealthy, the data plane is not running, or required
-  conformance is not passing.
+  conformance is not passing. Persisted `running` state also carries a heartbeat;
+  stale heartbeats block the share gate instead of advertising an abandoned
+  gateway as safe.
+
+By default, `fabric run` persists the latest runtime status in
+`.snulbug/fabric-runtime.sqlite3`. Use SQLite for one local gateway and Redis
+when multiple containers or hosts need to share the same runtime view:
+
+```bash
+snulbug mcp fabric run \
+  --config snulbug.toml \
+  --runtime-state sqlite:.snulbug/fabric-runtime.sqlite3
+
+snulbug mcp fabric run \
+  --config snulbug.toml \
+  --runtime-state redis://127.0.0.1:6379/0 \
+  --runtime-state-key snulbug:fabric:devbox-a
+```
+
+Read or clear the persisted runtime state without contacting the live status
+server:
+
+```bash
+snulbug mcp fabric runtime status --compact
+snulbug mcp fabric runtime clear
+```
 
 To gate public sharing on a generated conformance pack:
 

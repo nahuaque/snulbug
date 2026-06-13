@@ -31,3 +31,14 @@ application = LuaMiddleware(
 ```
 
 Use Redis for distributed rate limits or global policy state.
+
+Fabric runtime state uses the same adapter vocabulary, but stores the managed
+gateway's latest data-plane status instead of Lua policy keys:
+
+```bash
+snulbug mcp fabric run --runtime-state sqlite:.snulbug/fabric-runtime.sqlite3
+snulbug mcp fabric runtime status --runtime-state sqlite:.snulbug/fabric-runtime.sqlite3
+```
+
+Use `redis://...` plus `--runtime-state-key` when several containers or hosts
+need one shared MCP fabric runtime view.

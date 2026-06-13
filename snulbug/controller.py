@@ -25,10 +25,17 @@ from .control_events import (
     make_control_event,
 )
 from .fabric import build_fabric_audit_metadata, fabric_status, run_fabric_conformance_pack
+from .fabric_runtime import (
+    DEFAULT_FABRIC_RUNTIME_STATE,
+    DEFAULT_FABRIC_RUNTIME_STATE_KEY,
+    FabricRuntimeStateStore,
+    open_fabric_runtime_state_store,
+)
 
 DEFAULT_CONTROLLER_STATE_PATH = Path(".snulbug/fabric-state.json")
 DEFAULT_CONTROLLER_EVENT_LOG_PATH = Path(".snulbug/fabric-events.jsonl")
 DEFAULT_CONTROLLER_STATUS_PORT = 8765
+DEFAULT_RUNTIME_HEARTBEAT_TTL_SECONDS = 15.0
 
 FabricProxyRunner = Callable[..., None]
 
@@ -155,6 +162,9 @@ def run_fabric_data_plane(
     status_port: int = DEFAULT_CONTROLLER_STATUS_PORT,
     conformance_pack: str | Path | None = None,
     require_conformance: bool = False,
+    runtime_state: str | Path | FabricRuntimeStateStore | None = DEFAULT_FABRIC_RUNTIME_STATE,
+    runtime_state_key: str = DEFAULT_FABRIC_RUNTIME_STATE_KEY,
+    runtime_heartbeat_ttl: float = DEFAULT_RUNTIME_HEARTBEAT_TTL_SECONDS,
     emit: Callable[[Mapping[str, Any]], None] | None = None,
     proxy_runner: FabricProxyRunner | None = None,
 ) -> dict[str, Any]:
@@ -166,9 +176,13 @@ def run_fabric_data_plane(
         raise ValueError("reload_interval must be positive")
     if require_conformance and conformance_pack is None:
         raise ValueError("require_conformance requires conformance_pack")
+    if runtime_heartbeat_ttl <= 0:
+        raise ValueError("runtime_heartbeat_ttl must be positive")
 
     config_path = Path(config)
-    status_server = FabricControllerStatusServer(host=status_host, port=status_port)
+    runtime_store = open_fabric_runtime_state_store(runtime_state, key=runtime_state_key)
+    close_runtime_store = runtime_store if isinstance(runtime_state, str | Path) else None
+    status_server = FabricControllerStatusServer(host=status_host, port=status_port, runtime_store=runtime_store)
     status_server.start()
     stop_event = threading.Event()
     controller_errors: list[str] = []
@@ -199,6 +213,7 @@ def run_fabric_data_plane(
                         conformance_pack=conformance_pack,
                         conformance=conformance_result,
                         require_conformance=require_conformance,
+                        heartbeat_ttl_seconds=runtime_heartbeat_ttl,
                         error="fabric conformance gate failed",
                     )
                 )
@@ -247,55 +262,70 @@ def run_fabric_data_plane(
             conformance_pack=conformance_pack,
             conformance=conformance_result,
             require_conformance=require_conformance,
+            heartbeat_ttl_seconds=runtime_heartbeat_ttl,
         )
         status_server.update_runtime(started["runtime"])
         if emit is not None:
             emit(started)
 
         runner = proxy_runner or _default_proxy_runner()
-        runner(
-            upstream=proxy_config["upstream"],
-            upstreams=proxy_config["upstreams"],
-            policy=proxy_config["policy"],
-            host=proxy_config["host"],
-            port=proxy_config["port"],
-            state=proxy_config["state"],
-            trace=proxy_config["trace"],
-            max_body_bytes=proxy_config["max_body_bytes"],
-            timeout=proxy_config["timeout"],
-            record_out=proxy_config["record_out"],
-            audit_out=proxy_config["audit_out"],
-            redact_records=proxy_config["redact_records"],
-            decision_console=proxy_config["decision_console"],
-            decision_console_format=proxy_config["decision_console_format"],
-            confirm=proxy_config["confirm"],
-            response_max_bytes=proxy_config["response_max_bytes"],
-            response_redact_secrets=proxy_config["response_redact_secrets"],
-            response_block_instructions=proxy_config["response_block_instructions"],
-            tool_pinning=proxy_config["tool_pinning"],
-            tool_pinning_action=proxy_config["tool_pinning_action"],
-            schema_validation=proxy_config["schema_validation"],
-            schema_validation_action=proxy_config["schema_validation_action"],
-            facade_health_routing=proxy_config["facade_health_routing"],
-            facade_health_failure_threshold=proxy_config["facade_health_failure_threshold"],
-            facade_health_cooldown_seconds=proxy_config["facade_health_cooldown_seconds"],
-            facade_health_exclude_unhealthy=proxy_config["facade_health_exclude_unhealthy"],
-            lease_file=proxy_config["lease_file"],
-            lease_required=proxy_config["lease_required"],
-            lease_header=proxy_config["lease_header"],
-            tunnel_provider=proxy_config["tunnel_provider"],
-            tunnel_public_url=proxy_config["tunnel_public_url"],
-            cloudflare_access=proxy_config["cloudflare_access"],
-            cloudflare_access_require_jwt=proxy_config["cloudflare_access_require_jwt"],
-            cloudflare_access_require_email=proxy_config["cloudflare_access_require_email"],
-            cloudflare_access_require_cf_ray=proxy_config["cloudflare_access_require_cf_ray"],
-            cloudflare_access_allowed_emails=proxy_config["cloudflare_access_allowed_emails"],
-            cloudflare_access_allowed_domains=proxy_config["cloudflare_access_allowed_domains"],
-            topology_audit=topology_audit,
-            fabric_reload_config=config_path,
-            fabric_reload_interval=reload_interval,
-            fabric_reload_overrides={},
-        )
+        try:
+            runner(
+                upstream=proxy_config["upstream"],
+                upstreams=proxy_config["upstreams"],
+                policy=proxy_config["policy"],
+                host=proxy_config["host"],
+                port=proxy_config["port"],
+                state=proxy_config["state"],
+                trace=proxy_config["trace"],
+                max_body_bytes=proxy_config["max_body_bytes"],
+                timeout=proxy_config["timeout"],
+                record_out=proxy_config["record_out"],
+                audit_out=proxy_config["audit_out"],
+                redact_records=proxy_config["redact_records"],
+                decision_console=proxy_config["decision_console"],
+                decision_console_format=proxy_config["decision_console_format"],
+                confirm=proxy_config["confirm"],
+                response_max_bytes=proxy_config["response_max_bytes"],
+                response_redact_secrets=proxy_config["response_redact_secrets"],
+                response_block_instructions=proxy_config["response_block_instructions"],
+                tool_pinning=proxy_config["tool_pinning"],
+                tool_pinning_action=proxy_config["tool_pinning_action"],
+                schema_validation=proxy_config["schema_validation"],
+                schema_validation_action=proxy_config["schema_validation_action"],
+                facade_health_routing=proxy_config["facade_health_routing"],
+                facade_health_failure_threshold=proxy_config["facade_health_failure_threshold"],
+                facade_health_cooldown_seconds=proxy_config["facade_health_cooldown_seconds"],
+                facade_health_exclude_unhealthy=proxy_config["facade_health_exclude_unhealthy"],
+                lease_file=proxy_config["lease_file"],
+                lease_required=proxy_config["lease_required"],
+                lease_header=proxy_config["lease_header"],
+                tunnel_provider=proxy_config["tunnel_provider"],
+                tunnel_public_url=proxy_config["tunnel_public_url"],
+                cloudflare_access=proxy_config["cloudflare_access"],
+                cloudflare_access_require_jwt=proxy_config["cloudflare_access_require_jwt"],
+                cloudflare_access_require_email=proxy_config["cloudflare_access_require_email"],
+                cloudflare_access_require_cf_ray=proxy_config["cloudflare_access_require_cf_ray"],
+                cloudflare_access_allowed_emails=proxy_config["cloudflare_access_allowed_emails"],
+                cloudflare_access_allowed_domains=proxy_config["cloudflare_access_allowed_domains"],
+                topology_audit=topology_audit,
+                fabric_reload_config=config_path,
+                fabric_reload_interval=reload_interval,
+                fabric_reload_overrides={},
+            )
+        except Exception as exc:
+            failed_runtime = _fabric_runtime_state(
+                status="stopped",
+                proxy_config=proxy_config,
+                reload_interval=reload_interval,
+                conformance_pack=conformance_pack,
+                conformance=conformance_result,
+                require_conformance=require_conformance,
+                heartbeat_ttl_seconds=runtime_heartbeat_ttl,
+                error=str(exc),
+            )
+            status_server.update_runtime(failed_runtime)
+            raise
         stopped_runtime = _fabric_runtime_state(
             status="stopped",
             proxy_config=proxy_config,
@@ -303,7 +333,9 @@ def run_fabric_data_plane(
             conformance_pack=conformance_pack,
             conformance=conformance_result,
             require_conformance=require_conformance,
+            heartbeat_ttl_seconds=runtime_heartbeat_ttl,
         )
+        status_server.update_runtime(stopped_runtime)
         stopped = _attach_share_gate({**started, "runtime": stopped_runtime, "stopped": True})
         return {**stopped, "controller_errors": controller_errors}
     finally:
@@ -311,6 +343,8 @@ def run_fabric_data_plane(
         if controller_thread is not None:
             controller_thread.join(timeout=max(1.0, min(controller_interval, 5.0)))
         status_server.stop()
+        if close_runtime_store is not None:
+            close_runtime_store.close()
 
 
 def format_fabric_controller_report(result: Mapping[str, Any]) -> str:
@@ -421,10 +455,18 @@ def format_fabric_run_report(result: Mapping[str, Any]) -> str:
 class FabricControllerStatusServer:
     host: str = "127.0.0.1"
     port: int = 0
+    runtime_store: FabricRuntimeStateStore | None = None
     _server: ThreadingHTTPServer | None = field(default=None, init=False, repr=False)
     _thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _latest: dict[str, Any] = field(default_factory=lambda: _initial_controller_status(), init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.runtime_store is None:
+            return
+        stored = self.runtime_store.load_status()
+        if stored is not None:
+            self._latest = _attach_share_gate(stored)
 
     def start(self) -> None:
         if self._server is not None:
@@ -478,19 +520,28 @@ class FabricControllerStatusServer:
             latest = _copy_jsonish(result)
             previous_runtime = _mapping(self._latest.get("runtime"))
             if "runtime" not in latest and previous_runtime:
-                latest["runtime"] = _copy_jsonish(previous_runtime)
+                latest["runtime"] = _heartbeat_runtime(previous_runtime)
             latest = _attach_share_gate(latest)
             self._latest = latest
+            self._save_latest()
 
     def update_runtime(self, runtime: Mapping[str, Any]) -> None:
         with self._lock:
             latest = _copy_jsonish(self._latest)
             latest["runtime"] = _copy_jsonish(runtime)
             self._latest = _attach_share_gate(latest)
+            self._save_latest()
 
     def latest(self) -> dict[str, Any]:
+        stored = self.runtime_store.load_status() if self.runtime_store is not None else None
         with self._lock:
+            if stored is not None:
+                self._latest = _attach_share_gate(stored)
             return _copy_jsonish(self._latest)
+
+    def _save_latest(self) -> None:
+        if self.runtime_store is not None:
+            self.runtime_store.save_status(self._latest)
 
 
 def _desired_state(status: Mapping[str, Any]) -> dict[str, Any]:
@@ -1024,15 +1075,19 @@ def _fabric_runtime_state(
     conformance_pack: str | Path | None = None,
     conformance: Mapping[str, Any] | None = None,
     require_conformance: bool = False,
+    heartbeat_ttl_seconds: float = DEFAULT_RUNTIME_HEARTBEAT_TTL_SECONDS,
     error: str | None = None,
 ) -> dict[str, Any]:
     host = proxy_config.get("host")
     port = proxy_config.get("port")
+    now = _utc_now()
     data_plane = _drop_empty(
         {
             "managed": True,
             "status": status,
-            "updated_at": _utc_now(),
+            "updated_at": now,
+            "heartbeat_at": now,
+            "heartbeat_ttl_seconds": heartbeat_ttl_seconds,
             "gateway_url": f"http://{host}:{port}/mcp",
             "host": host,
             "port": port,
@@ -1098,6 +1153,8 @@ def _attach_share_gate(result: Mapping[str, Any]) -> dict[str, Any]:
     data_plane = _mapping(runtime.get("data_plane"))
     if data_plane and data_plane.get("status") != "running":
         blocks.append(f"data_plane_{data_plane.get('status', 'unknown')}")
+    if data_plane.get("status") == "running" and _data_plane_heartbeat_stale(data_plane):
+        blocks.append("data_plane_heartbeat_stale")
     conformance = _mapping(runtime.get("conformance"))
     if conformance:
         if conformance.get("required") and conformance.get("ok") is not True:
@@ -1117,6 +1174,45 @@ def _attach_share_gate(result: Mapping[str, Any]) -> dict[str, Any]:
     return latest
 
 
+def _heartbeat_runtime(runtime: Mapping[str, Any]) -> dict[str, Any]:
+    updated = _copy_jsonish(runtime)
+    data_plane = _mapping(updated.get("data_plane"))
+    if data_plane.get("status") == "running":
+        now = _utc_now()
+        updated["data_plane"] = {
+            **dict(data_plane),
+            "updated_at": now,
+            "heartbeat_at": now,
+        }
+    return updated
+
+
+def _data_plane_heartbeat_stale(data_plane: Mapping[str, Any]) -> bool:
+    timestamp = data_plane.get("heartbeat_at") or data_plane.get("updated_at")
+    if not isinstance(timestamp, str) or not timestamp:
+        return False
+    try:
+        ttl = float(data_plane.get("heartbeat_ttl_seconds") or 0)
+    except (TypeError, ValueError):
+        return False
+    if ttl <= 0:
+        return False
+    observed_at = _parse_timestamp(timestamp)
+    if observed_at is None:
+        return False
+    return (datetime.now(timezone.utc) - observed_at).total_seconds() > ttl
+
+
+def _parse_timestamp(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _fabric_run_started_result(
     *,
     config: Path,
@@ -1130,6 +1226,7 @@ def _fabric_run_started_result(
     conformance_pack: str | Path | None,
     conformance: Mapping[str, Any] | None,
     require_conformance: bool,
+    heartbeat_ttl_seconds: float,
 ) -> dict[str, Any]:
     host = proxy_config.get("host")
     port = proxy_config.get("port")
@@ -1141,6 +1238,7 @@ def _fabric_run_started_result(
         conformance_pack=conformance_pack,
         conformance=conformance,
         require_conformance=require_conformance,
+        heartbeat_ttl_seconds=heartbeat_ttl_seconds,
     )
     return _attach_share_gate(
         {

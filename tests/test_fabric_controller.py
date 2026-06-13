@@ -11,6 +11,9 @@ from snulbug import (
     EVENT_ROUTE_CHANGED,
     EVENT_UPSTREAM_UNHEALTHY,
     FabricControllerStatusServer,
+    MemoryFabricRuntimeStateStore,
+    load_fabric_runtime_status,
+    open_fabric_runtime_state_store,
     reconcile_fabric_controller,
     run_fabric_controller,
     run_fabric_data_plane,
@@ -304,6 +307,8 @@ def test_fabric_data_plane_runner_starts_controller_and_proxy(tmp_path):
     config = write_fabric_run_config(tmp_path)
     state = tmp_path / ".snulbug/fabric-state.json"
     event_log = tmp_path / ".snulbug/fabric-events.jsonl"
+    runtime_state = f"sqlite:{tmp_path / '.snulbug/fabric-runtime.sqlite3'}"
+    runtime_state_key = "test-runtime"
     started = []
     proxy_calls = []
     health_checks = []
@@ -327,6 +332,8 @@ def test_fabric_data_plane_runner_starts_controller_and_proxy(tmp_path):
         controller_interval=0.01,
         reload_interval=0.02,
         status_port=0,
+        runtime_state=runtime_state,
+        runtime_state_key=runtime_state_key,
         emit=emit,
         proxy_runner=fake_proxy_runner,
     )
@@ -358,6 +365,40 @@ def test_fabric_data_plane_runner_starts_controller_and_proxy(tmp_path):
     assert "snulbug_fabric_shareable 1" in metric_checks[0]["body"]
     assert snapshot["initialized"] is True
     assert event_log.is_file()
+    persisted = load_fabric_runtime_status(runtime_state, key=runtime_state_key)
+    assert persisted["ok"] is True
+    assert persisted["status"]["runtime"]["data_plane"]["status"] == "stopped"
+    assert persisted["status"]["share_gate"]["blocked_by"] == ["data_plane_stopped"]
+
+
+def test_fabric_status_server_loads_shared_runtime_state():
+    store = MemoryFabricRuntimeStateStore()
+    first = FabricControllerStatusServer(host="127.0.0.1", port=0, runtime_store=store)
+    first.update(
+        {
+            "ok": True,
+            "summary": {"upstream_count": 1},
+            "runtime": {
+                "data_plane": {
+                    "managed": True,
+                    "status": "running",
+                    "updated_at": "2000-01-01T00:00:00+00:00",
+                    "heartbeat_at": "2000-01-01T00:00:00+00:00",
+                    "heartbeat_ttl_seconds": 1,
+                }
+            },
+        }
+    )
+
+    second = FabricControllerStatusServer(host="127.0.0.1", port=0, runtime_store=store)
+    loaded = second.latest()
+    loaded_runtime = load_fabric_runtime_status(store)
+
+    assert loaded["runtime"]["data_plane"]["status"] == "running"
+    assert loaded["share_gate"]["ok"] is False
+    assert "data_plane_heartbeat_stale" in loaded["share_gate"]["blocked_by"]
+    assert loaded_runtime["status"]["share_gate"]["ok"] is False
+    assert "data_plane_heartbeat_stale" in loaded_runtime["status"]["share_gate"]["blocked_by"]
 
 
 def test_fabric_data_plane_runner_blocks_when_required_conformance_fails(monkeypatch, tmp_path):
@@ -387,6 +428,7 @@ def test_fabric_data_plane_runner_blocks_when_required_conformance_fails(monkeyp
             status_port=0,
             conformance_pack=conformance_pack,
             require_conformance=True,
+            runtime_state="memory",
             proxy_runner=lambda **kwargs: proxy_calls.append(kwargs),
         )
     except ValueError as exc:
@@ -412,7 +454,7 @@ def test_fabric_data_plane_runner_requires_facade_upstreams(tmp_path):
     )
 
     try:
-        run_fabric_data_plane(config, status_port=0, proxy_runner=lambda **kwargs: None)
+        run_fabric_data_plane(config, status_port=0, runtime_state="memory", proxy_runner=lambda **kwargs: None)
     except ValueError as exc:
         assert "facade upstreams" in str(exc)
     else:  # pragma: no cover - assertion guard.
@@ -422,6 +464,7 @@ def test_fabric_data_plane_runner_requires_facade_upstreams(tmp_path):
 def test_mcp_fabric_run_cli_emits_compact_startup(monkeypatch, tmp_path, capsys):
     config = write_fabric_run_config(tmp_path)
     conformance_pack = tmp_path / ".snulbug/fabric-conformance"
+    runtime_state = f"sqlite:{tmp_path / '.snulbug/fabric-runtime.sqlite3'}"
     calls = []
 
     def fake_run_fabric_data_plane(config_path, **kwargs):
@@ -458,6 +501,12 @@ def test_mcp_fabric_run_cli_emits_compact_startup(monkeypatch, tmp_path, capsys)
             "--conformance-pack",
             str(conformance_pack),
             "--require-conformance",
+            "--runtime-state",
+            runtime_state,
+            "--runtime-state-key",
+            "cli-runtime",
+            "--runtime-heartbeat-ttl",
+            "20",
             "--compact",
         ]
     )
@@ -471,6 +520,75 @@ def test_mcp_fabric_run_cli_emits_compact_startup(monkeypatch, tmp_path, capsys)
     assert calls[0][1]["status_port"] == 0
     assert calls[0][1]["conformance_pack"] == conformance_pack
     assert calls[0][1]["require_conformance"] is True
+    assert calls[0][1]["runtime_state"] == runtime_state
+    assert calls[0][1]["runtime_state_key"] == "cli-runtime"
+    assert calls[0][1]["runtime_heartbeat_ttl"] == 20.0
+
+
+def test_mcp_fabric_runtime_cli_reads_and_clears_persisted_state(tmp_path, capsys):
+    runtime_state = f"sqlite:{tmp_path / '.snulbug/fabric-runtime.sqlite3'}"
+    runtime_key = "cli-runtime"
+    store = open_fabric_runtime_state_store(runtime_state, key=runtime_key)
+    assert store is not None
+    try:
+        store.save_status(
+            {
+                "ok": True,
+                "runtime": {
+                    "data_plane": {
+                        "managed": True,
+                        "status": "stopped",
+                        "updated_at": "2000-01-01T00:00:00+00:00",
+                    }
+                },
+            }
+        )
+    finally:
+        store.close()
+
+    status = simulator_main(
+        [
+            "mcp",
+            "fabric",
+            "runtime",
+            "status",
+            "--runtime-state",
+            runtime_state,
+            "--runtime-state-key",
+            runtime_key,
+            "--compact",
+        ]
+    )
+    status_output = json.loads(capsys.readouterr().out)
+    clear_status = simulator_main(
+        [
+            "mcp",
+            "fabric",
+            "runtime",
+            "clear",
+            "--runtime-state",
+            runtime_state,
+            "--runtime-state-key",
+            runtime_key,
+            "--compact",
+        ]
+    )
+    clear_output = json.loads(capsys.readouterr().out)
+
+    assert status == 0
+    assert status_output["status"]["runtime"]["data_plane"]["status"] == "stopped"
+    assert clear_status == 0
+    assert clear_output["cleared"] is True
+    assert load_fabric_runtime_status(runtime_state, key=runtime_key)["ok"] is False
+
+
+def test_fabric_runtime_status_does_not_create_missing_sqlite_store(tmp_path):
+    db_path = tmp_path / ".snulbug/missing-runtime.sqlite3"
+    result = load_fabric_runtime_status(f"sqlite:{db_path}", key="missing")
+
+    assert result["ok"] is False
+    assert result["error"] == "fabric runtime state is empty"
+    assert not db_path.exists()
 
 
 def write_controller_config(tmp_path: Path, *, discovery_registry: Path | None = None) -> Path:
