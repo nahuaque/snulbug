@@ -121,6 +121,18 @@ from .lab import run_mcp_lab
 from .learn import amend_mcp_policy, learn_mcp_policy
 from .leases import LeasePolicyConfig, create_lease, list_leases, revoke_lease
 from .manifests import load_manifest, manifest_digest, sign_upstream_manifest, verify_upstream_manifest, write_manifest
+from .mcp_tools import (
+    MCP_TOOL_DIFF_SCHEMA,
+    MCP_TOOL_SNAPSHOT_SCHEMA,
+    build_mcp_tool_snapshot,
+    diff_mcp_tool_snapshots,
+    fetch_mcp_tools_list,
+    format_mcp_tool_diff_report,
+    format_mcp_tool_snapshot_report,
+    mcp_tool_digest,
+    parse_mcp_tool_headers,
+    snapshot_mcp_tools,
+)
 from .middleware import LuaConfig, LuaMiddleware
 from .policy_activation import POLICY_ACTIVATION_MODES, reconcile_policy_activation
 from .presets import McpPolicyOptions, copy_builtin_preset, generate_mcp_preset, list_builtin_presets
@@ -220,6 +232,8 @@ __all__ = [
     "ManagedHolepunchBridge",
     "ManagedStdioMcpClient",
     "MCP_GUIDE_WORKFLOWS",
+    "MCP_TOOL_DIFF_SCHEMA",
+    "MCP_TOOL_SNAPSHOT_SCHEMA",
     "McpFacadeProxyApp",
     "PolicyFabricRuntimeStateStore",
     "POLICY_ACTIVATION_MODES",
@@ -242,6 +256,7 @@ __all__ = [
     "annotate_topology_audit",
     "build_audit_event",
     "build_fabric_audit_metadata",
+    "build_mcp_tool_snapshot",
     "build_tunnel_audit_metadata",
     "bundle_lifecycle_digest",
     "clear_fabric_control_actions",
@@ -254,6 +269,7 @@ __all__ = [
     "create_mcp_quickstart",
     "create_mcp_share",
     "create_proxy_application",
+    "diff_mcp_tool_snapshots",
     "diff_policies",
     "build_mcp_guide",
     "discovery_provider_types",
@@ -263,6 +279,7 @@ __all__ = [
     "doctor_fabric",
     "evaluate_cloudflare_access",
     "fabric_status",
+    "fetch_mcp_tools_list",
     "format_fabric_conformance_report",
     "format_fabric_discovery_report",
     "format_fabric_doctor_report",
@@ -279,6 +296,8 @@ __all__ = [
     "format_mcp_inspection_report",
     "format_mcp_impact_report",
     "format_mcp_guide",
+    "format_mcp_tool_diff_report",
+    "format_mcp_tool_snapshot_report",
     "format_tunnel_doctor_report",
     "format_tunnel_init_report",
     "generate_fabric_conformance_pack",
@@ -299,11 +318,13 @@ __all__ = [
     "load_record_log",
     "manifest_digest",
     "make_control_event",
+    "mcp_tool_digest",
     "member_upstreams",
     "list_builtin_presets",
     "list_leases",
     "open_fabric_runtime_state_store",
     "pack_bundle",
+    "parse_mcp_tool_headers",
     "parse_tunnel_headers",
     "plan_exposure_session",
     "prepare_codespace_attach",
@@ -325,6 +346,7 @@ __all__ = [
     "run_proxy",
     "simulate_policy",
     "smoke_check_codespace_upstream",
+    "snapshot_mcp_tools",
     "promote_bundle_lifecycle",
     "sign_bundle_lifecycle",
     "sign_upstream_manifest",

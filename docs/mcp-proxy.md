@@ -364,6 +364,10 @@ snulbug mcp proxy --config snulbug.toml --response-block-instructions
 snulbug mcp proxy --config snulbug.toml --tool-pinning-action warn
 ```
 
+For reviewable snapshots and CI checks outside the live proxy, use
+`snulbug mcp tools snapshot` and `snulbug mcp tools diff`. See
+[MCP tool change watcher](mcp-tools.md).
+
 ## Human Confirmation
 
 Policies can return `action = "confirm"` for risky calls that should not be

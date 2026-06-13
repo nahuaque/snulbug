@@ -12,6 +12,7 @@
 - [Codespaces and devcontainers](devcontainers.md)
 - [MCP client setup recipes](mcp-client-recipes.md)
 - [MCP presets](mcp-presets.md)
+- [MCP tool change watcher](mcp-tools.md)
 - [MCP recorder and replay](mcp-recorder.md)
 - [MCP learn and amend mode](mcp-learn.md)
 - [MCP impact preview](mcp-impact.md)
