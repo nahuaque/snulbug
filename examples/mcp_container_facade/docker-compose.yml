@@ -1,0 +1,51 @@
+name: snulbug-mcp-container-facade
+
+services:
+  snulbug-gateway:
+    build:
+      context: ../..
+      dockerfile: examples/mcp_container_facade/Dockerfile.gateway
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/share
+    depends_on:
+      local-mcp:
+        condition: service_started
+    command:
+      - snulbug
+      - mcp
+      - proxy
+      - --config
+      - /share/snulbug.facade.toml
+      - --decision-console
+
+  local-mcp:
+    image: python:3.13-slim
+    working_dir: /app
+    volumes:
+      - ./mock_mcp_server.py:/app/mock_mcp_server.py:ro
+    command:
+      - python
+      - /app/mock_mcp_server.py
+      - --host
+      - 0.0.0.0
+      - --port
+      - "9000"
+      - --name
+      - local
+
+  remote-by-peer-mcp:
+    profiles:
+      - remote-peer
+    build:
+      context: .
+      dockerfile: Dockerfile.remote-peer
+    volumes:
+      - ./hypertele-server.json:/peer/hypertele-server.json:ro
+    command:
+      - sh
+      - -lc
+      - >-
+        python3 /app/mock_mcp_server.py --host 127.0.0.1 --port 9000 --name remote &
+        exec hypertele-server -l 9000 --address 127.0.0.1 -c /peer/hypertele-server.json --private

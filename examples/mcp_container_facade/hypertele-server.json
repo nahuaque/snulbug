@@ -1,0 +1,6 @@
+{
+  "seed": "REPLACE_WITH_32_BYTE_REMOTE_SERVER_SEED",
+  "allow": [
+    "REPLACE_WITH_GATEWAY_PEER_KEY"
+  ]
+}

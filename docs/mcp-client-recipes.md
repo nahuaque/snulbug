@@ -447,3 +447,33 @@ http://127.0.0.1:8080/mcp
 The client sees namespaced tools such as `files.read_file`, `git.status`, and
 `devbox.read_file`. `tools/list` is aggregated across the configured upstreams
 and `tools/call` is routed back to the matching local process or peer bridge.
+
+## 8. Container facade with a remote peer upstream
+
+Use this when the snulbug gateway and MCP upstreams run as containers, and one
+upstream is on another machine or container host reachable through a Holepunch
+peer bridge.
+
+The share command writes a ready-to-edit compose recipe under
+`.snulbug/shares/share-*/containers/`:
+
+```bash
+uv run snulbug mcp share \
+  --provider holepunch \
+  --allow-tool safe_read_file \
+  --allow-tool list_project_files \
+  --ttl 30m
+
+cd .snulbug/shares/share-*/containers
+docker compose --profile remote-peer up --build remote-by-peer-mcp
+docker compose up --build local-mcp snulbug-gateway
+```
+
+The recipe includes one `snulbug-gateway` service, one `local-mcp` service, and
+one `remote-by-peer-mcp` service. The generated `snulbug.facade.toml` exposes
+prefixed tools such as `local.safe_read_file` and `remote.safe_read_file`, and
+the generated `mcp-client.facade.json` contains the bearer and lease headers for
+that facade session.
+
+For a checked-in version of the same shape, see
+[`examples/mcp_container_facade`](../examples/mcp_container_facade/README.md).

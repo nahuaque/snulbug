@@ -25,6 +25,7 @@ leases.json
 mcp-client.json
 SHARE.md
 tunnel/
+containers/
 traces/
 ```
 
@@ -75,6 +76,46 @@ uv run snulbug tunnel doctor \
 
 Treat this file as secret-bearing material. It contains both the bearer token
 and the lease token.
+
+## Remote container as upstream
+
+Every share also writes an optional `containers/` recipe for the containerized
+facade case:
+
+```text
+containers/
+  docker-compose.yml
+  Dockerfile.gateway
+  Dockerfile.remote-peer
+  snulbug.facade.toml
+  policy.snulbug/
+  leases.json
+  mcp-client.facade.json
+  mock_mcp_server.py
+  hypertele-server.json
+  hypertele-client.json
+```
+
+The recipe models three services: a snulbug gateway, a local MCP container, and
+a remote-by-peer MCP container reached through a managed Hypertele bridge. It
+uses facade tool names such as `local.safe_read_file` and
+`remote.safe_read_file`.
+
+The normal share config remains at `snulbug.toml`. The container recipe has its
+own facade config, policy, lease file, and MCP client config so experimenting
+with container upstreams does not change the default share session.
+
+Start from the generated recipe:
+
+```bash
+cd .snulbug/shares/share-*/containers
+docker compose --profile remote-peer up --build remote-by-peer-mcp
+docker compose up --build local-mcp snulbug-gateway
+```
+
+Replace the placeholder peer material in `hypertele-server.json` and
+`hypertele-client.json` before using the peer bridge outside local testing.
+Point clients at `mcp-client.facade.json` for this facade recipe.
 
 ## Public tunnel providers
 
