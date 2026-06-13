@@ -9,8 +9,10 @@ from .confirm import ConfirmationBroker
 from .controller import (
     FabricControllerStatusServer,
     format_fabric_controller_report,
+    format_fabric_run_report,
     reconcile_fabric_controller,
     run_fabric_controller,
+    run_fabric_data_plane,
 )
 from .discovery import discovery_provider_types, register_discovery_provider
 from .fabric import (
@@ -127,6 +129,7 @@ __all__ = [
     "format_fabric_discovery_report",
     "format_fabric_doctor_report",
     "format_fabric_controller_report",
+    "format_fabric_run_report",
     "format_fabric_learn_report",
     "format_fabric_status_report",
     "format_mcp_inspection_report",
@@ -157,6 +160,7 @@ __all__ = [
     "revoke_lease",
     "run_mcp_lab",
     "run_fabric_controller",
+    "run_fabric_data_plane",
     "run_proxy",
     "simulate_policy",
     "sign_upstream_manifest",

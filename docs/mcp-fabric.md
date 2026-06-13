@@ -332,6 +332,35 @@ Replay records and audit events include `fabric_reload`, `route_revision`, and
 `route_fingerprint` metadata so a session can be tied back to the exact route
 snapshot that served it.
 
+## Managed Run
+
+`fabric run` starts the controller and the live-reloading data plane together.
+Use it when you want snulbug to act as one local MCP fabric process instead of
+running `fabric controller` and `mcp proxy --reload-fabric` separately.
+
+```bash
+snulbug mcp fabric run \
+  --config snulbug.toml \
+  --status-port 8765
+```
+
+It does four things:
+
+- reconciles fabric state into `.snulbug/fabric-state.json`
+- appends controller change events to `.snulbug/fabric-events.jsonl`
+- exposes `/healthz`, `/status`, and `/metrics` on the controller status port
+- starts the MCP facade proxy with fabric reload enabled
+
+Agent-friendly startup output:
+
+```bash
+snulbug mcp fabric run --config snulbug.toml --compact
+```
+
+`fabric run` requires facade upstreams from `[[mcp.proxy.upstreams]]` or
+discovery providers. For a single upstream reverse proxy, use
+`snulbug mcp proxy --config snulbug.toml`.
+
 ## Doctor
 
 `doctor` is the active readiness gate. It verifies configured manifests, checks

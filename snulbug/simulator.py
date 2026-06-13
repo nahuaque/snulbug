@@ -493,6 +493,39 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_fabric_controller.add_argument("--status-host", default="127.0.0.1", help="status server bind host")
     mcp_fabric_controller.add_argument("--status-port", type=int, default=0, help="status server bind port")
     mcp_fabric_controller.add_argument("--compact", action="store_true", help="emit compact JSON")
+    mcp_fabric_run = mcp_fabric_subparsers.add_parser(
+        "run",
+        help="run the fabric controller and live-reloading MCP data plane together",
+    )
+    mcp_fabric_run.add_argument("--config", type=Path, default=Path("snulbug.toml"), help="snulbug.toml config file")
+    mcp_fabric_run.add_argument(
+        "--state",
+        type=Path,
+        default=Path(".snulbug/fabric-state.json"),
+        help="controller state snapshot path",
+    )
+    mcp_fabric_run.add_argument(
+        "--event-log",
+        type=Path,
+        default=Path(".snulbug/fabric-events.jsonl"),
+        help="controller change event JSONL path",
+    )
+    mcp_fabric_run.add_argument("--no-event-log", action="store_true", help="do not append reconcile change events")
+    mcp_fabric_run.add_argument(
+        "--controller-interval",
+        type=float,
+        default=2.0,
+        help="controller reconcile interval in seconds",
+    )
+    mcp_fabric_run.add_argument(
+        "--reload-interval",
+        type=float,
+        default=2.0,
+        help="data-plane fabric reload interval in seconds",
+    )
+    mcp_fabric_run.add_argument("--status-host", default="127.0.0.1", help="status server bind host")
+    mcp_fabric_run.add_argument("--status-port", type=int, default=8765, help="status server bind port")
+    mcp_fabric_run.add_argument("--compact", action="store_true", help="emit compact JSON startup output")
 
     mcp_manifest = mcp_subparsers.add_parser("manifest", help="sign and verify MCP upstream manifests")
     mcp_manifest_subparsers = mcp_manifest.add_subparsers(dest="manifest_command", required=True)
@@ -1067,7 +1100,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             from .controller import (
                 FabricControllerStatusServer,
                 format_fabric_controller_report,
+                format_fabric_run_report,
                 run_fabric_controller,
+                run_fabric_data_plane,
             )
             from .fabric import (
                 discover_fabric_upstreams,
@@ -1152,6 +1187,30 @@ def main(argv: Sequence[str] | None = None) -> int:
                     finally:
                         if status_server is not None and args.once:
                             status_server.stop()
+                    status = 0 if result["ok"] else 1
+                    return status
+                elif args.fabric_command == "run":
+                    event_log = None if args.no_event_log else args.event_log
+
+                    def emit_fabric_run_started(payload: Mapping[str, Any]) -> None:
+                        if args.compact:
+                            sys.stdout.write(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+                            sys.stdout.write("\n")
+                        else:
+                            sys.stdout.write(format_fabric_run_report(payload))
+                            sys.stdout.write("\n")
+                        sys.stdout.flush()
+
+                    result = run_fabric_data_plane(
+                        args.config,
+                        state_path=args.state,
+                        event_log=event_log,
+                        controller_interval=args.controller_interval,
+                        reload_interval=args.reload_interval,
+                        status_host=args.status_host,
+                        status_port=args.status_port,
+                        emit=emit_fabric_run_started,
+                    )
                     status = 0 if result["ok"] else 1
                     return status
                 else:

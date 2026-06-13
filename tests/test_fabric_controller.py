@@ -4,7 +4,12 @@ import http.client
 import json
 from pathlib import Path
 
-from snulbug import FabricControllerStatusServer, reconcile_fabric_controller, run_fabric_controller
+from snulbug import (
+    FabricControllerStatusServer,
+    reconcile_fabric_controller,
+    run_fabric_controller,
+    run_fabric_data_plane,
+)
 from snulbug.simulator import main as simulator_main
 
 
@@ -194,6 +199,118 @@ def test_fabric_controller_status_server_exposes_health_status_and_metrics(tmp_p
     assert "snulbug_fabric_upstreams 1" in metrics["body"]
 
 
+def test_fabric_data_plane_runner_starts_controller_and_proxy(tmp_path):
+    config = write_fabric_run_config(tmp_path)
+    state = tmp_path / ".snulbug/fabric-state.json"
+    event_log = tmp_path / ".snulbug/fabric-events.jsonl"
+    started = []
+    proxy_calls = []
+    health_checks = []
+
+    def emit(payload):
+        started.append(payload)
+
+    def fake_proxy_runner(**kwargs):
+        proxy_calls.append(kwargs)
+        status = started[0]["status_server"]
+        health_checks.append(read_http(status["host"], status["port"], "/healthz"))
+
+    result = run_fabric_data_plane(
+        config,
+        state_path=state,
+        event_log=event_log,
+        controller_interval=0.01,
+        reload_interval=0.02,
+        status_port=0,
+        emit=emit,
+        proxy_runner=fake_proxy_runner,
+    )
+
+    snapshot = json.loads(state.read_text(encoding="utf-8"))
+    assert result["ok"] is True
+    assert result["stopped"] is True
+    assert started[0]["generated_by"] == "snulbug mcp fabric run"
+    assert started[0]["proxy"]["upstream_count"] == 1
+    assert started[0]["proxy"]["reload_enabled"] is True
+    assert proxy_calls[0]["fabric_reload_config"] == config
+    assert proxy_calls[0]["fabric_reload_interval"] == 0.02
+    assert proxy_calls[0]["upstreams"][0]["name"] == "files"
+    assert health_checks[0]["status"] == 200
+    assert json.loads(health_checks[0]["body"]) == {"ok": True}
+    assert snapshot["initialized"] is True
+    assert event_log.is_file()
+
+
+def test_fabric_data_plane_runner_requires_facade_upstreams(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.fabric]
+        name = "single-upstream"
+
+        [mcp.proxy]
+        upstream = "http://127.0.0.1:9000/mcp"
+        policy = "policy.snulbug/policy.lua"
+        """,
+        encoding="utf-8",
+    )
+
+    try:
+        run_fabric_data_plane(config, status_port=0, proxy_runner=lambda **kwargs: None)
+    except ValueError as exc:
+        assert "facade upstreams" in str(exc)
+    else:  # pragma: no cover - assertion guard.
+        raise AssertionError("expected fabric data plane to require facade upstreams")
+
+
+def test_mcp_fabric_run_cli_emits_compact_startup(monkeypatch, tmp_path, capsys):
+    config = write_fabric_run_config(tmp_path)
+    calls = []
+
+    def fake_run_fabric_data_plane(config_path, **kwargs):
+        calls.append((config_path, kwargs))
+        payload = {
+            "ok": True,
+            "generated_by": "snulbug mcp fabric run",
+            "config": str(config_path),
+            "status_server": {"url": "http://127.0.0.1:0"},
+            "proxy": {"upstream_count": 1, "reload_enabled": True},
+        }
+        kwargs["emit"](payload)
+        return {**payload, "stopped": True}
+
+    monkeypatch.setattr("snulbug.controller.run_fabric_data_plane", fake_run_fabric_data_plane)
+
+    status = simulator_main(
+        [
+            "mcp",
+            "fabric",
+            "run",
+            "--config",
+            str(config),
+            "--state",
+            str(tmp_path / "state.json"),
+            "--event-log",
+            str(tmp_path / "events.jsonl"),
+            "--controller-interval",
+            "0.5",
+            "--reload-interval",
+            "0.25",
+            "--status-port",
+            "0",
+            "--compact",
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert status == 0
+    assert output["generated_by"] == "snulbug mcp fabric run"
+    assert calls[0][0] == config
+    assert calls[0][1]["controller_interval"] == 0.5
+    assert calls[0][1]["reload_interval"] == 0.25
+    assert calls[0][1]["status_port"] == 0
+
+
 def write_controller_config(tmp_path: Path, *, discovery_registry: Path | None = None) -> Path:
     config = tmp_path / "snulbug.toml"
     if discovery_registry is None:
@@ -239,8 +356,44 @@ def write_controller_config(tmp_path: Path, *, discovery_registry: Path | None =
     return config
 
 
+def write_fabric_run_config(tmp_path: Path) -> Path:
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.fabric]
+        name = "managed-fabric"
+        probe_gateway = false
+        probe_upstreams = false
+
+        [mcp.proxy]
+        host = "127.0.0.1"
+        port = 8181
+        policy = "policy.snulbug/policy.lua"
+        record_out = "traces/session.jsonl"
+        audit_out = "traces/audit.jsonl"
+
+        [[mcp.proxy.upstreams]]
+        name = "files"
+        url = "http://127.0.0.1:9001/mcp"
+        """,
+        encoding="utf-8",
+    )
+    return config
+
+
 def read_status_server(server: FabricControllerStatusServer, path: str) -> dict[str, object]:
     connection = http.client.HTTPConnection(server.host, server.port, timeout=2)
+    try:
+        connection.request("GET", path)
+        response = connection.getresponse()
+        body = response.read().decode("utf-8")
+        return {"status": response.status, "body": body}
+    finally:
+        connection.close()
+
+
+def read_http(host: str, port: int, path: str) -> dict[str, object]:
+    connection = http.client.HTTPConnection(host, port, timeout=2)
     try:
         connection.request("GET", path)
         response = connection.getresponse()
