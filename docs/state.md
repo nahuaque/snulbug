@@ -41,4 +41,6 @@ snulbug mcp fabric runtime status --runtime-state sqlite:.snulbug/fabric-runtime
 ```
 
 Use `redis://...` plus `--runtime-state-key` when several containers or hosts
-need one shared MCP fabric runtime view.
+need one shared MCP fabric runtime view. Runtime state also maintains a lease
+key next to the status key so only one active owner can publish heartbeats for a
+given fabric key at a time.

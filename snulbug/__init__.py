@@ -55,8 +55,10 @@ from .fabric import (
     run_fabric_conformance_pack,
 )
 from .fabric_runtime import (
+    DEFAULT_FABRIC_RUNTIME_LEASE_TTL_SECONDS,
     DEFAULT_FABRIC_RUNTIME_STATE,
     DEFAULT_FABRIC_RUNTIME_STATE_KEY,
+    FABRIC_RUNTIME_LEASE_SCHEMA,
     FABRIC_RUNTIME_STATE_SCHEMA,
     FabricRuntimeStateStore,
     MemoryFabricRuntimeStateStore,
@@ -119,6 +121,7 @@ __all__ = [
     "CloudflareAccessConfig",
     "ConfirmationBroker",
     "CONTROL_EVENT_SCHEMA",
+    "DEFAULT_FABRIC_RUNTIME_LEASE_TTL_SECONDS",
     "DEFAULT_FABRIC_RUNTIME_STATE",
     "DEFAULT_FABRIC_RUNTIME_STATE_KEY",
     "EVENT_DISCOVERY_DEGRADED",
@@ -131,6 +134,7 @@ __all__ = [
     "EVENT_UPSTREAM_DEGRADED",
     "EVENT_UPSTREAM_RECOVERED",
     "EVENT_UPSTREAM_UNHEALTHY",
+    "FABRIC_RUNTIME_LEASE_SCHEMA",
     "FABRIC_RUNTIME_STATE_SCHEMA",
     "FacadeHealthPolicy",
     "LuaConfig",

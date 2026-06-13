@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import socket
 import threading
 import time
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -26,6 +29,7 @@ from .control_events import (
 )
 from .fabric import build_fabric_audit_metadata, fabric_status, run_fabric_conformance_pack
 from .fabric_runtime import (
+    DEFAULT_FABRIC_RUNTIME_LEASE_TTL_SECONDS,
     DEFAULT_FABRIC_RUNTIME_STATE,
     DEFAULT_FABRIC_RUNTIME_STATE_KEY,
     FabricRuntimeStateStore,
@@ -165,6 +169,8 @@ def run_fabric_data_plane(
     runtime_state: str | Path | FabricRuntimeStateStore | None = DEFAULT_FABRIC_RUNTIME_STATE,
     runtime_state_key: str = DEFAULT_FABRIC_RUNTIME_STATE_KEY,
     runtime_heartbeat_ttl: float = DEFAULT_RUNTIME_HEARTBEAT_TTL_SECONDS,
+    runtime_instance_id: str | None = None,
+    runtime_lease_ttl: float = DEFAULT_FABRIC_RUNTIME_LEASE_TTL_SECONDS,
     emit: Callable[[Mapping[str, Any]], None] | None = None,
     proxy_runner: FabricProxyRunner | None = None,
 ) -> dict[str, Any]:
@@ -178,17 +184,43 @@ def run_fabric_data_plane(
         raise ValueError("require_conformance requires conformance_pack")
     if runtime_heartbeat_ttl <= 0:
         raise ValueError("runtime_heartbeat_ttl must be positive")
+    if runtime_lease_ttl <= 0:
+        raise ValueError("runtime_lease_ttl must be positive")
 
     config_path = Path(config)
     runtime_store = open_fabric_runtime_state_store(runtime_state, key=runtime_state_key)
     close_runtime_store = runtime_store if isinstance(runtime_state, str | Path) else None
-    status_server = FabricControllerStatusServer(host=status_host, port=status_port, runtime_store=runtime_store)
-    status_server.start()
+    owner_id = runtime_instance_id or _new_runtime_owner_id()
+    runtime_lease = None
+    status_server = None
     stop_event = threading.Event()
     controller_errors: list[str] = []
     controller_thread: threading.Thread | None = None
 
     try:
+        if runtime_store is not None:
+            runtime_lease_result = runtime_store.acquire_lease(
+                owner_id,
+                ttl_seconds=runtime_lease_ttl,
+                metadata={"config": str(config_path), "state": str(state_path), "event_log": str(event_log)},
+            )
+            if not runtime_lease_result.get("ok"):
+                lease = _mapping(runtime_lease_result.get("lease"))
+                raise ValueError(
+                    "fabric runtime state is owned by "
+                    f"{lease.get('owner_id', 'another instance')} until {lease.get('expires_at', 'unknown')}"
+                )
+            runtime_lease = _mapping(runtime_lease_result.get("lease"))
+
+        status_server = FabricControllerStatusServer(
+            host=status_host,
+            port=status_port,
+            runtime_store=runtime_store,
+            runtime_owner_id=owner_id if runtime_store is not None else None,
+            runtime_lease=runtime_lease,
+            runtime_lease_ttl=runtime_lease_ttl,
+        )
+        status_server.start()
         initial = run_fabric_controller(
             config_path,
             state_path=state_path,
@@ -336,13 +368,22 @@ def run_fabric_data_plane(
             heartbeat_ttl_seconds=runtime_heartbeat_ttl,
         )
         status_server.update_runtime(stopped_runtime)
-        stopped = _attach_share_gate({**started, "runtime": stopped_runtime, "stopped": True})
+        stopped = _attach_share_gate(
+            {
+                **started,
+                "runtime": stopped_runtime,
+                "runtime_owner": _runtime_owner_summary(status_server.runtime_lease),
+                "stopped": True,
+            }
+        )
         return {**stopped, "controller_errors": controller_errors}
     finally:
         stop_event.set()
         if controller_thread is not None:
             controller_thread.join(timeout=max(1.0, min(controller_interval, 5.0)))
-        status_server.stop()
+        if status_server is not None:
+            status_server.release_runtime_lease()
+            status_server.stop()
         if close_runtime_store is not None:
             close_runtime_store.close()
 
@@ -414,6 +455,7 @@ def format_fabric_run_report(result: Mapping[str, Any]) -> str:
     data_plane = _mapping(runtime.get("data_plane"))
     conformance = _mapping(runtime.get("conformance"))
     share_gate = _mapping(result.get("share_gate"))
+    runtime_owner = _mapping(result.get("runtime_owner"))
     lines = [
         "# snulbug fabric run",
         "",
@@ -439,6 +481,8 @@ def format_fabric_run_report(result: Mapping[str, Any]) -> str:
             f"- reload interval: {proxy.get('reload_interval')}s",
             f"- share gate: `{'ok' if share_gate.get('ok') else 'blocked'}`",
             f"- conformance: `{conformance.get('status', 'not_configured')}`",
+            f"- owner: `{runtime_owner.get('owner_id', 'none')}`",
+            f"- fencing token: `{runtime_owner.get('fencing_token', 'none')}`",
             "",
             "## Endpoints",
             f"- health: `{status_server.get('url')}/healthz`",
@@ -456,6 +500,9 @@ class FabricControllerStatusServer:
     host: str = "127.0.0.1"
     port: int = 0
     runtime_store: FabricRuntimeStateStore | None = None
+    runtime_owner_id: str | None = None
+    runtime_lease: Mapping[str, Any] | None = None
+    runtime_lease_ttl: float = DEFAULT_FABRIC_RUNTIME_LEASE_TTL_SECONDS
     _server: ThreadingHTTPServer | None = field(default=None, init=False, repr=False)
     _thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _latest: dict[str, Any] = field(default_factory=lambda: _initial_controller_status(), init=False, repr=False)
@@ -464,9 +511,10 @@ class FabricControllerStatusServer:
     def __post_init__(self) -> None:
         if self.runtime_store is None:
             return
-        stored = self.runtime_store.load_status()
-        if stored is not None:
-            self._latest = _attach_share_gate(stored)
+        if self.runtime_owner_id is None:
+            stored = self.runtime_store.load_status()
+            if stored is not None:
+                self._latest = _attach_share_gate(stored)
 
     def start(self) -> None:
         if self._server is not None:
@@ -533,15 +581,52 @@ class FabricControllerStatusServer:
             self._save_latest()
 
     def latest(self) -> dict[str, Any]:
-        stored = self.runtime_store.load_status() if self.runtime_store is not None else None
+        stored = (
+            self.runtime_store.load_status()
+            if self.runtime_store is not None and self.runtime_owner_id is None
+            else None
+        )
         with self._lock:
             if stored is not None:
                 self._latest = _attach_share_gate(stored)
             return _copy_jsonish(self._latest)
 
     def _save_latest(self) -> None:
-        if self.runtime_store is not None:
+        if self.runtime_store is None:
+            return
+        if self.runtime_owner_id is None or self.runtime_lease is None:
             self.runtime_store.save_status(self._latest)
+            return
+        lease = self.runtime_store.renew_lease(
+            self.runtime_owner_id,
+            int(self.runtime_lease.get("fencing_token", -1)),
+            ttl_seconds=self.runtime_lease_ttl,
+        )
+        if lease is None:
+            self.runtime_lease = _runtime_owner_lost(self.runtime_lease)
+            self._latest["runtime_owner"] = _runtime_owner_summary(self.runtime_lease)
+            self._latest = _attach_share_gate(self._latest)
+            return
+        self.runtime_lease = lease
+        self._latest["runtime_owner"] = _runtime_owner_summary(lease)
+        self._latest = _attach_share_gate(self._latest)
+        self.runtime_store.save_status(self._latest, lease=lease)
+
+    def release_runtime_lease(self) -> None:
+        if self.runtime_store is None or self.runtime_owner_id is None or self.runtime_lease is None:
+            return
+        released = self.runtime_store.release_lease(
+            self.runtime_owner_id,
+            int(self.runtime_lease.get("fencing_token", -1)),
+        )
+        if not released:
+            return
+        current = self.runtime_store.load_lease()
+        if current is not None:
+            self.runtime_lease = current
+            self._latest["runtime_owner"] = _runtime_owner_summary(current)
+            self._latest = _attach_share_gate(self._latest)
+            self.runtime_store.save_status(self._latest, lease=current)
 
 
 def _desired_state(status: Mapping[str, Any]) -> dict[str, Any]:
@@ -1155,6 +1240,13 @@ def _attach_share_gate(result: Mapping[str, Any]) -> dict[str, Any]:
         blocks.append(f"data_plane_{data_plane.get('status', 'unknown')}")
     if data_plane.get("status") == "running" and _data_plane_heartbeat_stale(data_plane):
         blocks.append("data_plane_heartbeat_stale")
+    runtime_owner = _mapping(latest.get("runtime_owner"))
+    if runtime_owner.get("lost"):
+        blocks.append("runtime_lease_lost")
+    elif runtime_owner.get("released_at"):
+        blocks.append("runtime_lease_released")
+    elif runtime_owner and _runtime_owner_lease_expired(runtime_owner):
+        blocks.append("runtime_lease_expired")
     conformance = _mapping(runtime.get("conformance"))
     if conformance:
         if conformance.get("required") and conformance.get("ok") is not True:
@@ -1172,6 +1264,42 @@ def _attach_share_gate(result: Mapping[str, Any]) -> dict[str, Any]:
         }
     )
     return latest
+
+
+def _runtime_owner_summary(lease: Mapping[str, Any] | None) -> dict[str, Any]:
+    lease_mapping = _mapping(lease)
+    return _drop_empty(
+        {
+            "owner_id": lease_mapping.get("owner_id"),
+            "fencing_token": lease_mapping.get("fencing_token"),
+            "acquired_at": lease_mapping.get("acquired_at"),
+            "heartbeat_at": lease_mapping.get("heartbeat_at"),
+            "expires_at": lease_mapping.get("expires_at"),
+            "ttl_seconds": lease_mapping.get("ttl_seconds"),
+            "released_at": lease_mapping.get("released_at"),
+            "lost": lease_mapping.get("lost"),
+        }
+    )
+
+
+def _runtime_owner_lost(lease: Mapping[str, Any]) -> dict[str, Any]:
+    now = _utc_now()
+    return _drop_empty(
+        {
+            **_copy_jsonish(lease),
+            "lost": True,
+            "lost_at": now,
+            "heartbeat_at": now,
+        }
+    )
+
+
+def _runtime_owner_lease_expired(runtime_owner: Mapping[str, Any]) -> bool:
+    expires_at = runtime_owner.get("expires_at")
+    if not isinstance(expires_at, str) or not expires_at:
+        return False
+    parsed = _parse_timestamp(expires_at)
+    return parsed is not None and parsed <= datetime.now(timezone.utc)
 
 
 def _heartbeat_runtime(runtime: Mapping[str, Any]) -> dict[str, Any]:
@@ -1213,6 +1341,11 @@ def _parse_timestamp(value: str) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _new_runtime_owner_id() -> str:
+    host = socket.gethostname().split(".")[0] or "host"
+    return f"{host}-{os.getpid()}-{uuid.uuid4().hex[:12]}"
+
+
 def _fabric_run_started_result(
     *,
     config: Path,
@@ -1240,6 +1373,7 @@ def _fabric_run_started_result(
         require_conformance=require_conformance,
         heartbeat_ttl_seconds=heartbeat_ttl_seconds,
     )
+    runtime_owner = _runtime_owner_summary(status_server.runtime_lease)
     return _attach_share_gate(
         {
             "ok": True,
@@ -1269,6 +1403,7 @@ def _fabric_run_started_result(
                 "reload_interval": reload_interval,
             },
             "runtime": runtime,
+            "runtime_owner": runtime_owner,
             "stopped": False,
         }
     )

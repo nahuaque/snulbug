@@ -8,7 +8,11 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .fabric_runtime import DEFAULT_FABRIC_RUNTIME_STATE, DEFAULT_FABRIC_RUNTIME_STATE_KEY
+from .fabric_runtime import (
+    DEFAULT_FABRIC_RUNTIME_LEASE_TTL_SECONDS,
+    DEFAULT_FABRIC_RUNTIME_STATE,
+    DEFAULT_FABRIC_RUNTIME_STATE_KEY,
+)
 from .runtime import LuaDecisionError, compile_lua_file
 from .state import BoundedPolicyState, SnapshotStateStore
 
@@ -708,6 +712,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=float,
         default=15.0,
         help="seconds before persisted running runtime state is considered stale",
+    )
+    mcp_fabric_run.add_argument(
+        "--runtime-instance-id",
+        help="explicit managed data-plane owner id; defaults to a generated host/pid/id value",
+    )
+    mcp_fabric_run.add_argument(
+        "--runtime-lease-ttl",
+        type=float,
+        default=DEFAULT_FABRIC_RUNTIME_LEASE_TTL_SECONDS,
+        help="seconds before another instance may acquire the shared runtime lease",
     )
     mcp_fabric_run.add_argument("--compact", action="store_true", help="emit compact JSON startup output")
 
@@ -1551,6 +1565,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         runtime_state=args.runtime_state,
                         runtime_state_key=args.runtime_state_key,
                         runtime_heartbeat_ttl=args.runtime_heartbeat_ttl,
+                        runtime_instance_id=args.runtime_instance_id,
+                        runtime_lease_ttl=args.runtime_lease_ttl,
                         emit=emit_fabric_run_started,
                     )
                     status = 0 if result["ok"] else 1

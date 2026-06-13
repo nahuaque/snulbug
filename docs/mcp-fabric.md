@@ -414,6 +414,19 @@ snulbug mcp fabric run \
   --runtime-state-key snulbug:fabric:devbox-a
 ```
 
+Shared runtime state is protected by an owner lease. Each `fabric run` instance
+gets an owner id and a monotonic fencing token; a second active instance with
+the same runtime-state key is refused until the first lease is released or
+expires. Use an explicit owner id for stable container names:
+
+```bash
+snulbug mcp fabric run \
+  --config snulbug.toml \
+  --runtime-state redis://127.0.0.1:6379/0 \
+  --runtime-instance-id gateway-devbox-a \
+  --runtime-lease-ttl 30
+```
+
 Read or clear the persisted runtime state without contacting the live status
 server:
 

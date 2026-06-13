@@ -346,6 +346,8 @@ def test_fabric_data_plane_runner_starts_controller_and_proxy(tmp_path):
     assert started[0]["proxy"]["reload_enabled"] is True
     assert started[0]["runtime"]["data_plane"]["status"] == "running"
     assert started[0]["runtime"]["conformance"]["status"] == "not_configured"
+    assert started[0]["runtime_owner"]["owner_id"]
+    assert started[0]["runtime_owner"]["fencing_token"] == 1
     assert started[0]["share_gate"]["ok"] is True
     assert started[0]["share_gate"]["warnings"] == ["conformance_not_configured"]
     assert result["runtime"]["data_plane"]["status"] == "stopped"
@@ -368,7 +370,64 @@ def test_fabric_data_plane_runner_starts_controller_and_proxy(tmp_path):
     persisted = load_fabric_runtime_status(runtime_state, key=runtime_state_key)
     assert persisted["ok"] is True
     assert persisted["status"]["runtime"]["data_plane"]["status"] == "stopped"
-    assert persisted["status"]["share_gate"]["blocked_by"] == ["data_plane_stopped"]
+    assert "data_plane_stopped" in persisted["status"]["share_gate"]["blocked_by"]
+    assert "runtime_lease_released" in persisted["status"]["share_gate"]["blocked_by"]
+    assert persisted["status"]["runtime_owner"]["released_at"]
+
+
+def test_fabric_runtime_store_uses_fencing_tokens_for_ownership():
+    store = MemoryFabricRuntimeStateStore()
+    first = store.acquire_lease("owner-a", ttl_seconds=60)
+    second = store.acquire_lease("owner-b", ttl_seconds=60)
+    renewed = store.renew_lease("owner-a", first["lease"]["fencing_token"], ttl_seconds=60)
+    released = store.release_lease("owner-a", first["lease"]["fencing_token"])
+    third = store.acquire_lease("owner-b", ttl_seconds=60)
+
+    assert first["ok"] is True
+    assert first["lease"]["fencing_token"] == 1
+    assert second["ok"] is False
+    assert second["reason"] == "owned_by_other_instance"
+    assert second["lease"]["owner_id"] == "owner-a"
+    assert renewed["owner_id"] == "owner-a"
+    assert released is True
+    assert third["ok"] is True
+    assert third["lease"]["fencing_token"] == 2
+
+
+def test_fabric_data_plane_runner_rejects_competing_runtime_owner(tmp_path):
+    config = write_fabric_run_config(tmp_path)
+    runtime_store = MemoryFabricRuntimeStateStore()
+    started = []
+    second_error = []
+
+    def fake_proxy_runner(**kwargs):
+        try:
+            run_fabric_data_plane(
+                config,
+                status_port=0,
+                runtime_state=runtime_store,
+                runtime_instance_id="owner-b",
+                proxy_runner=lambda **nested_kwargs: None,
+            )
+        except ValueError as exc:
+            second_error.append(str(exc))
+        else:  # pragma: no cover - assertion guard.
+            raise AssertionError("expected competing fabric runtime owner to be rejected")
+
+    result = run_fabric_data_plane(
+        config,
+        status_port=0,
+        runtime_state=runtime_store,
+        runtime_instance_id="owner-a",
+        emit=lambda payload: started.append(payload),
+        proxy_runner=fake_proxy_runner,
+    )
+
+    assert result["ok"] is True
+    assert started[0]["runtime_owner"]["owner_id"] == "owner-a"
+    assert started[0]["runtime_owner"]["fencing_token"] == 1
+    assert second_error
+    assert "owned by owner-a" in second_error[0]
 
 
 def test_fabric_status_server_loads_shared_runtime_state():
@@ -507,6 +566,10 @@ def test_mcp_fabric_run_cli_emits_compact_startup(monkeypatch, tmp_path, capsys)
             "cli-runtime",
             "--runtime-heartbeat-ttl",
             "20",
+            "--runtime-instance-id",
+            "cli-owner",
+            "--runtime-lease-ttl",
+            "45",
             "--compact",
         ]
     )
@@ -523,6 +586,8 @@ def test_mcp_fabric_run_cli_emits_compact_startup(monkeypatch, tmp_path, capsys)
     assert calls[0][1]["runtime_state"] == runtime_state
     assert calls[0][1]["runtime_state_key"] == "cli-runtime"
     assert calls[0][1]["runtime_heartbeat_ttl"] == 20.0
+    assert calls[0][1]["runtime_instance_id"] == "cli-owner"
+    assert calls[0][1]["runtime_lease_ttl"] == 45.0
 
 
 def test_mcp_fabric_runtime_cli_reads_and_clears_persisted_state(tmp_path, capsys):
