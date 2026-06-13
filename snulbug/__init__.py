@@ -59,6 +59,7 @@ from .controller import (
     run_fabric_data_plane,
 )
 from .discovery import discovery_provider_types, register_discovery_provider
+from .expose import format_exposure_session_report, plan_exposure_session
 from .fabric import (
     annotate_topology_audit,
     build_fabric_audit_metadata,
@@ -155,6 +156,7 @@ from .tunnel import (
     TUNNEL_PROVIDERS,
     TunnelAuditConfig,
     build_tunnel_audit_metadata,
+    display_tunnel_public_endpoint,
     doctor_tunnel,
     format_tunnel_doctor_report,
     format_tunnel_init_report,
@@ -256,6 +258,7 @@ __all__ = [
     "build_mcp_guide",
     "discovery_provider_types",
     "discover_fabric_upstreams",
+    "display_tunnel_public_endpoint",
     "doctor_tunnel",
     "doctor_fabric",
     "evaluate_cloudflare_access",
@@ -272,6 +275,7 @@ __all__ = [
     "format_fabric_status_report",
     "format_codespace_attach_report",
     "format_codespace_demo_report",
+    "format_exposure_session_report",
     "format_mcp_inspection_report",
     "format_mcp_impact_report",
     "format_mcp_guide",
@@ -301,6 +305,7 @@ __all__ = [
     "open_fabric_runtime_state_store",
     "pack_bundle",
     "parse_tunnel_headers",
+    "plan_exposure_session",
     "prepare_codespace_attach",
     "prepare_codespace_demo",
     "record_audit_event",

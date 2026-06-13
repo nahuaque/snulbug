@@ -800,6 +800,12 @@ def _display_public_endpoint(provider: str, public_endpoint: str) -> str:
     return public_endpoint
 
 
+def display_tunnel_public_endpoint(provider: str, public_endpoint: str) -> str:
+    """Return the copy-paste display URL for a tunnel endpoint."""
+
+    return _display_public_endpoint(provider, public_endpoint)
+
+
 def _default_public_url_report_lines(provider: str) -> list[str]:
     env = DEFAULT_PUBLIC_URL_ENVS[provider]
     origin = _default_public_origin(provider) or ""

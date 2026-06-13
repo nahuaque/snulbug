@@ -274,6 +274,7 @@ Workflow:
 Start with:
 
 - [Quickstart: local MCP policy gateway](docs/quickstart.md)
+- [Expose session planner](docs/expose.md)
 - [MCP share sessions](docs/mcp-share.md)
 - [MCP CLI guide for agents and harnesses](docs/mcp-guide.md)
 - [Tunnel init](docs/tunnel-init.md)

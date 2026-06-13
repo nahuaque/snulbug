@@ -232,6 +232,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     tunnel_doctor.add_argument("--timeout", type=float, default=5.0, help="HTTP probe timeout in seconds")
     tunnel_doctor.add_argument("--compact", action="store_true", help="emit compact JSON")
 
+    expose = subparsers.add_parser("expose", help="plan a tunnel-safe MCP exposure session")
+    expose.add_argument(
+        "--provider",
+        choices=("generic", "ngrok", "cloudflare", "tailscale", "localxpose", "holepunch"),
+        required=True,
+        help="tunnel provider or peer bridge profile",
+    )
+    expose.add_argument("--config", type=Path, help="snulbug.toml config file")
+    expose.add_argument("--local-url", help="local snulbug MCP URL or origin")
+    expose.add_argument("--url", "--public-url", dest="url", help="public tunnel MCP URL")
+    expose.add_argument("--hostname", help="provider hostname to use when --url is omitted")
+    expose.add_argument("--token-env", default="SNULBUG_TOKEN", help="environment variable holding bearer token")
+    expose.add_argument("--path", default="/mcp", help="MCP path to append when URLs omit a path")
+    expose.add_argument("--output-dir", type=Path, help="optional directory for generated setup files")
+    expose.add_argument("--report-out", type=Path, help="session report path for the generated inspect command")
+    expose.add_argument(
+        "--decision-console",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="include decision-console mode in the proxy command",
+    )
+    expose.add_argument("--force", action="store_true", help="overwrite generated files")
+    expose.add_argument("--dry-run", action="store_true", help="print the exposure plan without writing files")
+    expose.add_argument("--compact", action="store_true", help="emit compact JSON")
+
     mcp = subparsers.add_parser("mcp", help="work with local-dev MCP policy helpers and presets")
     mcp_subparsers = mcp.add_subparsers(dest="mcp_command", required=True)
 
@@ -1470,6 +1495,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 output = json.dumps(result, indent=2)
             sys.stdout.write(output)
+        sys.stdout.write("\n")
+        return status
+
+    if args.command == "expose":
+        from .expose import format_exposure_session_report, plan_exposure_session
+
+        try:
+            result = plan_exposure_session(
+                provider=args.provider,
+                config=args.config,
+                local_url=args.local_url,
+                public_url=args.url,
+                hostname=args.hostname,
+                token_env=args.token_env,
+                path=args.path,
+                output_dir=args.output_dir,
+                report_out=args.report_out,
+                decision_console=args.decision_console,
+                force=args.force,
+                dry_run=args.dry_run,
+            )
+            status = 0 if result["ok"] else 1
+        except Exception as exc:
+            result = {"ok": False, "error": str(exc)}
+            status = 1
+
+        if args.compact:
+            sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
+        else:
+            sys.stdout.write(format_exposure_session_report(result))
         sys.stdout.write("\n")
         return status
 

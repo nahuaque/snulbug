@@ -308,6 +308,8 @@ auth-sensitive replay artifacts for a short-lived local debugging session.
   runs a standalone HTTP MCP upstream behind the generated proxy policy.
 - [MCP CLI guide for agents and harnesses](mcp-guide.md) shows copy-paste and
   compact JSON workflows.
+- [Expose](expose.md) prints the end-to-end proxy, tunnel, doctor, client, and
+  report commands as one session plan.
 - [Tunnel init](tunnel-init.md) generates provider-specific setup commands and
   config snippets.
 - [Tunnel doctor](tunnel-doctor.md) checks a local proxy or public tunnel before

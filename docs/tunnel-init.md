@@ -14,6 +14,9 @@ If no `snulbug.toml` is present, init also creates a safe starter under
 starter points at `http://127.0.0.1:9000`; edit the generated `upstream` value
 if your local MCP server uses another URL.
 
+Use [Expose](expose.md) when you want the proxy, provider, doctor, client, and
+session-report commands printed as one ordered plan.
+
 ## Ngrok
 
 ```bash
