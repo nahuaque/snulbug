@@ -120,6 +120,80 @@ def test_fabric_doctor_verifies_manifests_and_probes_gateway_and_upstreams(tmp_p
     assert checks["upstream.files.tools_list"]["status"] == "pass"
 
 
+def test_fabric_doctor_uses_upstream_credential_for_authenticated_probe(tmp_path, monkeypatch):
+    upstream = start_mcp_server(protected=True)
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        f"""
+        [mcp.fabric]
+        name = "dev-fabric"
+        probe_gateway = false
+
+        [mcp.fabric.credentials.files]
+        type = "env"
+        env = "FILES_MCP_TOKEN"
+        scheme = "bearer"
+
+        [mcp.proxy]
+        host = "127.0.0.1"
+        port = 8181
+        record_out = "traces/session.jsonl"
+        audit_out = "traces/audit.jsonl"
+
+        [[mcp.proxy.upstreams]]
+        name = "files"
+        url = "http://127.0.0.1:{upstream.server_port}/mcp"
+        auth = "files"
+        """,
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FILES_MCP_TOKEN", "local-dev-secret")
+
+    try:
+        result = doctor_fabric(config, headers={"Authorization": "Bearer caller-token"})
+    finally:
+        stop_server(upstream)
+
+    checks = {check["id"]: check for check in result["checks"]}
+    assert result["ok"] is True
+    assert checks["upstream.files.auth_available"]["status"] == "pass"
+    assert checks["upstream.files.tools_list"]["status"] == "pass"
+
+
+def test_fabric_doctor_fails_when_upstream_credential_is_missing(tmp_path, monkeypatch):
+    monkeypatch.delenv("FILES_MCP_TOKEN", raising=False)
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.fabric]
+        name = "dev-fabric"
+        probe_gateway = false
+        probe_upstreams = false
+
+        [mcp.fabric.credentials.files]
+        type = "env"
+        env = "FILES_MCP_TOKEN"
+
+        [mcp.proxy]
+        host = "127.0.0.1"
+        port = 8181
+
+        [[mcp.proxy.upstreams]]
+        name = "files"
+        url = "http://127.0.0.1:9001/mcp"
+        auth = "files"
+        """,
+        encoding="utf-8",
+    )
+
+    result = doctor_fabric(config)
+
+    checks = {check["id"]: check for check in result["checks"]}
+    assert result["ok"] is False
+    assert checks["upstream.files.auth_available"]["status"] == "fail"
+    assert "FILES_MCP_TOKEN" in checks["upstream.files.auth_available"]["message"]
+
+
 def test_fabric_doctor_fails_when_required_manifest_is_missing(tmp_path):
     config = tmp_path / "snulbug.toml"
     config.write_text(

@@ -489,6 +489,55 @@ def test_mcp_facade_aggregates_tool_lists_with_upstream_prefixes(tmp_path):
     assert git_seen["calls"] == [{"method": "tools/list", "tool": None}]
 
 
+def test_mcp_facade_injects_upstream_credential_header(tmp_path, monkeypatch):
+    files_server, files_seen = start_mcp_upstream({"read_file": "Read a file"})
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+    monkeypatch.setenv("FILES_MCP_TOKEN", "upstream-secret")
+    app = create_proxy_application(
+        None,
+        policy,
+        upstreams=[
+            {
+                "name": "files",
+                "url": f"http://127.0.0.1:{files_server.server_port}/mcp",
+                "credential": {
+                    "id": "files-api",
+                    "type": "env",
+                    "env": "FILES_MCP_TOKEN",
+                    "scheme": "bearer",
+                    "header": "Authorization",
+                },
+            }
+        ],
+        record_out=record_log,
+        audit_out=audit_log,
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            headers=[(b"authorization", b"Bearer caller-token")],
+            body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}',
+        )
+    finally:
+        files_server.shutdown()
+        files_server.server_close()
+
+    records = load_record_log(record_log)
+    audit = json.loads(audit_log.read_text(encoding="utf-8"))
+    assert sent[0]["status"] == 200
+    assert files_seen["headers"][0]["authorization"] == "Bearer upstream-secret"
+    assert "caller-token" not in files_seen["headers"][0]["authorization"]
+    auth_metadata = records[0]["metadata"]["upstream_transports"][0]["auth"]
+    assert auth_metadata["id"] == "files-api"
+    assert auth_metadata["source"] == "env"
+    assert auth_metadata["header"] == "Authorization"
+    assert "upstream-secret" not in json.dumps(records)
+    assert "upstream-secret" not in json.dumps(audit)
+
+
 def test_mcp_facade_routes_tool_calls_by_prefix_and_records_upstream_metadata(tmp_path):
     files_server, files_seen = start_mcp_upstream({"read_file": "Read a file"})
     git_server, git_seen = start_mcp_upstream({"status": "Show git status"})
@@ -1774,13 +1823,14 @@ def start_mcp_upstream(
     call_text: str | None = None,
     schemas: dict[str, Any] | None = None,
 ):
-    seen: dict[str, Any] = {"calls": []}
+    seen: dict[str, Any] = {"calls": [], "headers": []}
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):  # noqa: N802
             body = self.rfile.read(int(self.headers.get("content-length", "0")))
             request = json.loads(body.decode("utf-8"))
             params = request.get("params") if isinstance(request.get("params"), dict) else {}
+            seen["headers"].append({name.lower(): value for name, value in self.headers.items()})
             seen["calls"].append({"method": request.get("method"), "tool": params.get("name")})
             if request.get("method") == "tools/list":
                 result = {

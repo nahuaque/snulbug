@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from snulbug import load_mcp_proxy_config, write_sample_config
 from snulbug.config import merge_mcp_proxy_config
 from snulbug.simulator import main as simulator_main
@@ -153,6 +155,75 @@ def test_load_mcp_proxy_config_supports_facade_upstreams(tmp_path):
             "default": False,
         },
     ]
+
+
+def test_load_mcp_proxy_config_attaches_fabric_credentials_to_upstreams(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.fabric.credentials.codespace]
+        type = "env"
+        env = "CODESPACE_MCP_TOKEN"
+        scheme = "bearer"
+
+        [mcp.fabric.credentials.file_token]
+        type = "file"
+        path = "secrets/upstream-token"
+        scheme = "raw"
+        header = "x-api-key"
+
+        [mcp.proxy]
+        policy = "policy.snulbug/policy.lua"
+
+        [[mcp.proxy.upstreams]]
+        name = "files"
+        url = "http://127.0.0.1:9001/mcp"
+        auth = "codespace"
+
+        [[mcp.proxy.upstreams]]
+        name = "git"
+        url = "http://127.0.0.1:9002/mcp"
+        auth = "file_token"
+        """,
+        encoding="utf-8",
+    )
+
+    result = load_mcp_proxy_config(config)
+
+    assert result["upstreams"][0]["auth"] == "codespace"
+    assert result["upstreams"][0]["credential"] == {
+        "id": "codespace",
+        "type": "env",
+        "env": "CODESPACE_MCP_TOKEN",
+        "scheme": "bearer",
+        "header": "Authorization",
+    }
+    assert result["upstreams"][1]["credential"] == {
+        "id": "file_token",
+        "type": "file",
+        "path": str(tmp_path / "secrets/upstream-token"),
+        "scheme": "raw",
+        "header": "x-api-key",
+    }
+
+
+def test_load_mcp_proxy_config_rejects_unknown_upstream_credential_ref(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.proxy]
+        policy = "policy.snulbug/policy.lua"
+
+        [[mcp.proxy.upstreams]]
+        name = "files"
+        url = "http://127.0.0.1:9001/mcp"
+        auth = "missing"
+        """,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unknown mcp.fabric.credentials"):
+        load_mcp_proxy_config(config)
 
 
 def test_load_mcp_proxy_config_supports_stdio_facade_upstreams(tmp_path):

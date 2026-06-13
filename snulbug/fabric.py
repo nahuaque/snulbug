@@ -15,6 +15,12 @@ from typing import Any
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from .config import DEFAULT_CONFIG_PATH, load_mcp_fabric_config
+from .credentials import (
+    CredentialResolutionError,
+    apply_credential_header,
+    credential_metadata,
+    credential_status,
+)
 from .discovery import resolve_fabric_discovery
 from .manifests import load_manifest, verify_upstream_manifest
 
@@ -52,6 +58,7 @@ def fabric_status(config: str | Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
         "probe_gateway": fabric["probe_gateway"],
         "probe_upstreams": fabric["probe_upstreams"],
         "timeout": fabric["timeout"],
+        "credentials": _credentials_status(fabric),
         "proxy": _proxy_status(proxy),
         "discovery": _discovery_status(proxy),
         "upstreams": upstreams,
@@ -427,6 +434,7 @@ def doctor_fabric(
     )
 
     for upstream in upstreams:
+        _run_credential_checks(checks, upstream)
         _run_manifest_checks(checks, upstream, require_manifest=bool(fabric["require_manifests"]))
 
     if do_probe_gateway and fabric.get("gateway_url"):
@@ -502,15 +510,21 @@ def format_fabric_status_report(result: Mapping[str, Any]) -> str:
     for upstream in upstreams:
         manifest = _mapping(upstream.get("manifest"))
         member = _mapping(upstream.get("member"))
+        auth = _mapping(upstream.get("auth"))
         manifest_text = "none"
         if manifest:
             manifest_text = f"{manifest.get('path')} ({'exists' if manifest.get('exists') else 'missing'})"
+        auth_text = "none"
+        if auth:
+            availability = "available" if auth.get("available") else "missing"
+            auth_text = f"{auth.get('id')} ({auth.get('source')}, {availability})"
         lines.append(
             "- "
             f"{upstream.get('name')} [{upstream.get('transport')}] "
             f"prefix=`{upstream.get('tool_prefix')}` "
             f"url=`{upstream.get('url') or '-'}` "
             f"member=`{member.get('id') or '-'}` "
+            f"auth=`{auth_text}` "
             f"manifest=`{manifest_text}`"
         )
 
@@ -520,6 +534,8 @@ def format_fabric_status_report(result: Mapping[str, Any]) -> str:
             "",
             "## Summary",
             f"- upstreams: {summary.get('upstream_count', 0)}",
+            f"- authenticated upstreams: {summary.get('authenticated_upstream_count', 0)}",
+            f"- unavailable credentials: {summary.get('unavailable_credential_count', 0)}",
             f"- manifests: {summary.get('manifest_count', 0)}",
             f"- missing required manifests: {summary.get('missing_required_manifests', 0)}",
         ]
@@ -1948,6 +1964,9 @@ def _upstream_status(upstream: Mapping[str, Any]) -> dict[str, Any]:
         status["args"] = list(upstream["args"])
     if upstream.get("bridge_args"):
         status["bridge_args"] = list(upstream["bridge_args"])
+    auth = credential_status(_mapping(upstream.get("credential")))
+    if auth:
+        status["auth"] = auth
     manifest = _manifest_status(upstream)
     if manifest:
         status["manifest"] = manifest
@@ -1987,6 +2006,7 @@ def _topology_upstream(upstream: Mapping[str, Any]) -> dict[str, Any]:
             "discovery": _upstream_discovery(upstream),
             "member": _upstream_member(upstream),
             "bridge": _holepunch_topology(upstream) if transport == "holepunch" else None,
+            "auth": credential_metadata(_mapping(upstream.get("credential"))),
             "manifest": manifest_summary,
         }
     )
@@ -2098,6 +2118,11 @@ def _fabric_summary(
         "transports": transports,
         "manifest_count": sum(1 for upstream in upstreams if upstream.get("manifest")),
         "missing_required_manifests": missing_required_manifests,
+        "credential_count": len(_mapping(fabric.get("credentials"))),
+        "authenticated_upstream_count": sum(1 for upstream in upstreams if upstream.get("auth")),
+        "unavailable_credential_count": sum(
+            1 for upstream in upstreams if _mapping(upstream.get("auth")).get("available") is False
+        ),
         "default_upstream": default_upstream,
         "facade": bool(proxy.get("upstreams")),
         "tunnel_provider": proxy.get("tunnel_provider"),
@@ -2116,7 +2141,20 @@ def _fabric_recommendations(fabric: Mapping[str, Any], upstreams: Sequence[Mappi
         recommendations.append("Add signed manifests for every upstream or set require_manifests = false.")
     if not fabric.get("gateway_url"):
         recommendations.append("Set mcp.fabric.gateway_url or configure mcp.proxy.host and mcp.proxy.port.")
+    if any(_mapping(upstream.get("auth")).get("available") is False for upstream in upstreams):
+        recommendations.append("Set the env vars or files referenced by [mcp.fabric.credentials] before probing.")
     return recommendations
+
+
+def _credentials_status(fabric: Mapping[str, Any]) -> dict[str, Any]:
+    credentials = _mapping(fabric.get("credentials"))
+    items = [credential_status(credential) for credential in credentials.values() if isinstance(credential, Mapping)]
+    return {
+        "count": len(items),
+        "available_count": sum(1 for item in items if item.get("available") is True),
+        "unavailable_count": sum(1 for item in items if item.get("available") is False),
+        "items": items,
+    }
 
 
 def _run_discovery_checks(checks: list[dict[str, Any]], proxy: Mapping[str, Any]) -> None:
@@ -2224,6 +2262,28 @@ def _run_manifest_checks(
         _add_check(checks, f"upstream.{name}.manifest_verified", False, f"manifest verification failed: {exc}")
 
 
+def _run_credential_checks(checks: list[dict[str, Any]], upstream: Mapping[str, Any]) -> None:
+    name = _check_name(upstream)
+    credential = _mapping(upstream.get("credential"))
+    if not credential:
+        _add_check(checks, f"upstream.{name}.auth_configured", None, "no upstream credential configured")
+        return
+    status = credential_status(credential)
+    available = status.get("available") is True
+    message = (
+        "upstream credential is available"
+        if available
+        else f"upstream credential is unavailable: {status.get('error')}"
+    )
+    _add_check(
+        checks,
+        f"upstream.{name}.auth_available",
+        available,
+        message,
+        details=status,
+    )
+
+
 def _run_upstream_probe_checks(
     checks: list[dict[str, Any]],
     probes: dict[str, Any],
@@ -2239,12 +2299,36 @@ def _run_upstream_probe_checks(
         if not isinstance(url, str) or not url:
             _add_check(checks, f"upstream.{name}.url_present", False, "upstream URL is missing")
             return
+        probe_headers = dict(headers)
+        credential = _mapping(upstream.get("credential"))
+        if credential:
+            status = credential_status(credential)
+            if status.get("available") is not True:
+                _add_check(
+                    checks,
+                    f"upstream.{name}.probe_auth",
+                    None,
+                    "upstream probe skipped because credential is unavailable",
+                    details=status,
+                )
+                return
+            try:
+                probe_headers = apply_credential_header(probe_headers, credential)
+            except CredentialResolutionError as exc:
+                _add_check(
+                    checks,
+                    f"upstream.{name}.probe_auth",
+                    None,
+                    f"upstream probe skipped because credential resolution failed: {exc}",
+                    details=credential_metadata(credential),
+                )
+                return
         _run_mcp_endpoint_checks(
             checks,
             probes,
             check_prefix=f"upstream.{name}",
             url=url,
-            headers=headers,
+            headers=probe_headers,
             timeout=timeout,
             label=f"upstream {upstream.get('name')}",
         )

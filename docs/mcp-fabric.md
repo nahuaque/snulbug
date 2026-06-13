@@ -561,11 +561,51 @@ snulbug mcp fabric run \
 discovery providers. For a single upstream reverse proxy, use
 `snulbug mcp proxy --config snulbug.toml`.
 
+## Upstream Credentials
+
+Fabric configs can declare small credential references and attach them to
+individual HTTP or Holepunch upstreams. snulbug stores only the reference
+metadata in config, status, audit, and replay output. The secret value is read
+from the environment or a local file only when the proxy forwards a request or
+`fabric doctor` probes that upstream.
+
+```toml
+[mcp.fabric.credentials.codespace]
+type = "env"
+env = "CODESPACE_MCP_TOKEN"
+scheme = "bearer" # bearer, basic, or raw
+header = "Authorization"
+
+[mcp.fabric.credentials.local_api]
+type = "file"
+path = ".snulbug/secrets/local-api-token"
+scheme = "raw"
+header = "x-api-key"
+
+[[mcp.proxy.upstreams]]
+name = "codespace-files"
+url = "https://example-codespace.github.dev/mcp"
+tool_prefix = "codespace.files."
+auth = "codespace"
+
+[[mcp.proxy.upstreams]]
+name = "local-api"
+url = "http://127.0.0.1:9001/mcp"
+tool_prefix = "local."
+auth = "local_api"
+```
+
+When `auth` is configured, snulbug injects that upstream credential into the
+outbound request and replaces any same-named caller header. This prevents a
+gateway/client bearer token from being accidentally forwarded to the upstream.
+Run `fabric doctor` to check that all referenced env vars or files are present
+before starting or sharing the fabric.
+
 ## Doctor
 
 `doctor` is the active readiness gate. It verifies configured manifests, checks
-stdio commands, and probes MCP `tools/list` on the gateway and HTTP/Holepunch
-upstream URLs.
+upstream credential refs, stdio commands, and probes MCP `tools/list` on the
+gateway and HTTP/Holepunch upstream URLs.
 
 ```bash
 export SNULBUG_MANIFEST_SECRET="replace-with-a-local-secret"

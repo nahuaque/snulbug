@@ -27,6 +27,7 @@ from .control_events import (
     event_types,
     make_control_event,
 )
+from .credentials import apply_credential_header, credential_metadata, normalize_upstream_credential
 from .fabric import annotate_topology_audit, build_fabric_audit_metadata
 from .fabric_control import summarize_fabric_control_state
 from .leases import LeasePolicyConfig, enforce_mcp_lease_policy, mcp_lease_error_response
@@ -89,6 +90,7 @@ class FacadeUpstream:
     manifest_key_id: str | None = None
     manifest_identity: str | None = None
     manifest_metadata: Mapping[str, Any] | None = None
+    credential: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -1419,6 +1421,7 @@ class McpFacadeProxyApp:
         connection = _connection(parsed, self.timeout)
         try:
             headers = _request_headers(scope.get("headers", []), parsed, content_length=len(body))
+            headers = apply_credential_header(headers, upstream.credential)
             connection.request(str(scope.get("method", "POST")), _exact_target(parsed), body=body, headers=headers)
             response = connection.getresponse()
             response_body = response.read()
@@ -2115,6 +2118,7 @@ def _facade_upstream_reload_fingerprint(upstream: FacadeUpstream) -> dict[str, A
         "manifest_key_id": upstream.manifest_key_id,
         "manifest_identity": upstream.manifest_identity,
         "manifest_metadata": _copy_jsonish(upstream.manifest_metadata or {}),
+        "credential": credential_metadata(upstream.credential),
     }
 
 
@@ -2356,6 +2360,9 @@ def _coerce_facade_upstream(upstream: FacadeUpstream | Mapping[str, Any]) -> Fac
             raise ValueError(f"facade upstream {name!r} env must be a string table")
         if not all(isinstance(value, str) for value in env.values()):
             raise ValueError(f"facade upstream {name!r} env must be a string table")
+    credential = upstream.get("credential")
+    if credential is not None:
+        credential = normalize_upstream_credential(credential, field=f"facade upstream {name!r} credential")
     manifest = upstream.get("manifest", upstream.get("manifest_path"))
     if manifest is not None and not isinstance(manifest, str | Path):
         raise ValueError(f"facade upstream {name!r} manifest must be a string path")
@@ -2413,6 +2420,7 @@ def _coerce_facade_upstream(upstream: FacadeUpstream | Mapping[str, Any]) -> Fac
         manifest_key_id=manifest_key_id,
         manifest_identity=manifest_identity,
         manifest_metadata=manifest_metadata,
+        credential=credential,
     )
 
 
@@ -2516,6 +2524,9 @@ def _upstream_metadata(upstream: FacadeUpstream) -> dict[str, Any]:
         }
     if upstream.manifest_metadata:
         metadata["manifest"] = dict(upstream.manifest_metadata)
+    auth = credential_metadata(upstream.credential)
+    if auth:
+        metadata["auth"] = auth
     return _drop_empty(metadata)
 
 

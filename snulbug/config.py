@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from .credentials import attach_upstream_credentials, normalize_fabric_credentials, normalize_upstream_credential
 from .discovery import apply_fabric_discovery
 
 try:
@@ -61,6 +62,7 @@ DEFAULT_MCP_FABRIC_CONFIG = {
     "probe_gateway": True,
     "probe_upstreams": True,
     "timeout": 5.0,
+    "credentials": {},
     "policy_activation": {
         "mode": "off",
         "key_id": None,
@@ -126,6 +128,13 @@ timeout = 5.0
 # key_id = "local-review"
 # secret_env = "SNULBUG_BUNDLE_SECRET"
 
+# Optional upstream credentials. Values are resolved only at request/probe time.
+# [mcp.fabric.credentials.codespace]
+# type = "env"
+# env = "CODESPACE_MCP_TOKEN"
+# scheme = "bearer" # bearer, basic, or raw
+# header = "Authorization"
+
 # Optional discovery providers append facade upstreams before validation:
 # [mcp.fabric.discovery]
 # enabled = true
@@ -161,6 +170,7 @@ timeout = 5.0
 # transport = "holepunch"
 # peer = "SERVER_PEER_KEY"
 # local_port = 19100
+# auth = "codespace"
 """
 
 
@@ -216,7 +226,9 @@ def _normalize_proxy_config_with_discovery(
     *,
     base_dir: Path,
 ) -> dict[str, Any]:
+    credentials = normalize_fabric_credentials(fabric.get("credentials", {}), base_dir=base_dir)
     discovered_proxy, discovery = apply_fabric_discovery(proxy, fabric, base_dir=base_dir)
+    discovered_proxy = attach_upstream_credentials(discovered_proxy, credentials)
     proxy_config = normalize_mcp_proxy_config(discovered_proxy, base_dir=base_dir)
     proxy_config["discovery"] = discovery
     return proxy_config
@@ -341,6 +353,7 @@ def normalize_mcp_fabric_config(
     if not isinstance(normalized.get("timeout"), int | float) or float(normalized["timeout"]) <= 0:
         raise ValueError("mcp.fabric.timeout must be a positive number")
     normalized["timeout"] = float(normalized["timeout"])
+    normalized["credentials"] = normalize_fabric_credentials(normalized.get("credentials", {}), base_dir=base_dir)
     normalized["policy_activation"] = _normalize_policy_activation(normalized.get("policy_activation", {}))
 
     if normalized["gateway_url"] is None and proxy_config is not None:
@@ -433,6 +446,8 @@ def _normalize_upstreams(value: Any, *, base_dir: Path = Path(".")) -> list[dict
         bridge_env = item.get("bridge_env")
         bridge_private = item.get("bridge_private", True)
         bridge_ready_timeout = item.get("bridge_ready_timeout", 10.0)
+        auth = item.get("auth")
+        credential = item.get("credential")
         manifest = item.get("manifest", item.get("manifest_path"))
         manifest_secret_env = item.get("manifest_secret_env")
         manifest_secret = item.get("manifest_secret")
@@ -489,6 +504,15 @@ def _normalize_upstreams(value: Any, *, base_dir: Path = Path(".")) -> list[dict
                 raise ValueError(f"mcp.proxy.upstreams[{index}].bridge_ready_timeout must be a positive number")
         if not isinstance(tool_prefix, str) or not tool_prefix:
             raise ValueError(f"mcp.proxy.upstreams[{index}].tool_prefix must be a non-empty string")
+        if auth is not None and (not isinstance(auth, str) or not auth):
+            raise ValueError(f"mcp.proxy.upstreams[{index}].auth must be a non-empty credential id")
+        if credential is not None:
+            credential = normalize_upstream_credential(
+                credential,
+                field=f"mcp.proxy.upstreams[{index}].credential",
+                base_dir=base_dir,
+                resolve_relative_paths=True,
+            )
         if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
             raise ValueError(f"mcp.proxy.upstreams[{index}].args must be a list of strings")
         if cwd is not None and not isinstance(cwd, str):
@@ -543,6 +567,8 @@ def _normalize_upstreams(value: Any, *, base_dir: Path = Path(".")) -> list[dict
                 "transport": transport,
                 "tool_prefix": tool_prefix,
                 "default": default,
+                **({"auth": auth} if auth is not None else {}),
+                **({"credential": credential} if credential is not None else {}),
                 **({"url": url} if transport in {"http", "holepunch"} else {}),
                 **(
                     {
