@@ -10,6 +10,7 @@ from typing import Any
 from snulbug import (
     append_audit_event,
     build_fabric_audit_metadata,
+    discover_fabric_upstreams,
     doctor_fabric,
     fabric_status,
     learn_fabric_profile,
@@ -163,6 +164,78 @@ def test_mcp_fabric_cli_emits_compact_status_and_doctor(tmp_path, capsys):
     assert doctor_code == 0
     assert doctor_output["ok"] is True
     assert doctor_output["summary"]["skipped"] >= 2
+
+
+def test_fabric_discover_resolves_directory_provider(tmp_path):
+    discovery_dir = tmp_path / "discovery"
+    discovery_dir.mkdir()
+    (discovery_dir / "files.json").write_text(
+        json.dumps({"name": "files", "url": "http://127.0.0.1:9001/mcp", "tool_prefix": "files."}),
+        encoding="utf-8",
+    )
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.fabric]
+        name = "directory-fabric"
+
+        [mcp.fabric.discovery]
+
+        [[mcp.fabric.discovery.providers]]
+        name = "local-directory"
+        type = "directory"
+        path = "discovery"
+
+        [mcp.proxy]
+        host = "127.0.0.1"
+        port = 8181
+        """,
+        encoding="utf-8",
+    )
+
+    discovery = discover_fabric_upstreams(config)
+    status = fabric_status(config)
+
+    assert discovery["ok"] is True
+    assert discovery["summary"]["upstream_count"] == 1
+    assert discovery["providers"][0]["status"] == "loaded"
+    assert discovery["upstreams"][0]["name"] == "files"
+    assert status["summary"]["discovered_upstream_count"] == 1
+    assert status["discovery"]["summary"]["provider_count"] == 1
+    assert status["upstreams"][0]["discovery"] == {
+        "provider": "local-directory",
+        "type": "directory",
+        "source": str(discovery_dir),
+    }
+
+
+def test_mcp_fabric_discover_cli_emits_compact_result(tmp_path, capsys):
+    registry = tmp_path / "upstreams.json"
+    registry.write_text(json.dumps([{"name": "git", "url": "http://127.0.0.1:9002/mcp"}]), encoding="utf-8")
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.fabric.discovery]
+
+        [[mcp.fabric.discovery.providers]]
+        name = "registry"
+        type = "file"
+        path = "upstreams.json"
+
+        [mcp.proxy]
+        host = "127.0.0.1"
+        port = 8181
+        """,
+        encoding="utf-8",
+    )
+
+    status_code = simulator_main(["mcp", "fabric", "discover", "--config", str(config), "--compact"])
+    output = json.loads(capsys.readouterr().out)
+
+    assert status_code == 0
+    assert output["summary"]["upstream_count"] == 1
+    assert output["providers"][0]["name"] == "registry"
+    assert output["upstreams"][0]["name"] == "git"
 
 
 def test_fabric_learn_profile_from_topology_audit_log(tmp_path):

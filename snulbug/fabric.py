@@ -13,7 +13,13 @@ from typing import Any
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from .config import DEFAULT_CONFIG_PATH, load_mcp_fabric_config
+from .discovery import resolve_fabric_discovery
 from .manifests import load_manifest, verify_upstream_manifest
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10.
+    import tomli as tomllib  # type: ignore[import-not-found]
 
 _FABRIC_DOCTOR_REQUEST = {
     "jsonrpc": "2.0",
@@ -42,6 +48,7 @@ def fabric_status(config: str | Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
         "probe_upstreams": fabric["probe_upstreams"],
         "timeout": fabric["timeout"],
         "proxy": _proxy_status(proxy),
+        "discovery": _discovery_status(proxy),
         "upstreams": upstreams,
         "summary": summary,
         "recommendations": recommendations,
@@ -77,6 +84,7 @@ def build_fabric_audit_metadata(fabric: Mapping[str, Any]) -> dict[str, Any]:
                 }
             ),
             "summary": summary,
+            "discovery": _topology_discovery(proxy),
             "upstreams": upstreams,
         }
     )
@@ -145,6 +153,32 @@ def learn_fabric_profile(
     }
 
 
+def discover_fabric_upstreams(config: str | Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
+    """Resolve configured discovery providers without starting the proxy."""
+
+    config_path = Path(config)
+    try:
+        fabric = _raw_fabric_config(config_path)
+        discovery = resolve_fabric_discovery(fabric, base_dir=config_path.parent, strict=False)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "config": str(config),
+            "providers": [],
+            "upstreams": [],
+            "summary": {"provider_count": 0, "enabled_provider_count": 0, "upstream_count": 0, "error_count": 1},
+            "errors": [{"error": str(exc)}],
+        }
+    return {
+        "ok": discovery["ok"],
+        "config": str(config),
+        "providers": discovery["providers"],
+        "upstreams": _discovered_upstream_status(discovery["upstreams"]),
+        "summary": discovery["summary"],
+        "errors": discovery["errors"],
+    }
+
+
 def doctor_fabric(
     config: str | Path = DEFAULT_CONFIG_PATH,
     *,
@@ -196,6 +230,7 @@ def doctor_fabric(
         f"facade declares {len(upstreams)} upstream(s)" if upstreams else "no facade upstreams are declared",
         severity="warning",
     )
+    _run_discovery_checks(checks, proxy)
     _add_check(
         checks,
         "logs.record_out_configured",
@@ -262,6 +297,26 @@ def format_fabric_status_report(result: Mapping[str, Any]) -> str:
     for key in ("host", "port", "policy", "state", "tunnel_provider", "lease_required", "facade"):
         lines.append(f"- {key}: `{proxy.get(key)}`")
 
+    discovery = _mapping(result.get("discovery"))
+    discovery_summary = _mapping(discovery.get("summary"))
+    lines.extend(
+        [
+            "",
+            "## Discovery",
+            f"- providers: {discovery_summary.get('provider_count', 0)}",
+            f"- discovered upstreams: {discovery_summary.get('upstream_count', 0)}",
+            f"- errors: {discovery_summary.get('error_count', 0)}",
+        ]
+    )
+    for provider in discovery.get("providers", []):
+        if isinstance(provider, Mapping):
+            lines.append(
+                "- "
+                f"{provider.get('name')} [{provider.get('type')}] "
+                f"status=`{provider.get('status')}` "
+                f"upstreams={provider.get('upstream_count', 0)}"
+            )
+
     lines.extend(["", "## Upstreams"])
     upstreams = list(result.get("upstreams", []))
     if not upstreams:
@@ -294,6 +349,52 @@ def format_fabric_status_report(result: Mapping[str, Any]) -> str:
         lines.extend(["", "## Recommendations"])
         for recommendation in recommendations:
             lines.append(f"- {recommendation}")
+    return "\n".join(lines).rstrip()
+
+
+def format_fabric_discovery_report(result: Mapping[str, Any]) -> str:
+    lines = [
+        "# snulbug fabric discover",
+        "",
+        f"Config: {result.get('config')}",
+        "",
+        "## Providers",
+    ]
+    providers = result.get("providers", [])
+    if not providers:
+        lines.append("- none")
+    for provider in providers:
+        if not isinstance(provider, Mapping):
+            continue
+        lines.append(
+            "- "
+            f"{provider.get('name')} [{provider.get('type')}] "
+            f"status=`{provider.get('status')}` "
+            f"source=`{provider.get('source') or '-'}` "
+            f"upstreams={provider.get('upstream_count', 0)}"
+        )
+
+    lines.extend(["", "## Upstreams"])
+    upstreams = result.get("upstreams", [])
+    if not upstreams:
+        lines.append("- none")
+    for upstream in upstreams:
+        if not isinstance(upstream, Mapping):
+            continue
+        lines.append(
+            "- "
+            f"{upstream.get('name')} [{upstream.get('transport')}] "
+            f"prefix=`{upstream.get('tool_prefix') or '-'}` "
+            f"provider=`{upstream.get('discovery_provider') or '-'}` "
+            f"source=`{upstream.get('discovery_source') or '-'}`"
+        )
+
+    errors = result.get("errors", [])
+    if errors:
+        lines.extend(["", "## Errors"])
+        for error in errors:
+            if isinstance(error, Mapping):
+                lines.append(f"- {error.get('provider', 'config')}: {error.get('error')}")
     return "\n".join(lines).rstrip()
 
 
@@ -1121,6 +1222,77 @@ def _proxy_status(proxy: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _raw_fabric_config(config: Path) -> Mapping[str, Any]:
+    with config.open("rb") as file:
+        raw_config = tomllib.load(file)
+    if not isinstance(raw_config, Mapping):
+        raise ValueError("config file must contain a TOML object")
+    mcp = raw_config.get("mcp", {})
+    if not isinstance(mcp, Mapping):
+        raise ValueError("config section [mcp] must be a table")
+    fabric = mcp.get("fabric", {})
+    if not isinstance(fabric, Mapping):
+        raise ValueError("config section [mcp.fabric] must be a table")
+    return fabric
+
+
+def _discovered_upstream_status(upstreams: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    statuses = []
+    for upstream in upstreams:
+        statuses.append(
+            _drop_empty(
+                {
+                    "name": upstream.get("name"),
+                    "transport": upstream.get("transport") or ("stdio" if upstream.get("command") else "http"),
+                    "tool_prefix": upstream.get("tool_prefix") or f"{upstream.get('name')}.",
+                    "url": _audit_url(upstream.get("url")),
+                    "command": upstream.get("command"),
+                    "discovery_provider": upstream.get("discovery_provider"),
+                    "discovery_type": upstream.get("discovery_type"),
+                    "discovery_source": upstream.get("discovery_source"),
+                    "manifest": str(upstream.get("manifest"))
+                    if upstream.get("manifest") is not None
+                    else upstream.get("manifest"),
+                }
+            )
+        )
+    return statuses
+
+
+def _discovery_status(proxy: Mapping[str, Any]) -> dict[str, Any]:
+    discovery = _mapping(proxy.get("discovery"))
+    if not discovery:
+        return {"ok": True, "providers": [], "summary": {"provider_count": 0, "upstream_count": 0, "error_count": 0}}
+    return _drop_empty(
+        {
+            "ok": discovery.get("ok"),
+            "providers": _copy_jsonish(discovery.get("providers", [])),
+            "summary": _copy_jsonish(discovery.get("summary", {})),
+            "errors": _copy_jsonish(discovery.get("errors", [])),
+        }
+    )
+
+
+def _topology_discovery(proxy: Mapping[str, Any]) -> dict[str, Any]:
+    discovery = _discovery_status(proxy)
+    providers = []
+    for provider in discovery.get("providers", []):
+        if not isinstance(provider, Mapping):
+            continue
+        providers.append(
+            _drop_empty(
+                {
+                    "name": provider.get("name"),
+                    "type": provider.get("type"),
+                    "status": provider.get("status"),
+                    "source": provider.get("source"),
+                    "upstream_count": provider.get("upstream_count"),
+                }
+            )
+        )
+    return _drop_empty({"summary": discovery.get("summary"), "providers": providers})
+
+
 def _upstream_status(upstream: Mapping[str, Any]) -> dict[str, Any]:
     status: dict[str, Any] = {
         "name": upstream.get("name"),
@@ -1128,6 +1300,9 @@ def _upstream_status(upstream: Mapping[str, Any]) -> dict[str, Any]:
         "tool_prefix": upstream.get("tool_prefix"),
         "default": upstream.get("default", False),
     }
+    discovery = _upstream_discovery(upstream)
+    if discovery:
+        status["discovery"] = discovery
     for field_name in ("url", "command", "cwd", "peer", "local_port", "bridge_command", "bridge_config"):
         if upstream.get(field_name) is not None:
             status[field_name] = str(upstream[field_name])
@@ -1171,8 +1346,21 @@ def _topology_upstream(upstream: Mapping[str, Any]) -> dict[str, Any]:
             "url": _audit_url(upstream.get("url")) if transport in {"http", "holepunch"} else None,
             "command": command,
             "cwd": str(upstream.get("cwd")) if upstream.get("cwd") is not None else None,
+            "discovery": _upstream_discovery(upstream),
             "bridge": _holepunch_topology(upstream) if transport == "holepunch" else None,
             "manifest": manifest_summary,
+        }
+    )
+
+
+def _upstream_discovery(upstream: Mapping[str, Any]) -> dict[str, Any]:
+    if not upstream.get("discovered"):
+        return {}
+    return _drop_empty(
+        {
+            "provider": upstream.get("discovery_provider"),
+            "type": upstream.get("discovery_type"),
+            "source": upstream.get("discovery_source"),
         }
     )
 
@@ -1249,12 +1437,17 @@ def _fabric_summary(
     default_upstream = next((upstream.get("name") for upstream in upstreams if upstream.get("default")), None)
     return {
         "upstream_count": len(upstreams),
+        "discovered_upstream_count": sum(
+            1 for upstream in upstreams if upstream.get("discovered") or upstream.get("discovery")
+        ),
         "transports": transports,
         "manifest_count": sum(1 for upstream in upstreams if upstream.get("manifest")),
         "missing_required_manifests": missing_required_manifests,
         "default_upstream": default_upstream,
         "facade": bool(proxy.get("upstreams")),
         "tunnel_provider": proxy.get("tunnel_provider"),
+        "discovery_provider_count": _mapping(_mapping(proxy.get("discovery")).get("summary")).get("provider_count", 0),
+        "discovery_error_count": _mapping(_mapping(proxy.get("discovery")).get("summary")).get("error_count", 0),
     }
 
 
@@ -1269,6 +1462,53 @@ def _fabric_recommendations(fabric: Mapping[str, Any], upstreams: Sequence[Mappi
     if not fabric.get("gateway_url"):
         recommendations.append("Set mcp.fabric.gateway_url or configure mcp.proxy.host and mcp.proxy.port.")
     return recommendations
+
+
+def _run_discovery_checks(checks: list[dict[str, Any]], proxy: Mapping[str, Any]) -> None:
+    discovery = _mapping(proxy.get("discovery"))
+    providers = discovery.get("providers", [])
+    if not isinstance(providers, list) or not providers:
+        _add_check(checks, "discovery.configured", None, "no discovery providers configured")
+        return
+    summary = _mapping(discovery.get("summary"))
+    _add_check(
+        checks,
+        "discovery.configured",
+        True,
+        f"configured {summary.get('enabled_provider_count', len(providers))} discovery provider(s)",
+        details=summary,
+    )
+    for provider in providers:
+        if not isinstance(provider, Mapping):
+            continue
+        status = provider.get("status")
+        check_id = f"discovery.{_check_name(provider)}"
+        if status == "loaded":
+            _add_check(
+                checks,
+                check_id,
+                True,
+                f"provider loaded {provider.get('upstream_count', 0)} upstream(s)",
+                details=provider,
+            )
+        elif status == "disabled":
+            _add_check(checks, check_id, None, "provider is disabled", details=provider)
+        elif status == "missing":
+            _add_check(
+                checks,
+                check_id,
+                None,
+                f"optional provider source is missing: {provider.get('error')}",
+                details=provider,
+            )
+        else:
+            _add_check(
+                checks,
+                check_id,
+                False,
+                f"provider failed: {provider.get('error', 'unknown error')}",
+                details=provider,
+            )
 
 
 def _run_manifest_checks(

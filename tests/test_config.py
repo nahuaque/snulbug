@@ -222,6 +222,132 @@ def test_load_mcp_proxy_config_supports_holepunch_facade_upstreams(tmp_path):
     ]
 
 
+def test_load_mcp_proxy_config_applies_file_discovery_provider(tmp_path):
+    registry = tmp_path / "discovery/upstreams.json"
+    registry.parent.mkdir()
+    registry.write_text(
+        json.dumps(
+            {
+                "upstreams": [
+                    {
+                        "name": "remote",
+                        "transport": "holepunch",
+                        "peer": "SERVER_PEER_KEY",
+                        "local_port": 19100,
+                        "tool_prefix": "remote.",
+                        "manifest": "manifests/remote.json",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.fabric.discovery]
+        enabled = true
+
+        [[mcp.fabric.discovery.providers]]
+        name = "local-registry"
+        type = "file"
+        path = "discovery/upstreams.json"
+        required = true
+
+        [mcp.proxy]
+        policy = "policy.snulbug/policy.lua"
+        """,
+        encoding="utf-8",
+    )
+
+    result = load_mcp_proxy_config(config)
+
+    assert result["discovery"]["summary"]["upstream_count"] == 1
+    assert result["discovery"]["providers"][0]["status"] == "loaded"
+    assert result["upstreams"] == [
+        {
+            "name": "remote",
+            "transport": "holepunch",
+            "url": "http://127.0.0.1:19100/mcp",
+            "peer": "SERVER_PEER_KEY",
+            "local_port": 19100,
+            "bridge_command": "hypertele",
+            "bridge_args": ["-p", "19100", "-s", "SERVER_PEER_KEY", "--private"],
+            "bridge_private": True,
+            "bridge_ready_timeout": 10.0,
+            "tool_prefix": "remote.",
+            "default": False,
+            "manifest": tmp_path / "manifests/remote.json",
+            "manifest_required": True,
+            "discovered": True,
+            "discovery_provider": "local-registry",
+            "discovery_type": "file",
+            "discovery_source": str(registry),
+        }
+    ]
+
+
+def test_load_mcp_proxy_config_applies_env_discovery_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "SNULBUG_DISCOVERY_UPSTREAMS",
+        json.dumps([{"name": "files", "url": "http://127.0.0.1:9001/mcp"}]),
+    )
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.fabric.discovery]
+
+        [[mcp.fabric.discovery.providers]]
+        name = "container-env"
+        type = "env"
+        env = "SNULBUG_DISCOVERY_UPSTREAMS"
+
+        [mcp.proxy]
+        policy = "policy.snulbug/policy.lua"
+        """,
+        encoding="utf-8",
+    )
+
+    result = load_mcp_proxy_config(config)
+
+    assert result["upstreams"][0]["name"] == "files"
+    assert result["upstreams"][0]["discovered"] is True
+    assert result["upstreams"][0]["discovery_provider"] == "container-env"
+    assert result["upstreams"][0]["discovery_type"] == "env"
+
+
+def test_load_mcp_proxy_config_fails_on_duplicate_discovered_upstream_name(tmp_path):
+    registry = tmp_path / "discovery/upstreams.json"
+    registry.parent.mkdir()
+    registry.write_text(json.dumps([{"name": "files", "url": "http://127.0.0.1:9002/mcp"}]), encoding="utf-8")
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.fabric.discovery]
+
+        [[mcp.fabric.discovery.providers]]
+        name = "local-registry"
+        type = "file"
+        path = "discovery/upstreams.json"
+
+        [mcp.proxy]
+        policy = "policy.snulbug/policy.lua"
+
+        [[mcp.proxy.upstreams]]
+        name = "files"
+        url = "http://127.0.0.1:9001/mcp"
+        """,
+        encoding="utf-8",
+    )
+
+    try:
+        load_mcp_proxy_config(config)
+    except ValueError as exc:
+        assert "duplicate mcp.proxy.upstreams name" in str(exc)
+    else:
+        raise AssertionError("expected duplicate upstream validation error")
+
+
 def test_merge_mcp_proxy_config_ignores_none_and_applies_overrides(tmp_path):
     config = load_mcp_proxy_config(write_config(tmp_path))
 

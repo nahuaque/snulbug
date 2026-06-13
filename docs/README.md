@@ -8,6 +8,7 @@
 - [Tunnel doctor](tunnel-doctor.md)
 - [One-command MCP policy lab](quickstart.md#2-run-the-policy-lab)
 - [MCP reverse proxy](mcp-proxy.md)
+- [MCP fabric config](mcp-fabric.md)
 - [MCP client setup recipes](mcp-client-recipes.md)
 - [MCP presets](mcp-presets.md)
 - [MCP recorder and replay](mcp-recorder.md)

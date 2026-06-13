@@ -4,6 +4,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from .discovery import apply_fabric_discovery
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10.
@@ -101,6 +103,16 @@ probe_gateway = true
 probe_upstreams = true
 timeout = 5.0
 
+# Optional discovery providers append facade upstreams before validation:
+# [mcp.fabric.discovery]
+# enabled = true
+#
+# [[mcp.fabric.discovery.providers]]
+# name = "local-registry"
+# type = "file"
+# path = "discovery/upstreams.json"
+# required = false
+
 # Optional MCP facade mode:
 # [[mcp.proxy.upstreams]]
 # name = "files"
@@ -145,7 +157,10 @@ def load_mcp_proxy_config(path: str | Path) -> dict[str, Any]:
     proxy = mcp.get("proxy", {})
     if not isinstance(proxy, Mapping):
         raise ValueError("config section [mcp.proxy] must be a table")
-    return normalize_mcp_proxy_config(proxy, base_dir=config_path.parent)
+    fabric = mcp.get("fabric", {})
+    if not isinstance(fabric, Mapping):
+        raise ValueError("config section [mcp.fabric] must be a table")
+    return _normalize_proxy_config_with_discovery(proxy, fabric, base_dir=config_path.parent)
 
 
 def load_mcp_fabric_config(path: str | Path) -> dict[str, Any]:
@@ -163,8 +178,20 @@ def load_mcp_fabric_config(path: str | Path) -> dict[str, Any]:
     proxy = mcp.get("proxy", {})
     if not isinstance(proxy, Mapping):
         raise ValueError("config section [mcp.proxy] must be a table")
-    proxy_config = normalize_mcp_proxy_config(proxy, base_dir=config_path.parent)
+    proxy_config = _normalize_proxy_config_with_discovery(proxy, fabric, base_dir=config_path.parent)
     return normalize_mcp_fabric_config(fabric, proxy_config=proxy_config, base_dir=config_path.parent)
+
+
+def _normalize_proxy_config_with_discovery(
+    proxy: Mapping[str, Any],
+    fabric: Mapping[str, Any],
+    *,
+    base_dir: Path,
+) -> dict[str, Any]:
+    discovered_proxy, discovery = apply_fabric_discovery(proxy, fabric, base_dir=base_dir)
+    proxy_config = normalize_mcp_proxy_config(discovered_proxy, base_dir=base_dir)
+    proxy_config["discovery"] = discovery
+    return proxy_config
 
 
 def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Path = ".") -> dict[str, Any]:
@@ -324,6 +351,10 @@ def _normalize_upstreams(value: Any, *, base_dir: Path = Path(".")) -> list[dict
         args = item.get("args", [])
         cwd = item.get("cwd")
         env = item.get("env")
+        discovered = item.get("discovered", False)
+        discovery_provider = item.get("discovery_provider")
+        discovery_type = item.get("discovery_type")
+        discovery_source = item.get("discovery_source")
         peer = item.get("peer")
         local_port = item.get("local_port")
         bridge_config = item.get("bridge_config")
@@ -408,6 +439,15 @@ def _normalize_upstreams(value: Any, *, base_dir: Path = Path(".")) -> list[dict
                 raise ValueError(f"mcp.proxy.upstreams[{index}].env must be a table of strings")
             if not all(isinstance(key, str) and isinstance(item_value, str) for key, item_value in env.items()):
                 raise ValueError(f"mcp.proxy.upstreams[{index}].env must be a table of strings")
+        if not isinstance(discovered, bool):
+            raise ValueError(f"mcp.proxy.upstreams[{index}].discovered must be a boolean")
+        for discovery_field, discovery_value in (
+            ("discovery_provider", discovery_provider),
+            ("discovery_type", discovery_type),
+            ("discovery_source", discovery_source),
+        ):
+            if discovery_value is not None and not isinstance(discovery_value, str):
+                raise ValueError(f"mcp.proxy.upstreams[{index}].{discovery_field} must be a string")
         if name in names:
             raise ValueError(f"duplicate mcp.proxy.upstreams name: {name!r}")
         if tool_prefix in prefixes:
@@ -465,6 +505,16 @@ def _normalize_upstreams(value: Any, *, base_dir: Path = Path(".")) -> list[dict
                         **({"manifest_identity": manifest_identity} if manifest_identity is not None else {}),
                     }
                     if manifest is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "discovered": True,
+                        **({"discovery_provider": discovery_provider} if discovery_provider is not None else {}),
+                        **({"discovery_type": discovery_type} if discovery_type is not None else {}),
+                        **({"discovery_source": discovery_source} if discovery_source is not None else {}),
+                    }
+                    if discovered
                     else {}
                 ),
             }

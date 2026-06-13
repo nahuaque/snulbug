@@ -43,6 +43,76 @@ manifest_identity = "devbox@peer"
 When `gateway_url` is empty, snulbug infers it from `[mcp.proxy]` `host` and
 `port`.
 
+## Discovery Providers
+
+Discovery providers let a fabric load facade upstreams from a small registry
+instead of hard-coding every `[[mcp.proxy.upstreams]]` entry in `snulbug.toml`.
+The discovered entries are normalized into the same upstream model as static
+config, so duplicate names/tool prefixes still fail closed and signed manifest
+settings keep working.
+
+```toml
+[mcp.fabric.discovery]
+enabled = true
+
+[[mcp.fabric.discovery.providers]]
+name = "local-registry"
+type = "file"
+path = "discovery/upstreams.json"
+required = true
+
+[[mcp.fabric.discovery.providers]]
+name = "container-env"
+type = "env"
+env = "SNULBUG_DISCOVERY_UPSTREAMS"
+
+[[mcp.fabric.discovery.providers]]
+name = "peer-directory"
+type = "directory"
+path = "discovery/peers"
+glob = "*.json"
+```
+
+Supported provider types:
+
+- `file`: reads one JSON or TOML registry file
+- `directory`: reads every matching JSON/TOML file in a directory, sorted by
+  filename
+- `env`: reads JSON from an environment variable
+
+Each provider can return one upstream object, a list of upstream objects, an
+object with `upstreams`, or a TOML/JSON config-shaped object containing
+`mcp.proxy.upstreams`.
+
+```json
+{
+  "upstreams": [
+    {
+      "name": "remote-devbox",
+      "transport": "holepunch",
+      "peer": "SERVER_PEER_KEY",
+      "local_port": 19100,
+      "tool_prefix": "devbox.",
+      "manifest": "manifests/devbox.signed.json",
+      "manifest_secret_env": "SNULBUG_MANIFEST_SECRET",
+      "manifest_identity": "devbox@peer"
+    }
+  ]
+}
+```
+
+Inspect discovery without starting the proxy:
+
+```bash
+snulbug mcp fabric discover --config snulbug.toml
+snulbug mcp fabric discover --config snulbug.toml --compact
+```
+
+Discovery does not execute commands or contact networks. It is intentionally a
+registry adapter layer: external systems such as Docker Compose, a peer bridge
+supervisor, or a future Hyperswarm watcher can write registry files or env JSON,
+and snulbug consumes them through the same validation path as local config.
+
 ## Status
 
 `status` is a static topology summary. It reads config and manifest files but

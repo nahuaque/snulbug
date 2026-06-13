@@ -407,6 +407,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_fabric_status = mcp_fabric_subparsers.add_parser("status", help="summarize declared MCP fabric topology")
     mcp_fabric_status.add_argument("--config", type=Path, default=Path("snulbug.toml"), help="snulbug.toml config file")
     mcp_fabric_status.add_argument("--compact", action="store_true", help="emit compact JSON")
+    mcp_fabric_discover = mcp_fabric_subparsers.add_parser(
+        "discover",
+        help="resolve configured MCP fabric discovery providers",
+    )
+    mcp_fabric_discover.add_argument(
+        "--config", type=Path, default=Path("snulbug.toml"), help="snulbug.toml config file"
+    )
+    mcp_fabric_discover.add_argument("--compact", action="store_true", help="emit compact JSON")
     mcp_fabric_doctor = mcp_fabric_subparsers.add_parser(
         "doctor",
         help="verify declared MCP fabric config, manifests, and reachable endpoints",
@@ -1008,8 +1016,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 2
         elif args.mcp_command == "fabric":
             from .fabric import (
+                discover_fabric_upstreams,
                 doctor_fabric,
                 fabric_status,
+                format_fabric_discovery_report,
                 format_fabric_doctor_report,
                 format_fabric_learn_report,
                 format_fabric_status_report,
@@ -1023,6 +1033,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     status = 0 if result["ok"] else 1
                     if not args.compact:
                         sys.stdout.write(format_fabric_status_report(result))
+                        sys.stdout.write("\n")
+                        return status
+                elif args.fabric_command == "discover":
+                    result = discover_fabric_upstreams(args.config)
+                    status = 0 if result["ok"] else 1
+                    if not args.compact:
+                        sys.stdout.write(format_fabric_discovery_report(result))
                         sys.stdout.write("\n")
                         return status
                 elif args.fabric_command == "doctor":
