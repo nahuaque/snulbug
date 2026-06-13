@@ -95,17 +95,17 @@ python_package_spec() {
 write_defaults() {
   install -d "${SNULBUG_HOME}"
   {
-    printf 'SNULBUG_DEVCONTAINER_MODE=%q\n' "${MODE}"
-    printf 'SNULBUG_DEVCONTAINER_POLICY_PROFILE=%q\n' "${POLICY_PROFILE}"
-    printf 'SNULBUG_DEVCONTAINER_UPSTREAM=%q\n' "${UPSTREAM}"
-    printf 'SNULBUG_DEVCONTAINER_GATEWAY_PORT=%q\n' "${GATEWAY_PORT}"
-    printf 'SNULBUG_DEVCONTAINER_REGISTRY=%q\n' "${REGISTRY}"
-    printf 'SNULBUG_DEVCONTAINER_REGISTRY_KEY=%q\n' "${REGISTRY_KEY}"
-    printf 'SNULBUG_DEVCONTAINER_MEMBER_ID=%q\n' "${MEMBER_ID}"
-    printf 'SNULBUG_DEVCONTAINER_MEMBER_UPSTREAM=%q\n' "${MEMBER_UPSTREAM}"
-    printf 'SNULBUG_DEVCONTAINER_TTL_SECONDS=%q\n' "${TTL_SECONDS}"
-    printf 'SNULBUG_DEVCONTAINER_HEARTBEAT_INTERVAL=%q\n' "${HEARTBEAT_INTERVAL}"
-    printf 'SNULBUG_DEVCONTAINER_WRITE_CONFIG=%q\n' "${WRITE_CONFIG}"
+    printf 'if [ -z "${SNULBUG_DEVCONTAINER_MODE+x}" ]; then SNULBUG_DEVCONTAINER_MODE=%q; fi\n' "${MODE}"
+    printf 'if [ -z "${SNULBUG_DEVCONTAINER_POLICY_PROFILE+x}" ]; then SNULBUG_DEVCONTAINER_POLICY_PROFILE=%q; fi\n' "${POLICY_PROFILE}"
+    printf 'if [ -z "${SNULBUG_DEVCONTAINER_UPSTREAM+x}" ]; then SNULBUG_DEVCONTAINER_UPSTREAM=%q; fi\n' "${UPSTREAM}"
+    printf 'if [ -z "${SNULBUG_DEVCONTAINER_GATEWAY_PORT+x}" ]; then SNULBUG_DEVCONTAINER_GATEWAY_PORT=%q; fi\n' "${GATEWAY_PORT}"
+    printf 'if [ -z "${SNULBUG_DEVCONTAINER_REGISTRY+x}" ]; then SNULBUG_DEVCONTAINER_REGISTRY=%q; fi\n' "${REGISTRY}"
+    printf 'if [ -z "${SNULBUG_DEVCONTAINER_REGISTRY_KEY+x}" ]; then SNULBUG_DEVCONTAINER_REGISTRY_KEY=%q; fi\n' "${REGISTRY_KEY}"
+    printf 'if [ -z "${SNULBUG_DEVCONTAINER_MEMBER_ID+x}" ]; then SNULBUG_DEVCONTAINER_MEMBER_ID=%q; fi\n' "${MEMBER_ID}"
+    printf 'if [ -z "${SNULBUG_DEVCONTAINER_MEMBER_UPSTREAM+x}" ]; then SNULBUG_DEVCONTAINER_MEMBER_UPSTREAM=%q; fi\n' "${MEMBER_UPSTREAM}"
+    printf 'if [ -z "${SNULBUG_DEVCONTAINER_TTL_SECONDS+x}" ]; then SNULBUG_DEVCONTAINER_TTL_SECONDS=%q; fi\n' "${TTL_SECONDS}"
+    printf 'if [ -z "${SNULBUG_DEVCONTAINER_HEARTBEAT_INTERVAL+x}" ]; then SNULBUG_DEVCONTAINER_HEARTBEAT_INTERVAL=%q; fi\n' "${HEARTBEAT_INTERVAL}"
+    printf 'if [ -z "${SNULBUG_DEVCONTAINER_WRITE_CONFIG+x}" ]; then SNULBUG_DEVCONTAINER_WRITE_CONFIG=%q; fi\n' "${WRITE_CONFIG}"
   } > "${SNULBUG_HOME}/defaults.env"
 }
 
@@ -175,13 +175,67 @@ HEARTBEAT_INTERVAL="${SNULBUG_DEVCONTAINER_HEARTBEAT_INTERVAL:-20}"
 PIDFILE="${WORKSPACE}/.snulbug/devcontainer-agent.pid"
 LOGFILE="${WORKSPACE}/.snulbug/devcontainer-agent.log"
 
+resolve_member_upstream() {
+  local spec="$1"
+  if [[ "${spec}" != codespaces:* ]]; then
+    printf '%s\n' "${spec}"
+    return
+  fi
+
+  local remainder="${spec#codespaces:}"
+  local part1=""
+  local part2=""
+  local part3=""
+  local extra=""
+  IFS=':' read -r part1 part2 part3 extra <<< "${remainder}"
+
+  local name="workspace"
+  local port=""
+  local path="/mcp"
+  if [ -z "${part2}" ]; then
+    port="${part1}"
+  else
+    name="${part1}"
+    port="${part2}"
+    path="${part3:-/mcp}"
+  fi
+
+  if [ -n "${extra}" ]; then
+    echo "invalid Codespaces member upstream '${spec}'; expected codespaces:NAME:PORT[:PATH]" >&2
+    exit 2
+  fi
+  if [ -z "${name}" ] || [ -z "${port}" ]; then
+    echo "invalid Codespaces member upstream '${spec}'; expected codespaces:NAME:PORT[:PATH]" >&2
+    exit 2
+  fi
+  if ! [[ "${port}" =~ ^[0-9]+$ ]]; then
+    echo "invalid Codespaces member upstream port '${port}'" >&2
+    exit 2
+  fi
+
+  local codespace_name="${SNULBUG_CODESPACE_NAME:-${CODESPACE_NAME:-}}"
+  local domain="${SNULBUG_CODESPACES_PORT_FORWARDING_DOMAIN:-${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-}}"
+  domain="${domain%.}"
+  if [ -z "${codespace_name}" ] || [ -z "${domain}" ]; then
+    echo "Codespaces upstream inference requires CODESPACE_NAME and GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN" >&2
+    exit 2
+  fi
+  if [[ "${path}" != /* ]]; then
+    path="/${path}"
+  fi
+
+  printf '%s=https://%s-%s.%s%s\n' "${name}" "${codespace_name}" "${port}" "${domain}" "${path}"
+}
+
 run_agent() {
   cd "${WORKSPACE}"
   if [ "${MODE}" = "member-agent" ]; then
+    local resolved_upstream
+    resolved_upstream="$(resolve_member_upstream "${MEMBER_UPSTREAM}")"
     exec snulbug mcp fabric member agent "${MEMBER_ID}" \
       --registry "${REGISTRY}" \
       --registry-key "${REGISTRY_KEY}" \
-      --upstream "${MEMBER_UPSTREAM}" \
+      --upstream "${resolved_upstream}" \
       --ttl-seconds "${TTL_SECONDS}" \
       --interval "${HEARTBEAT_INTERVAL}" \
       --unregister-on-exit

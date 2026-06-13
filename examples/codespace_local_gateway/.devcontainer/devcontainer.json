@@ -1,0 +1,27 @@
+{
+  "name": "snulbug Codespace MCP member",
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": {},
+    "ghcr.io/lbruhacs/snulbug/features/snulbug:0.1.0": {
+      "install_source": "github",
+      "github_ref": "main",
+      "mode": "member-agent",
+      "policy_profile": "none",
+      "registry": "redis://YOUR_SHARED_REDIS:6379/0",
+      "registry_key": "snulbug:fabric:codespaces:members",
+      "member_id": "codespace-files",
+      "member_upstream": "codespaces:files:9001:/mcp",
+      "ttl_seconds": "60",
+      "heartbeat_interval": "20",
+      "write_config": false
+    }
+  },
+  "forwardPorts": [9001],
+  "portsAttributes": {
+    "9001": {
+      "label": "mock MCP server",
+      "visibility": "public"
+    }
+  },
+  "postStartCommand": "python examples/codespace_local_gateway/mock_mcp_server.py --host 0.0.0.0 --port 9001 --name codespace > /tmp/snulbug-codespace-mcp.log 2>&1 & snulbug-devcontainer-agent start"
+}

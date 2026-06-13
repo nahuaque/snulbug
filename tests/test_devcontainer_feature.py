@@ -25,6 +25,7 @@ def test_devcontainer_feature_manifest_defines_runtime_modes_and_member_options(
     assert options["registry"]["default"] == ".snulbug/fabric-members.json"
     assert options["registry_key"]["default"] == "snulbug:fabric:members"
     assert options["member_upstream"]["default"] == "workspace=http://127.0.0.1:9000/mcp"
+    assert "codespaces:NAME:PORT[:PATH]" in options["member_upstream"]["description"]
 
 
 def test_devcontainer_feature_install_script_is_executable_and_installs_helpers():
@@ -38,6 +39,10 @@ def test_devcontainer_feature_install_script_is_executable_and_installs_helpers(
     assert "snulbug mcp fabric member agent" in script
     assert "snulbug mcp proxy --config snulbug.toml" in script
     assert "git+https://github.com/lbruhacs/snulbug" in script
+    assert 'if [ -z "${SNULBUG_DEVCONTAINER_REGISTRY+x}" ]' in script
+    assert "resolve_member_upstream" in script
+    assert "GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN" in script
+    assert "codespaces:NAME:PORT[:PATH]" in script
 
 
 def test_devcontainer_docs_and_feature_are_packaged():
@@ -49,4 +54,24 @@ def test_devcontainer_docs_and_feature_are_packaged():
     assert "features" in include
     assert "snulbug-devcontainer-init" in docs
     assert "snulbug-devcontainer-agent start" in docs
+    assert "codespaces:files:9001:/mcp" in docs
     assert "docs/devcontainers.md" in readme
+
+
+def test_codespace_local_gateway_example_documents_member_agent_flow():
+    example = ROOT / "examples" / "codespace_local_gateway"
+    devcontainer = json.loads((example / ".devcontainer" / "devcontainer.json").read_text(encoding="utf-8"))
+    config = tomllib.loads((example / "snulbug.local-gateway.toml").read_text(encoding="utf-8"))
+    readme = (example / "README.md").read_text(encoding="utf-8")
+
+    feature_options = devcontainer["features"]["ghcr.io/lbruhacs/snulbug/features/snulbug:0.1.0"]
+    provider = config["mcp"]["fabric"]["discovery"]["providers"][0]
+
+    assert feature_options["mode"] == "member-agent"
+    assert feature_options["member_upstream"] == "codespaces:files:9001:/mcp"
+    assert feature_options["registry_key"] == "snulbug:fabric:codespaces:members"
+    assert provider["type"] == "members"
+    assert provider["state_key"] == "snulbug:fabric:codespaces:members"
+    assert config["mcp"]["proxy"]["policy"] == "policy.lua"
+    assert "uv run snulbug mcp fabric discover" in readme
+    assert "CODESPACE_NAME" in readme

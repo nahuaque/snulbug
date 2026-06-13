@@ -72,7 +72,7 @@
     "member_upstream": {
       "type": "string",
       "default": "workspace=http://127.0.0.1:9000/mcp",
-      "description": "Fabric member upstream as NAME=URL; repeat manually in a wrapper for multiple upstreams."
+      "description": "Fabric member upstream as NAME=URL, or codespaces:NAME:PORT[:PATH] to infer a Codespaces forwarded URL."
     },
     "ttl_seconds": {
       "type": "string",

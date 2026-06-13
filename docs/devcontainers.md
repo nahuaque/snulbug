@@ -18,7 +18,7 @@ servers with a shared control plane.
       "registry": "redis://redis:6379/0",
       "registry_key": "snulbug:fabric:dev:members",
       "member_id": "codespace-files",
-      "member_upstream": "files=http://127.0.0.1:9001/mcp",
+      "member_upstream": "codespaces:files:9001:/mcp",
       "ttl_seconds": "60",
       "heartbeat_interval": "20"
     }
@@ -30,6 +30,21 @@ servers with a shared control plane.
 
 Use `install_source = "github"` until a PyPI release is available. After a PyPI
 release, omit it or set `install_source = "pypi"` and pin `version`.
+
+In GitHub Codespaces, `member_upstream` can use:
+
+```text
+codespaces:NAME:PORT[:PATH]
+```
+
+The agent resolves that to the forwarded URL:
+
+```text
+NAME=https://${CODESPACE_NAME}-PORT.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}/PATH
+```
+
+For example, `codespaces:files:9001:/mcp` registers the upstream `files` using
+the public Codespaces forwarded URL for port `9001`.
 
 ## Runtime helpers
 
@@ -96,3 +111,9 @@ path = ".devcontainer/devcontainer.json"
 Use member-agent mode when the container should join and leave dynamically. Use
 static devcontainer metadata when the gateway and workspace are managed from the
 same repository.
+
+## Codespace-to-local gateway
+
+See [../examples/codespace_local_gateway](../examples/codespace_local_gateway/README.md)
+for a complete demo where a Codespace registers its MCP server in Redis and a
+laptop snulbug gateway routes it as one local MCP facade.

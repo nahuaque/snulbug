@@ -14,7 +14,7 @@ workspace helpers for Codespaces/devcontainers.
       "registry": "redis://redis:6379/0",
       "registry_key": "snulbug:fabric:dev:members",
       "member_id": "codespace-files",
-      "member_upstream": "files=http://127.0.0.1:9001/mcp"
+      "member_upstream": "codespaces:files:9001:/mcp"
     }
   },
   "postCreateCommand": "snulbug-devcontainer-init",
@@ -32,3 +32,10 @@ Runtime helpers:
   background for `postStartCommand`.
 - `snulbug-devcontainer-agent stop`: stops the background process and unregisters
   the member when running in `member-agent` mode.
+
+In GitHub Codespaces, set `member_upstream` to
+`codespaces:NAME:PORT[:PATH]`. The agent resolves that to:
+
+```text
+NAME=https://${CODESPACE_NAME}-PORT.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}/mcp
+```
