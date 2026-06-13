@@ -6,6 +6,7 @@ from .bundle import pack_bundle, test_bundle, validate_bundle
 from .cloudflare_access import CloudflareAccessConfig, evaluate_cloudflare_access
 from .config import load_mcp_fabric_config, load_mcp_proxy_config, write_sample_config
 from .confirm import ConfirmationBroker
+from .discovery import discovery_provider_types, register_discovery_provider
 from .fabric import (
     annotate_topology_audit,
     build_fabric_audit_metadata,
@@ -108,6 +109,7 @@ __all__ = [
     "create_proxy_application",
     "diff_policies",
     "build_mcp_guide",
+    "discovery_provider_types",
     "discover_fabric_upstreams",
     "doctor_tunnel",
     "doctor_fabric",
@@ -138,6 +140,7 @@ __all__ = [
     "parse_tunnel_headers",
     "record_audit_event",
     "record_policy_request",
+    "register_discovery_provider",
     "redact_secrets",
     "replay_record_log",
     "revoke_lease",

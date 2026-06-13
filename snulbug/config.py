@@ -112,6 +112,11 @@ timeout = 5.0
 # type = "file"
 # path = "discovery/upstreams.json"
 # required = false
+#
+# [[mcp.fabric.discovery.providers]]
+# name = "compose"
+# type = "docker_compose"
+# path = "compose.yml"
 
 # Optional MCP facade mode:
 # [[mcp.proxy.upstreams]]

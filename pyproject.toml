@@ -46,6 +46,9 @@ redis = [
 proxy = [
     "uvicorn>=0.30",
 ]
+discovery = [
+    "pyyaml>=6.0",
+]
 dev = [
     "bandit>=1.9.4",
     "pytest>=8.0",

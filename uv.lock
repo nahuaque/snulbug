@@ -334,6 +334,9 @@ dev = [
     { name = "pytest" },
     { name = "ruff" },
 ]
+discovery = [
+    { name = "pyyaml" },
+]
 proxy = [
     { name = "uvicorn" },
 ]
@@ -353,6 +356,7 @@ requires-dist = [
     { name = "bandit", marker = "extra == 'dev'", specifier = ">=1.9.4" },
     { name = "lupa", specifier = ">=2.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pyyaml", marker = "extra == 'discovery'", specifier = ">=6.0" },
     { name = "redis", marker = "extra == 'redis'", specifier = ">=5.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },

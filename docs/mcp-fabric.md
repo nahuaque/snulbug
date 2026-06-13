@@ -79,6 +79,22 @@ Supported provider types:
 - `directory`: reads every matching JSON/TOML file in a directory, sorted by
   filename
 - `env`: reads JSON from an environment variable
+- `static` / `static_toml`: reads inline `upstreams` or a static TOML registry
+- `docker_compose`: reads Docker Compose services with `snulbug.mcp.*` labels
+- `kubernetes`: reads Kubernetes Service lists/manifests with
+  `snulbug.dev/mcp-*` annotations
+- `tailscale`: reads Tailscale API/status JSON and filters by tags, default
+  `tag:mcp`
+- `mdns` / `dns_sd`: reads mDNS/DNS-SD record snapshots or inline TXT records
+- `codespaces`: maps GitHub Codespaces forwarded ports into MCP upstream URLs
+- `devcontainer`: reads `.devcontainer/devcontainer.json`
+  `customizations.snulbug.upstreams`
+- `supervisor` / `process_registry`: reads a local process supervisor registry
+  and exposes ready/running MCP processes
+
+YAML Compose/Kubernetes files are supported when PyYAML is installed, for
+example with `snulbug[discovery]`. JSON and TOML registries work without extra
+dependencies.
 
 Each provider can return one upstream object, a list of upstream objects, an
 object with `upstreams`, or a TOML/JSON config-shaped object containing
@@ -108,10 +124,130 @@ snulbug mcp fabric discover --config snulbug.toml
 snulbug mcp fabric discover --config snulbug.toml --compact
 ```
 
-Discovery does not execute commands or contact networks. It is intentionally a
-registry adapter layer: external systems such as Docker Compose, a peer bridge
-supervisor, or a future Hyperswarm watcher can write registry files or env JSON,
-and snulbug consumes them through the same validation path as local config.
+Discovery does not execute commands. It is intentionally a registry adapter
+layer: external systems such as Docker Compose, a peer bridge supervisor, or a
+future Hyperswarm watcher can write registry files or env JSON, and snulbug
+consumes them through the same validation path as local config. Providers only
+contact a network when an explicit `api_url` is configured.
+
+### Docker Compose Labels
+
+`docker_compose` reads a Compose file and includes services labeled
+`snulbug.mcp.enabled=true`.
+
+```yaml
+services:
+  files-mcp:
+    image: ghcr.io/example/files-mcp
+    ports:
+      - "9001:9000"
+    labels:
+      snulbug.mcp.enabled: "true"
+      snulbug.mcp.name: files
+      snulbug.mcp.tool_prefix: files.
+```
+
+By default, the generated upstream URL uses the Compose service name and target
+port: `http://files-mcp:9000/mcp`.
+
+### Kubernetes Services
+
+`kubernetes` reads a Service manifest/list from `path`, `env`, or `api_url`.
+Annotate services explicitly:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: git-mcp
+  namespace: dev
+  annotations:
+    snulbug.dev/mcp-enabled: "true"
+    snulbug.dev/mcp-name: git
+    snulbug.dev/mcp-tool_prefix: git.
+spec:
+  ports:
+    - port: 9002
+```
+
+The default in-cluster URL is
+`http://git-mcp.dev.svc:9002/mcp`.
+
+### Tailscale
+
+`tailscale` consumes Tailscale API JSON or `tailscale status --json` output from
+`path`, `env`, or an explicit `api_url`. It filters devices by `tag`/`tags` and
+builds URLs from DNS names.
+
+```toml
+[[mcp.fabric.discovery.providers]]
+name = "tailnet"
+type = "tailscale"
+env = "SNULBUG_TAILSCALE_DEVICES"
+tag = "tag:mcp"
+port = 9000
+```
+
+For live HTTP API reads, set `api_url` plus one of `authorization_env`,
+`bearer_token_env`, or `basic_token_env`. Snapshot files/env are preferred for
+repeatable local-dev runs.
+
+### LAN DNS-SD
+
+`mdns` reads DNS-SD snapshots or inline records. This intentionally avoids a
+daemon dependency; a LAN watcher can write the snapshot and snulbug consumes it.
+
+```toml
+[[mcp.fabric.discovery.providers]]
+name = "lan"
+type = "mdns"
+records = [
+  { name = "files", host = "files.local", port = 9004, properties = { "snulbug.mcp.enabled" = "true" } }
+]
+```
+
+### Codespaces And Devcontainers
+
+`codespaces` converts configured forwarded ports into Codespaces URLs when
+`CODESPACE_NAME` and `GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN` are present.
+
+```toml
+[[mcp.fabric.discovery.providers]]
+name = "codespace"
+type = "codespaces"
+ports = [{ name = "files", port = 9005, tool_prefix = "files." }]
+```
+
+`devcontainer` reads:
+
+```json
+{
+  "customizations": {
+    "snulbug": {
+      "upstreams": [
+        { "name": "workspace", "url": "http://127.0.0.1:9006/mcp" }
+      ]
+    }
+  }
+}
+```
+
+### Supervisor Registry
+
+`supervisor` reads JSON/TOML written by a local process supervisor and includes
+processes whose `status` is `ready` or `running`.
+
+```json
+{
+  "processes": [
+    { "name": "files", "port": 9007, "status": "ready" }
+  ]
+}
+```
+
+Custom providers can also be registered from Python with
+`register_discovery_provider("my_type", resolver)`, where `resolver(provider)`
+returns raw upstream tables.
 
 ## Status
 
