@@ -17,7 +17,7 @@ services:
       - mcp
       - proxy
       - --config
-      - /share/snulbug.facade.toml
+      - /share/snulbug.local.toml
       - --decision-console
 
   local-mcp:
@@ -47,5 +47,5 @@ services:
       - sh
       - -lc
       - >-
-        python3 /app/mock_mcp_server.py --host 127.0.0.1 --port 9000 --name remote &
+        node /app/mock_mcp_server.js --host 127.0.0.1 --port 9000 --name remote &
         exec hypertele-server -l 9000 --address 127.0.0.1 -c /peer/hypertele-server.json --private

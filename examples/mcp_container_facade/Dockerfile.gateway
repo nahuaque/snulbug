@@ -2,14 +2,9 @@ FROM python:3.13-slim
 
 WORKDIR /src
 
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends nodejs npm \
-  && rm -rf /var/lib/apt/lists/*
-
 COPY pyproject.toml README.md LICENSE ./
 COPY snulbug ./snulbug
 
-RUN python -m pip install --no-cache-dir ".[proxy]" \
-  && npm install -g hypertele
+RUN python -m pip install --no-cache-dir ".[proxy]"
 
 WORKDIR /share

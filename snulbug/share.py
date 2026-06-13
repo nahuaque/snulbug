@@ -415,9 +415,22 @@ def _write_container_upstream_recipe(
     _write_json(client_config_path, _client_config(f"{client_name}-facade", client_url, client_headers), force=force)
 
     facade_config_path = recipe_dir / "snulbug.facade.toml"
+    local_config_path = recipe_dir / "snulbug.local.toml"
     _write_text(
         facade_config_path,
         _container_facade_config(
+            provider=provider,
+            client_url=client_url,
+            port=port,
+            state=state,
+            lease_required=lease_required,
+            lease_header=lease_header,
+        ),
+        force=force,
+    )
+    _write_text(
+        local_config_path,
+        _container_local_config(
             provider=provider,
             client_url=client_url,
             port=port,
@@ -432,6 +445,7 @@ def _write_container_upstream_recipe(
         "gateway_dockerfile": recipe_dir / "Dockerfile.gateway",
         "remote_peer_dockerfile": recipe_dir / "Dockerfile.remote-peer",
         "mock_server": recipe_dir / "mock_mcp_server.py",
+        "mock_server_js": recipe_dir / "mock_mcp_server.js",
         "hypertele_server": recipe_dir / "hypertele-server.json",
         "hypertele_client": recipe_dir / "hypertele-client.json",
         "source": recipe_dir / "snulbug-src",
@@ -442,6 +456,7 @@ def _write_container_upstream_recipe(
     _write_text(files["gateway_dockerfile"], _gateway_dockerfile(), force=force)
     _write_text(files["remote_peer_dockerfile"], _remote_peer_dockerfile(), force=force)
     _write_text(files["mock_server"], _mock_mcp_server(), force=force)
+    _write_text(files["mock_server_js"], _mock_mcp_server_js(), force=force)
     _write_text(files["hypertele_server"], _hypertele_server_config(), force=force)
     _write_text(files["hypertele_client"], _hypertele_client_config(), force=force)
     _write_text(
@@ -459,6 +474,7 @@ def _write_container_upstream_recipe(
         "kind": "remote-container-upstream",
         "compose": str(files["compose"]),
         "facade_config": str(facade_config_path),
+        "local_config": str(local_config_path),
         "policy": str(policy_dir),
         "lease_file": lease["file"],
         "lease": lease["lease"],
@@ -549,6 +565,54 @@ def _container_facade_config(
     return "\n".join(lines) + "\n"
 
 
+def _container_local_config(
+    *,
+    provider: str,
+    client_url: str,
+    port: int,
+    state: str,
+    lease_required: bool,
+    lease_header: str,
+) -> str:
+    lines = [
+        "[mcp.proxy]",
+        'policy = "policy.snulbug/policy.lua"',
+        f"host = {_toml_value(CONTAINER_BIND_HOST)}",
+        f"port = {port}",
+        f"state = {_toml_value(state)}",
+        "trace = true",
+        'record_out = "../traces/container-session.jsonl"',
+        'audit_out = "../traces/container-audit.jsonl"',
+        "redact_records = true",
+        "decision_console = true",
+        'decision_console_format = "text"',
+        "confirm = false",
+        "max_body_bytes = 65536",
+        "response_max_bytes = 262144",
+        "response_redact_secrets = true",
+        "response_block_instructions = false",
+        "tool_pinning = true",
+        'tool_pinning_action = "block"',
+        "schema_validation = true",
+        'schema_validation_action = "block"',
+        'lease_file = "leases.json"',
+        f"lease_required = {_toml_value(lease_required)}",
+        f"lease_header = {_toml_value(lease_header)}",
+        f"tunnel_provider = {_toml_value(provider)}",
+        f"tunnel_public_url = {_toml_value(client_url)}",
+        'cloudflare_access = "off"',
+        "timeout = 30.0",
+        "",
+        "[[mcp.proxy.upstreams]]",
+        'name = "local"',
+        'transport = "http"',
+        'url = "http://local-mcp:9000/mcp"',
+        'tool_prefix = "local."',
+        "default = true",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def _container_compose() -> str:
     return f"""name: snulbug-mcp-container-share
 
@@ -569,7 +633,7 @@ services:
       - mcp
       - proxy
       - --config
-      - /share/containers/snulbug.facade.toml
+      - /share/containers/snulbug.local.toml
       - --decision-console
 
   local-mcp:
@@ -599,7 +663,7 @@ services:
       - sh
       - -lc
       - >-
-        python3 /app/mock_mcp_server.py --host 127.0.0.1 --port 9000 --name remote &
+        node /app/mock_mcp_server.js --host 127.0.0.1 --port 9000 --name remote &
         exec hypertele-server -l 9000 --address 127.0.0.1 -c /peer/hypertele-server.json --private
 """
 
@@ -609,14 +673,9 @@ def _gateway_dockerfile() -> str:
 
 WORKDIR /src
 
-RUN apt-get update \\
-  && apt-get install -y --no-install-recommends nodejs npm \\
-  && rm -rf /var/lib/apt/lists/*
-
 COPY snulbug-src/ /src/
 
-RUN python -m pip install --no-cache-dir ".[proxy]" \\
-  && npm install -g hypertele
+RUN python -m pip install --no-cache-dir ".[proxy]"
 
 WORKDIR /share
 """
@@ -625,13 +684,10 @@ WORKDIR /share
 def _remote_peer_dockerfile() -> str:
     return """FROM node:22-bookworm-slim
 
-RUN apt-get update \\
-  && apt-get install -y --no-install-recommends python3 \\
-  && rm -rf /var/lib/apt/lists/* \\
-  && npm install -g hypertele
+RUN npm install -g hypertele
 
 WORKDIR /app
-COPY mock_mcp_server.py /app/mock_mcp_server.py
+COPY mock_mcp_server.js /app/mock_mcp_server.js
 """
 
 
@@ -767,6 +823,102 @@ if __name__ == "__main__":
 """
 
 
+def _mock_mcp_server_js() -> str:
+    return """const http = require('node:http')
+
+function arg(name, fallback) {
+  const index = process.argv.indexOf(`--${name}`)
+  return index >= 0 && process.argv[index + 1] ? process.argv[index + 1] : fallback
+}
+
+const host = arg('host', '127.0.0.1')
+const port = Number(arg('port', '9000'))
+const serverName = arg('name', 'remote')
+
+function writeJson(response, payload) {
+  const body = Buffer.from(JSON.stringify(payload))
+  response.writeHead(200, {
+    'content-type': 'application/json',
+    'content-length': String(body.length)
+  })
+  response.end(body)
+}
+
+const server = http.createServer((request, response) => {
+  if (request.method !== 'POST' || request.url !== '/mcp') {
+    response.writeHead(404)
+    response.end()
+    return
+  }
+
+  const chunks = []
+  request.on('data', chunk => chunks.push(chunk))
+  request.on('end', () => {
+    let message = {}
+    try {
+      const body = Buffer.concat(chunks).toString('utf8')
+      message = body ? JSON.parse(body) : {}
+    } catch {
+      writeJson(response, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'invalid JSON' } })
+      return
+    }
+
+    if (message.method === 'tools/list') {
+      writeJson(response, {
+        jsonrpc: '2.0',
+        id: message.id,
+        result: {
+          tools: [
+            {
+              name: 'safe_read_file',
+              description: `Read a demo file from ${serverName}`,
+              inputSchema: {
+                type: 'object',
+                properties: { path: { type: 'string' } },
+                required: ['path'],
+                additionalProperties: false
+              }
+            },
+            {
+              name: 'list_project_files',
+              description: `List demo files from ${serverName}`,
+              inputSchema: {
+                type: 'object',
+                properties: {},
+                additionalProperties: false
+              }
+            }
+          ]
+        }
+      })
+      return
+    }
+
+    if (message.method === 'tools/call') {
+      const params = message.params && typeof message.params === 'object' ? message.params : {}
+      writeJson(response, {
+        jsonrpc: '2.0',
+        id: message.id,
+        result: {
+          content: [
+            {
+              type: 'text',
+              text: `${serverName} handled ${params.name || ''}`
+            }
+          ]
+        }
+      })
+      return
+    }
+
+    writeJson(response, { jsonrpc: '2.0', id: message.id, result: {} })
+  })
+})
+
+server.listen(port, host)
+"""
+
+
 def _hypertele_server_config() -> str:
     return (
         json.dumps(
@@ -799,23 +951,24 @@ def _container_recipe_readme(
         "or the remote container reached through a managed Hypertele bridge.\n\n"
         "## Files\n\n"
         "- `docker-compose.yml`: gateway, local MCP, and remote-by-peer MCP services.\n"
-        "- `snulbug.facade.toml`: facade config with `local.` and `remote.` upstreams.\n"
+        "- `snulbug.local.toml`: default compose config with only the `local.` upstream.\n"
+        "- `snulbug.facade.toml`: peer facade config with both `local.` and `remote.` upstreams.\n"
         "- `policy.snulbug/`: policy generated for prefixed facade tools.\n"
         "- `leases.json`: task lease generated for prefixed facade tools.\n"
         "- `mcp-client.facade.json`: MCP client config for this container facade.\n"
+        "- `mock_mcp_server.py` / `mock_mcp_server.js`: local and remote demo MCP servers.\n"
         "- `snulbug-src/`: local source snapshot installed into the gateway image.\n"
         "- `hypertele-server.json` / `hypertele-client.json`: placeholder peer bridge configs.\n\n"
         "## Run\n\n"
-        "First edit `hypertele-server.json` and `hypertele-client.json` with real "
-        "Hypertele peer material. Run the remote peer container on the remote host or "
-        "with the `remote-peer` profile for local testing:\n\n"
-        "```bash\n"
-        "docker compose --profile remote-peer up --build remote-by-peer-mcp\n"
-        "```\n\n"
-        "Then start the local MCP container and snulbug gateway:\n\n"
+        "Start the local MCP container and snulbug gateway first. This default path "
+        "does not install Node, npm, or Hypertele in the gateway image:\n\n"
         "```bash\n"
         "docker compose up --build local-mcp snulbug-gateway\n"
         "```\n\n"
+        "For the remote peer path, edit `hypertele-server.json` and "
+        "`hypertele-client.json` with real Hypertele peer material, make Hypertele "
+        "available to the gateway or run it as a sidecar, then switch the gateway "
+        "command to `snulbug.facade.toml`.\n\n"
         "`Dockerfile.gateway` installs from the generated `snulbug-src/` snapshot "
         "instead of PyPI, so this recipe works before snulbug has a published package "
         "release.\n\n"

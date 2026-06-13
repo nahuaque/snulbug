@@ -23,6 +23,7 @@ def test_create_mcp_share_writes_ephemeral_holepunch_session(tmp_path):
     client_config = json.loads((tmp_path / "mcp-client.json").read_text(encoding="utf-8"))
     facade_client_config = json.loads((tmp_path / "containers" / "mcp-client.facade.json").read_text(encoding="utf-8"))
     proxy_config = load_mcp_proxy_config(tmp_path / "snulbug.toml")
+    local_config = load_mcp_proxy_config(tmp_path / "containers" / "snulbug.local.toml")
     facade_config = load_mcp_proxy_config(tmp_path / "containers" / "snulbug.facade.toml")
     report = (tmp_path / "SHARE.md").read_text(encoding="utf-8")
 
@@ -58,6 +59,10 @@ def test_create_mcp_share_writes_ephemeral_holepunch_session(tmp_path):
         facade_client_config["mcpServers"]["snulbug-share-facade"]["headers"]
         == (result["recipes"]["remote_container_upstream"]["client"]["headers"])
     )
+    assert local_config["host"] == "0.0.0.0"
+    assert local_config["port"] == 8080
+    assert [upstream["name"] for upstream in local_config["upstreams"]] == ["local"]
+    assert local_config["upstreams"][0]["url"] == "http://local-mcp:9000/mcp"
     assert facade_config["host"] == "0.0.0.0"
     assert facade_config["port"] == 8080
     assert facade_config["lease_required"] is True
@@ -70,15 +75,23 @@ def test_create_mcp_share_writes_ephemeral_holepunch_session(tmp_path):
     assert (tmp_path / "containers" / "Dockerfile.gateway").is_file()
     assert (tmp_path / "containers" / "Dockerfile.remote-peer").is_file()
     assert (tmp_path / "containers" / "mock_mcp_server.py").is_file()
+    assert (tmp_path / "containers" / "mock_mcp_server.js").is_file()
     assert (tmp_path / "containers" / "snulbug-src" / "pyproject.toml").is_file()
     assert (tmp_path / "containers" / "snulbug-src" / "snulbug" / "share.py").is_file()
     assert (tmp_path / "containers" / "policy.snulbug" / "policy.lua").is_file()
     assert (tmp_path / "containers" / "leases.json").is_file()
     compose = (tmp_path / "containers" / "docker-compose.yml").read_text(encoding="utf-8")
     gateway_dockerfile = (tmp_path / "containers" / "Dockerfile.gateway").read_text(encoding="utf-8")
+    remote_dockerfile = (tmp_path / "containers" / "Dockerfile.remote-peer").read_text(encoding="utf-8")
     assert "remote-by-peer-mcp" in compose
+    assert "snulbug.local.toml" in compose
     assert "snulbug-src/" in gateway_dockerfile
     assert "snulbug[proxy]" not in gateway_dockerfile
+    assert "apt-get" not in gateway_dockerfile
+    assert "npm install" not in gateway_dockerfile
+    assert "apt-get" not in remote_dockerfile
+    assert "python3" not in remote_dockerfile
+    assert "mock_mcp_server.js" in remote_dockerfile
     assert (tmp_path / "tunnel" / "hypertele-server.json").is_file()
     assert (tmp_path / "tunnel" / "hypertele-client.json").is_file()
     assert "snulbug MCP share session" in report
@@ -139,10 +152,15 @@ def test_mcp_share_refuses_to_overwrite_without_force(tmp_path):
 def test_checked_in_container_facade_example_matches_proxy_schema():
     root = Path(__file__).resolve().parents[1]
     example = root / "examples" / "mcp_container_facade"
+    local_config = load_mcp_proxy_config(example / "snulbug.local.toml")
     config = load_mcp_proxy_config(example / "snulbug.facade.toml")
     compose = (example / "docker-compose.yml").read_text(encoding="utf-8")
+    gateway_dockerfile = (example / "Dockerfile.gateway").read_text(encoding="utf-8")
+    remote_dockerfile = (example / "Dockerfile.remote-peer").read_text(encoding="utf-8")
     client = json.loads((example / "mcp-client.json").read_text(encoding="utf-8"))
 
+    assert local_config["host"] == "0.0.0.0"
+    assert [upstream["name"] for upstream in local_config["upstreams"]] == ["local"]
     assert config["host"] == "0.0.0.0"
     assert config["upstreams"][0]["name"] == "local"
     assert config["upstreams"][0]["url"] == "http://local-mcp:9000/mcp"
@@ -150,6 +168,12 @@ def test_checked_in_container_facade_example_matches_proxy_schema():
     assert config["upstreams"][1]["transport"] == "holepunch"
     assert config["upstreams"][1]["bridge_config"] == "hypertele-client.json"
     assert "snulbug-gateway" in compose
+    assert "snulbug.local.toml" in compose
     assert "local-mcp" in compose
     assert "remote-by-peer-mcp" in compose
+    assert "apt-get" not in gateway_dockerfile
+    assert "npm install" not in gateway_dockerfile
+    assert "apt-get" not in remote_dockerfile
+    assert "python3" not in remote_dockerfile
+    assert "mock_mcp_server.js" in remote_dockerfile
     assert client["mcpServers"]["snulbug-container-facade"]["headers"]["Authorization"] == ("Bearer local-dev-secret")

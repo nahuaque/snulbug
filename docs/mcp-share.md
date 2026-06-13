@@ -87,11 +87,13 @@ containers/
   docker-compose.yml
   Dockerfile.gateway
   Dockerfile.remote-peer
+  snulbug.local.toml
   snulbug.facade.toml
   policy.snulbug/
   leases.json
   mcp-client.facade.json
   mock_mcp_server.py
+  mock_mcp_server.js
   snulbug-src/
   hypertele-server.json
   hypertele-client.json
@@ -109,16 +111,19 @@ The generated `Dockerfile.gateway` installs from `snulbug-src/`, a source
 snapshot copied from the checkout that created the share, so it does not require
 a published PyPI release.
 
-Start from the generated recipe:
+Start from the generated local-only recipe first. This path does not install
+Node, npm, or Hypertele in the snulbug gateway image:
 
 ```bash
 cd .snulbug/shares/share-*/containers
-docker compose --profile remote-peer up --build remote-by-peer-mcp
-docker compose up --build local-mcp snulbug-gateway
+docker compose up --build
 ```
 
 Replace the placeholder peer material in `hypertele-server.json` and
-`hypertele-client.json` before using the peer bridge outside local testing.
+`hypertele-client.json` before using the peer bridge outside local testing. For
+the remote peer path, make Hypertele available to the gateway or run it as a
+sidecar, then switch the gateway command from `snulbug.local.toml` to
+`snulbug.facade.toml`.
 Point clients at `mcp-client.facade.json` for this facade recipe.
 
 ## Public tunnel providers

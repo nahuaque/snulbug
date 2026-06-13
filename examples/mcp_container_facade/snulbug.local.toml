@@ -1,0 +1,34 @@
+[mcp.proxy]
+policy = "policy.lua"
+host = "0.0.0.0"
+port = 8080
+state = "memory"
+trace = true
+record_out = "traces/session.jsonl"
+audit_out = "traces/audit.jsonl"
+redact_records = true
+decision_console = true
+decision_console_format = "text"
+confirm = false
+max_body_bytes = 65536
+response_max_bytes = 262144
+response_redact_secrets = true
+response_block_instructions = false
+tool_pinning = true
+tool_pinning_action = "block"
+schema_validation = true
+schema_validation_action = "block"
+lease_file = "leases.json"
+lease_required = false
+lease_header = "x-snulbug-lease"
+tunnel_provider = "holepunch"
+tunnel_public_url = "http://127.0.0.1:8080/mcp"
+cloudflare_access = "off"
+timeout = 30.0
+
+[[mcp.proxy.upstreams]]
+name = "local"
+transport = "http"
+url = "http://local-mcp:9000/mcp"
+tool_prefix = "local."
+default = true

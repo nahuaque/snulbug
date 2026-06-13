@@ -465,15 +465,15 @@ uv run snulbug mcp share \
   --ttl 30m
 
 cd .snulbug/shares/share-*/containers
-docker compose --profile remote-peer up --build remote-by-peer-mcp
-docker compose up --build local-mcp snulbug-gateway
+docker compose up --build
 ```
 
-The recipe includes one `snulbug-gateway` service, one `local-mcp` service, and
-one `remote-by-peer-mcp` service. The generated `snulbug.facade.toml` exposes
-prefixed tools such as `local.safe_read_file` and `remote.safe_read_file`, and
-the generated `mcp-client.facade.json` contains the bearer and lease headers for
-that facade session.
+The default command starts one `snulbug-gateway` service and one `local-mcp`
+service without installing Node, npm, or Hypertele in the gateway image. The
+recipe also includes a `remote-by-peer-mcp` service and `snulbug.facade.toml` for
+the peer-bridge variant. That facade config exposes prefixed tools such as
+`local.safe_read_file` and `remote.safe_read_file`, and the generated
+`mcp-client.facade.json` contains the bearer and lease headers for that session.
 
 For a checked-in version of the same shape, see
 [`examples/mcp_container_facade`](../examples/mcp_container_facade/README.md).
