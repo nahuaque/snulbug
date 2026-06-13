@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import secrets
 import shlex
+import shutil
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -433,8 +434,10 @@ def _write_container_upstream_recipe(
         "mock_server": recipe_dir / "mock_mcp_server.py",
         "hypertele_server": recipe_dir / "hypertele-server.json",
         "hypertele_client": recipe_dir / "hypertele-client.json",
+        "source": recipe_dir / "snulbug-src",
         "readme": recipe_dir / "README.md",
     }
+    _copy_gateway_source(files["source"], force=force)
     _write_text(files["compose"], _container_compose(), force=force)
     _write_text(files["gateway_dockerfile"], _gateway_dockerfile(), force=force)
     _write_text(files["remote_peer_dockerfile"], _remote_peer_dockerfile(), force=force)
@@ -604,12 +607,15 @@ services:
 def _gateway_dockerfile() -> str:
     return """FROM python:3.13-slim
 
+WORKDIR /src
+
 RUN apt-get update \\
   && apt-get install -y --no-install-recommends nodejs npm \\
   && rm -rf /var/lib/apt/lists/*
 
-ARG SNULBUG_PACKAGE=snulbug[proxy]
-RUN python -m pip install --no-cache-dir "${SNULBUG_PACKAGE}" \\
+COPY snulbug-src/ /src/
+
+RUN python -m pip install --no-cache-dir ".[proxy]" \\
   && npm install -g hypertele
 
 WORKDIR /share
@@ -627,6 +633,34 @@ RUN apt-get update \\
 WORKDIR /app
 COPY mock_mcp_server.py /app/mock_mcp_server.py
 """
+
+
+def _copy_gateway_source(destination: Path, *, force: bool) -> None:
+    source_root = Path(__file__).resolve().parents[1]
+    package_source = source_root / "snulbug"
+    required_files = ("pyproject.toml", "README.md", "LICENSE")
+    missing = [name for name in required_files if not (source_root / name).is_file()]
+    if missing or not package_source.is_dir():
+        raise FileNotFoundError(
+            "cannot create container gateway source snapshot; run `snulbug mcp share` from a source checkout "
+            "until snulbug is published as a container-installable package"
+        )
+    if destination.exists():
+        if not force:
+            raise FileExistsError(f"share output already exists: {destination}")
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True, exist_ok=True)
+    for name in required_files:
+        shutil.copy2(source_root / name, destination / name)
+    shutil.copytree(package_source, destination / "snulbug", ignore=_ignore_source_artifacts)
+
+
+def _ignore_source_artifacts(_directory: str, names: list[str]) -> set[str]:
+    return {
+        name
+        for name in names
+        if name == "__pycache__" or name.endswith((".pyc", ".pyo")) or name in {".DS_Store", ".pytest_cache"}
+    }
 
 
 def _mock_mcp_server() -> str:
@@ -769,6 +803,7 @@ def _container_recipe_readme(
         "- `policy.snulbug/`: policy generated for prefixed facade tools.\n"
         "- `leases.json`: task lease generated for prefixed facade tools.\n"
         "- `mcp-client.facade.json`: MCP client config for this container facade.\n"
+        "- `snulbug-src/`: local source snapshot installed into the gateway image.\n"
         "- `hypertele-server.json` / `hypertele-client.json`: placeholder peer bridge configs.\n\n"
         "## Run\n\n"
         "First edit `hypertele-server.json` and `hypertele-client.json` with real "
@@ -781,9 +816,9 @@ def _container_recipe_readme(
         "```bash\n"
         "docker compose up --build local-mcp snulbug-gateway\n"
         "```\n\n"
-        "By default `Dockerfile.gateway` installs `snulbug[proxy]` as a package. "
-        "Override the `SNULBUG_PACKAGE` build arg if you want to install from a "
-        "Git URL or another package source.\n\n"
+        "`Dockerfile.gateway` installs from the generated `snulbug-src/` snapshot "
+        "instead of PyPI, so this recipe works before snulbug has a published package "
+        "release.\n\n"
         f"Point the MCP client at `{client_config_path}`. The facade config is "
         f"`{facade_config_path}`.\n\n"
         "## Facade tool names\n\n"

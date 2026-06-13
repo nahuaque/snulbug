@@ -70,9 +70,15 @@ def test_create_mcp_share_writes_ephemeral_holepunch_session(tmp_path):
     assert (tmp_path / "containers" / "Dockerfile.gateway").is_file()
     assert (tmp_path / "containers" / "Dockerfile.remote-peer").is_file()
     assert (tmp_path / "containers" / "mock_mcp_server.py").is_file()
+    assert (tmp_path / "containers" / "snulbug-src" / "pyproject.toml").is_file()
+    assert (tmp_path / "containers" / "snulbug-src" / "snulbug" / "share.py").is_file()
     assert (tmp_path / "containers" / "policy.snulbug" / "policy.lua").is_file()
     assert (tmp_path / "containers" / "leases.json").is_file()
-    assert "remote-by-peer-mcp" in (tmp_path / "containers" / "docker-compose.yml").read_text(encoding="utf-8")
+    compose = (tmp_path / "containers" / "docker-compose.yml").read_text(encoding="utf-8")
+    gateway_dockerfile = (tmp_path / "containers" / "Dockerfile.gateway").read_text(encoding="utf-8")
+    assert "remote-by-peer-mcp" in compose
+    assert "snulbug-src/" in gateway_dockerfile
+    assert "snulbug[proxy]" not in gateway_dockerfile
     assert (tmp_path / "tunnel" / "hypertele-server.json").is_file()
     assert (tmp_path / "tunnel" / "hypertele-client.json").is_file()
     assert "snulbug MCP share session" in report

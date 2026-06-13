@@ -92,6 +92,7 @@ containers/
   leases.json
   mcp-client.facade.json
   mock_mcp_server.py
+  snulbug-src/
   hypertele-server.json
   hypertele-client.json
 ```
@@ -104,6 +105,9 @@ uses facade tool names such as `local.safe_read_file` and
 The normal share config remains at `snulbug.toml`. The container recipe has its
 own facade config, policy, lease file, and MCP client config so experimenting
 with container upstreams does not change the default share session.
+The generated `Dockerfile.gateway` installs from `snulbug-src/`, a source
+snapshot copied from the checkout that created the share, so it does not require
+a published PyPI release.
 
 Start from the generated recipe:
 
