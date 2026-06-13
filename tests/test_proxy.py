@@ -9,7 +9,14 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from snulbug import ConfirmationBroker, create_lease, create_proxy_application, list_leases, load_record_log
+from snulbug import (
+    ConfirmationBroker,
+    create_lease,
+    create_proxy_application,
+    list_leases,
+    load_record_log,
+    sign_upstream_manifest,
+)
 
 
 def test_reverse_proxy_forwards_allowed_request_to_upstream(tmp_path):
@@ -511,6 +518,62 @@ def test_mcp_facade_routes_tool_calls_by_prefix_and_records_upstream_metadata(tm
     assert records[0]["metadata"]["tool"] == "git.status"
     assert records[0]["metadata"]["upstream_tool"] == "status"
     assert records[0]["metadata"]["response_policy"]["checked"] is True
+
+
+def test_mcp_facade_records_verified_upstream_manifest_metadata(tmp_path, monkeypatch):
+    files_server, _files_seen = start_mcp_upstream({"read_file": "Read a file"})
+    manifest_path = tmp_path / "files.manifest.json"
+    signed_manifest = sign_upstream_manifest(
+        {
+            "schema": "snulbug.upstream-manifest.v1",
+            "identity": "files@local",
+            "transport": "http",
+            "tool_prefix": "files.",
+            "labels": {"owner": "local-dev"},
+            "tools": [{"name": "read_file", "description": "Read a file"}],
+        },
+        secret="dev-secret",
+        key_id="dev",
+    )
+    manifest_path.write_text(json.dumps(signed_manifest), encoding="utf-8")
+    monkeypatch.setenv("SNULBUG_MANIFEST_SECRET", "dev-secret")
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+    app = create_proxy_application(
+        None,
+        policy,
+        upstreams=[
+            {
+                "name": "files",
+                "url": f"http://127.0.0.1:{files_server.server_port}/mcp",
+                "manifest": manifest_path,
+                "manifest_secret_env": "SNULBUG_MANIFEST_SECRET",
+                "manifest_identity": "files@local",
+            }
+        ],
+        record_out=record_log,
+        audit_out=audit_log,
+    )
+
+    try:
+        sent = run_asgi(app, body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}')
+    finally:
+        files_server.shutdown()
+        files_server.server_close()
+
+    records = load_record_log(record_log)
+    audit = json.loads(audit_log.read_text(encoding="utf-8"))
+    manifest_metadata = records[0]["metadata"]["upstream_transports"][0]["manifest"]
+    audit_manifest_metadata = audit["facade"]["upstream_transports"][0]["manifest"]
+    assert sent[0]["status"] == 200
+    assert manifest_metadata["identity"] == "files@local"
+    assert manifest_metadata["digest"].startswith("sha256:")
+    assert manifest_metadata["key_id"] == "dev"
+    assert manifest_metadata["path"] == str(manifest_path)
+    assert manifest_metadata["required"] is True
+    assert "dev-secret" not in json.dumps(records[0])
+    assert audit_manifest_metadata == manifest_metadata
 
 
 def test_mcp_facade_can_route_to_managed_stdio_upstream(tmp_path):

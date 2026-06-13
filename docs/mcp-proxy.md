@@ -401,6 +401,63 @@ events promote the same upstream identity into a top-level `facade` field so a
 session report can show which local, stdio, or peer-bridged server handled each
 decision.
 
+### Signed upstream manifests
+
+Signed upstream manifests let facade mode fail closed when an upstream identity
+or advertised capability document changes unexpectedly. This is useful when one
+gateway fronts multiple local, containerized, or peer-bridged MCP servers and you
+want audit records to carry a verified upstream identity instead of only a local
+config name.
+
+Create an unsigned JSON manifest:
+
+```json
+{
+  "schema": "snulbug.upstream-manifest.v1",
+  "identity": "files@local",
+  "transport": "http",
+  "tool_prefix": "files.",
+  "labels": {
+    "owner": "local-dev"
+  },
+  "tools": [
+    {
+      "name": "read_file",
+      "description": "Read a project file"
+    }
+  ]
+}
+```
+
+Sign and verify it with a shared secret kept outside the file:
+
+```bash
+export SNULBUG_MANIFEST_SECRET="replace-with-a-local-secret"
+snulbug mcp manifest sign manifests/files.json \
+  --out manifests/files.signed.json \
+  --key-id dev
+snulbug mcp manifest verify manifests/files.signed.json \
+  --expect-identity files@local
+```
+
+Then require that manifest for the facade upstream:
+
+```toml
+[[mcp.proxy.upstreams]]
+name = "files"
+url = "http://127.0.0.1:9001/mcp"
+tool_prefix = "files."
+manifest = "manifests/files.signed.json"
+manifest_secret_env = "SNULBUG_MANIFEST_SECRET"
+manifest_identity = "files@local"
+```
+
+On startup, snulbug verifies the manifest HMAC-SHA256 signature, digest, key id,
+and optional expected identity. Replay records and audit events include only
+safe manifest metadata: identity, digest, key id, schema, transport, tool prefix,
+tool count, labels, path, and whether the manifest was required. The signing
+secret is never written into record or audit metadata.
+
 ### Managed stdio upstreams
 
 Use `transport = "stdio"` when an MCP server is normally launched as a local

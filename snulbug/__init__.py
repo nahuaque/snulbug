@@ -12,6 +12,7 @@ from .inspection import format_mcp_inspection_report, inspect_mcp_log
 from .lab import run_mcp_lab
 from .learn import amend_mcp_policy, learn_mcp_policy
 from .leases import LeasePolicyConfig, create_lease, list_leases, revoke_lease
+from .manifests import load_manifest, manifest_digest, sign_upstream_manifest, verify_upstream_manifest, write_manifest
 from .middleware import LuaConfig, LuaMiddleware
 from .presets import McpPolicyOptions, copy_builtin_preset, generate_mcp_preset, list_builtin_presets
 from .promotion import compare_decisions, diff_policies
@@ -105,7 +106,9 @@ __all__ = [
     "init_tunnel_provider",
     "learn_mcp_policy",
     "load_mcp_proxy_config",
+    "load_manifest",
     "load_record_log",
+    "manifest_digest",
     "list_builtin_presets",
     "list_leases",
     "pack_bundle",
@@ -118,7 +121,10 @@ __all__ = [
     "run_mcp_lab",
     "run_proxy",
     "simulate_policy",
+    "sign_upstream_manifest",
     "test_bundle",
     "validate_bundle",
+    "verify_upstream_manifest",
+    "write_manifest",
     "write_sample_config",
 ]

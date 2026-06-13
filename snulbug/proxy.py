@@ -15,6 +15,7 @@ from urllib.parse import SplitResult, urlsplit
 from .cloudflare_access import CloudflareAccessConfig, evaluate_cloudflare_access
 from .confirm import ConfirmationBroker
 from .leases import LeasePolicyConfig, enforce_mcp_lease_policy, mcp_lease_error_response
+from .manifests import load_manifest, verify_upstream_manifest
 from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
 from .recorder import append_record, build_request_record, record_audit_event
 from .redaction import append_audit_event
@@ -66,6 +67,13 @@ class FacadeUpstream:
     bridge_env: Mapping[str, str] | None = None
     bridge_private: bool = True
     bridge_ready_timeout: float = 10.0
+    manifest: Path | None = None
+    manifest_required: bool = False
+    manifest_secret_env: str | None = None
+    manifest_secret: str | None = None
+    manifest_key_id: str | None = None
+    manifest_identity: str | None = None
+    manifest_metadata: Mapping[str, Any] | None = None
 
 
 class ReverseProxyApp:
@@ -1377,6 +1385,37 @@ def _coerce_facade_upstream(upstream: FacadeUpstream | Mapping[str, Any]) -> Fac
             raise ValueError(f"facade upstream {name!r} env must be a string table")
         if not all(isinstance(value, str) for value in env.values()):
             raise ValueError(f"facade upstream {name!r} env must be a string table")
+    manifest = upstream.get("manifest", upstream.get("manifest_path"))
+    if manifest is not None and not isinstance(manifest, str | Path):
+        raise ValueError(f"facade upstream {name!r} manifest must be a string path")
+    manifest_secret_env = upstream.get("manifest_secret_env")
+    manifest_secret = upstream.get("manifest_secret")
+    manifest_key_id = upstream.get("manifest_key_id")
+    manifest_identity = upstream.get("manifest_identity")
+    for manifest_field, manifest_value in (
+        ("manifest_secret_env", manifest_secret_env),
+        ("manifest_secret", manifest_secret),
+        ("manifest_key_id", manifest_key_id),
+        ("manifest_identity", manifest_identity),
+    ):
+        if manifest_value is not None and not isinstance(manifest_value, str):
+            raise ValueError(f"facade upstream {name!r} {manifest_field} must be a string")
+    raw_manifest_required = upstream.get("manifest_required")
+    if raw_manifest_required is None:
+        manifest_required = manifest is not None
+    elif isinstance(raw_manifest_required, bool):
+        manifest_required = raw_manifest_required
+    else:
+        raise ValueError(f"facade upstream {name!r} manifest_required must be a boolean")
+    manifest_metadata = _verify_upstream_manifest_config(
+        name=name,
+        manifest=manifest,
+        manifest_required=manifest_required,
+        manifest_secret_env=manifest_secret_env,
+        manifest_secret=manifest_secret,
+        manifest_key_id=manifest_key_id,
+        manifest_identity=manifest_identity,
+    )
     return FacadeUpstream(
         name=name,
         tool_prefix=tool_prefix,
@@ -1396,7 +1435,55 @@ def _coerce_facade_upstream(upstream: FacadeUpstream | Mapping[str, Any]) -> Fac
         bridge_env=dict(bridge_env) if isinstance(bridge_env, Mapping) else None,
         bridge_private=bridge_private,
         bridge_ready_timeout=float(bridge_ready_timeout),
+        manifest=Path(manifest) if manifest is not None else None,
+        manifest_required=manifest_required,
+        manifest_secret_env=manifest_secret_env,
+        manifest_secret=manifest_secret,
+        manifest_key_id=manifest_key_id,
+        manifest_identity=manifest_identity,
+        manifest_metadata=manifest_metadata,
     )
+
+
+def _verify_upstream_manifest_config(
+    *,
+    name: str,
+    manifest: str | Path | None,
+    manifest_required: bool,
+    manifest_secret_env: str | None,
+    manifest_secret: str | None,
+    manifest_key_id: str | None,
+    manifest_identity: str | None,
+) -> dict[str, Any] | None:
+    if manifest is None:
+        if manifest_required:
+            raise ValueError(f"facade upstream {name!r} manifest is required")
+        return None
+    manifest_path = Path(manifest)
+    if not manifest_path.is_file():
+        raise ValueError(f"facade upstream {name!r} manifest file does not exist: {manifest_path}")
+    manifest_document = load_manifest(manifest_path)
+    signature = manifest_document.get("snulbug_signature")
+    signature_key_id = signature.get("key_id") if isinstance(signature, Mapping) else None
+    key_id = manifest_key_id or signature_key_id
+    if not isinstance(key_id, str) or not key_id:
+        raise ValueError(f"facade upstream {name!r} manifest key_id is required")
+    secret = manifest_secret
+    if not secret and manifest_secret_env:
+        secret = os.environ.get(manifest_secret_env)
+    if not secret:
+        secret_source = f"environment variable {manifest_secret_env!r}" if manifest_secret_env else "manifest_secret"
+        raise ValueError(f"facade upstream {name!r} manifest secret is required from {secret_source}")
+    summary = verify_upstream_manifest(
+        manifest_document,
+        secrets={key_id: secret},
+        expected_identity=manifest_identity,
+    )
+    return {
+        **summary,
+        "path": str(manifest_path),
+        "required": manifest_required,
+    }
 
 
 def _required_url(upstream: FacadeUpstream) -> str:
@@ -1456,6 +1543,8 @@ def _upstream_metadata(upstream: FacadeUpstream) -> dict[str, Any]:
             "private": upstream.bridge_private,
             "ready_timeout": upstream.bridge_ready_timeout,
         }
+    if upstream.manifest_metadata:
+        metadata["manifest"] = dict(upstream.manifest_metadata)
     return _drop_empty(metadata)
 
 

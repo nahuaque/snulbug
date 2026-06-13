@@ -190,7 +190,7 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
     if normalized["cloudflare_access"] not in {"off", "audit", "enforce"}:
         raise ValueError("mcp.proxy.cloudflare_access must be 'off', 'audit', or 'enforce'")
 
-    normalized["upstreams"] = _normalize_upstreams(normalized.get("upstreams", []))
+    normalized["upstreams"] = _normalize_upstreams(normalized.get("upstreams", []), base_dir=base)
     normalized["cloudflare_access_allowed_emails"] = _normalize_string_list(
         normalized.get("cloudflare_access_allowed_emails", []),
         field="cloudflare_access_allowed_emails",
@@ -230,7 +230,7 @@ def _normalize_string_list(value: Any, *, field: str) -> list[str]:
     return list(value)
 
 
-def _normalize_upstreams(value: Any) -> list[dict[str, Any]]:
+def _normalize_upstreams(value: Any, *, base_dir: Path = Path(".")) -> list[dict[str, Any]]:
     if value in (None, ""):
         return []
     if not isinstance(value, list):
@@ -259,6 +259,18 @@ def _normalize_upstreams(value: Any) -> list[dict[str, Any]]:
         bridge_env = item.get("bridge_env")
         bridge_private = item.get("bridge_private", True)
         bridge_ready_timeout = item.get("bridge_ready_timeout", 10.0)
+        manifest = item.get("manifest", item.get("manifest_path"))
+        manifest_secret_env = item.get("manifest_secret_env")
+        manifest_secret = item.get("manifest_secret")
+        manifest_key_id = item.get("manifest_key_id")
+        manifest_identity = item.get("manifest_identity")
+        raw_manifest_required = item.get("manifest_required")
+        if raw_manifest_required is None:
+            manifest_required = manifest is not None
+        elif isinstance(raw_manifest_required, bool):
+            manifest_required = raw_manifest_required
+        else:
+            raise ValueError(f"mcp.proxy.upstreams[{index}].manifest_required must be a boolean")
         tool_prefix = item.get("tool_prefix", f"{name}.")
         default = bool(item.get("default", False))
         if not isinstance(name, str) or not name:
@@ -307,6 +319,16 @@ def _normalize_upstreams(value: Any) -> list[dict[str, Any]]:
             raise ValueError(f"mcp.proxy.upstreams[{index}].args must be a list of strings")
         if cwd is not None and not isinstance(cwd, str):
             raise ValueError(f"mcp.proxy.upstreams[{index}].cwd must be a string")
+        if manifest is not None and not isinstance(manifest, str | Path):
+            raise ValueError(f"mcp.proxy.upstreams[{index}].manifest must be a string path")
+        for manifest_field, manifest_value in (
+            ("manifest_secret_env", manifest_secret_env),
+            ("manifest_secret", manifest_secret),
+            ("manifest_key_id", manifest_key_id),
+            ("manifest_identity", manifest_identity),
+        ):
+            if manifest_value is not None and not isinstance(manifest_value, str):
+                raise ValueError(f"mcp.proxy.upstreams[{index}].{manifest_field} must be a string")
         if env is not None:
             if not isinstance(env, Mapping):
                 raise ValueError(f"mcp.proxy.upstreams[{index}].env must be a table of strings")
@@ -357,6 +379,18 @@ def _normalize_upstreams(value: Any) -> list[dict[str, Any]]:
                         "bridge_ready_timeout": float(bridge_ready_timeout),
                     }
                     if transport == "holepunch"
+                    else {}
+                ),
+                **(
+                    {
+                        "manifest": _resolve_path(base_dir, manifest),
+                        "manifest_required": manifest_required,
+                        **({"manifest_secret_env": manifest_secret_env} if manifest_secret_env is not None else {}),
+                        **({"manifest_secret": manifest_secret} if manifest_secret is not None else {}),
+                        **({"manifest_key_id": manifest_key_id} if manifest_key_id is not None else {}),
+                        **({"manifest_identity": manifest_identity} if manifest_identity is not None else {}),
+                    }
+                    if manifest is not None
                     else {}
                 ),
             }

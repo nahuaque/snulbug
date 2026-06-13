@@ -16,6 +16,7 @@ It gives you a tight loop for agent-tool safety:
 - learn a least-privilege policy from observed traffic
 - amend blocked requests into reviewable candidate bundles
 - use task-scoped leases for temporary tool/path grants
+- pin facade upstream identity with signed manifests
 
 The standalone ASGI Lua middleware is still available, but it is an
 implementation surface. The main use case is protecting local MCP traffic.

@@ -109,6 +109,10 @@ def test_load_mcp_proxy_config_supports_facade_upstreams(tmp_path):
         name = "files"
         url = "http://127.0.0.1:9001/mcp"
         default = true
+        manifest = "manifests/files.json"
+        manifest_secret_env = "SNULBUG_MANIFEST_SECRET"
+        manifest_key_id = "dev"
+        manifest_identity = "files@local"
 
         [[mcp.proxy.upstreams]]
         name = "git"
@@ -127,6 +131,11 @@ def test_load_mcp_proxy_config_supports_facade_upstreams(tmp_path):
             "url": "http://127.0.0.1:9001/mcp",
             "tool_prefix": "files.",
             "default": True,
+            "manifest": tmp_path / "manifests/files.json",
+            "manifest_required": True,
+            "manifest_secret_env": "SNULBUG_MANIFEST_SECRET",
+            "manifest_key_id": "dev",
+            "manifest_identity": "files@local",
         },
         {
             "name": "git",
