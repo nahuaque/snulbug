@@ -22,6 +22,7 @@ def test_devcontainer_feature_manifest_defines_runtime_modes_and_member_options(
     assert options["mode"]["enum"] == ["cli", "gateway", "member-agent"]
     assert options["policy_profile"]["default"] == "tunnel-safe"
     assert options["install_source"]["enum"] == ["pypi", "github"]
+    assert options["install_source"]["default"] == "github"
     assert options["registry"]["default"] == ".snulbug/fabric-members.json"
     assert options["registry_key"]["default"] == "snulbug:fabric:members"
     assert options["member_upstream"]["default"] == "workspace=http://127.0.0.1:9000/mcp"

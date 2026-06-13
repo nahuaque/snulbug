@@ -23,20 +23,33 @@ implementation surface. The main use case is protecting local MCP traffic.
 
 ## Install
 
+`snulbug` is not published on PyPI yet. Use `uv` from the source tree or install
+from GitHub.
+
+From this repository:
+
 ```bash
-pip install "snulbug[proxy]"
+uv sync --extra proxy --extra discovery
+uv run snulbug --help
 ```
 
-For Redis-backed policy state:
+For contributor/dev tooling:
 
 ```bash
-pip install "snulbug[redis]"
+uv sync --all-extras --dev
+uv run pytest
 ```
 
-For local development from this repository:
+From another `uv` project:
 
 ```bash
-uv sync --extra dev
+uv add "snulbug[proxy,discovery] @ git+https://github.com/lbruhacs/snulbug"
+```
+
+Add the Redis extra when you need Redis-backed policy, runtime, or member state:
+
+```bash
+uv add "snulbug[proxy,discovery,redis] @ git+https://github.com/lbruhacs/snulbug"
 ```
 
 `snulbug` supports Python 3.10 through 3.13.

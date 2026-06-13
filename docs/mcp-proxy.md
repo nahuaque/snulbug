@@ -3,23 +3,30 @@
 Reverse proxy mode lets `snulbug` protect a local MCP HTTP server even when the
 server is not a Python ASGI app.
 
-Install the proxy runner:
+Install the proxy runner from this repository with `uv`:
 
 ```bash
-pip install "snulbug[proxy]"
+uv sync --extra proxy --extra discovery
+uv run snulbug --help
+```
+
+Or add the current GitHub source to another `uv` project:
+
+```bash
+uv add "snulbug[proxy,discovery] @ git+https://github.com/lbruhacs/snulbug"
 ```
 
 Copy a starter policy. For public tunnel use, `tunnel-safe` is the recommended
 default:
 
 ```bash
-snulbug mcp init tunnel-safe --output policy.snulbug
+uv run snulbug mcp init tunnel-safe --output policy.snulbug
 ```
 
 Or generate one with project-specific values:
 
 ```bash
-snulbug mcp init tunnel-safe \
+uv run snulbug mcp init tunnel-safe \
   --output policy.snulbug \
   --token local-dev-secret \
   --allow-tool safe_read_file \
@@ -29,13 +36,13 @@ snulbug mcp init tunnel-safe \
 Write a starter config:
 
 ```bash
-snulbug mcp config init
+uv run snulbug mcp config init
 ```
 
 Run the proxy:
 
 ```bash
-snulbug mcp proxy --config snulbug.toml
+uv run snulbug mcp proxy --config snulbug.toml
 ```
 
 For concrete MCP client configuration patterns, see
@@ -55,7 +62,7 @@ external access-control layer in front of the tunnel or peer bridge.
 Generate provider-specific tunnel setup snippets first:
 
 ```bash
-snulbug tunnel init \
+uv run snulbug tunnel init \
   --provider ngrok \
   --hostname YOUR-TUNNEL.ngrok.app \
   --config snulbug.toml \

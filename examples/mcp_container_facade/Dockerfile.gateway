@@ -1,10 +1,11 @@
 FROM python:3.13-slim
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /src
 
 COPY pyproject.toml README.md LICENSE ./
 COPY snulbug ./snulbug
 
-RUN python -m pip install --no-cache-dir ".[proxy]"
+RUN uv pip install --system --no-cache ".[proxy]"
 
 WORKDIR /share

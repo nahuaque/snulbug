@@ -12,20 +12,20 @@ MCP client
 
 ## 1. Install
 
-For a published install:
+`snulbug` is not published on PyPI yet. Use `uv` from the source tree:
 
 ```bash
-pip install "snulbug[proxy]"
+uv sync --extra proxy --extra discovery
+uv run snulbug --help
 ```
 
-From this repository:
+From another `uv` project, install from GitHub:
 
 ```bash
-uv sync --extra dev
+uv add "snulbug[proxy,discovery] @ git+https://github.com/lbruhacs/snulbug"
 ```
 
-The commands below use `uv run` for local repository development. With a
-published install, drop the `uv run` prefix.
+The commands below use `uv run` from this repository.
 
 For a self-describing workflow that an agentic harness can parse:
 

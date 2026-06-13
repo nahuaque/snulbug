@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALL_SOURCE="${INSTALL_SOURCE:-pypi}"
+INSTALL_SOURCE="${INSTALL_SOURCE:-github}"
 VERSION="${VERSION:-latest}"
 GITHUB_REF="${GITHUB_REF:-main}"
 PACKAGE_SPEC="${PACKAGE_SPEC:-}"

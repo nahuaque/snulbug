@@ -9,7 +9,7 @@
     "install_source": {
       "type": "string",
       "enum": ["pypi", "github"],
-      "default": "pypi",
+      "default": "github",
       "description": "Install snulbug from PyPI or directly from GitHub."
     },
     "version": {

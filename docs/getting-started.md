@@ -4,10 +4,17 @@
 engine can wrap FastAPI, Starlette, or any ASGI app. It can be served by
 Uvicorn, Hypercorn, Daphne, or another ASGI server.
 
-Install:
+Install from this repository with `uv`:
 
 ```bash
-pip install snulbug
+uv sync
+uv run python -c "import snulbug; print(snulbug.__version__)"
+```
+
+Or add the current GitHub source to another `uv` project:
+
+```bash
+uv add "snulbug @ git+https://github.com/lbruhacs/snulbug"
 ```
 
 Minimal policy:
