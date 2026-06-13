@@ -14,6 +14,17 @@ from .bundle import (
     verify_bundle_lifecycle,
 )
 from .cloudflare_access import CloudflareAccessConfig, evaluate_cloudflare_access
+from .codespaces import (
+    DEFAULT_CODESPACE_ATTACH_DIR,
+    DEFAULT_CODESPACE_DISCOVERY_ENV,
+    DEFAULT_CODESPACE_HOST,
+    DEFAULT_CODESPACE_PORT,
+    DEFAULT_CODESPACE_TOOL_PREFIX,
+    DEFAULT_CODESPACE_UPSTREAM_NAME,
+    format_codespace_attach_report,
+    prepare_codespace_attach,
+    smoke_check_codespace_upstream,
+)
 from .config import load_mcp_fabric_config, load_mcp_proxy_config, write_sample_config
 from .confirm import ConfirmationBroker
 from .control_events import (
@@ -150,6 +161,12 @@ __all__ = [
     "DEFAULT_FABRIC_MEMBER_REGISTRY",
     "DEFAULT_FABRIC_MEMBER_REGISTRY_KEY",
     "DEFAULT_FABRIC_MEMBER_TTL_SECONDS",
+    "DEFAULT_CODESPACE_ATTACH_DIR",
+    "DEFAULT_CODESPACE_DISCOVERY_ENV",
+    "DEFAULT_CODESPACE_HOST",
+    "DEFAULT_CODESPACE_PORT",
+    "DEFAULT_CODESPACE_TOOL_PREFIX",
+    "DEFAULT_CODESPACE_UPSTREAM_NAME",
     "DEFAULT_FABRIC_RUNTIME_LEASE_TTL_SECONDS",
     "DEFAULT_FABRIC_RUNTIME_STATE",
     "DEFAULT_FABRIC_RUNTIME_STATE_KEY",
@@ -238,6 +255,7 @@ __all__ = [
     "format_fabric_member_report",
     "format_fabric_runtime_report",
     "format_fabric_status_report",
+    "format_codespace_attach_report",
     "format_mcp_inspection_report",
     "format_mcp_impact_report",
     "format_mcp_guide",
@@ -267,6 +285,7 @@ __all__ = [
     "open_fabric_runtime_state_store",
     "pack_bundle",
     "parse_tunnel_headers",
+    "prepare_codespace_attach",
     "record_audit_event",
     "record_policy_request",
     "reconcile_fabric_controller",
@@ -282,6 +301,7 @@ __all__ = [
     "run_fabric_data_plane",
     "run_proxy",
     "simulate_policy",
+    "smoke_check_codespace_upstream",
     "promote_bundle_lifecycle",
     "sign_bundle_lifecycle",
     "sign_upstream_manifest",

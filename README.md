@@ -66,6 +66,18 @@ The lab creates fake MCP upstreams behind one facade, records traffic, learns a
 least-privilege policy, amends a blocked request into a candidate policy, and
 writes replay/audit/report artifacts under `.snulbug-lab/`.
 
+## Codespaces Demo
+
+Attach one Codespaces forwarded MCP URL to a local snulbug gateway:
+
+```bash
+uv run snulbug mcp codespace attach https://YOUR-CODESPACE-9001.app.github.dev/mcp
+```
+
+The command generates `.snulbug/codespace-local/`, preflights the upstream with
+`tools/list`, starts the gateway at `http://127.0.0.1:8080/mcp`, and writes
+replay/audit logs for inspection.
+
 ## Quickstart
 
 Ask the CLI for a copy-paste workflow before wiring a client or harness:

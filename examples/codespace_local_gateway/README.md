@@ -53,14 +53,12 @@ From this repo on the laptop:
 ```bash
 uv sync
 export CODESPACE_MCP_URL="https://YOUR-CODESPACE-9001.app.github.dev/mcp"
-export SNULBUG_DISCOVERY_UPSTREAMS="[{\"name\":\"codespace-files\",\"url\":\"${CODESPACE_MCP_URL}\",\"tool_prefix\":\"codespace.files.\"}]"
-uv run snulbug mcp fabric discover \
-  --config examples/codespace_local_gateway/snulbug.env-gateway.toml
-uv run snulbug mcp proxy \
-  --config examples/codespace_local_gateway/snulbug.env-gateway.toml
+uv run snulbug mcp codespace attach "$CODESPACE_MCP_URL"
 ```
 
-The proxy listens on:
+The command writes `.snulbug/codespace-local/snulbug.toml`, preflights the
+remote MCP URL with `tools/list`, prints the local MCP client URL, and starts
+the proxy. The proxy listens on:
 
 ```text
 http://127.0.0.1:8080/mcp
@@ -95,14 +93,21 @@ Inspect the audit log after traffic flows:
 
 ```bash
 uv run snulbug mcp inspect \
-  examples/codespace_local_gateway/traces/codespace-env-audit.jsonl \
+  .snulbug/codespace-local/traces/audit.jsonl \
   --kind audit
 ```
 
-Clean generated demo logs:
+Clean generated demo artifacts:
 
 ```bash
-rm -rf examples/codespace_local_gateway/traces
+rm -rf .snulbug/codespace-local
+```
+
+Under the hood, `codespace attach` uses the same env discovery shape as
+`snulbug.env-gateway.toml`:
+
+```bash
+export SNULBUG_DISCOVERY_UPSTREAMS="[{\"name\":\"codespace-files\",\"url\":\"${CODESPACE_MCP_URL}\",\"tool_prefix\":\"codespace.files.\"}]"
 ```
 
 ## Demo B: Redis Member Agent

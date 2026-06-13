@@ -1,0 +1,310 @@
+from __future__ import annotations
+
+import http.client
+import json
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+from urllib.parse import SplitResult, urlsplit
+
+DEFAULT_CODESPACE_ATTACH_DIR = Path(".snulbug/codespace-local")
+DEFAULT_CODESPACE_DISCOVERY_ENV = "SNULBUG_DISCOVERY_UPSTREAMS"
+DEFAULT_CODESPACE_UPSTREAM_NAME = "codespace-files"
+DEFAULT_CODESPACE_TOOL_PREFIX = "codespace.files."
+DEFAULT_CODESPACE_HOST = "127.0.0.1"
+DEFAULT_CODESPACE_PORT = 8080
+
+_TOOLS_LIST_REQUEST = {"jsonrpc": "2.0", "id": "snulbug-smoke", "method": "tools/list", "params": {}}
+
+_ALLOW_POLICY = """return function()
+  return {
+    action = "continue",
+    reason_code = "codespace.attach.allow",
+  }
+end
+"""
+
+
+def prepare_codespace_attach(
+    upstream_url: str,
+    *,
+    directory: str | Path = DEFAULT_CODESPACE_ATTACH_DIR,
+    name: str = DEFAULT_CODESPACE_UPSTREAM_NAME,
+    tool_prefix: str = DEFAULT_CODESPACE_TOOL_PREFIX,
+    host: str = DEFAULT_CODESPACE_HOST,
+    port: int = DEFAULT_CODESPACE_PORT,
+    state: str = "memory",
+    discovery_env: str = DEFAULT_CODESPACE_DISCOVERY_ENV,
+    decision_console: bool = True,
+    force: bool = True,
+) -> dict[str, Any]:
+    """Write a runnable local gateway config for one Codespaces MCP upstream."""
+
+    parsed = urlsplit(upstream_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Codespace MCP URL must be an absolute http:// or https:// URL")
+    if not name:
+        raise ValueError("upstream name must be non-empty")
+    if not tool_prefix:
+        raise ValueError("tool prefix must be non-empty")
+    if port <= 0:
+        raise ValueError("port must be positive")
+
+    root = Path(directory)
+    policy = root / "policy.lua"
+    config = root / "snulbug.toml"
+    traces = root / "traces"
+    record_out = traces / "session.jsonl"
+    audit_out = traces / "audit.jsonl"
+    if not force:
+        existing = [path for path in (policy, config) if path.exists()]
+        if existing:
+            raise FileExistsError(f"codespace attach file already exists: {existing[0]}")
+
+    upstream = {"name": name, "url": upstream_url, "tool_prefix": tool_prefix}
+    discovery_value = json.dumps([upstream], separators=(",", ":"))
+    root.mkdir(parents=True, exist_ok=True)
+    traces.mkdir(parents=True, exist_ok=True)
+    policy.write_text(_ALLOW_POLICY, encoding="utf-8")
+    config.write_text(
+        _codespace_attach_toml(
+            discovery_env=discovery_env,
+            host=host,
+            port=port,
+            state=state,
+            decision_console=decision_console,
+        ),
+        encoding="utf-8",
+    )
+
+    gateway_url = f"http://{host}:{port}/mcp"
+    return {
+        "ok": True,
+        "generated_by": "snulbug mcp codespace attach",
+        "directory": str(root),
+        "config": str(config),
+        "policy": str(policy),
+        "gateway": {"url": gateway_url, "host": host, "port": port},
+        "upstream": upstream,
+        "env": {"name": discovery_env, "value": discovery_value},
+        "logs": {"record_out": str(record_out), "audit_out": str(audit_out)},
+        "commands": {
+            "proxy": f"uv run snulbug mcp proxy --config {config}",
+            "inspect_audit": f"uv run snulbug mcp inspect {audit_out} --kind audit",
+        },
+    }
+
+
+def smoke_check_codespace_upstream(upstream_url: str, *, timeout: float = 5.0) -> dict[str, Any]:
+    """POST tools/list to the remote MCP URL and summarize the result."""
+
+    probe = _post_tools_list(upstream_url, timeout=timeout)
+    json_body = probe.get("json")
+    result_body = json_body.get("result") if isinstance(json_body, Mapping) else None
+    tools = result_body.get("tools") if isinstance(result_body, Mapping) else None
+    tool_names = (
+        [
+            str(tool.get("name"))
+            for tool in tools
+            if isinstance(tool, Mapping) and isinstance(tool.get("name"), str) and tool.get("name")
+        ]
+        if isinstance(tools, list)
+        else []
+    )
+    ok = probe.get("status") == 200 and isinstance(tools, list)
+    return {
+        "ok": ok,
+        "url": upstream_url,
+        "method": "tools/list",
+        "status": probe.get("status"),
+        "tool_count": len(tool_names),
+        "tools": tool_names,
+        "error": probe.get("error"),
+        "body_sample": probe.get("body_sample") if not ok else None,
+    }
+
+
+def format_codespace_attach_report(result: Mapping[str, Any]) -> str:
+    """Render a short operator report for the guided Codespaces attach command."""
+
+    gateway = _mapping(result.get("gateway"))
+    upstream = _mapping(result.get("upstream"))
+    logs = _mapping(result.get("logs"))
+    env = _mapping(result.get("env"))
+    smoke = _mapping(result.get("smoke_check"))
+    commands = _mapping(result.get("commands"))
+    lines = [
+        "# snulbug codespace attach",
+        "",
+        f"Gateway: `{gateway.get('url')}`",
+        f"Upstream: `{upstream.get('url')}`",
+        f"Tool prefix: `{upstream.get('tool_prefix')}`",
+        f"Config: `{result.get('config')}`",
+        f"Policy: `{result.get('policy')}`",
+        "",
+        "## Environment",
+        "",
+        f"- {env.get('name')}: `{env.get('value')}`",
+        "",
+        "## Logs",
+        "",
+        f"- Replay: `{logs.get('record_out')}`",
+        f"- Audit: `{logs.get('audit_out')}`",
+    ]
+    if smoke:
+        ok = "ok" if smoke.get("ok") else "failed"
+        lines.extend(
+            [
+                "",
+                "## Smoke Check",
+                "",
+                f"- Status: {ok}",
+                f"- HTTP: `{smoke.get('status')}`",
+                f"- tools/list tools: `{smoke.get('tool_count')}`",
+            ]
+        )
+        tools = smoke.get("tools")
+        if isinstance(tools, list) and tools:
+            lines.append(f"- Tool names: `{', '.join(str(tool) for tool in tools)}`")
+        if smoke.get("error"):
+            lines.append(f"- Error: `{smoke.get('error')}`")
+    lines.extend(
+        [
+            "",
+            "## Next",
+            "",
+            f"- Point the MCP client at `{gateway.get('url')}`.",
+            f"- Inspect audit logs with `{commands.get('inspect_audit')}`.",
+        ]
+    )
+    if result.get("starting_proxy"):
+        lines.extend(["- Starting the local proxy now. Press Ctrl-C to stop it."])
+    else:
+        lines.extend([f"- Start later with `{commands.get('proxy')}`."])
+    return "\n".join(lines)
+
+
+def _codespace_attach_toml(
+    *,
+    discovery_env: str,
+    host: str,
+    port: int,
+    state: str,
+    decision_console: bool,
+) -> str:
+    return (
+        "[mcp.fabric]\n"
+        'name = "codespace-local"\n'
+        'description = "Laptop snulbug gateway routing one Codespace MCP URL"\n'
+        f'gateway_url = "http://{host}:{port}/mcp"\n'
+        "require_manifests = false\n"
+        "probe_gateway = false\n"
+        "probe_upstreams = false\n"
+        "timeout = 5.0\n"
+        "\n"
+        "[mcp.fabric.discovery]\n"
+        "enabled = true\n"
+        "\n"
+        "[[mcp.fabric.discovery.providers]]\n"
+        'name = "codespace-env"\n'
+        'type = "env"\n'
+        f"env = {json.dumps(discovery_env)}\n"
+        "required = true\n"
+        "\n"
+        "[mcp.proxy]\n"
+        'policy = "policy.lua"\n'
+        f"host = {json.dumps(host)}\n"
+        f"port = {port}\n"
+        f"state = {json.dumps(state)}\n"
+        "trace = true\n"
+        'record_out = "traces/session.jsonl"\n'
+        'audit_out = "traces/audit.jsonl"\n'
+        "redact_records = true\n"
+        f"decision_console = {_toml_bool(decision_console)}\n"
+        'decision_console_format = "text"\n'
+        "max_body_bytes = 65536\n"
+        "response_max_bytes = 262144\n"
+        "response_redact_secrets = true\n"
+        "tool_pinning = true\n"
+        'tool_pinning_action = "warn"\n'
+        "schema_validation = true\n"
+        'schema_validation_action = "warn"\n'
+        "facade_health_routing = true\n"
+        "facade_health_failure_threshold = 2\n"
+        "facade_health_cooldown_seconds = 10.0\n"
+        "facade_health_exclude_unhealthy = true\n"
+        "timeout = 30.0\n"
+    )
+
+
+def _post_tools_list(url: str, *, timeout: float) -> dict[str, Any]:
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return _probe_error(url, "invalid URL")
+    body = json.dumps(_TOOLS_LIST_REQUEST, separators=(",", ":")).encode("utf-8")
+    headers = {
+        "Host": parsed.netloc,
+        "Content-Type": "application/json",
+        "Content-Length": str(len(body)),
+        "User-Agent": "snulbug-codespace-attach",
+    }
+    connection = None
+    try:
+        connection = _connection(parsed, timeout)
+        connection.request("POST", _exact_target(parsed), body=body, headers=headers)
+        response = connection.getresponse()
+        response_body = response.read()
+        text = response_body.decode("utf-8", errors="replace")
+        json_body = None
+        try:
+            json_body = json.loads(text) if text else None
+        except json.JSONDecodeError:
+            json_body = None
+        return {
+            "url": url,
+            "status": int(response.status),
+            "headers": {name.lower(): value for name, value in response.getheaders()},
+            "body_size": len(response_body),
+            "body_sample": text[:300],
+            "json": json_body,
+            "error": None,
+        }
+    except Exception as exc:
+        return _probe_error(url, str(exc))
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _probe_error(url: str, error: str) -> dict[str, Any]:
+    return {
+        "url": url,
+        "status": None,
+        "headers": {},
+        "body_size": 0,
+        "body_sample": "",
+        "json": None,
+        "error": error,
+    }
+
+
+def _connection(upstream: SplitResult, timeout: float) -> http.client.HTTPConnection:
+    host = upstream.hostname
+    if host is None:
+        raise ValueError("upstream host is required")
+    if upstream.scheme == "https":
+        return http.client.HTTPSConnection(host, port=upstream.port, timeout=timeout)
+    return http.client.HTTPConnection(host, port=upstream.port, timeout=timeout)
+
+
+def _exact_target(upstream: SplitResult) -> str:
+    path = upstream.path or "/"
+    return f"{path}?{upstream.query}" if upstream.query else path
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _toml_bool(value: bool) -> str:
+    return "true" if value else "false"

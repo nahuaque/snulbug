@@ -394,6 +394,61 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     mcp_quickstart.add_argument("--compact", action="store_true", help="emit compact JSON")
 
+    mcp_codespace = mcp_subparsers.add_parser("codespace", help="attach GitHub Codespace MCP upstreams")
+    mcp_codespace_subparsers = mcp_codespace.add_subparsers(dest="codespace_command", required=True)
+    mcp_codespace_attach = mcp_codespace_subparsers.add_parser(
+        "attach",
+        help="start a local gateway for one Codespaces forwarded MCP URL",
+    )
+    mcp_codespace_attach.add_argument(
+        "url",
+        help="Codespaces forwarded MCP URL, such as https://NAME-9001.app.github.dev/mcp",
+    )
+    mcp_codespace_attach.add_argument("--name", default="codespace-files", help="facade upstream name")
+    mcp_codespace_attach.add_argument(
+        "--tool-prefix",
+        default="codespace.files.",
+        help="tool prefix exposed by the local facade",
+    )
+    mcp_codespace_attach.add_argument(
+        "--directory",
+        type=Path,
+        default=Path(".snulbug/codespace-local"),
+        help="generated local gateway artifact directory",
+    )
+    mcp_codespace_attach.add_argument("--host", default="127.0.0.1", help="local gateway bind host")
+    mcp_codespace_attach.add_argument("--port", type=int, default=8080, help="local gateway bind port")
+    mcp_codespace_attach.add_argument(
+        "--state",
+        default="memory",
+        help="'memory', 'none', or sqlite:/path/to/state.sqlite3",
+    )
+    mcp_codespace_attach.add_argument(
+        "--decision-console",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="print live redacted policy decisions while proxying",
+    )
+    mcp_codespace_attach.add_argument(
+        "--smoke-check",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="preflight the remote upstream with tools/list before starting the gateway",
+    )
+    mcp_codespace_attach.add_argument("--smoke-timeout", type=float, default=5.0, help="smoke-check timeout in seconds")
+    mcp_codespace_attach.add_argument(
+        "--force",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="overwrite generated local gateway files",
+    )
+    mcp_codespace_attach.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="write artifacts and print the plan without starting the gateway",
+    )
+    mcp_codespace_attach.add_argument("--compact", action="store_true", help="emit compact JSON")
+
     mcp_share = mcp_subparsers.add_parser(
         "share",
         help="create an ephemeral MCP share session with bearer auth, lease, tunnel setup, and client config",
@@ -1517,6 +1572,81 @@ def main(argv: Sequence[str] | None = None) -> int:
             except Exception as exc:
                 result = {"ok": False, "directory": str(args.directory), "error": str(exc)}
                 status = 1
+        elif args.mcp_command == "codespace":
+            from .codespaces import (
+                format_codespace_attach_report,
+                prepare_codespace_attach,
+                smoke_check_codespace_upstream,
+            )
+
+            if args.codespace_command != "attach":
+                parser.error(f"unknown mcp codespace command: {args.codespace_command}")
+                return 2
+            try:
+                result = prepare_codespace_attach(
+                    args.url,
+                    directory=args.directory,
+                    name=args.name,
+                    tool_prefix=args.tool_prefix,
+                    host=args.host,
+                    port=args.port,
+                    state=args.state,
+                    decision_console=args.decision_console,
+                    force=args.force,
+                )
+                if args.smoke_check:
+                    result["smoke_check"] = smoke_check_codespace_upstream(args.url, timeout=args.smoke_timeout)
+                    if not result["smoke_check"]["ok"]:
+                        status = 1
+                        if args.compact:
+                            sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
+                        else:
+                            sys.stdout.write(format_codespace_attach_report(result))
+                        sys.stdout.write("\n")
+                        return status
+                result["dry_run"] = bool(args.dry_run)
+                status = 0
+                if args.dry_run:
+                    if args.compact:
+                        sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
+                    else:
+                        sys.stdout.write(format_codespace_attach_report(result))
+                    sys.stdout.write("\n")
+                    return status
+
+                import os
+
+                os.environ[result["env"]["name"]] = result["env"]["value"]
+                proxy_config = load_mcp_proxy_config(result["config"])
+                fabric_config = load_mcp_fabric_config(result["config"])
+                fabric_config["proxy"] = proxy_config
+                result["starting_proxy"] = True
+                if args.compact:
+                    sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
+                else:
+                    sys.stdout.write(format_codespace_attach_report(result))
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+
+                from .fabric import build_fabric_audit_metadata
+                from .proxy import run_proxy
+
+                _run_loaded_mcp_proxy(
+                    proxy_config,
+                    fabric_config,
+                    build_fabric_audit_metadata=build_fabric_audit_metadata,
+                    run_proxy=run_proxy,
+                )
+                return 0
+            except Exception as exc:
+                result = {"ok": False, "url": args.url, "directory": str(args.directory), "error": str(exc)}
+                status = 1
+                if args.compact:
+                    sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
+                else:
+                    sys.stdout.write(json.dumps(result, indent=2, sort_keys=True))
+                sys.stdout.write("\n")
+                return status
         elif args.mcp_command == "init":
             output = args.output or Path(f"{args.preset}.snulbug")
             try:
@@ -2166,46 +2296,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         return 1
                     proxy_config = normalize_mcp_proxy_config(overrides)
                     fabric_config = normalize_mcp_fabric_config({}, proxy_config=proxy_config)
-                topology_audit = build_fabric_audit_metadata(fabric_config)
-                run_proxy(
-                    upstream=proxy_config["upstream"],
-                    upstreams=proxy_config["upstreams"],
-                    policy=proxy_config["policy"],
-                    host=proxy_config["host"],
-                    port=proxy_config["port"],
-                    state=proxy_config["state"],
-                    trace=proxy_config["trace"],
-                    max_body_bytes=proxy_config["max_body_bytes"],
-                    timeout=proxy_config["timeout"],
-                    record_out=proxy_config["record_out"],
-                    audit_out=proxy_config["audit_out"],
-                    redact_records=proxy_config["redact_records"],
-                    decision_console=proxy_config["decision_console"],
-                    decision_console_format=proxy_config["decision_console_format"],
-                    confirm=proxy_config["confirm"],
-                    response_max_bytes=proxy_config["response_max_bytes"],
-                    response_redact_secrets=proxy_config["response_redact_secrets"],
-                    response_block_instructions=proxy_config["response_block_instructions"],
-                    tool_pinning=proxy_config["tool_pinning"],
-                    tool_pinning_action=proxy_config["tool_pinning_action"],
-                    schema_validation=proxy_config["schema_validation"],
-                    schema_validation_action=proxy_config["schema_validation_action"],
-                    facade_health_routing=proxy_config["facade_health_routing"],
-                    facade_health_failure_threshold=proxy_config["facade_health_failure_threshold"],
-                    facade_health_cooldown_seconds=proxy_config["facade_health_cooldown_seconds"],
-                    facade_health_exclude_unhealthy=proxy_config["facade_health_exclude_unhealthy"],
-                    lease_file=proxy_config["lease_file"],
-                    lease_required=proxy_config["lease_required"],
-                    lease_header=proxy_config["lease_header"],
-                    tunnel_provider=proxy_config["tunnel_provider"],
-                    tunnel_public_url=proxy_config["tunnel_public_url"],
-                    cloudflare_access=proxy_config["cloudflare_access"],
-                    cloudflare_access_require_jwt=proxy_config["cloudflare_access_require_jwt"],
-                    cloudflare_access_require_email=proxy_config["cloudflare_access_require_email"],
-                    cloudflare_access_require_cf_ray=proxy_config["cloudflare_access_require_cf_ray"],
-                    cloudflare_access_allowed_emails=proxy_config["cloudflare_access_allowed_emails"],
-                    cloudflare_access_allowed_domains=proxy_config["cloudflare_access_allowed_domains"],
-                    topology_audit=topology_audit,
+                _run_loaded_mcp_proxy(
+                    proxy_config,
+                    fabric_config,
+                    build_fabric_audit_metadata=build_fabric_audit_metadata,
+                    run_proxy=run_proxy,
                     fabric_reload_config=args.config if args.reload_fabric else None,
                     fabric_reload_interval=args.fabric_reload_interval or 2.0,
                     fabric_reload_overrides=overrides if args.reload_fabric else None,
@@ -2310,6 +2405,62 @@ def _parse_facade_upstreams(values: Sequence[str] | None) -> list[dict[str, Any]
             raise ValueError("--facade-upstream must use NAME=URL")
         upstreams.append({"name": name, "url": url, "tool_prefix": f"{name}."})
     return upstreams
+
+
+def _run_loaded_mcp_proxy(
+    proxy_config: Mapping[str, Any],
+    fabric_config: Mapping[str, Any],
+    *,
+    build_fabric_audit_metadata: Any,
+    run_proxy: Any,
+    fabric_reload_config: str | Path | None = None,
+    fabric_reload_interval: float = 2.0,
+    fabric_reload_overrides: Mapping[str, Any] | None = None,
+) -> None:
+    topology_audit = build_fabric_audit_metadata(fabric_config)
+    run_proxy(
+        upstream=proxy_config["upstream"],
+        upstreams=proxy_config["upstreams"],
+        policy=proxy_config["policy"],
+        host=proxy_config["host"],
+        port=proxy_config["port"],
+        state=proxy_config["state"],
+        trace=proxy_config["trace"],
+        max_body_bytes=proxy_config["max_body_bytes"],
+        timeout=proxy_config["timeout"],
+        record_out=proxy_config["record_out"],
+        audit_out=proxy_config["audit_out"],
+        redact_records=proxy_config["redact_records"],
+        decision_console=proxy_config["decision_console"],
+        decision_console_format=proxy_config["decision_console_format"],
+        confirm=proxy_config["confirm"],
+        response_max_bytes=proxy_config["response_max_bytes"],
+        response_redact_secrets=proxy_config["response_redact_secrets"],
+        response_block_instructions=proxy_config["response_block_instructions"],
+        tool_pinning=proxy_config["tool_pinning"],
+        tool_pinning_action=proxy_config["tool_pinning_action"],
+        schema_validation=proxy_config["schema_validation"],
+        schema_validation_action=proxy_config["schema_validation_action"],
+        facade_health_routing=proxy_config["facade_health_routing"],
+        facade_health_failure_threshold=proxy_config["facade_health_failure_threshold"],
+        facade_health_cooldown_seconds=proxy_config["facade_health_cooldown_seconds"],
+        facade_health_exclude_unhealthy=proxy_config["facade_health_exclude_unhealthy"],
+        lease_file=proxy_config["lease_file"],
+        lease_required=proxy_config["lease_required"],
+        lease_header=proxy_config["lease_header"],
+        tunnel_provider=proxy_config["tunnel_provider"],
+        tunnel_public_url=proxy_config["tunnel_public_url"],
+        cloudflare_access=proxy_config["cloudflare_access"],
+        cloudflare_access_require_jwt=proxy_config["cloudflare_access_require_jwt"],
+        cloudflare_access_require_email=proxy_config["cloudflare_access_require_email"],
+        cloudflare_access_require_cf_ray=proxy_config["cloudflare_access_require_cf_ray"],
+        cloudflare_access_allowed_emails=proxy_config["cloudflare_access_allowed_emails"],
+        cloudflare_access_allowed_domains=proxy_config["cloudflare_access_allowed_domains"],
+        topology_audit=topology_audit,
+        fabric_reload_config=fabric_reload_config,
+        fabric_reload_interval=fabric_reload_interval,
+        fabric_reload_overrides=fabric_reload_overrides,
+    )
 
 
 def status_server_url(status_server: Any) -> str:

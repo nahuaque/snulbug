@@ -115,7 +115,7 @@ same repository.
 ## Codespace-to-local gateway
 
 See [../examples/codespace_local_gateway](../examples/codespace_local_gateway/README.md)
-for a complete demo. Demo A routes a single Codespace MCP URL from
-`SNULBUG_DISCOVERY_UPSTREAMS`, so it needs no Redis and works from the source
-repo. Demo B shows the Redis-backed member-agent flow where a Codespace
-registers and unregisters itself as a remote fabric member.
+for a complete demo. Demo A uses `snulbug mcp codespace attach <url>` to route a
+single Codespace MCP URL with no Redis. Demo B shows the Redis-backed
+member-agent flow where a Codespace registers and unregisters itself as a remote
+fabric member.
