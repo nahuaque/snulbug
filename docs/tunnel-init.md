@@ -42,7 +42,8 @@ ngrok http 8080 \
 ```
 
 Copy the exact `Forwarding` HTTPS URL printed by ngrok. Random free ngrok URLs
-commonly use `ngrok-free.app`; do not rewrite them as `ngrok-free.ngrok.app`.
+commonly use domains such as `ngrok-free.dev` or `ngrok-free.app`; do not
+rewrite them into an `ngrok.app` hostname.
 
 Then test the tunnel with a JSON-RPC MCP `tools/list` request:
 
@@ -210,17 +211,17 @@ active task lease.
 Agentic harnesses can consume the plan directly:
 
 ```bash
-snulbug tunnel init --provider ngrok --hostname YOUR-TUNNEL.ngrok.app --compact
+snulbug tunnel init --provider ngrok --compact
 ```
 
 The compact output includes `commands`, `client`, `doctor`, generated `files`,
 provider-specific `bridge` metadata when present, and `next_steps`.
 
-For explicit audit labels while proxying, copy the generated public URL into
-`snulbug.toml`:
+For explicit audit labels while proxying, copy the exact ngrok `Forwarding`
+origin into `snulbug.toml` and append `/mcp`:
 
 ```toml
 [mcp.proxy]
 tunnel_provider = "ngrok"
-tunnel_public_url = "https://YOUR-TUNNEL.ngrok.app/mcp"
+tunnel_public_url = "https://YOUR-NGROK-FORWARDING-DOMAIN/mcp"
 ```

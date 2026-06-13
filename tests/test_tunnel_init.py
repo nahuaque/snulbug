@@ -53,6 +53,11 @@ def test_tunnel_init_ngrok_without_config_writes_default_config_dir(tmp_path, mo
     assert result["config_generated"] is True
     assert result["config"] == ".snulbug/configs/snulbug.toml"
     assert result["output_dir"] == ".snulbug/configs"
+    assert result["public_url"] == "https://YOUR-NGROK-FORWARDING-DOMAIN/mcp"
+    assert result["commands"][0]["command"] == (
+        "ngrok http 8080 --traffic-policy-file .snulbug/configs/ngrok-traffic-policy.yml"
+    )
+    assert '  --url "${NGROK_URL}/mcp" \\' in result["doctor"]["command"]
     assert result["written_files"] == [
         ".snulbug/configs/snulbug.toml",
         ".snulbug/configs/policy.snulbug",
@@ -66,7 +71,8 @@ def test_tunnel_init_ngrok_without_config_writes_default_config_dir(tmp_path, mo
     assert "Generated snulbug config" in report
     assert "Config: `.snulbug/configs/snulbug.toml`" in report
     assert "export SNULBUG_TOKEN=local-dev-secret" in report
-    assert "Do not rewrite `ngrok-free.app` as `ngrok-free.ngrok.app`" in report
+    assert "export NGROK_URL=https://YOUR-NGROK-FORWARDING-DOMAIN" in report
+    assert "ngrok-free.dev" in report
     assert "--traffic-policy-file .snulbug/configs/ngrok-traffic-policy.yml" in report
     assert "snulbug mcp proxy --config .snulbug/configs/snulbug.toml" in result["next_steps"][1]
 

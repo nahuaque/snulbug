@@ -200,7 +200,8 @@ ngrok http 8080 --traffic-policy-file .snulbug/configs/ngrok-traffic-policy.yml
 ```
 
 Copy the exact `Forwarding` HTTPS URL printed by ngrok. Random free ngrok URLs
-commonly use `ngrok-free.app`; do not rewrite them as `ngrok-free.ngrok.app`.
+commonly use domains such as `ngrok-free.dev` or `ngrok-free.app`; do not
+rewrite them into an `ngrok.app` hostname.
 
 Use curl as a minimal MCP client to verify `tools/list` through the tunnel:
 

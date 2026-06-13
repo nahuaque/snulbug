@@ -17,12 +17,17 @@ snulbug tunnel doctor \
 Run it against a public tunnel URL:
 
 ```bash
+export NGROK_URL=https://YOUR-NGROK-FORWARDING-DOMAIN
 snulbug tunnel doctor \
   --provider ngrok \
-  --url https://YOUR-TUNNEL.ngrok.app/mcp \
+  --url "${NGROK_URL}/mcp" \
   --config snulbug.toml \
   --token local-dev-secret
 ```
+
+Use the exact `Forwarding` HTTPS origin printed by ngrok. Do not assume the
+domain is `ngrok.app`; free URLs commonly use domains such as `ngrok-free.dev`
+or `ngrok-free.app`.
 
 For Cloudflare Access service-token protected apps, pass the Access headers:
 

@@ -133,7 +133,6 @@ The share command also works with existing tunnel providers:
 ```bash
 uv run snulbug mcp share \
   --provider ngrok \
-  --hostname YOUR-TUNNEL.ngrok.app \
   --upstream http://127.0.0.1:9000 \
   --allow-tool safe_read_file \
   --ttl 30m
@@ -141,6 +140,8 @@ uv run snulbug mcp share \
 
 For public tunnel providers, expose the snulbug proxy, not the upstream MCP
 server, and run the generated doctor command before sharing the client config.
+Pass `--hostname` only when you have a reserved tunnel hostname; otherwise copy
+the exact forwarding URL printed by the tunnel provider.
 
 ## Close out
 

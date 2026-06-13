@@ -215,7 +215,6 @@ def _workflows() -> dict[str, dict[str, Any]]:
                         [
                             "snulbug tunnel init \\",
                             "  --provider ngrok \\",
-                            "  --hostname YOUR-TUNNEL.ngrok.app \\",
                             "  --config snulbug.toml \\",
                             "  --output-dir tunnel.ngrok",
                         ]
@@ -239,9 +238,10 @@ def _workflows() -> dict[str, dict[str, Any]]:
                     "title": "Verify the public tunnel boundary",
                     "command": "\n".join(
                         [
+                            "export NGROK_URL=https://YOUR-NGROK-FORWARDING-DOMAIN",
                             "snulbug tunnel doctor \\",
                             "  --provider ngrok \\",
-                            "  --url https://YOUR-TUNNEL.ngrok.app/mcp \\",
+                            '  --url "${NGROK_URL}/mcp" \\',
                             "  --config snulbug.toml \\",
                             "  --token local-dev-secret",
                         ]

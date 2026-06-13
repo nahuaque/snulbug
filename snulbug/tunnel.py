@@ -17,6 +17,8 @@ DEFAULT_MCP_PATH = "/mcp"
 DEFAULT_AUTH_FAILURE_STATUSES = (401, 403)
 DEFAULT_TUNNEL_TOKEN_ENV = "SNULBUG_TOKEN"
 DEFAULT_TUNNEL_OUTPUT_DIR = ".snulbug/configs"
+DEFAULT_NGROK_FORWARDING_HOST = "YOUR-NGROK-FORWARDING-DOMAIN"
+DEFAULT_NGROK_FORWARDING_ORIGIN = f"https://{DEFAULT_NGROK_FORWARDING_HOST}"
 DEFAULT_HOLEPUNCH_CLIENT_ORIGIN = "http://127.0.0.1:18080"
 
 _DOCTOR_REQUEST = {
@@ -295,15 +297,18 @@ def format_tunnel_init_report(result: Mapping[str, Any]) -> str:
         ]
     )
 
-    if provider == "ngrok" and str(result.get("public_url", "")).startswith("https://YOUR-TUNNEL.ngrok.app"):
+    if provider == "ngrok" and _is_default_ngrok_endpoint(str(result.get("public_url", ""))):
         lines.extend(
             [
                 "## Ngrok forwarding URL",
                 "",
-                "`YOUR-TUNNEL.ngrok.app` is a placeholder for a reserved ngrok domain. "
-                "If you are using ngrok's random free forwarding URL, omit `--hostname`, "
-                "start ngrok, and copy the exact `Forwarding` URL printed by the ngrok CLI. "
-                "Do not rewrite `ngrok-free.app` as `ngrok-free.ngrok.app`.",
+                "Set `NGROK_URL` to the exact `Forwarding` HTTPS origin printed by the "
+                "ngrok CLI. Do not assume an `ngrok.app` domain; random free URLs may use "
+                "`ngrok-free.dev`, `ngrok-free.app`, or another ngrok-owned domain.",
+                "",
+                "```bash",
+                f"export NGROK_URL={DEFAULT_NGROK_FORWARDING_ORIGIN}",
+                "```",
                 "",
             ]
         )
@@ -529,7 +534,7 @@ def _public_endpoint(
         return _normalize_url(public_url, path)
     normalized_path = _normalize_path(path)
     if provider == "ngrok":
-        host = hostname or "YOUR-TUNNEL.ngrok.app"
+        host = hostname or DEFAULT_NGROK_FORWARDING_HOST
     elif provider == "cloudflare":
         host = hostname or "mcp.example.com"
     elif provider == "tailscale":
@@ -563,7 +568,7 @@ def _provider_plan(
     if provider == "ngrok":
         tunnel_target = _ngrok_target(origin)
         public_origin = _url_origin(public_endpoint)
-        url_arg = "" if public_origin == "https://YOUR-TUNNEL.ngrok.app" else f" --url {public_origin}"
+        url_arg = "" if _is_default_ngrok_endpoint(public_endpoint) else f" --url {public_origin}"
         traffic_policy_file = _shell_path(output / "ngrok-traffic-policy.yml")
         commands = [
             {
@@ -712,17 +717,34 @@ def _host_port_from_origin(origin: str) -> dict[str, Any]:
 
 
 def _doctor_command(provider: str, *, public_endpoint: str, token_env: str, config_path: str | Path) -> str:
+    url_arg = (
+        _default_ngrok_doctor_url_arg(public_endpoint)
+        if provider == "ngrok" and _is_default_ngrok_endpoint(public_endpoint)
+        else public_endpoint
+    )
     lines = ["snulbug tunnel doctor \\"]
     if provider != "generic":
         lines.append(f"  --provider {provider} \\")
     lines.extend(
         [
-            f"  --url {public_endpoint} \\",
+            f"  --url {url_arg} \\",
             f"  --config {_shell_path(config_path)} \\",
             f"  --token ${{{token_env}}}",
         ]
     )
     return "\n".join(lines)
+
+
+def _is_default_ngrok_endpoint(value: str) -> bool:
+    return _url_origin(value) == DEFAULT_NGROK_FORWARDING_ORIGIN
+
+
+def _default_ngrok_doctor_url_arg(public_endpoint: str) -> str:
+    parsed = urlsplit(public_endpoint)
+    suffix = parsed.path or DEFAULT_MCP_PATH
+    if parsed.query:
+        suffix = f"{suffix}?{parsed.query}"
+    return f'"${{NGROK_URL}}{suffix}"'
 
 
 def _tunnel_init_files(
