@@ -33,14 +33,12 @@ From the Codespace terminal:
 
 ```bash
 uv sync
-uv run python examples/codespace_local_gateway/mock_mcp_server.py \
-  --host 0.0.0.0 \
-  --port 9001 \
-  --name codespace
+uv run snulbug mcp codespace serve-demo --host 0.0.0.0 --port 9001
 ```
 
-Make port `9001` public or otherwise reachable from the laptop, then copy the
-forwarded URL. In a Codespace shell this prints the expected URL shape:
+Make port `9001` public or otherwise reachable from the laptop. The command
+prints the expected forwarded URL and a laptop attach command. In a Codespace
+shell, the forwarded URL has this shape:
 
 ```bash
 echo "https://${CODESPACE_NAME}-9001.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}/mcp"

@@ -68,13 +68,20 @@ writes replay/audit/report artifacts under `.snulbug-lab/`.
 
 ## Codespaces Demo
 
-Attach one Codespaces forwarded MCP URL to a local snulbug gateway:
+In the Codespace terminal, start the bundled mock MCP server:
+
+```bash
+uv run snulbug mcp codespace serve-demo
+```
+
+It prints the forwarded MCP URL and the matching laptop command. On the laptop,
+attach that URL to a local snulbug gateway:
 
 ```bash
 uv run snulbug mcp codespace attach https://YOUR-CODESPACE-9001.app.github.dev/mcp
 ```
 
-The command generates `.snulbug/codespace-local/`, preflights the upstream with
+`attach` generates `.snulbug/codespace-local/`, preflights the upstream with
 `tools/list`, starts the gateway at `http://127.0.0.1:8080/mcp`, and writes
 replay/audit logs for inspection.
 

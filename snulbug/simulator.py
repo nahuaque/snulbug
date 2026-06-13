@@ -448,6 +448,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="write artifacts and print the plan without starting the gateway",
     )
     mcp_codespace_attach.add_argument("--compact", action="store_true", help="emit compact JSON")
+    mcp_codespace_serve_demo = mcp_codespace_subparsers.add_parser(
+        "serve-demo",
+        help="run the bundled mock MCP server inside a Codespace",
+    )
+    mcp_codespace_serve_demo.add_argument("--host", default="0.0.0.0", help="demo MCP server bind host")
+    mcp_codespace_serve_demo.add_argument("--port", type=int, default=9001, help="demo MCP server bind port")
+    mcp_codespace_serve_demo.add_argument("--name", default="codespace", help="demo MCP server name")
+    mcp_codespace_serve_demo.add_argument("--path", default="/mcp", help="MCP HTTP path")
+    mcp_codespace_serve_demo.add_argument(
+        "--ready-check",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="verify local tools/list before printing the laptop attach command",
+    )
+    mcp_codespace_serve_demo.add_argument("--ready-timeout", type=float, default=5.0, help="ready-check timeout")
+    mcp_codespace_serve_demo.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the inferred URLs and commands without starting the server",
+    )
+    mcp_codespace_serve_demo.add_argument("--compact", action="store_true", help="emit compact JSON")
 
     mcp_share = mcp_subparsers.add_parser(
         "share",
@@ -1575,78 +1596,130 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.mcp_command == "codespace":
             from .codespaces import (
                 format_codespace_attach_report,
+                format_codespace_demo_report,
                 prepare_codespace_attach,
+                prepare_codespace_demo,
+                serve_codespace_demo,
                 smoke_check_codespace_upstream,
             )
 
-            if args.codespace_command != "attach":
-                parser.error(f"unknown mcp codespace command: {args.codespace_command}")
-                return 2
-            try:
-                result = prepare_codespace_attach(
-                    args.url,
-                    directory=args.directory,
-                    name=args.name,
-                    tool_prefix=args.tool_prefix,
-                    host=args.host,
-                    port=args.port,
-                    state=args.state,
-                    decision_console=args.decision_console,
-                    force=args.force,
-                )
-                if args.smoke_check:
-                    result["smoke_check"] = smoke_check_codespace_upstream(args.url, timeout=args.smoke_timeout)
-                    if not result["smoke_check"]["ok"]:
-                        status = 1
+            if args.codespace_command == "attach":
+                try:
+                    result = prepare_codespace_attach(
+                        args.url,
+                        directory=args.directory,
+                        name=args.name,
+                        tool_prefix=args.tool_prefix,
+                        host=args.host,
+                        port=args.port,
+                        state=args.state,
+                        decision_console=args.decision_console,
+                        force=args.force,
+                    )
+                    if args.smoke_check:
+                        result["smoke_check"] = smoke_check_codespace_upstream(args.url, timeout=args.smoke_timeout)
+                        if not result["smoke_check"]["ok"]:
+                            status = 1
+                            if args.compact:
+                                sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
+                            else:
+                                sys.stdout.write(format_codespace_attach_report(result))
+                            sys.stdout.write("\n")
+                            return status
+                    result["dry_run"] = bool(args.dry_run)
+                    status = 0
+                    if args.dry_run:
                         if args.compact:
                             sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
                         else:
                             sys.stdout.write(format_codespace_attach_report(result))
                         sys.stdout.write("\n")
                         return status
-                result["dry_run"] = bool(args.dry_run)
-                status = 0
-                if args.dry_run:
+
+                    import os
+
+                    os.environ[result["env"]["name"]] = result["env"]["value"]
+                    proxy_config = load_mcp_proxy_config(result["config"])
+                    fabric_config = load_mcp_fabric_config(result["config"])
+                    fabric_config["proxy"] = proxy_config
+                    result["starting_proxy"] = True
                     if args.compact:
                         sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
                     else:
                         sys.stdout.write(format_codespace_attach_report(result))
                     sys.stdout.write("\n")
+                    sys.stdout.flush()
+
+                    from .fabric import build_fabric_audit_metadata
+                    from .proxy import run_proxy
+
+                    _run_loaded_mcp_proxy(
+                        proxy_config,
+                        fabric_config,
+                        build_fabric_audit_metadata=build_fabric_audit_metadata,
+                        run_proxy=run_proxy,
+                    )
+                    return 0
+                except Exception as exc:
+                    result = {"ok": False, "url": args.url, "directory": str(args.directory), "error": str(exc)}
+                    status = 1
+                    if args.compact:
+                        sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
+                    else:
+                        sys.stdout.write(json.dumps(result, indent=2, sort_keys=True))
+                    sys.stdout.write("\n")
                     return status
+            if args.codespace_command == "serve-demo":
+                try:
+                    if args.dry_run:
+                        result = prepare_codespace_demo(
+                            host=args.host,
+                            port=args.port,
+                            name=args.name,
+                            path=args.path,
+                        )
+                        result["dry_run"] = True
+                        if args.compact:
+                            sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
+                        else:
+                            sys.stdout.write(format_codespace_demo_report(result))
+                        sys.stdout.write("\n")
+                        return 0
 
-                import os
+                    def emit_codespace_demo(payload: Mapping[str, Any]) -> None:
+                        if args.compact:
+                            sys.stdout.write(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+                        else:
+                            sys.stdout.write(format_codespace_demo_report(payload))
+                        sys.stdout.write("\n")
+                        sys.stdout.flush()
 
-                os.environ[result["env"]["name"]] = result["env"]["value"]
-                proxy_config = load_mcp_proxy_config(result["config"])
-                fabric_config = load_mcp_fabric_config(result["config"])
-                fabric_config["proxy"] = proxy_config
-                result["starting_proxy"] = True
-                if args.compact:
-                    sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
-                else:
-                    sys.stdout.write(format_codespace_attach_report(result))
-                sys.stdout.write("\n")
-                sys.stdout.flush()
-
-                from .fabric import build_fabric_audit_metadata
-                from .proxy import run_proxy
-
-                _run_loaded_mcp_proxy(
-                    proxy_config,
-                    fabric_config,
-                    build_fabric_audit_metadata=build_fabric_audit_metadata,
-                    run_proxy=run_proxy,
-                )
-                return 0
-            except Exception as exc:
-                result = {"ok": False, "url": args.url, "directory": str(args.directory), "error": str(exc)}
-                status = 1
-                if args.compact:
-                    sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
-                else:
-                    sys.stdout.write(json.dumps(result, indent=2, sort_keys=True))
-                sys.stdout.write("\n")
-                return status
+                    result = serve_codespace_demo(
+                        host=args.host,
+                        port=args.port,
+                        name=args.name,
+                        path=args.path,
+                        ready_check=args.ready_check,
+                        ready_timeout=args.ready_timeout,
+                        emit=emit_codespace_demo,
+                    )
+                    return 0 if result["ok"] else 1
+                except Exception as exc:
+                    result = {
+                        "ok": False,
+                        "host": args.host,
+                        "port": args.port,
+                        "path": args.path,
+                        "error": str(exc),
+                    }
+                    if args.compact:
+                        sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
+                    else:
+                        sys.stdout.write(json.dumps(result, indent=2, sort_keys=True))
+                    sys.stdout.write("\n")
+                    return 1
+            parser.error(f"unknown mcp codespace command: {args.codespace_command}")
+            return 2
         elif args.mcp_command == "init":
             output = args.output or Path(f"{args.preset}.snulbug")
             try:

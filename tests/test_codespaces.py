@@ -5,11 +5,16 @@ import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import snulbug.codespaces as codespaces_module
 import snulbug.simulator as simulator
 from snulbug import (
+    codespace_forwarded_url,
+    create_codespace_demo_server,
     load_mcp_fabric_config,
     load_mcp_proxy_config,
     prepare_codespace_attach,
+    prepare_codespace_demo,
+    serve_codespace_demo,
     smoke_check_codespace_upstream,
 )
 
@@ -38,6 +43,32 @@ def test_prepare_codespace_attach_writes_loadable_env_discovery_config(tmp_path,
     assert fabric["gateway_url"] == "http://127.0.0.1:8181/mcp"
 
 
+def test_prepare_codespace_demo_infers_forwarded_url():
+    result = prepare_codespace_demo(
+        port=9001,
+        environ={
+            "CODESPACE_NAME": "ideal-space",
+            "GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN": "app.github.dev",
+        },
+    )
+
+    assert (
+        codespace_forwarded_url(
+            port=9001,
+            environ={
+                "CODESPACE_NAME": "ideal-space",
+                "GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN": "app.github.dev",
+            },
+        )
+        == "https://ideal-space-9001.app.github.dev/mcp"
+    )
+    assert result["server"]["public_url"] == "https://ideal-space-9001.app.github.dev/mcp"
+    assert result["commands"]["attach"] == (
+        "uv run snulbug mcp codespace attach https://ideal-space-9001.app.github.dev/mcp"
+    )
+    assert result["tools"] == ["safe_read_file", "list_project_files"]
+
+
 def test_smoke_check_codespace_upstream_lists_tools():
     server = ThreadingHTTPServer(("127.0.0.1", 0), _ToolsListHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -52,6 +83,49 @@ def test_smoke_check_codespace_upstream_lists_tools():
     assert result["status"] == 200
     assert result["tool_count"] == 2
     assert result["tools"] == ["safe_read_file", "list_project_files"]
+
+
+def test_create_codespace_demo_server_responds_to_tools_list():
+    server = create_codespace_demo_server(host="127.0.0.1", port=0, name="codespace", path="/mcp")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = smoke_check_codespace_upstream(f"http://127.0.0.1:{server.server_port}/mcp", timeout=2)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result["ok"] is True
+    assert result["status"] == 200
+    assert result["tools"] == ["safe_read_file", "list_project_files"]
+
+
+def test_serve_codespace_demo_emits_ready_plan_and_stops_on_interrupt(monkeypatch):
+    emitted = []
+
+    def interrupt_sleep(seconds):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(codespaces_module.time, "sleep", interrupt_sleep)
+
+    result = serve_codespace_demo(
+        host="127.0.0.1",
+        port=0,
+        ready_timeout=2,
+        emit=lambda payload: emitted.append(json.loads(json.dumps(payload))),
+        environ={
+            "CODESPACE_NAME": "ideal-space",
+            "GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN": "app.github.dev",
+        },
+    )
+
+    assert emitted
+    assert emitted[0]["serving"] is True
+    assert emitted[0]["ready_check"]["ok"] is True
+    assert emitted[0]["commands"]["attach"].startswith("uv run snulbug mcp codespace attach https://ideal-space-")
+    assert result["interrupted"] is True
+    assert result["serving"] is False
 
 
 def test_mcp_codespace_attach_cli_dry_run_outputs_plan(tmp_path, capsys, monkeypatch):
@@ -82,6 +156,32 @@ def test_mcp_codespace_attach_cli_dry_run_outputs_plan(tmp_path, capsys, monkeyp
     assert output["env"]["name"] == "SNULBUG_DISCOVERY_UPSTREAMS"
     assert "example-9001.app.github.dev" in output["env"]["value"]
     assert "SNULBUG_DISCOVERY_UPSTREAMS" not in os.environ
+
+
+def test_mcp_codespace_serve_demo_cli_dry_run_outputs_laptop_command(capsys, monkeypatch):
+    monkeypatch.setenv("CODESPACE_NAME", "ideal-space")
+    monkeypatch.setenv("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN", "app.github.dev")
+
+    status = simulator.main(
+        [
+            "mcp",
+            "codespace",
+            "serve-demo",
+            "--port",
+            "9001",
+            "--dry-run",
+            "--compact",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert status == 0
+    assert output["ok"] is True
+    assert output["dry_run"] is True
+    assert output["server"]["public_url"] == "https://ideal-space-9001.app.github.dev/mcp"
+    assert output["commands"]["attach"] == (
+        "uv run snulbug mcp codespace attach https://ideal-space-9001.app.github.dev/mcp"
+    )
 
 
 def test_mcp_codespace_attach_cli_sets_env_and_starts_proxy(tmp_path, capsys, monkeypatch):

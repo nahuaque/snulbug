@@ -2,19 +2,48 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
+import threading
+import time
 from collections.abc import Mapping
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import SplitResult, urlsplit
 
 DEFAULT_CODESPACE_ATTACH_DIR = Path(".snulbug/codespace-local")
 DEFAULT_CODESPACE_DISCOVERY_ENV = "SNULBUG_DISCOVERY_UPSTREAMS"
+DEFAULT_CODESPACE_DEMO_HOST = "0.0.0.0"
+DEFAULT_CODESPACE_DEMO_NAME = "codespace"
+DEFAULT_CODESPACE_DEMO_PATH = "/mcp"
+DEFAULT_CODESPACE_DEMO_PORT = 9001
 DEFAULT_CODESPACE_UPSTREAM_NAME = "codespace-files"
 DEFAULT_CODESPACE_TOOL_PREFIX = "codespace.files."
 DEFAULT_CODESPACE_HOST = "127.0.0.1"
 DEFAULT_CODESPACE_PORT = 8080
 
 _TOOLS_LIST_REQUEST = {"jsonrpc": "2.0", "id": "snulbug-smoke", "method": "tools/list", "params": {}}
+_DEMO_TOOLS = [
+    {
+        "name": "safe_read_file",
+        "description": "Read a demo file from codespace",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "list_project_files",
+        "description": "List demo files from codespace",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+]
 
 _ALLOW_POLICY = """return function()
   return {
@@ -93,6 +122,188 @@ def prepare_codespace_attach(
             "inspect_audit": f"uv run snulbug mcp inspect {audit_out} --kind audit",
         },
     }
+
+
+def prepare_codespace_demo(
+    *,
+    host: str = DEFAULT_CODESPACE_DEMO_HOST,
+    port: int = DEFAULT_CODESPACE_DEMO_PORT,
+    name: str = DEFAULT_CODESPACE_DEMO_NAME,
+    path: str = DEFAULT_CODESPACE_DEMO_PATH,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Build the operator plan for the bundled Codespaces demo server."""
+
+    if port < 0:
+        raise ValueError("port must be non-negative")
+    if not host:
+        raise ValueError("host must be non-empty")
+    if not name:
+        raise ValueError("demo server name must be non-empty")
+    path = _normalize_path(path)
+    public_url = codespace_forwarded_url(port=port, path=path, environ=environ)
+    local_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    local_url = f"http://{local_host}:{port}{path}"
+    bind_url = f"http://{host}:{port}{path}"
+    attach_url = public_url or local_url
+    return {
+        "ok": True,
+        "generated_by": "snulbug mcp codespace serve-demo",
+        "server": {
+            "name": name,
+            "host": host,
+            "port": port,
+            "path": path,
+            "url": bind_url,
+            "local_url": local_url,
+            "public_url": public_url,
+        },
+        "tools": [tool["name"] for tool in _DEMO_TOOLS],
+        "commands": {"attach": f"uv run snulbug mcp codespace attach {attach_url}"},
+        "codespaces": {
+            "detected": public_url is not None,
+            "url": public_url,
+            "required_env": ["CODESPACE_NAME", "GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN"],
+        },
+        "serving": False,
+        "ready_check": None,
+    }
+
+
+def codespace_forwarded_url(
+    *,
+    port: int,
+    path: str = DEFAULT_CODESPACE_DEMO_PATH,
+    environ: Mapping[str, str] | None = None,
+) -> str | None:
+    """Return the GitHub Codespaces forwarded URL when Codespaces env vars exist."""
+
+    env = environ if environ is not None else os.environ
+    codespace_name = env.get("CODESPACE_NAME")
+    domain = env.get("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN")
+    if not codespace_name or not domain or port <= 0:
+        return None
+    return f"https://{codespace_name}-{port}.{domain}{_normalize_path(path)}"
+
+
+def create_codespace_demo_server(
+    *,
+    host: str = DEFAULT_CODESPACE_DEMO_HOST,
+    port: int = DEFAULT_CODESPACE_DEMO_PORT,
+    name: str = DEFAULT_CODESPACE_DEMO_NAME,
+    path: str = DEFAULT_CODESPACE_DEMO_PATH,
+) -> ThreadingHTTPServer:
+    """Create the bundled mock MCP HTTP server used by the Codespaces demo."""
+
+    if port < 0:
+        raise ValueError("port must be non-negative")
+    server = ThreadingHTTPServer((host, port), _CodespaceDemoHandler)
+    server.server_name_label = name
+    server.mcp_path = _normalize_path(path)
+    return server
+
+
+def serve_codespace_demo(
+    *,
+    host: str = DEFAULT_CODESPACE_DEMO_HOST,
+    port: int = DEFAULT_CODESPACE_DEMO_PORT,
+    name: str = DEFAULT_CODESPACE_DEMO_NAME,
+    path: str = DEFAULT_CODESPACE_DEMO_PATH,
+    ready_check: bool = True,
+    ready_timeout: float = 5.0,
+    emit: Any = None,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Run the bundled Codespaces demo server until interrupted."""
+
+    server = create_codespace_demo_server(host=host, port=port, name=name, path=path)
+    actual_port = int(server.server_port)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    result = prepare_codespace_demo(
+        host=host,
+        port=actual_port,
+        name=name,
+        path=path,
+        environ=environ,
+    )
+    result["serving"] = True
+    if ready_check:
+        result["ready_check"] = smoke_check_codespace_upstream(result["server"]["local_url"], timeout=ready_timeout)
+        result["ok"] = bool(result["ready_check"]["ok"])
+    if not result["ok"]:
+        result["serving"] = False
+        if emit is not None:
+            emit(result)
+        _stop_server(server, thread)
+        return result
+    if emit is not None:
+        emit(result)
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        result["interrupted"] = True
+    finally:
+        _stop_server(server, thread)
+        result["serving"] = False
+    return result
+
+
+def format_codespace_demo_report(result: Mapping[str, Any]) -> str:
+    """Render a short operator report for the Codespaces demo server."""
+
+    server = _mapping(result.get("server"))
+    codespaces = _mapping(result.get("codespaces"))
+    commands = _mapping(result.get("commands"))
+    ready = _mapping(result.get("ready_check"))
+    lines = [
+        "# snulbug codespace serve-demo",
+        "",
+        f"Server: `{server.get('url')}`",
+        f"Local MCP URL: `{server.get('local_url')}`",
+    ]
+    public_url = server.get("public_url")
+    if public_url:
+        lines.append(f"Codespaces URL: `{public_url}`")
+    else:
+        lines.append("Codespaces URL: not detected")
+    lines.extend(
+        [
+            f"Tools: `{', '.join(str(tool) for tool in result.get('tools', []))}`",
+            "",
+            "## Laptop Command",
+            "",
+            f"`{commands.get('attach')}`",
+        ]
+    )
+    if ready:
+        status = "ok" if ready.get("ok") else "failed"
+        lines.extend(
+            [
+                "",
+                "## Ready Check",
+                "",
+                f"- Status: {status}",
+                f"- HTTP: `{ready.get('status')}`",
+                f"- tools/list tools: `{ready.get('tool_count')}`",
+            ]
+        )
+        if ready.get("error"):
+            lines.append(f"- Error: `{ready.get('error')}`")
+    if not codespaces.get("detected"):
+        lines.extend(
+            [
+                "",
+                "## Codespaces",
+                "",
+                "- Set the Codespaces port public or otherwise reachable from the laptop.",
+                "- If this is not running inside Codespaces, replace the attach URL with the reachable MCP URL.",
+            ]
+        )
+    if result.get("serving"):
+        lines.extend(["", "Serving. Press Ctrl-C to stop."])
+    return "\n".join(lines)
 
 
 def smoke_check_codespace_upstream(upstream_url: str, *, timeout: float = 5.0) -> dict[str, Any]:
@@ -288,6 +499,86 @@ def _probe_error(url: str, error: str) -> dict[str, Any]:
     }
 
 
+class _CodespaceDemoHandler(BaseHTTPRequestHandler):
+    server_version = "snulbug-codespace-mcp/1"
+
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("content-length", "0"))
+        body = self.rfile.read(length)
+        try:
+            request = json.loads(body.decode("utf-8")) if body else {}
+        except json.JSONDecodeError:
+            self._json({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "invalid JSON"}})
+            return
+
+        if self.path != self.server.mcp_path:
+            self.send_error(404)
+            return
+
+        method = request.get("method")
+        if method == "initialize":
+            self._json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id"),
+                    "result": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": self.server.server_name_label, "version": "0.1.0"},
+                    },
+                }
+            )
+            return
+        if method == "tools/list":
+            self._json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id"),
+                    "result": {
+                        "tools": [
+                            {
+                                **tool,
+                                "description": tool["description"].replace("codespace", self.server.server_name_label),
+                            }
+                            for tool in _DEMO_TOOLS
+                        ]
+                    },
+                }
+            )
+            return
+        if method == "tools/call":
+            params = request.get("params") if isinstance(request.get("params"), dict) else {}
+            tool = params.get("name", "unknown")
+            self._json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id"),
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"{self.server.server_name_label} handled {tool}",
+                            }
+                        ]
+                    },
+                }
+            )
+            return
+
+        self._json({"jsonrpc": "2.0", "id": request.get("id"), "result": {}})
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+    def _json(self, payload: Any) -> None:
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
 def _connection(upstream: SplitResult, timeout: float) -> http.client.HTTPConnection:
     host = upstream.hostname
     if host is None:
@@ -300,6 +591,18 @@ def _connection(upstream: SplitResult, timeout: float) -> http.client.HTTPConnec
 def _exact_target(upstream: SplitResult) -> str:
     path = upstream.path or "/"
     return f"{path}?{upstream.query}" if upstream.query else path
+
+
+def _normalize_path(path: str) -> str:
+    if not path:
+        return "/"
+    return path if path.startswith("/") else f"/{path}"
+
+
+def _stop_server(server: ThreadingHTTPServer, thread: threading.Thread) -> None:
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=2)
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
