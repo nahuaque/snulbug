@@ -17,6 +17,13 @@ from urllib.parse import SplitResult, urlsplit
 from .cloudflare_access import CloudflareAccessConfig, evaluate_cloudflare_access
 from .config import load_mcp_fabric_config, load_mcp_proxy_config, merge_mcp_proxy_config
 from .confirm import ConfirmationBroker
+from .control_events import (
+    EVENT_RELOAD_FAILED,
+    EVENT_RELOAD_RECOVERED,
+    EVENT_ROUTE_CHANGED,
+    event_types,
+    make_control_event,
+)
 from .fabric import annotate_topology_audit, build_fabric_audit_metadata
 from .leases import LeasePolicyConfig, enforce_mcp_lease_policy, mcp_lease_error_response
 from .manifests import load_manifest, verify_upstream_manifest
@@ -509,6 +516,7 @@ class McpFacadeProxyApp:
         *,
         reason: str = "manual",
     ) -> dict[str, Any]:
+        reloaded_at = _utc_timestamp()
         new_routes = _build_facade_route_table(upstreams, timeout=self.timeout, revision=self._next_revision)
         current = self._routes
         if new_routes.fingerprint == current.fingerprint:
@@ -520,11 +528,34 @@ class McpFacadeProxyApp:
                 "revision": current.revision,
                 "fingerprint": current.fingerprint,
                 "upstream_count": len(current.upstreams),
+                "control_events": [],
+                "event_types": [],
             }
 
         self._next_revision += 1
         self._routes = new_routes
         await self._retire_routes(current)
+        control_events = [
+            make_control_event(
+                EVENT_ROUTE_CHANGED,
+                time=reloaded_at,
+                severity="info",
+                reason_code="fabric.route.reload",
+                message="facade route table reloaded",
+                subject={"kind": "route_table"},
+                previous={
+                    "revision": current.revision,
+                    "fingerprint": current.fingerprint,
+                    "upstreams": [upstream.name for upstream in current.upstreams],
+                },
+                current={
+                    "revision": new_routes.revision,
+                    "fingerprint": new_routes.fingerprint,
+                    "upstreams": [upstream.name for upstream in new_routes.upstreams],
+                },
+                details={"reason": reason},
+            )
+        ]
         return {
             "ok": True,
             "reloaded": True,
@@ -535,6 +566,8 @@ class McpFacadeProxyApp:
             "previous_fingerprint": current.fingerprint,
             "upstream_count": len(new_routes.upstreams),
             "upstreams": [upstream.name for upstream in new_routes.upstreams],
+            "control_events": control_events,
+            "event_types": event_types(control_events),
         }
 
     def _acquire_routes(self) -> FacadeRouteTable:
@@ -1121,6 +1154,7 @@ class FabricConfigReloadMiddleware:
                 return
             self._next_check = now + self.interval
             checked_at = _utc_timestamp()
+            previous_reload_ok = bool(self._last_reload.get("ok", True))
             try:
                 loaded = await asyncio.to_thread(
                     _load_fabric_reload_config,
@@ -1132,6 +1166,22 @@ class FabricConfigReloadMiddleware:
                     reason=f"config:{self.config}",
                 )
                 self.topology_audit = loaded["topology_audit"]
+                control_events = list(result.get("control_events", []))
+                if not previous_reload_ok:
+                    control_events.append(
+                        make_control_event(
+                            EVENT_RELOAD_RECOVERED,
+                            time=checked_at,
+                            severity="info",
+                            reason_code="fabric.reload.recovered",
+                            message="fabric config reload recovered",
+                            subject={"kind": "fabric_reload", "config": str(self.config)},
+                            current={
+                                "route_revision": self.facade.route_revision,
+                                "route_fingerprint": self.facade.route_fingerprint,
+                            },
+                        )
+                    )
                 self._last_reload = {
                     **result,
                     "config": str(self.config),
@@ -1139,8 +1189,25 @@ class FabricConfigReloadMiddleware:
                     "route_revision": self.facade.route_revision,
                     "route_fingerprint": self.facade.route_fingerprint,
                     "summary": loaded["summary"],
+                    "control_events": control_events,
+                    "event_types": event_types(control_events),
                 }
             except Exception as exc:
+                control_events = [
+                    make_control_event(
+                        EVENT_RELOAD_FAILED,
+                        time=checked_at,
+                        severity="error",
+                        reason_code="fabric.reload.failed",
+                        message="fabric config reload failed",
+                        subject={"kind": "fabric_reload", "config": str(self.config)},
+                        current={
+                            "route_revision": self.facade.route_revision,
+                            "route_fingerprint": self.facade.route_fingerprint,
+                        },
+                        details={"error": str(exc)},
+                    )
+                ]
                 self._last_reload = {
                     "ok": False,
                     "reloaded": False,
@@ -1149,6 +1216,8 @@ class FabricConfigReloadMiddleware:
                     "error": str(exc),
                     "route_revision": self.facade.route_revision,
                     "route_fingerprint": self.facade.route_fingerprint,
+                    "control_events": control_events,
+                    "event_types": event_types(control_events),
                 }
 
     def _lock_for_loop(self) -> asyncio.Lock:

@@ -13,6 +13,17 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .config import DEFAULT_CONFIG_PATH, load_mcp_fabric_config, load_mcp_proxy_config
+from .control_events import (
+    EVENT_DISCOVERY_DEGRADED,
+    EVENT_DISCOVERY_RECOVERED,
+    EVENT_MANIFEST_CHANGED,
+    EVENT_POLICY_CHANGED,
+    EVENT_ROUTE_CHANGED,
+    EVENT_UPSTREAM_RECOVERED,
+    EVENT_UPSTREAM_UNHEALTHY,
+    event_types,
+    make_control_event,
+)
 from .fabric import build_fabric_audit_metadata, fabric_status
 
 DEFAULT_CONTROLLER_STATE_PATH = Path(".snulbug/fabric-state.json")
@@ -64,6 +75,13 @@ def reconcile_fabric_controller(
         load_error=load_error,
         previous_error=previous_error,
     )
+    control_events = _control_plane_events(
+        previous,
+        desired,
+        observed_at=observed_at,
+        fingerprint=fingerprint,
+        load_error=load_error,
+    )
     snapshot = _controller_snapshot(
         config=config_path,
         state_path=state,
@@ -73,12 +91,13 @@ def reconcile_fabric_controller(
         fingerprint=fingerprint,
         previous=previous,
         changes=changes,
+        control_events=control_events,
         load_error=load_error,
     )
     _write_json(state, snapshot)
 
     event_written = False
-    if event_log is not None and changes:
+    if event_log is not None and (changes or control_events):
         _append_jsonl(Path(event_log), _controller_event(snapshot))
         event_written = True
 
@@ -454,8 +473,10 @@ def _controller_snapshot(
     fingerprint: str,
     previous: Mapping[str, Any] | None,
     changes: Sequence[Mapping[str, Any]],
+    control_events: Sequence[Mapping[str, Any]],
     load_error: str | None,
 ) -> dict[str, Any]:
+    typed_events = _copy_jsonish(list(control_events))
     return {
         "version": 1,
         "generated_by": "snulbug mcp fabric controller",
@@ -468,6 +489,8 @@ def _controller_snapshot(
         "previous_fingerprint": previous.get("fingerprint") if previous else None,
         "changed": bool(changes),
         "changes": _copy_jsonish(list(changes)),
+        "control_events": typed_events,
+        "event_types": event_types(typed_events),
         "error": load_error,
         "fabric": {
             "name": desired.get("name"),
@@ -495,8 +518,235 @@ def _controller_event(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "fingerprint": snapshot.get("fingerprint"),
         "previous_fingerprint": snapshot.get("previous_fingerprint"),
         "changes": _copy_jsonish(snapshot.get("changes", [])),
+        "control_events": _copy_jsonish(snapshot.get("control_events", [])),
+        "event_types": _copy_jsonish(snapshot.get("event_types", [])),
         "summary": _copy_jsonish(snapshot.get("summary", {})),
     }
+
+
+def _control_plane_events(
+    previous: Mapping[str, Any] | None,
+    desired: Mapping[str, Any],
+    *,
+    observed_at: str,
+    fingerprint: str,
+    load_error: str | None,
+) -> list[dict[str, Any]]:
+    previous_desired = _mapping(previous.get("desired")) if previous else {}
+    events: list[dict[str, Any]] = []
+    events.extend(_route_events(previous_desired, desired, observed_at=observed_at, fingerprint=fingerprint))
+    events.extend(_policy_events(previous_desired, desired, observed_at=observed_at))
+    events.extend(_manifest_events(previous_desired, desired, observed_at=observed_at))
+    events.extend(_discovery_events(previous_desired, desired, observed_at=observed_at, load_error=load_error))
+    events.extend(_upstream_health_events(previous_desired, desired, observed_at=observed_at))
+    return events
+
+
+def _route_events(
+    previous: Mapping[str, Any],
+    desired: Mapping[str, Any],
+    *,
+    observed_at: str,
+    fingerprint: str,
+) -> list[dict[str, Any]]:
+    previous_routes = _route_index(previous.get("upstreams"))
+    current_routes = _route_index(desired.get("upstreams"))
+    previous_fingerprint = _fingerprint({"routes": previous_routes}) if previous else None
+    current_fingerprint = _fingerprint({"routes": current_routes})
+    if previous and previous_fingerprint == current_fingerprint:
+        return []
+
+    added = sorted(current_routes.keys() - previous_routes.keys())
+    removed = sorted(previous_routes.keys() - current_routes.keys())
+    changed = [
+        name
+        for name in sorted(current_routes.keys() & previous_routes.keys())
+        if _fingerprint(previous_routes[name]) != _fingerprint(current_routes[name])
+    ]
+    if previous and not added and not removed and not changed:
+        return []
+
+    reason_code = "fabric.route.initialized" if not previous else "fabric.route.changed"
+    message = (
+        f"route table initialized with {len(current_routes)} upstream(s)"
+        if not previous
+        else "fabric route table changed"
+    )
+    return [
+        make_control_event(
+            EVENT_ROUTE_CHANGED,
+            time=observed_at,
+            severity="info",
+            reason_code=reason_code,
+            message=message,
+            subject={"kind": "route_table"},
+            previous={"fingerprint": previous_fingerprint, "upstreams": sorted(previous_routes)} if previous else None,
+            current={
+                "fingerprint": current_fingerprint,
+                "fabric_fingerprint": fingerprint,
+                "upstreams": sorted(current_routes),
+            },
+            details={
+                "added": added,
+                "removed": removed,
+                "changed": changed,
+                "upstream_count": len(current_routes),
+            },
+        )
+    ]
+
+
+def _policy_events(
+    previous: Mapping[str, Any],
+    desired: Mapping[str, Any],
+    *,
+    observed_at: str,
+) -> list[dict[str, Any]]:
+    previous_policy = _mapping(previous.get("proxy")).get("policy") if previous else None
+    current_policy = _mapping(desired.get("proxy")).get("policy")
+    if previous and previous_policy == current_policy:
+        return []
+    if not previous and current_policy is None:
+        return []
+    return [
+        make_control_event(
+            EVENT_POLICY_CHANGED,
+            time=observed_at,
+            severity="info",
+            reason_code="fabric.policy.initialized" if not previous else "fabric.policy.changed",
+            message="fabric policy changed" if previous else "fabric policy observed",
+            subject={"kind": "policy", "path": current_policy or previous_policy},
+            previous={"policy": previous_policy} if previous else None,
+            current={"policy": current_policy},
+        )
+    ]
+
+
+def _manifest_events(
+    previous: Mapping[str, Any],
+    desired: Mapping[str, Any],
+    *,
+    observed_at: str,
+) -> list[dict[str, Any]]:
+    previous_upstreams = _index_by_name(previous.get("upstreams")) if previous else {}
+    current_upstreams = _index_by_name(desired.get("upstreams"))
+    events = []
+    for name in sorted(previous_upstreams.keys() | current_upstreams.keys()):
+        previous_manifest = _manifest_view(_mapping(previous_upstreams.get(name)).get("manifest"))
+        current_manifest = _manifest_view(_mapping(current_upstreams.get(name)).get("manifest"))
+        if previous and _fingerprint(previous_manifest) == _fingerprint(current_manifest):
+            continue
+        if not previous and not current_manifest:
+            continue
+        if not previous:
+            reason_code = "fabric.manifest.observed"
+            message = f"manifest observed for upstream {name!r}"
+        elif previous_manifest and current_manifest:
+            reason_code = "fabric.manifest.changed"
+            message = f"manifest changed for upstream {name!r}"
+        elif current_manifest:
+            reason_code = "fabric.manifest.added"
+            message = f"manifest added for upstream {name!r}"
+        else:
+            reason_code = "fabric.manifest.removed"
+            message = f"manifest removed for upstream {name!r}"
+        events.append(
+            make_control_event(
+                EVENT_MANIFEST_CHANGED,
+                time=observed_at,
+                severity="info",
+                reason_code=reason_code,
+                message=message,
+                subject={"kind": "manifest", "upstream": name, "path": current_manifest.get("path")},
+                previous=previous_manifest if previous else None,
+                current=current_manifest,
+            )
+        )
+    return events
+
+
+def _discovery_events(
+    previous: Mapping[str, Any],
+    desired: Mapping[str, Any],
+    *,
+    observed_at: str,
+    load_error: str | None,
+) -> list[dict[str, Any]]:
+    previous_errors = _discovery_error_count(previous)
+    current_errors = _discovery_error_count(desired)
+    if load_error and "fabric discovery failed" in load_error:
+        current_errors = max(1, current_errors)
+    if current_errors > 0 and (not previous or previous_errors == 0):
+        return [
+            make_control_event(
+                EVENT_DISCOVERY_DEGRADED,
+                time=observed_at,
+                severity="warning",
+                reason_code="fabric.discovery.degraded",
+                message="fabric discovery degraded",
+                subject={"kind": "discovery"},
+                previous={"error_count": previous_errors} if previous else None,
+                current={"error_count": current_errors},
+                details={"error": load_error, "summary": _mapping(_mapping(desired.get("discovery")).get("summary"))},
+            )
+        ]
+    if previous_errors > 0 and current_errors == 0:
+        return [
+            make_control_event(
+                EVENT_DISCOVERY_RECOVERED,
+                time=observed_at,
+                severity="info",
+                reason_code="fabric.discovery.recovered",
+                message="fabric discovery recovered",
+                subject={"kind": "discovery"},
+                previous={"error_count": previous_errors},
+                current={"error_count": current_errors},
+            )
+        ]
+    return []
+
+
+def _upstream_health_events(
+    previous: Mapping[str, Any],
+    desired: Mapping[str, Any],
+    *,
+    observed_at: str,
+) -> list[dict[str, Any]]:
+    previous_upstreams = _index_by_name(previous.get("upstreams")) if previous else {}
+    current_upstreams = _index_by_name(desired.get("upstreams"))
+    events = []
+    for name in sorted(previous_upstreams.keys() | current_upstreams.keys()):
+        previous_issue = _upstream_health_issue(previous_upstreams.get(name)) if previous else None
+        current_issue = _upstream_health_issue(current_upstreams.get(name))
+        if current_issue and (
+            previous_issue is None or previous_issue.get("reason_code") != current_issue.get("reason_code")
+        ):
+            events.append(
+                make_control_event(
+                    EVENT_UPSTREAM_UNHEALTHY,
+                    time=observed_at,
+                    severity="warning",
+                    reason_code=str(current_issue["reason_code"]),
+                    message=f"upstream {name!r} is unhealthy: {current_issue['message']}",
+                    subject={"kind": "upstream", "name": name},
+                    previous=previous_issue,
+                    current=current_issue,
+                )
+            )
+        elif previous_issue and not current_issue:
+            events.append(
+                make_control_event(
+                    EVENT_UPSTREAM_RECOVERED,
+                    time=observed_at,
+                    severity="info",
+                    reason_code="fabric.upstream.recovered",
+                    message=f"upstream {name!r} recovered",
+                    subject={"kind": "upstream", "name": name},
+                    previous=previous_issue,
+                    current={"healthy": True},
+                )
+            )
+    return events
 
 
 def _controller_changes(
@@ -583,6 +833,90 @@ def _diff_named_items(kind: str, previous_items: Any, current_items: Any) -> lis
                 }
             )
     return changes
+
+
+def _route_index(items: Any) -> dict[str, dict[str, Any]]:
+    return {name: _route_view(item) for name, item in _index_by_name(items).items()}
+
+
+def _route_view(upstream: Mapping[str, Any]) -> dict[str, Any]:
+    return _copy_jsonish(
+        {
+            key: upstream.get(key)
+            for key in (
+                "name",
+                "transport",
+                "tool_prefix",
+                "default",
+                "url",
+                "command",
+                "args",
+                "cwd",
+                "peer",
+                "local_port",
+                "bridge_command",
+                "bridge_config",
+                "bridge_args",
+            )
+            if upstream.get(key) is not None
+        }
+    )
+
+
+def _manifest_view(value: Any) -> dict[str, Any]:
+    manifest = _mapping(value)
+    return _copy_jsonish(
+        {
+            key: manifest.get(key)
+            for key in (
+                "path",
+                "required",
+                "exists",
+                "expected_identity",
+                "configured_key_id",
+                "signed",
+                "signature_key_id",
+                "digest",
+                "algorithm",
+                "declared_schema",
+                "declared_identity",
+                "declared_transport",
+                "declared_tool_prefix",
+                "declared_tool_count",
+                "load_error",
+            )
+            if manifest.get(key) is not None
+        }
+    )
+
+
+def _discovery_error_count(desired: Mapping[str, Any]) -> int:
+    summary = _mapping(_mapping(desired.get("discovery")).get("summary"))
+    try:
+        return int(summary.get("error_count", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _upstream_health_issue(upstream: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(upstream, Mapping):
+        return None
+    manifest = _mapping(upstream.get("manifest"))
+    if manifest.get("required") and manifest.get("exists") is False:
+        return {
+            "healthy": False,
+            "reason_code": "fabric.upstream.manifest_missing",
+            "message": "required manifest is missing",
+            "manifest": _manifest_view(manifest),
+        }
+    if manifest.get("load_error"):
+        return {
+            "healthy": False,
+            "reason_code": "fabric.upstream.manifest_load_error",
+            "message": "manifest could not be loaded",
+            "manifest": _manifest_view(manifest),
+        }
+    return None
 
 
 def _index_by_name(items: Any) -> dict[str, Mapping[str, Any]]:

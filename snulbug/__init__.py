@@ -16,6 +16,19 @@ from .bundle import (
 from .cloudflare_access import CloudflareAccessConfig, evaluate_cloudflare_access
 from .config import load_mcp_fabric_config, load_mcp_proxy_config, write_sample_config
 from .confirm import ConfirmationBroker
+from .control_events import (
+    CONTROL_EVENT_SCHEMA,
+    EVENT_DISCOVERY_DEGRADED,
+    EVENT_DISCOVERY_RECOVERED,
+    EVENT_MANIFEST_CHANGED,
+    EVENT_POLICY_CHANGED,
+    EVENT_RELOAD_FAILED,
+    EVENT_RELOAD_RECOVERED,
+    EVENT_ROUTE_CHANGED,
+    EVENT_UPSTREAM_RECOVERED,
+    EVENT_UPSTREAM_UNHEALTHY,
+    make_control_event,
+)
 from .controller import (
     FabricControllerStatusServer,
     format_fabric_controller_report,
@@ -88,6 +101,16 @@ __all__ = [
     "BoundedPolicyState",
     "CloudflareAccessConfig",
     "ConfirmationBroker",
+    "CONTROL_EVENT_SCHEMA",
+    "EVENT_DISCOVERY_DEGRADED",
+    "EVENT_DISCOVERY_RECOVERED",
+    "EVENT_MANIFEST_CHANGED",
+    "EVENT_POLICY_CHANGED",
+    "EVENT_RELOAD_FAILED",
+    "EVENT_RELOAD_RECOVERED",
+    "EVENT_ROUTE_CHANGED",
+    "EVENT_UPSTREAM_RECOVERED",
+    "EVENT_UPSTREAM_UNHEALTHY",
     "LuaConfig",
     "LuaDecisionError",
     "LuaDecisionTrace",
@@ -160,6 +183,7 @@ __all__ = [
     "load_manifest",
     "load_record_log",
     "manifest_digest",
+    "make_control_event",
     "list_builtin_presets",
     "list_leases",
     "pack_bundle",

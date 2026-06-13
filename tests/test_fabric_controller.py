@@ -5,10 +5,16 @@ import json
 from pathlib import Path
 
 from snulbug import (
+    EVENT_DISCOVERY_DEGRADED,
+    EVENT_MANIFEST_CHANGED,
+    EVENT_POLICY_CHANGED,
+    EVENT_ROUTE_CHANGED,
+    EVENT_UPSTREAM_UNHEALTHY,
     FabricControllerStatusServer,
     reconcile_fabric_controller,
     run_fabric_controller,
     run_fabric_data_plane,
+    sign_upstream_manifest,
 )
 from snulbug.simulator import main as simulator_main
 
@@ -29,6 +35,8 @@ def test_fabric_controller_writes_state_and_change_event(tmp_path):
     assert snapshot["summary"]["upstream_count"] == 1
     assert events[0]["type"] == "snulbug.fabric.reconcile"
     assert events[0]["changes"][0]["type"] == "controller_initialized"
+    assert EVENT_ROUTE_CHANGED in events[0]["event_types"]
+    assert snapshot["control_events"][0]["schema"] == "snulbug.control-plane-event.v1"
 
 
 def test_fabric_controller_detects_discovered_upstream_changes(tmp_path):
@@ -55,7 +63,100 @@ def test_fabric_controller_detects_discovered_upstream_changes(tmp_path):
     assert second["changed"] is True
     assert "fabric_changed" in change_types
     assert {"type": "upstream_added", "target": "git", "message": "upstream was added"} in second["changes"]
+    assert EVENT_ROUTE_CHANGED in second["event_types"]
     assert len(event_log.read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_fabric_controller_emits_policy_and_manifest_control_events(tmp_path):
+    manifest = write_controller_manifest(tmp_path, identity="files@local")
+    config = write_controller_manifest_config(tmp_path, manifest=manifest, policy="policy-a.snulbug/policy.lua")
+    state = tmp_path / ".snulbug/fabric-state.json"
+    event_log = tmp_path / ".snulbug/fabric-events.jsonl"
+    reconcile_fabric_controller(config, state_path=state, event_log=event_log)
+    write_controller_manifest(tmp_path, identity="files@local-v2", path=manifest)
+    write_controller_manifest_config(
+        tmp_path,
+        manifest=manifest,
+        policy="policy-b.snulbug/policy.lua",
+        manifest_identity="files@local-v2",
+    )
+
+    result = reconcile_fabric_controller(config, state_path=state, event_log=event_log)
+
+    event_types = {event["type"] for event in result["control_events"]}
+    assert EVENT_POLICY_CHANGED in event_types
+    assert EVENT_MANIFEST_CHANGED in event_types
+    policy_event = next(event for event in result["control_events"] if event["type"] == EVENT_POLICY_CHANGED)
+    manifest_event = next(event for event in result["control_events"] if event["type"] == EVENT_MANIFEST_CHANGED)
+    assert policy_event["previous"]["policy"].endswith("policy-a.snulbug/policy.lua")
+    assert policy_event["current"]["policy"].endswith("policy-b.snulbug/policy.lua")
+    assert manifest_event["subject"]["upstream"] == "files"
+    assert manifest_event["current"]["declared_identity"] == "files@local-v2"
+
+
+def test_fabric_controller_emits_discovery_degraded_control_event(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.fabric]
+        name = "degraded-discovery"
+        probe_gateway = false
+        probe_upstreams = false
+
+        [mcp.fabric.discovery]
+
+        [[mcp.fabric.discovery.providers]]
+        name = "missing-required-registry"
+        type = "file"
+        path = "missing.json"
+        required = true
+
+        [mcp.proxy]
+        host = "127.0.0.1"
+        port = 8181
+        """,
+        encoding="utf-8",
+    )
+
+    result = reconcile_fabric_controller(config, state_path=tmp_path / "state.json", event_log=None)
+
+    assert result["ok"] is False
+    assert EVENT_DISCOVERY_DEGRADED in result["event_types"]
+    event = next(event for event in result["control_events"] if event["type"] == EVENT_DISCOVERY_DEGRADED)
+    assert event["severity"] == "warning"
+    assert event["current"]["error_count"] == 1
+
+
+def test_fabric_controller_emits_upstream_unhealthy_for_missing_required_manifest(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.fabric]
+        name = "missing-manifest"
+        require_manifests = true
+        probe_gateway = false
+        probe_upstreams = false
+
+        [mcp.proxy]
+        host = "127.0.0.1"
+        port = 8181
+
+        [[mcp.proxy.upstreams]]
+        name = "files"
+        url = "http://127.0.0.1:9001/mcp"
+        manifest = "missing.files.manifest.json"
+        manifest_required = true
+        """,
+        encoding="utf-8",
+    )
+
+    result = reconcile_fabric_controller(config, state_path=tmp_path / "state.json", event_log=None)
+
+    assert result["ok"] is False
+    assert EVENT_UPSTREAM_UNHEALTHY in result["event_types"]
+    event = next(event for event in result["control_events"] if event["type"] == EVENT_UPSTREAM_UNHEALTHY)
+    assert event["subject"] == {"kind": "upstream", "name": "files"}
+    assert event["reason_code"] == "fabric.upstream.manifest_missing"
 
 
 def test_fabric_controller_does_not_append_event_when_unchanged(tmp_path):
@@ -375,6 +476,58 @@ def write_fabric_run_config(tmp_path: Path) -> Path:
         [[mcp.proxy.upstreams]]
         name = "files"
         url = "http://127.0.0.1:9001/mcp"
+        """,
+        encoding="utf-8",
+    )
+    return config
+
+
+def write_controller_manifest(tmp_path: Path, *, identity: str, path: Path | None = None) -> Path:
+    manifest = sign_upstream_manifest(
+        {
+            "schema": "snulbug.upstream-manifest.v1",
+            "identity": identity,
+            "transport": "http",
+            "tool_prefix": "files.",
+            "tools": [{"name": "read_file", "description": "Read a file"}],
+        },
+        secret="dev-secret",
+        key_id="dev",
+    )
+    output = path or (tmp_path / "files.manifest.json")
+    output.write_text(json.dumps(manifest), encoding="utf-8")
+    return output
+
+
+def write_controller_manifest_config(
+    tmp_path: Path,
+    *,
+    manifest: Path,
+    policy: str,
+    manifest_identity: str = "files@local",
+) -> Path:
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        f"""
+        [mcp.fabric]
+        name = "manifest-fabric"
+        require_manifests = true
+        probe_gateway = false
+        probe_upstreams = false
+
+        [mcp.proxy]
+        host = "127.0.0.1"
+        port = 8181
+        policy = "{policy}"
+
+        [[mcp.proxy.upstreams]]
+        name = "files"
+        url = "http://127.0.0.1:9001/mcp"
+        tool_prefix = "files."
+        manifest = "{manifest.name}"
+        manifest_required = true
+        manifest_identity = "{manifest_identity}"
+        manifest_key_id = "dev"
         """,
         encoding="utf-8",
     )

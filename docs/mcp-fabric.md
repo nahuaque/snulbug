@@ -130,6 +130,28 @@ future Hyperswarm watcher can write registry files or env JSON, and snulbug
 consumes them through the same validation path as local config. Providers only
 contact a network when an explicit `api_url` is configured.
 
+## Control-Plane Events
+
+`snulbug mcp fabric controller` writes durable controller state and a JSONL
+event log. Each reconcile envelope keeps the older `changes` list and now also
+includes typed `control_events` using schema `snulbug.control-plane-event.v1`.
+
+Current event types:
+
+- `snulbug.fabric.route.changed`
+- `snulbug.fabric.manifest.changed`
+- `snulbug.fabric.policy.changed`
+- `snulbug.fabric.discovery.degraded`
+- `snulbug.fabric.discovery.recovered`
+- `snulbug.fabric.upstream.unhealthy`
+- `snulbug.fabric.upstream.recovered`
+- `snulbug.fabric.reload.failed`
+- `snulbug.fabric.reload.recovered`
+
+Live fabric reloads attach the same `control_events` and `event_types` fields
+to replay/audit metadata under `metadata.fabric_reload`, so session logs show
+route reloads, reload failures, and recovery after a bad config edit.
+
 ### Docker Compose Labels
 
 `docker_compose` reads a Compose file and includes services labeled

@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Any
 
 from snulbug import (
+    EVENT_RELOAD_FAILED,
+    EVENT_RELOAD_RECOVERED,
+    EVENT_ROUTE_CHANGED,
     ConfirmationBroker,
     McpFacadeProxyApp,
     build_fabric_audit_metadata,
@@ -555,6 +558,7 @@ def test_mcp_facade_can_reload_upstream_route_table(tmp_path):
     assert reload_result["reloaded"] is True
     assert reload_result["previous_revision"] == 1
     assert reload_result["revision"] == 2
+    assert EVENT_ROUTE_CHANGED in reload_result["event_types"]
     assert [tool["name"] for tool in first_payload["result"]["tools"]] == ["files.read_file"]
     assert [tool["name"] for tool in second_payload["result"]["tools"]] == ["git.status"]
     assert files_seen["calls"] == [{"method": "tools/list", "tool": None}]
@@ -641,6 +645,7 @@ def test_proxy_can_hot_reload_fabric_config_routes_and_records_metadata(tmp_path
     assert git_seen["calls"] == [{"method": "tools/call", "tool": "status"}]
     assert records[1]["metadata"]["fabric_reload"]["reloaded"] is True
     assert records[1]["metadata"]["fabric_reload"]["upstreams"] == ["git"]
+    assert EVENT_ROUTE_CHANGED in records[1]["metadata"]["fabric_reload"]["event_types"]
     assert records[1]["metadata"]["topology"]["fabric"]["name"] == "hot-reload-fabric"
     assert records[1]["metadata"]["topology"]["route"]["upstream"] == "git"
 
@@ -671,26 +676,39 @@ def test_proxy_fabric_reload_keeps_previous_routes_when_config_is_invalid(tmp_pa
             app,
             body=b'{"jsonrpc":"2.0","id":"call-2","method":"tools/call","params":{"name":"files.read_file"}}',
         )
+        write_hot_reload_config(config, upstream_name="files", port=files_server.server_port)
+        await asyncio.sleep(0.01)
+        third = await run_asgi_once(
+            app,
+            body=b'{"jsonrpc":"2.0","id":"call-3","method":"tools/call","params":{"name":"files.read_file"}}',
+        )
         await close_app(app)
-        return first, second
+        return first, second, third
 
     try:
-        first, second = asyncio.run(run_all())
+        first, second, third = asyncio.run(run_all())
     finally:
         files_server.shutdown()
         files_server.server_close()
 
     first_payload = json.loads(first[1]["body"])
     second_payload = json.loads(second[1]["body"])
+    third_payload = json.loads(third[1]["body"])
     records = load_record_log(record_log)
     assert first_payload["result"]["content"][0]["text"] == "called read_file"
     assert second_payload["result"]["content"][0]["text"] == "called read_file"
+    assert third_payload["result"]["content"][0]["text"] == "called read_file"
     assert files_seen["calls"] == [
+        {"method": "tools/call", "tool": "read_file"},
         {"method": "tools/call", "tool": "read_file"},
         {"method": "tools/call", "tool": "read_file"},
     ]
     assert records[1]["metadata"]["fabric_reload"]["ok"] is False
     assert "upstreams" in records[1]["metadata"]["fabric_reload"]["error"]
+    assert EVENT_RELOAD_FAILED in records[1]["metadata"]["fabric_reload"]["event_types"]
+    assert records[1]["metadata"]["fabric_reload"]["control_events"][0]["severity"] == "error"
+    assert records[2]["metadata"]["fabric_reload"]["ok"] is True
+    assert EVENT_RELOAD_RECOVERED in records[2]["metadata"]["fabric_reload"]["event_types"]
     assert records[1]["metadata"]["topology"]["route"]["upstream"] == "files"
 
 
