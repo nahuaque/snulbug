@@ -9,11 +9,16 @@ from typing import Any
 
 from snulbug import (
     append_audit_event,
+    append_record,
     build_fabric_audit_metadata,
     discover_fabric_upstreams,
     doctor_fabric,
     fabric_status,
+    generate_fabric_conformance_pack,
     learn_fabric_profile,
+    load_mcp_fabric_config,
+    record_policy_request,
+    run_fabric_conformance_pack,
     sign_upstream_manifest,
 )
 from snulbug.simulator import main as simulator_main
@@ -286,6 +291,73 @@ def test_mcp_fabric_learn_cli_emits_compact_result(tmp_path, capsys):
     assert (output / "fabric.json").is_file()
 
 
+def test_fabric_conformance_pack_generation_and_run(tmp_path, monkeypatch):
+    config, log = write_fabric_conformance_fixture(tmp_path)
+    output = tmp_path / "conformance"
+    monkeypatch.setenv("SNULBUG_MANIFEST_SECRET", "dev-secret")
+
+    generated = generate_fabric_conformance_pack(config, output, logs=[log], kind="record")
+    result = run_fabric_conformance_pack(output)
+
+    checks = {check["id"]: check for check in result["checks"]}
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert generated["ok"] is True
+    assert manifest["schema"] == "snulbug.fabric-conformance-pack.v1"
+    assert (output / "CONFORMANCE.md").is_file()
+    assert (output / "profiles" / "01-session.json").is_file()
+    assert result["ok"] is True
+    assert checks["doctor.upstream.files.manifest_verified"]["status"] == "pass"
+    assert checks["policy.bundle_valid"]["status"] == "pass"
+    assert checks["policy.bundle_tests"]["status"] == "pass"
+    assert checks["log.1.policy_replay"]["status"] == "pass"
+    assert checks["log.1.upstreams_covered"]["status"] == "pass"
+
+
+def test_fabric_conformance_cli_and_drift_failure(tmp_path, monkeypatch, capsys):
+    config, log = write_fabric_conformance_fixture(tmp_path)
+    output = tmp_path / "cli-conformance"
+    monkeypatch.setenv("SNULBUG_MANIFEST_SECRET", "dev-secret")
+
+    generate_status = simulator_main(
+        [
+            "mcp",
+            "fabric",
+            "conformance",
+            "generate",
+            "--config",
+            str(config),
+            "--log",
+            str(log),
+            "--kind",
+            "record",
+            "--out",
+            str(output),
+            "--compact",
+        ]
+    )
+    generate_payload = json.loads(capsys.readouterr().out)
+    run_status = simulator_main(["mcp", "fabric", "conformance", "run", str(output), "--compact"])
+    run_payload = json.loads(capsys.readouterr().out)
+
+    assert generate_status == 0
+    assert generate_payload["ok"] is True
+    assert run_status == 0
+    assert run_payload["ok"] is True
+
+    (tmp_path / "policy.snulbug" / "policy.lua").write_text(
+        'return function() return { action = "reject", status = 403 } end',
+        encoding="utf-8",
+    )
+    drift_status = simulator_main(["mcp", "fabric", "conformance", "run", str(output), "--compact"])
+    drift_payload = json.loads(capsys.readouterr().out)
+    drift_checks = {check["id"]: check for check in drift_payload["checks"]}
+
+    assert drift_status == 1
+    assert drift_payload["ok"] is False
+    assert drift_checks["policy.entrypoint_fingerprint"]["status"] == "fail"
+    assert drift_checks["log.1.policy_replay"]["status"] == "fail"
+
+
 def write_signed_manifest(tmp_path: Path, *, identity: str) -> Path:
     manifest = sign_upstream_manifest(
         {
@@ -301,6 +373,100 @@ def write_signed_manifest(tmp_path: Path, *, identity: str) -> Path:
     path = tmp_path / "files.manifest.json"
     path.write_text(json.dumps(manifest), encoding="utf-8")
     return path
+
+
+def write_fabric_conformance_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    write_signed_manifest(tmp_path, identity="files@local")
+    policy = tmp_path / "policy.snulbug"
+    fixtures = policy / "fixtures"
+    fixtures.mkdir(parents=True)
+    (policy / "policy.lua").write_text(
+        'return function() return { action = "continue", reason_code = "test.allow" } end',
+        encoding="utf-8",
+    )
+    (fixtures / "allow.json").write_text(
+        json.dumps(
+            {
+                "method": "POST",
+                "path": "/mcp",
+                "headers": {},
+                "body": '{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"files.read_file"}}',
+            }
+        ),
+        encoding="utf-8",
+    )
+    (policy / "manifest.json").write_text(
+        json.dumps(
+            {
+                "name": "test-policy",
+                "version": "0.1.0",
+                "entrypoint": "policy.lua",
+                "fixtures": [
+                    {
+                        "name": "allow",
+                        "request": "fixtures/allow.json",
+                        "expect": {"action": "continue", "decision.reason_code": "test.allow"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.fabric]
+        name = "dev-fabric"
+        gateway_url = "http://127.0.0.1:8080/mcp"
+        require_manifests = true
+        probe_gateway = false
+        probe_upstreams = false
+
+        [mcp.proxy]
+        policy = "policy.snulbug/policy.lua"
+        host = "127.0.0.1"
+        port = 8080
+        record_out = "traces/session.jsonl"
+        audit_out = "traces/audit.jsonl"
+
+        [[mcp.proxy.upstreams]]
+        name = "files"
+        url = "http://127.0.0.1:9001/mcp"
+        tool_prefix = "files."
+        manifest = "files.manifest.json"
+        manifest_secret_env = "SNULBUG_MANIFEST_SECRET"
+        manifest_identity = "files@local"
+        """,
+        encoding="utf-8",
+    )
+
+    fabric = load_mcp_fabric_config(config)
+    topology = build_fabric_audit_metadata(fabric)
+    topology["route"] = {
+        "mode": "facade",
+        "operation": "tools/call",
+        "upstream": "files",
+        "upstream_transport": "http",
+        "tool_prefix": "files.",
+        "tool": "files.read_file",
+        "upstream_tool": "read_file",
+        "upstream_identity": "files@local",
+        "manifest_digest": topology["upstreams"][0]["manifest"]["digest"],
+        "manifest_key_id": topology["upstreams"][0]["manifest"]["key_id"],
+    }
+    request = json.loads((fixtures / "allow.json").read_text(encoding="utf-8"))
+    log = tmp_path / "session.jsonl"
+    append_record(
+        log,
+        record_policy_request(
+            policy / "policy.lua",
+            request,
+            response={"status": 200},
+            metadata={"topology": topology},
+        ),
+    )
+    return config, log
 
 
 def write_fabric_learn_log(tmp_path: Path) -> Path:

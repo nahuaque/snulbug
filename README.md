@@ -121,6 +121,11 @@ to an agent:
 ```bash
 uv run snulbug mcp fabric status --config snulbug.toml
 uv run snulbug mcp fabric doctor --config snulbug.toml --token local-dev-secret
+uv run snulbug mcp fabric conformance generate \
+  --config snulbug.toml \
+  --log traces/session.jsonl \
+  --out .snulbug/fabric-conformance
+uv run snulbug mcp fabric conformance run .snulbug/fabric-conformance
 ```
 
 See the full [local MCP policy gateway quickstart](docs/quickstart.md) for
@@ -225,6 +230,7 @@ Start with:
 - [Tunnel init](docs/tunnel-init.md)
 - [Tunnel doctor](docs/tunnel-doctor.md)
 - [MCP reverse proxy](docs/mcp-proxy.md)
+- [MCP fabric config, discovery, and conformance](docs/mcp-fabric.md)
 - [MCP client setup recipes](docs/mcp-client-recipes.md)
 - [MCP learn and amend mode](docs/mcp-learn.md)
 - [MCP impact preview](docs/mcp-impact.md)

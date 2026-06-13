@@ -508,6 +508,75 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     mcp_fabric_learn.add_argument("--force", action="store_true", help="overwrite the output directory")
     mcp_fabric_learn.add_argument("--compact", action="store_true", help="emit compact JSON")
+    mcp_fabric_conformance = mcp_fabric_subparsers.add_parser(
+        "conformance",
+        help="generate and run fabric conformance test packs",
+    )
+    mcp_fabric_conformance_subparsers = mcp_fabric_conformance.add_subparsers(
+        dest="conformance_command",
+        required=True,
+    )
+    mcp_fabric_conformance_generate = mcp_fabric_conformance_subparsers.add_parser(
+        "generate",
+        help="generate a fabric conformance test pack",
+    )
+    mcp_fabric_conformance_generate.add_argument(
+        "--config",
+        type=Path,
+        default=Path("snulbug.toml"),
+        help="snulbug.toml config file",
+    )
+    mcp_fabric_conformance_generate.add_argument(
+        "--out",
+        "--output",
+        type=Path,
+        required=True,
+        help="output conformance pack directory",
+    )
+    mcp_fabric_conformance_generate.add_argument(
+        "--log",
+        action="append",
+        type=Path,
+        required=True,
+        help="topology-aware replay or audit JSONL log; repeat for multiple logs",
+    )
+    mcp_fabric_conformance_generate.add_argument(
+        "--kind",
+        choices=("auto", "record", "audit"),
+        default="auto",
+        help="input log type",
+    )
+    mcp_fabric_conformance_generate.add_argument("--force", action="store_true", help="overwrite generated files")
+    mcp_fabric_conformance_generate.add_argument("--compact", action="store_true", help="emit compact JSON")
+    mcp_fabric_conformance_run = mcp_fabric_conformance_subparsers.add_parser(
+        "run",
+        help="run a generated fabric conformance test pack",
+    )
+    mcp_fabric_conformance_run.add_argument("pack", type=Path, help="fabric conformance pack directory")
+    mcp_fabric_conformance_run.add_argument(
+        "--header",
+        "--auth-header",
+        action="append",
+        default=[],
+        help="authenticated probe header as 'Name: value'; repeat for multiple headers",
+    )
+    mcp_fabric_conformance_run.add_argument("--token", help="bearer token for authenticated MCP probes")
+    mcp_fabric_conformance_run.add_argument("--timeout", type=float, help="HTTP probe timeout in seconds")
+    mcp_fabric_conformance_run.add_argument(
+        "--probe-gateway",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="actively probe the client-facing snulbug gateway",
+    )
+    mcp_fabric_conformance_run.add_argument(
+        "--probe-upstreams",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="actively probe declared HTTP/Holepunch upstream URLs",
+    )
+    mcp_fabric_conformance_run.add_argument("--instruction-limit", type=int, default=100_000)
+    mcp_fabric_conformance_run.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
+    mcp_fabric_conformance_run.add_argument("--compact", action="store_true", help="emit compact JSON")
     mcp_fabric_controller = mcp_fabric_subparsers.add_parser(
         "controller",
         help="reconcile declarative MCP fabric config into a controller state snapshot",
@@ -1241,11 +1310,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 discover_fabric_upstreams,
                 doctor_fabric,
                 fabric_status,
+                format_fabric_conformance_report,
                 format_fabric_discovery_report,
                 format_fabric_doctor_report,
                 format_fabric_learn_report,
                 format_fabric_status_report,
+                generate_fabric_conformance_pack,
                 learn_fabric_profile,
+                run_fabric_conformance_pack,
             )
             from .tunnel import parse_tunnel_headers
 
@@ -1284,6 +1356,43 @@ def main(argv: Sequence[str] | None = None) -> int:
                         sys.stdout.write(format_fabric_learn_report(result))
                         sys.stdout.write("\n")
                         return status
+                elif args.fabric_command == "conformance":
+                    if args.conformance_command == "generate":
+                        result = generate_fabric_conformance_pack(
+                            args.config,
+                            args.out,
+                            logs=args.log,
+                            kind=args.kind,
+                            force=args.force,
+                        )
+                        status = 0 if result["ok"] else 1
+                        if not args.compact:
+                            sys.stdout.write("# snulbug fabric conformance generate\n\n")
+                            sys.stdout.write(f"Output: {result.get('output')}\n")
+                            sys.stdout.write(f"Manifest: {result.get('manifest')}\n")
+                            sys.stdout.write(f"Report: {result.get('report')}\n")
+                            sys.stdout.write("\n## Next steps\n")
+                            for check in result.get("checks", []):
+                                sys.stdout.write(f"- {check}\n")
+                            return status
+                    elif args.conformance_command == "run":
+                        result = run_fabric_conformance_pack(
+                            args.pack,
+                            headers=parse_tunnel_headers(args.header, token=args.token),
+                            timeout=args.timeout,
+                            probe_gateway=args.probe_gateway,
+                            probe_upstreams=args.probe_upstreams,
+                            instruction_limit=args.instruction_limit,
+                            memory_limit_bytes=args.memory_limit_bytes,
+                        )
+                        status = 0 if result["ok"] else 1
+                        if not args.compact:
+                            sys.stdout.write(format_fabric_conformance_report(result))
+                            sys.stdout.write("\n")
+                            return status
+                    else:
+                        parser.error(f"unknown mcp fabric conformance command: {args.conformance_command}")
+                        return 2
                 elif args.fabric_command == "controller":
                     event_log = None if args.no_event_log else args.event_log
                     status_server = None

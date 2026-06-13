@@ -424,6 +424,43 @@ snulbug mcp fabric doctor \
 Use `fabric doctor` before handing an agent a fabric endpoint or sharing a
 tunnel/peer bridge. Use `tunnel doctor` for public tunnel exposure checks.
 
+## Conformance Packs
+
+`fabric conformance` generates a path-based test pack that proves the current
+fabric config, signed manifests, policy bundle, and replay/audit logs still
+agree. Use it as the final local or CI gate before sharing a gateway, tunnel, or
+peer bridge.
+
+Generate a pack from the config and one or more topology-aware logs:
+
+```bash
+snulbug mcp fabric conformance generate \
+  --config snulbug.toml \
+  --log traces/session.jsonl \
+  --kind record \
+  --out .snulbug/fabric-conformance
+```
+
+Run the pack:
+
+```bash
+snulbug mcp fabric conformance run .snulbug/fabric-conformance
+```
+
+The runner fails closed when:
+
+- the config, policy, manifest, or log fingerprint changed since generation
+- `fabric doctor` cannot load the config or verify required signed manifests
+- the configured policy bundle fails validation or fixture tests
+- replay records no longer match the current policy decision output
+- topology-aware logs mention undeclared upstreams, miss configured upstreams,
+  or carry route/manifest metadata that disagrees with the current config
+
+By default, conformance runs offline and disables active gateway/upstream
+network probes. Add `--probe-gateway` or `--probe-upstreams` when the gateway
+and upstreams are already running and you want the pack to include live MCP
+`tools/list` checks. Pass `--token` or `--header` for authenticated probes.
+
 ## Learn Mode
 
 `learn` compiles topology-aware replay or audit logs into a reviewable fabric

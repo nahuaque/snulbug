@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
 import os
@@ -8,6 +9,7 @@ import shutil
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import SplitResult, urlsplit, urlunsplit
@@ -27,6 +29,9 @@ _FABRIC_DOCTOR_REQUEST = {
     "method": "tools/list",
     "params": {},
 }
+
+FABRIC_CONFORMANCE_SCHEMA = "snulbug.fabric-conformance-pack.v1"
+FABRIC_CONFORMANCE_VERSION = 1
 
 
 def fabric_status(config: str | Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
@@ -151,6 +156,179 @@ def learn_fabric_profile(
             f"uv run snulbug mcp fabric doctor --config {config_path}",
         ],
     }
+
+
+def generate_fabric_conformance_pack(
+    config: str | Path = DEFAULT_CONFIG_PATH,
+    output: str | Path = ".snulbug/fabric-conformance",
+    *,
+    logs: Sequence[str | Path] = (),
+    kind: str = "auto",
+    force: bool = False,
+) -> dict[str, Any]:
+    """Generate a reviewable conformance pack for a declared fabric."""
+
+    if kind not in {"auto", "record", "audit"}:
+        raise ValueError("kind must be 'auto', 'record', or 'audit'")
+    if not logs:
+        raise ValueError("at least one replay or audit log is required")
+
+    output_path = Path(output)
+    if output_path.exists() and any(output_path.iterdir()) and not force:
+        raise FileExistsError(f"fabric conformance output already exists: {output_path}")
+    output_path.mkdir(parents=True, exist_ok=True)
+    profiles_dir = output_path / "profiles"
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+
+    config_path = Path(config)
+    status = fabric_status(config_path)
+    policy = _conformance_policy_reference(_mapping(status.get("proxy")), base_dir=output_path)
+    log_entries = []
+    for index, log in enumerate(logs, start=1):
+        profile = _fabric_conformance_log_profile(log, kind=kind)
+        safe_name = _safe_artifact_name(Path(log).stem or f"log-{index}")
+        profile_path = profiles_dir / f"{index:02d}-{safe_name}.json"
+        report_path = profiles_dir / f"{index:02d}-{safe_name}.md"
+        profile_path.write_text(json.dumps(profile["profile"], indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        report_path.write_text(profile["report"], encoding="utf-8")
+        log_entries.append(
+            {
+                "path": _relative_path(Path(log), output_path),
+                "sha256": _file_sha256(Path(log)),
+                "kind": kind,
+                "profile": _relative_path(profile_path, output_path),
+                "report": _relative_path(report_path, output_path),
+                "event_count": profile["profile"].get("event_count", 0),
+                "topology_event_count": profile["profile"].get("topology_event_count", 0),
+                "route_event_count": profile["profile"].get("route_event_count", 0),
+            }
+        )
+
+    status_path = output_path / "fabric-status.json"
+    manifest_path = output_path / "manifest.json"
+    report_path = output_path / "CONFORMANCE.md"
+    status_path.write_text(json.dumps(status, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    manifest = {
+        "schema": FABRIC_CONFORMANCE_SCHEMA,
+        "version": FABRIC_CONFORMANCE_VERSION,
+        "generated_by": "snulbug mcp fabric conformance generate",
+        "generated_at": _utc_now(),
+        "config": {"path": _relative_path(config_path, output_path), "sha256": _file_sha256(config_path)},
+        "policy": policy,
+        "logs": log_entries,
+        "expected": _fabric_conformance_expected(status),
+        "artifacts": {"status": _relative_path(status_path, output_path)},
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    report_path.write_text(_format_fabric_conformance_pack_report(manifest), encoding="utf-8")
+    return {
+        "ok": True,
+        "output": str(output_path),
+        "manifest": str(manifest_path),
+        "report": str(report_path),
+        "config": str(config_path),
+        "logs": [str(log) for log in logs],
+        "checks": [
+            f"uv run snulbug mcp fabric conformance run {output_path}",
+            f"review {report_path}",
+        ],
+    }
+
+
+def run_fabric_conformance_pack(
+    pack: str | Path,
+    *,
+    headers: Mapping[str, str] | None = None,
+    timeout: float | None = None,
+    probe_gateway: bool = False,
+    probe_upstreams: bool = False,
+    instruction_limit: int = 100_000,
+    memory_limit_bytes: int | None = 8 * 1024 * 1024,
+) -> dict[str, Any]:
+    """Run a generated fabric conformance pack."""
+
+    pack_path = Path(pack)
+    manifest_path = pack_path / "manifest.json"
+    checks: list[dict[str, Any]] = []
+    try:
+        manifest = _read_json(manifest_path)
+        if not isinstance(manifest, Mapping):
+            raise ValueError("fabric conformance manifest must be a JSON object")
+        if manifest.get("schema") != FABRIC_CONFORMANCE_SCHEMA:
+            raise ValueError(f"unsupported fabric conformance schema: {manifest.get('schema')!r}")
+        if manifest.get("version") != FABRIC_CONFORMANCE_VERSION:
+            raise ValueError(f"unsupported fabric conformance version: {manifest.get('version')!r}")
+    except Exception as exc:
+        _add_check(checks, "pack.manifest_loaded", False, f"failed to load conformance manifest: {exc}")
+        return _fabric_conformance_result(pack_path, None, checks)
+
+    _add_check(checks, "pack.manifest_loaded", True, f"loaded conformance manifest {manifest_path}")
+    config_ref = _mapping(manifest.get("config"))
+    config_path = _resolve_pack_path(pack_path, config_ref.get("path"))
+    try:
+        status = fabric_status(config_path)
+        fabric = load_mcp_fabric_config(config_path)
+        _add_check(checks, "config.loaded", True, f"loaded fabric config {config_path}")
+    except Exception as exc:
+        _add_check(checks, "config.loaded", False, f"failed to load fabric config: {exc}")
+        return _fabric_conformance_result(pack_path, manifest, checks)
+
+    if config_ref.get("sha256"):
+        _add_check(
+            checks,
+            "config.fingerprint",
+            _file_sha256(config_path) == config_ref.get("sha256"),
+            "config file matches generated conformance fingerprint",
+            details={"expected": config_ref.get("sha256"), "actual": _file_sha256(config_path)},
+        )
+    _add_check(
+        checks,
+        "config.status",
+        bool(status.get("ok")),
+        "fabric status is healthy" if status.get("ok") else "fabric status is not healthy",
+        details={"summary": _mapping(status.get("summary"))},
+    )
+    _run_expected_snapshot_checks(checks, status, _mapping(manifest.get("expected")))
+
+    doctor = doctor_fabric(
+        config_path,
+        headers=headers,
+        timeout=timeout,
+        probe_gateway=probe_gateway,
+        probe_upstreams=probe_upstreams,
+    )
+    for check in doctor.get("checks", []):
+        if isinstance(check, Mapping):
+            checks.append({**dict(check), "id": f"doctor.{check.get('id')}"})
+
+    proxy = _mapping(fabric.get("proxy"))
+    policy_path = Path(proxy.get("policy")) if proxy.get("policy") is not None else None
+    if policy_path is None:
+        _add_check(checks, "policy.configured", False, "mcp.proxy.policy is not configured")
+    else:
+        _run_policy_conformance_checks(
+            checks,
+            policy_path,
+            _mapping(manifest.get("policy")),
+            instruction_limit=instruction_limit,
+            memory_limit_bytes=memory_limit_bytes,
+        )
+
+    for index, log_ref in enumerate(_sequence_mappings(manifest.get("logs")), start=1):
+        _run_log_conformance_checks(
+            checks,
+            pack_path,
+            log_ref,
+            index=index,
+            status=status,
+            policy_path=policy_path,
+            instruction_limit=instruction_limit,
+            memory_limit_bytes=memory_limit_bytes,
+        )
+    if not list(_sequence_mappings(manifest.get("logs"))):
+        _add_check(checks, "logs.configured", False, "conformance pack does not include replay or audit logs")
+
+    return _fabric_conformance_result(pack_path, manifest, checks, config=config_path)
 
 
 def discover_fabric_upstreams(config: str | Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
@@ -463,6 +641,451 @@ def format_fabric_learn_report(result: Mapping[str, Any]) -> str:
         for step in next_steps:
             lines.append(f"- {step}")
     return "\n".join(lines).rstrip()
+
+
+def format_fabric_conformance_report(result: Mapping[str, Any]) -> str:
+    lines = [
+        "# snulbug fabric conformance",
+        "",
+        f"Pack: {result.get('pack')}",
+        f"Config: {result.get('config') or '-'}",
+        "",
+        "## Checks",
+    ]
+    checks = result.get("checks", [])
+    if not checks:
+        lines.append("- none")
+    for check in checks:
+        if isinstance(check, Mapping):
+            lines.append(f"- [{check.get('status')}] {check.get('id')}: {check.get('message')}")
+    summary = _mapping(result.get("summary"))
+    lines.extend(
+        [
+            "",
+            "## Summary",
+            (
+                f"Passed: {summary.get('passed', 0)} | Failed: {summary.get('failed', 0)} | "
+                f"Warnings: {summary.get('warnings', 0)} | Skipped: {summary.get('skipped', 0)}"
+            ),
+        ]
+    )
+    recommendations = result.get("recommendations", [])
+    if recommendations:
+        lines.extend(["", "## Recommendations"])
+        for recommendation in recommendations:
+            lines.append(f"- {recommendation}")
+    return "\n".join(lines).rstrip()
+
+
+def _fabric_conformance_log_profile(log: str | Path, *, kind: str) -> dict[str, Any]:
+    from .inspection import _load_events
+
+    events = _load_events(log, kind=kind)
+    model = _LearnedFabric.from_events(events)
+    return {"profile": model.profile(log), "report": model.report(log)}
+
+
+def _fabric_conformance_expected(status: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "fabric": {
+            "name": status.get("name"),
+            "gateway_url": status.get("gateway_url"),
+            "require_manifests": status.get("require_manifests"),
+        },
+        "proxy": {
+            "policy": _mapping(status.get("proxy")).get("policy"),
+            "facade": _mapping(status.get("proxy")).get("facade"),
+        },
+        "upstreams": [
+            _conformance_upstream_snapshot(upstream) for upstream in _sequence_mappings(status.get("upstreams"))
+        ],
+    }
+
+
+def _conformance_upstream_snapshot(upstream: Mapping[str, Any]) -> dict[str, Any]:
+    manifest = _mapping(upstream.get("manifest"))
+    return _drop_empty(
+        {
+            "name": upstream.get("name"),
+            "transport": upstream.get("transport"),
+            "tool_prefix": upstream.get("tool_prefix"),
+            "default": upstream.get("default"),
+            "url": _audit_url(upstream.get("url")),
+            "command": upstream.get("command"),
+            "peer": upstream.get("peer"),
+            "local_port": upstream.get("local_port"),
+            "manifest": _drop_empty(
+                {
+                    "path": _normalized_path_string(manifest.get("path")),
+                    "required": manifest.get("required"),
+                    "exists": manifest.get("exists"),
+                    "identity": manifest.get("declared_identity"),
+                    "digest": manifest.get("digest"),
+                    "key_id": manifest.get("signature_key_id") or manifest.get("configured_key_id"),
+                }
+            ),
+        }
+    )
+
+
+def _run_expected_snapshot_checks(
+    checks: list[dict[str, Any]],
+    status: Mapping[str, Any],
+    expected: Mapping[str, Any],
+) -> None:
+    expected_fabric = _mapping(expected.get("fabric"))
+    _add_check(
+        checks,
+        "snapshot.fabric",
+        {
+            "name": status.get("name"),
+            "gateway_url": status.get("gateway_url"),
+            "require_manifests": status.get("require_manifests"),
+        }
+        == dict(expected_fabric),
+        "fabric identity matches generated conformance snapshot",
+        details={"expected": expected_fabric, "actual": _fabric_conformance_expected(status).get("fabric")},
+    )
+    expected_upstreams = {
+        str(upstream.get("name")): upstream for upstream in _sequence_mappings(expected.get("upstreams"))
+    }
+    actual_upstreams = {
+        str(upstream.get("name")): _conformance_upstream_snapshot(upstream)
+        for upstream in _sequence_mappings(status.get("upstreams"))
+    }
+    missing = sorted(name for name in expected_upstreams if name not in actual_upstreams)
+    extra = sorted(name for name in actual_upstreams if name not in expected_upstreams)
+    _add_check(
+        checks,
+        "snapshot.upstreams",
+        not missing and not extra,
+        "configured upstream set matches generated conformance snapshot",
+        details={"missing": missing, "extra": extra},
+    )
+    for name in sorted(set(expected_upstreams) & set(actual_upstreams)):
+        expected_upstream = _mapping(expected_upstreams[name])
+        actual_upstream = _mapping(actual_upstreams[name])
+        _add_check(
+            checks,
+            f"snapshot.upstream.{_safe_artifact_name(name)}",
+            actual_upstream == expected_upstream,
+            f"upstream {name!r} matches generated conformance snapshot",
+            details={"expected": expected_upstream, "actual": actual_upstream},
+        )
+
+
+def _conformance_policy_reference(proxy: Mapping[str, Any], *, base_dir: Path) -> dict[str, Any]:
+    policy = proxy.get("policy")
+    if not policy:
+        return {}
+    policy_path = Path(str(policy))
+    reference: dict[str, Any] = {
+        "entrypoint": _relative_path(policy_path, base_dir),
+        "entrypoint_sha256": _file_sha256(policy_path) if policy_path.is_file() else None,
+    }
+    bundle_root = _policy_bundle_root(policy_path)
+    if bundle_root is not None:
+        from .bundle import bundle_lifecycle_digest
+
+        reference["bundle"] = _relative_path(bundle_root, base_dir)
+        reference["bundle_digest"] = bundle_lifecycle_digest(bundle_root)
+    return _drop_empty(reference)
+
+
+def _run_policy_conformance_checks(
+    checks: list[dict[str, Any]],
+    policy_path: Path,
+    expected: Mapping[str, Any],
+    *,
+    instruction_limit: int,
+    memory_limit_bytes: int | None,
+) -> None:
+    _add_check(
+        checks,
+        "policy.entrypoint_present",
+        policy_path.is_file(),
+        f"policy entrypoint exists at {policy_path}" if policy_path.is_file() else f"policy is missing: {policy_path}",
+        details={"path": str(policy_path)},
+    )
+    if not policy_path.is_file():
+        return
+    if expected.get("entrypoint_sha256"):
+        _add_check(
+            checks,
+            "policy.entrypoint_fingerprint",
+            _file_sha256(policy_path) == expected.get("entrypoint_sha256"),
+            "policy entrypoint matches generated conformance fingerprint",
+            details={"expected": expected.get("entrypoint_sha256"), "actual": _file_sha256(policy_path)},
+        )
+    bundle_root = _policy_bundle_root(policy_path)
+    if bundle_root is None:
+        from .runtime import compile_lua_file
+
+        try:
+            compile_lua_file(policy_path)
+        except Exception as exc:
+            _add_check(checks, "policy.compiles", False, f"policy failed to compile: {exc}")
+        else:
+            _add_check(checks, "policy.compiles", True, "policy entrypoint compiles")
+        return
+
+    from .bundle import bundle_lifecycle_digest, test_bundle, validate_bundle
+
+    if expected.get("bundle_digest"):
+        _add_check(
+            checks,
+            "policy.bundle_fingerprint",
+            bundle_lifecycle_digest(bundle_root) == expected.get("bundle_digest"),
+            "policy bundle matches generated conformance fingerprint",
+            details={"expected": expected.get("bundle_digest"), "actual": bundle_lifecycle_digest(bundle_root)},
+        )
+    validation = validate_bundle(bundle_root)
+    _add_check(
+        checks,
+        "policy.bundle_valid",
+        bool(validation.get("ok")),
+        "policy bundle validates" if validation.get("ok") else "policy bundle validation failed",
+        details=validation,
+    )
+    if not validation.get("ok"):
+        return
+    tests = test_bundle(bundle_root, instruction_limit=instruction_limit, memory_limit_bytes=memory_limit_bytes)
+    _add_check(
+        checks,
+        "policy.bundle_tests",
+        bool(tests.get("ok")),
+        f"policy bundle tests passed ({tests.get('passed', 0)}/{tests.get('fixture_count', 0)})"
+        if tests.get("ok")
+        else "policy bundle tests failed",
+        details={
+            "passed": tests.get("passed"),
+            "failed": tests.get("failed"),
+            "fixture_count": tests.get("fixture_count"),
+        },
+    )
+
+
+def _run_log_conformance_checks(
+    checks: list[dict[str, Any]],
+    pack_path: Path,
+    log_ref: Mapping[str, Any],
+    *,
+    index: int,
+    status: Mapping[str, Any],
+    policy_path: Path | None,
+    instruction_limit: int,
+    memory_limit_bytes: int | None,
+) -> None:
+    from .inspection import _load_events
+    from .recorder import replay_record_log
+
+    check_prefix = f"log.{index}"
+    log_path = _resolve_pack_path(pack_path, log_ref.get("path"))
+    if not log_path.is_file():
+        _add_check(checks, f"{check_prefix}.present", False, f"log file is missing: {log_path}")
+        return
+    _add_check(checks, f"{check_prefix}.present", True, f"log exists at {log_path}")
+    if log_ref.get("sha256"):
+        _add_check(
+            checks,
+            f"{check_prefix}.fingerprint",
+            _file_sha256(log_path) == log_ref.get("sha256"),
+            "log file matches generated conformance fingerprint",
+            details={"expected": log_ref.get("sha256"), "actual": _file_sha256(log_path)},
+        )
+    try:
+        events = _load_events(log_path, kind=str(log_ref.get("kind") or "auto"))
+    except Exception as exc:
+        _add_check(checks, f"{check_prefix}.loaded", False, f"failed to load log: {exc}")
+        return
+    model = _LearnedFabric.from_events(events)
+    _add_check(checks, f"{check_prefix}.loaded", True, f"loaded {len(events)} event(s)")
+    _add_check(
+        checks,
+        f"{check_prefix}.has_routes",
+        model.route_event_count > 0,
+        f"log has {model.route_event_count} routed fabric event(s)",
+    )
+    _add_check(
+        checks,
+        f"{check_prefix}.topology_complete",
+        model.missing_topology_count == 0,
+        "every log event has topology or facade metadata",
+        details={"missing_topology_count": model.missing_topology_count},
+    )
+    _run_log_topology_checks(checks, check_prefix, model, status)
+    source_kinds = {str(event.get("source_kind")) for event in events}
+    if "record" in source_kinds and policy_path is not None:
+        replay = replay_record_log(
+            log_path,
+            script_path=policy_path,
+            instruction_limit=instruction_limit,
+            memory_limit_bytes=memory_limit_bytes,
+        )
+        _add_check(
+            checks,
+            f"{check_prefix}.policy_replay",
+            bool(replay.get("ok")),
+            "replay log decisions match current policy" if replay.get("ok") else "replay log decisions changed",
+            details={
+                "record_count": replay.get("record_count"),
+                "changed": replay.get("changed"),
+                "failed": replay.get("failed"),
+            },
+        )
+    else:
+        _add_check(
+            checks,
+            f"{check_prefix}.policy_replay",
+            None,
+            "audit logs are topology-checked but cannot be exactly replayed against policy",
+        )
+
+
+def _run_log_topology_checks(
+    checks: list[dict[str, Any]],
+    check_prefix: str,
+    model: _LearnedFabric,
+    status: Mapping[str, Any],
+) -> None:
+    configured = {
+        str(upstream.get("name")): _conformance_upstream_snapshot(upstream)
+        for upstream in _sequence_mappings(status.get("upstreams"))
+    }
+    observed_names = set(model.upstreams)
+    configured_names = set(configured)
+    unknown = sorted(observed_names - configured_names)
+    unobserved = sorted(configured_names - observed_names)
+    _add_check(
+        checks,
+        f"{check_prefix}.upstreams_known",
+        not unknown,
+        "all observed upstreams are declared in the fabric config",
+        details={"unknown": unknown},
+    )
+    _add_check(
+        checks,
+        f"{check_prefix}.upstreams_covered",
+        not unobserved,
+        "replay/audit logs cover every configured upstream",
+        details={"unobserved": unobserved},
+    )
+    for name in sorted(observed_names & configured_names):
+        observed = model.upstreams[name]
+        actual = configured[name]
+        expected_fields = {
+            "transport": observed.transport,
+            "tool_prefix": observed.tool_prefix,
+            "url": _audit_url(observed.url),
+        }
+        mismatches = []
+        for field_name, expected_value in expected_fields.items():
+            if expected_value and actual.get(field_name) != expected_value:
+                mismatches.append({"field": field_name, "expected": expected_value, "actual": actual.get(field_name)})
+        observed_manifest = _mapping(observed.manifest)
+        actual_manifest = _mapping(actual.get("manifest"))
+        for field_name in ("identity", "digest", "key_id"):
+            expected_value = observed_manifest.get(field_name)
+            if expected_value and actual_manifest.get(field_name) != expected_value:
+                mismatches.append(
+                    {
+                        "field": f"manifest.{field_name}",
+                        "expected": expected_value,
+                        "actual": actual_manifest.get(field_name),
+                    }
+                )
+        _add_check(
+            checks,
+            f"{check_prefix}.upstream.{_safe_artifact_name(name)}",
+            not mismatches,
+            f"observed upstream {name!r} agrees with config and manifest metadata",
+            details={"mismatches": mismatches},
+        )
+    unmatched_tools = []
+    for tool in sorted(model.tools):
+        if not any(tool.startswith(str(upstream.get("tool_prefix"))) for upstream in configured.values()):
+            unmatched_tools.append(tool)
+    _add_check(
+        checks,
+        f"{check_prefix}.tools_namespaced",
+        not unmatched_tools,
+        "all observed facade tools match configured upstream prefixes",
+        details={"unmatched_tools": unmatched_tools},
+    )
+
+
+def _fabric_conformance_result(
+    pack: Path,
+    manifest: Mapping[str, Any] | None,
+    checks: Sequence[Mapping[str, Any]],
+    *,
+    config: Path | None = None,
+) -> dict[str, Any]:
+    summary = _checks_summary(checks)
+    return {
+        "ok": summary["failed"] == 0,
+        "pack": str(pack),
+        "config": str(config) if config is not None else None,
+        "schema": manifest.get("schema") if isinstance(manifest, Mapping) else None,
+        "checks": list(checks),
+        "summary": summary,
+        "recommendations": _fabric_conformance_recommendations(checks),
+    }
+
+
+def _fabric_conformance_recommendations(checks: Sequence[Mapping[str, Any]]) -> list[str]:
+    failed = [str(check.get("id")) for check in checks if check.get("status") == "fail"]
+    recommendations = []
+    if any(check_id.startswith("doctor.upstream.") and check_id.endswith(".manifest_verified") for check_id in failed):
+        recommendations.append(
+            "Fix manifest signatures, expected identities, or manifest secret environment variables."
+        )
+    if any(check_id.endswith(".policy_replay") for check_id in failed):
+        recommendations.append("Regenerate or amend the policy bundle until replay records match the current policy.")
+    if any(".upstreams_covered" in check_id for check_id in failed):
+        recommendations.append("Record traffic through every configured facade upstream before sharing the gateway.")
+    if any(check_id.startswith("snapshot.") or check_id.endswith(".fingerprint") for check_id in failed):
+        recommendations.append(
+            "Regenerate the conformance pack after intentional config, policy, manifest, or log changes."
+        )
+    return recommendations
+
+
+def _format_fabric_conformance_pack_report(manifest: Mapping[str, Any]) -> str:
+    expected = _mapping(manifest.get("expected"))
+    fabric = _mapping(expected.get("fabric"))
+    upstreams = list(_sequence_mappings(expected.get("upstreams")))
+    lines = [
+        "# snulbug fabric conformance pack",
+        "",
+        f"- Config: `{_mapping(manifest.get('config')).get('path')}`",
+        f"- Fabric: `{fabric.get('name')}`",
+        f"- Gateway: `{fabric.get('gateway_url')}`",
+        f"- Logs: {len(list(_sequence_mappings(manifest.get('logs'))))}",
+        "",
+        "## Upstreams",
+    ]
+    if not upstreams:
+        lines.append("- none")
+    for upstream in upstreams:
+        manifest_summary = _mapping(upstream.get("manifest"))
+        lines.append(
+            "- "
+            f"{upstream.get('name')} [{upstream.get('transport')}] "
+            f"prefix=`{upstream.get('tool_prefix')}` "
+            f"manifest=`{manifest_summary.get('identity') or manifest_summary.get('path') or '-'}`"
+        )
+    lines.extend(
+        [
+            "",
+            "## Run",
+            "",
+            "```bash",
+            "snulbug mcp fabric conformance run .",
+            "```",
+        ]
+    )
+    return "\n".join(lines).rstrip() + "\n"
 
 
 @dataclass
@@ -1744,6 +2367,67 @@ def _doctor_recommendations(checks: Sequence[Mapping[str, Any]], *, headers: Map
     if statuses.get("proxy.facade_enabled") == "warn":
         recommendations.append("Declare [[mcp.proxy.upstreams]] entries to expose multiple MCP servers as one fabric.")
     return recommendations
+
+
+def _read_json(path: Path) -> Any:
+    with path.open("r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def _file_sha256(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _relative_path(path: Path, base_dir: Path) -> str:
+    try:
+        return os.path.relpath(path.resolve(), base_dir.resolve())
+    except OSError:
+        return str(path)
+
+
+def _normalized_path_string(value: Any) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return str(Path(value).resolve())
+    except OSError:
+        return value
+
+
+def _resolve_pack_path(pack: Path, value: Any) -> Path:
+    if not isinstance(value, str) or not value:
+        raise ValueError("conformance path reference must be a non-empty string")
+    path = Path(value)
+    return path if path.is_absolute() else pack / path
+
+
+def _policy_bundle_root(policy_path: Path) -> Path | None:
+    manifest = policy_path.parent / "manifest.json"
+    if not manifest.is_file():
+        return None
+    try:
+        data = _read_json(manifest)
+    except Exception:
+        return None
+    if not isinstance(data, Mapping):
+        return None
+    entrypoint = data.get("entrypoint")
+    if not isinstance(entrypoint, str):
+        return None
+    try:
+        if (policy_path.parent / entrypoint).resolve() != policy_path.resolve():
+            return None
+    except OSError:
+        return None
+    return policy_path.parent
+
+
+def _safe_artifact_name(value: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_.-]+", "-", value).strip("-") or "artifact"
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _topology_route(proxy_metadata: Mapping[str, Any]) -> dict[str, Any]:

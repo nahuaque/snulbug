@@ -45,11 +45,14 @@ from .fabric import (
     discover_fabric_upstreams,
     doctor_fabric,
     fabric_status,
+    format_fabric_conformance_report,
     format_fabric_discovery_report,
     format_fabric_doctor_report,
     format_fabric_learn_report,
     format_fabric_status_report,
+    generate_fabric_conformance_pack,
     learn_fabric_profile,
+    run_fabric_conformance_pack,
 )
 from .guide import MCP_GUIDE_WORKFLOWS, build_mcp_guide, format_mcp_guide
 from .impact import analyze_mcp_impact, format_mcp_impact_report
@@ -165,6 +168,7 @@ __all__ = [
     "doctor_fabric",
     "evaluate_cloudflare_access",
     "fabric_status",
+    "format_fabric_conformance_report",
     "format_fabric_discovery_report",
     "format_fabric_doctor_report",
     "format_fabric_controller_report",
@@ -176,6 +180,7 @@ __all__ = [
     "format_mcp_guide",
     "format_tunnel_doctor_report",
     "format_tunnel_init_report",
+    "generate_fabric_conformance_pack",
     "generate_mcp_preset",
     "inspect_mcp_log",
     "inspect_bundle_lifecycle",
@@ -201,6 +206,7 @@ __all__ = [
     "revoke_lease",
     "run_mcp_lab",
     "run_fabric_controller",
+    "run_fabric_conformance_pack",
     "run_fabric_data_plane",
     "run_proxy",
     "simulate_policy",
