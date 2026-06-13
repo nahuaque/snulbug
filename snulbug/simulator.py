@@ -180,7 +180,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_guide = mcp_subparsers.add_parser("guide", help="print agent-oriented MCP workflow guidance")
     mcp_guide.add_argument(
         "--workflow",
-        choices=("all", "tunnel", "learn-amend-impact", "leases", "facade"),
+        choices=("all", "share", "tunnel", "learn-amend-impact", "leases", "facade"),
         default="all",
         help="workflow to print",
     )
@@ -335,6 +335,53 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="validate and test the generated policy bundle",
     )
     mcp_quickstart.add_argument("--compact", action="store_true", help="emit compact JSON")
+
+    mcp_share = mcp_subparsers.add_parser(
+        "share",
+        help="create an ephemeral MCP share session with bearer auth, lease, tunnel setup, and client config",
+    )
+    mcp_share.add_argument("--directory", type=Path, help="share session directory")
+    mcp_share.add_argument(
+        "--provider",
+        choices=("generic", "ngrok", "cloudflare", "tailscale", "holepunch"),
+        default="holepunch",
+        help="tunnel or peer bridge provider",
+    )
+    mcp_share.add_argument("--preset", default="tunnel-safe", help="MCP policy preset")
+    mcp_share.add_argument("--upstream", default="http://127.0.0.1:9000", help="upstream MCP HTTP server")
+    mcp_share.add_argument("--hostname", help="provider hostname to use when --url is omitted")
+    mcp_share.add_argument("--url", "--public-url", dest="url", help="public tunnel or client bridge MCP URL")
+    mcp_share.add_argument("--token", help="bearer token; defaults to a generated session token")
+    mcp_share.add_argument("--ttl", default="30m", help="share lease TTL, such as 30m, 2h, or 1d")
+    mcp_share.add_argument("--task", default="Ephemeral MCP share session", help="human-readable share task")
+    mcp_share.add_argument("--allow-tool", action="append", default=[], help="allowed MCP tool name")
+    mcp_share.add_argument("--allow-path", action="append", default=[], help="allowed path or path prefix")
+    mcp_share.add_argument("--allow-host", action="append", default=[], help="allowed URL host")
+    mcp_share.add_argument("--allow-command", action="append", default=[], help="allowed command name")
+    mcp_share.add_argument("--max-calls", type=int, help="maximum number of allowed tools/call uses")
+    mcp_share.add_argument("--host", default="127.0.0.1", help="proxy bind host")
+    mcp_share.add_argument("--port", type=int, default=8080, help="proxy bind port")
+    mcp_share.add_argument("--state", default="memory", help="'memory', 'none', or 'sqlite:/path/to/state.sqlite3'")
+    mcp_share.add_argument(
+        "--lease-required",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="require a valid task lease for MCP tools/call requests",
+    )
+    mcp_share.add_argument(
+        "--lease-header",
+        default="x-snulbug-lease",
+        help="HTTP header carrying the task lease token",
+    )
+    mcp_share.add_argument("--client-name", default="snulbug-share", help="MCP client config server name")
+    mcp_share.add_argument("--force", action="store_true", help="overwrite generated share files")
+    mcp_share.add_argument(
+        "--validate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="validate and test the generated policy bundle",
+    )
+    mcp_share.add_argument("--compact", action="store_true", help="emit compact JSON")
 
     mcp_init = mcp_subparsers.add_parser("init", help="copy a bundled MCP policy preset")
     mcp_init.add_argument("preset", nargs="?", default="local-dev-safe", help="preset name to copy")
@@ -763,6 +810,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.mcp_command == "presets":
             result = {"presets": list_builtin_presets()}
             status = 0
+        elif args.mcp_command == "share":
+            from .share import create_mcp_share
+
+            try:
+                result = create_mcp_share(
+                    args.directory,
+                    provider=args.provider,
+                    preset=args.preset,
+                    upstream=args.upstream,
+                    hostname=args.hostname,
+                    public_url=args.url,
+                    token=args.token,
+                    ttl=args.ttl,
+                    task=args.task,
+                    allowed_tools=args.allow_tool or None,
+                    allowed_paths=args.allow_path or None,
+                    allowed_hosts=args.allow_host or None,
+                    allowed_commands=args.allow_command or None,
+                    max_calls=args.max_calls,
+                    host=args.host,
+                    port=args.port,
+                    state=args.state,
+                    lease_required=args.lease_required,
+                    lease_header=args.lease_header,
+                    client_name=args.client_name,
+                    force=args.force,
+                    validate=args.validate,
+                )
+                status = 0 if result["ok"] else 1
+            except Exception as exc:
+                result = {"ok": False, "directory": str(args.directory) if args.directory else None, "error": str(exc)}
+                status = 1
         elif args.mcp_command == "quickstart":
             from .quickstart import create_mcp_quickstart
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-MCP_GUIDE_WORKFLOWS = ("tunnel", "learn-amend-impact", "leases", "facade")
+MCP_GUIDE_WORKFLOWS = ("share", "tunnel", "learn-amend-impact", "leases", "facade")
 
 
 def build_mcp_guide(*, workflow: str = "all") -> dict[str, Any]:
@@ -25,6 +25,7 @@ def build_mcp_guide(*, workflow: str = "all") -> dict[str, Any]:
         "default_public_tunnel_profile": "tunnel-safe",
         "workflows": selected,
         "next_steps": [
+            "Run `snulbug mcp guide --workflow share` for the highest-level ephemeral sharing workflow.",
             "Run `snulbug mcp guide --workflow tunnel` before exposing a local MCP server through a tunnel.",
             "Run `snulbug mcp guide --workflow learn-amend-impact --compact` when automating policy promotion.",
         ],
@@ -92,6 +93,82 @@ def _format_workflow(workflow: Mapping[str, Any]) -> list[str]:
 
 def _workflows() -> dict[str, dict[str, Any]]:
     return {
+        "share": {
+            "id": "share",
+            "title": "Ephemeral MCP Share Session",
+            "purpose": (
+                "Create one bounded share directory with a tunnel-safe policy, random bearer token, task-scoped "
+                "lease, provider setup, MCP client config, audit paths, and close-out commands."
+            ),
+            "when_to_use": "You want to hand an agent or collaborator temporary access to local MCP tools.",
+            "safety_default": (
+                "Use a generated bearer token, require a lease for tools/call, and keep the default 30 minute TTL."
+            ),
+            "steps": [
+                {
+                    "id": "create-share",
+                    "title": "Create the ephemeral share",
+                    "command": "\n".join(
+                        [
+                            "snulbug mcp share \\",
+                            "  --provider holepunch \\",
+                            "  --upstream http://127.0.0.1:9000 \\",
+                            "  --allow-tool safe_read_file \\",
+                            "  --allow-tool list_project_files \\",
+                            "  --ttl 30m",
+                        ]
+                    ),
+                    "requires": ["local MCP upstream planned at http://127.0.0.1:9000"],
+                    "produces": [
+                        ".snulbug/shares/share-*/snulbug.toml",
+                        ".snulbug/shares/share-*/mcp-client.json",
+                        ".snulbug/shares/share-*/SHARE.md",
+                    ],
+                    "success_signals": ["generated policy validates", "lease is active", "client config is written"],
+                    "next": "Open SHARE.md and run the generated proxy, provider, and doctor commands.",
+                },
+                {
+                    "id": "start-share",
+                    "title": "Start the generated proxy and provider bridge",
+                    "command": "\n".join(
+                        [
+                            "export SNULBUG_SHARE_TOKEN=...",
+                            "uv run snulbug mcp proxy --config .snulbug/shares/share-*/snulbug.toml --decision-console",
+                            "(cd .snulbug/shares/share-*/tunnel && \\",
+                            "  hypertele-server -l 8080 --address 127.0.0.1 -c hypertele-server.json --private)",
+                        ]
+                    ),
+                    "requires": ["generated share directory", "local MCP upstream is listening"],
+                    "produces": ["live decision console", "redacted replay log", "redacted audit log"],
+                    "success_signals": ["proxy listens locally", "provider bridge is ready"],
+                    "next": "Run the generated tunnel doctor command before sharing mcp-client.json.",
+                },
+                {
+                    "id": "close-share",
+                    "title": "Inspect and revoke when done",
+                    "command": "\n".join(
+                        [
+                            "uv run snulbug mcp inspect .snulbug/shares/share-*/traces/audit.jsonl \\",
+                            "  --kind audit \\",
+                            "  --report-out .snulbug/shares/share-*/session-report.md",
+                            "uv run snulbug mcp lease revoke LEASE_ID --file .snulbug/shares/share-*/leases.json",
+                        ]
+                    ),
+                    "requires": ["share session traffic", "lease id from share output"],
+                    "produces": ["session report", "revoked lease"],
+                    "success_signals": ["lease is no longer active", "session report exists"],
+                    "next": (
+                        "Stop the proxy and provider process, then delete the share directory "
+                        "if it is no longer needed."
+                    ),
+                },
+            ],
+            "stop_conditions": [
+                "Do not share mcp-client.json until tunnel doctor passes.",
+                "Do not keep using a share after its task or TTL is no longer appropriate.",
+                "Do not expose the upstream MCP server directly.",
+            ],
+        },
         "tunnel": {
             "id": "tunnel",
             "title": "Public Tunnel-Safe MCP Proxy",

@@ -41,6 +41,9 @@ snulbug mcp proxy --config snulbug.toml
 For concrete MCP client configuration patterns, see
 [MCP client setup recipes](mcp-client-recipes.md).
 
+For a generated temporary bearer/lease share directory, see
+[MCP share sessions](mcp-share.md).
+
 For a runnable upstream-plus-proxy walkthrough, see the
 [end-to-end MCP policy proxy demo](../examples/mcp_proxy_demo/README.md).
 

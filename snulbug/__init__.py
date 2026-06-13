@@ -29,6 +29,7 @@ from .redaction import RedactionConfig, append_audit_event, build_audit_event, r
 from .response_policy import ResponsePolicyConfig
 from .runtime import LuaDecisionError, LuaDecisionTrace, LuaRuntimeError
 from .schema_policy import SchemaPolicyConfig
+from .share import create_mcp_share
 from .simulator import simulate_policy
 from .state import (
     BoundedPolicyState,
@@ -86,6 +87,7 @@ __all__ = [
     "copy_builtin_preset",
     "create_lease",
     "create_mcp_quickstart",
+    "create_mcp_share",
     "create_proxy_application",
     "diff_policies",
     "build_mcp_guide",

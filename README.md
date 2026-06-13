@@ -57,8 +57,21 @@ writes replay/audit/report artifacts under `.snulbug-lab/`.
 Ask the CLI for a copy-paste workflow before wiring a client or harness:
 
 ```bash
+uv run snulbug mcp guide --workflow share
 uv run snulbug mcp guide --workflow tunnel
 uv run snulbug mcp guide --workflow learn-amend-impact --compact
+```
+
+For a temporary share session with generated bearer auth, a task lease, provider
+setup, client config, and close-out report commands:
+
+```bash
+uv run snulbug mcp share \
+  --provider holepunch \
+  --upstream http://127.0.0.1:9000 \
+  --allow-tool safe_read_file \
+  --allow-tool list_project_files \
+  --ttl 30m
 ```
 
 For a tunnel-exposed local MCP server, `tunnel-safe` is the recommended default:
@@ -197,6 +210,7 @@ Workflow:
 Start with:
 
 - [Quickstart: local MCP policy gateway](docs/quickstart.md)
+- [MCP share sessions](docs/mcp-share.md)
 - [MCP CLI guide for agents and harnesses](docs/mcp-guide.md)
 - [Tunnel init](docs/tunnel-init.md)
 - [Tunnel doctor](docs/tunnel-doctor.md)

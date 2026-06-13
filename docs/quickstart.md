@@ -30,8 +30,25 @@ published install, drop the `uv run` prefix.
 For a self-describing workflow that an agentic harness can parse:
 
 ```bash
+uv run snulbug mcp guide --workflow share --compact
 uv run snulbug mcp guide --workflow tunnel --compact
 ```
+
+For a temporary share session, let snulbug generate the policy, random bearer
+token, task lease, provider setup, client config, and close-out commands:
+
+```bash
+uv run snulbug mcp share \
+  --provider holepunch \
+  --upstream http://127.0.0.1:9000 \
+  --allow-tool safe_read_file \
+  --allow-tool list_project_files \
+  --ttl 30m
+```
+
+The command writes a self-contained directory under `.snulbug/shares/`. Open the
+generated `SHARE.md`, run the proxy and provider commands, run doctor, and then
+share the generated `mcp-client.json`.
 
 ## 2. Run the policy lab
 

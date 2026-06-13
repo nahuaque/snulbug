@@ -11,7 +11,7 @@ def test_build_mcp_guide_defaults_to_all_workflows():
 
     workflow_ids = [workflow["id"] for workflow in guide["workflows"]]
     assert guide["ok"] is True
-    assert workflow_ids == ["tunnel", "learn-amend-impact", "leases", "facade"]
+    assert workflow_ids == ["share", "tunnel", "learn-amend-impact", "leases", "facade"]
     assert guide["default_public_tunnel_profile"] == "tunnel-safe"
 
 
@@ -36,6 +36,17 @@ def test_mcp_guide_cli_emits_human_workflow(capsys):
     assert "## Task-Scoped Capability Lease" in output
     assert "snulbug mcp lease create \\" in output
     assert "snulbug mcp impact traces/session.jsonl --lease leases.json" in output
+
+
+def test_mcp_guide_cli_emits_share_workflow(capsys):
+    status = simulator_main(["mcp", "guide", "--workflow", "share"])
+
+    output = capsys.readouterr().out
+    assert status == 0
+    assert "## Ephemeral MCP Share Session" in output
+    assert "snulbug mcp share \\" in output
+    assert "--provider holepunch" in output
+    assert "Do not share mcp-client.json until tunnel doctor passes." in output
 
 
 def test_mcp_guide_cli_emits_compact_json_for_harness(capsys):

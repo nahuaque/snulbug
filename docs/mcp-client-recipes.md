@@ -14,7 +14,31 @@ MCP client
       -> managed stdio MCP server
 ```
 
-## 1. Local HTTP MCP client
+## 1. Ephemeral share session
+
+Use this when you want one bounded session with generated bearer auth, a
+task-scoped lease, provider setup, client config, and close-out commands:
+
+```bash
+uv run snulbug mcp share \
+  --provider holepunch \
+  --upstream http://127.0.0.1:9000 \
+  --allow-tool safe_read_file \
+  --allow-tool list_project_files \
+  --ttl 30m
+```
+
+Open the generated `SHARE.md`, run the proxy/provider/doctor commands, then
+copy the generated `mcp-client.json` into the MCP client. It contains both:
+
+```text
+Authorization: Bearer <generated token>
+x-snulbug-lease: <generated lease token>
+```
+
+Treat `mcp-client.json` as secret-bearing material.
+
+## 2. Local HTTP MCP client
 
 Use this when the MCP client runs on the same machine as the local MCP server.
 
@@ -89,7 +113,7 @@ If your client uses JSON config, the shape is usually equivalent to:
 Client config field names vary. The important parts are the URL and bearer
 header.
 
-## 2. Remote client through a tunnel
+## 3. Remote client through a tunnel
 
 Use this when the MCP client cannot reach your laptop directly.
 
@@ -294,7 +318,7 @@ For public tunnels, treat `tunnel-safe` as the recommended default. Do not expos
 the `tool-allowlist` preset by itself unless another tunnel or network layer
 already authenticates callers and rejects abusive traffic.
 
-## 3. Observe a client session
+## 4. Observe a client session
 
 Run the proxy with the decision console:
 
@@ -322,7 +346,7 @@ uv run snulbug mcp proxy --config snulbug.toml --no-redact-records
 Exact replay records can contain bearer tokens, cookies, API keys, and tool
 arguments.
 
-## 4. Tighten tool access for one client
+## 5. Tighten tool access for one client
 
 Start with the tools the client should actually call:
 
@@ -347,7 +371,7 @@ uv run snulbug bundle test policy.snulbug
 Denied tool calls return `reason_code = "mcp.tool_not_allowed"` and appear in
 audit logs and offline inspection findings.
 
-## 5. Client cannot set HTTP headers
+## 6. Client cannot set HTTP headers
 
 Prefer a client or adapter that can send an `Authorization` header. If that is
 not possible, keep the proxy bound to `127.0.0.1` and avoid public tunnels.
@@ -364,7 +388,7 @@ uv run snulbug mcp init tool-allowlist \
 This does not authenticate callers. It should be paired with local-only network
 binding or another trusted access-control layer.
 
-## 6. Upstream server only supports stdio
+## 7. Upstream server only supports stdio
 
 Use this when the MCP server you want to protect is normally launched as a stdio
 process. Configure it as a managed facade upstream:
