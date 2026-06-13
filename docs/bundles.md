@@ -56,6 +56,10 @@ uv run snulbug bundle verify policy.snulbug --state active
 uv run snulbug bundle lifecycle policy.snulbug
 ```
 
+For managed fabrics, the controller can own the final activation step. Configure
+`[mcp.fabric.policy_activation] mode = "promote_approved"` to promote a signed
+`approved` bundle to `active` before `fabric run` starts the data plane.
+
 Illegal skips, such as `observed -> active`, are rejected. Any edit to
 `policy.lua`, fixtures, snapshots, README files, or lifecycle metadata after
 signing changes the bundle digest and causes verification to fail.

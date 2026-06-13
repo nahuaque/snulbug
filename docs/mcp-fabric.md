@@ -344,6 +344,38 @@ Endpoints:
 - `/metrics`: Prometheus-style gauges for fabric health, changes, upstreams,
   discovery errors, and missing required manifests
 
+## Policy Activation
+
+The controller can enforce signed policy bundle lifecycle state before the data
+plane starts. This turns policy activation into reconciled fabric state instead
+of an out-of-band manual step.
+
+```toml
+[mcp.fabric.policy_activation]
+mode = "promote_approved"
+key_id = "local-review"
+secret_env = "SNULBUG_BUNDLE_SECRET"
+```
+
+Modes:
+
+- `off`: do not inspect or mutate policy bundle lifecycle state
+- `require_active`: require the configured policy bundle to be signed and
+  already `active`
+- `promote_approved`: verify an `active` bundle, or promote a signed
+  `approved` bundle to `active`
+
+The controller only manages policies that are configured as bundle entrypoints,
+for example:
+
+```toml
+[mcp.proxy]
+policy = "policy.snulbug/policy.lua"
+```
+
+If activation fails because the bundle is still `observed` or `proposed`, the
+controller reports unhealthy and `fabric run` refuses to start the data plane.
+
 This is the control-plane foundation. It does not hot-swap a running proxy route
 table by itself; pair it with proxy fabric reload when you want the running data
 plane to consume those changes:

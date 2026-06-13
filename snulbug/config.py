@@ -61,6 +61,15 @@ DEFAULT_MCP_FABRIC_CONFIG = {
     "probe_gateway": True,
     "probe_upstreams": True,
     "timeout": 5.0,
+    "policy_activation": {
+        "mode": "off",
+        "key_id": None,
+        "secret_env": "SNULBUG_BUNDLE_SECRET",
+        "actor": "snulbug fabric controller",
+        "note": "activated by fabric controller",
+        "instruction_limit": 100_000,
+        "memory_limit_bytes": 8 * 1024 * 1024,
+    },
 }
 
 SAMPLE_CONFIG = """[mcp.proxy]
@@ -110,6 +119,12 @@ require_manifests = false
 probe_gateway = true
 probe_upstreams = true
 timeout = 5.0
+
+# Optional controller-enforced policy bundle lifecycle:
+# [mcp.fabric.policy_activation]
+# mode = "promote_approved" # off, require_active, or promote_approved
+# key_id = "local-review"
+# secret_env = "SNULBUG_BUNDLE_SECRET"
 
 # Optional discovery providers append facade upstreams before validation:
 # [mcp.fabric.discovery]
@@ -326,6 +341,7 @@ def normalize_mcp_fabric_config(
     if not isinstance(normalized.get("timeout"), int | float) or float(normalized["timeout"]) <= 0:
         raise ValueError("mcp.fabric.timeout must be a positive number")
     normalized["timeout"] = float(normalized["timeout"])
+    normalized["policy_activation"] = _normalize_policy_activation(normalized.get("policy_activation", {}))
 
     if normalized["gateway_url"] is None and proxy_config is not None:
         host = proxy_config.get("host")
@@ -333,6 +349,28 @@ def normalize_mcp_fabric_config(
         if isinstance(host, str) and isinstance(port, int):
             normalized["gateway_url"] = f"http://{host}:{port}/mcp"
     normalized["proxy"] = dict(proxy_config or {})
+    return normalized
+
+
+def _normalize_policy_activation(value: Any) -> dict[str, Any]:
+    if value in (None, ""):
+        value = {}
+    if not isinstance(value, Mapping):
+        raise ValueError("mcp.fabric.policy_activation must be a table")
+    normalized = dict(DEFAULT_MCP_FABRIC_CONFIG["policy_activation"])
+    normalized.update({key: item for key, item in value.items() if item is not None})
+    mode = normalized.get("mode")
+    if mode not in {"off", "require_active", "promote_approved"}:
+        raise ValueError("mcp.fabric.policy_activation.mode must be 'off', 'require_active', or 'promote_approved'")
+    for field in ("key_id", "secret_env", "actor", "note"):
+        item = normalized.get(field)
+        if item is not None and not isinstance(item, str):
+            raise ValueError(f"mcp.fabric.policy_activation.{field} must be a string")
+    if not isinstance(normalized.get("instruction_limit"), int) or normalized["instruction_limit"] <= 0:
+        raise ValueError("mcp.fabric.policy_activation.instruction_limit must be a positive integer")
+    memory_limit = normalized.get("memory_limit_bytes")
+    if memory_limit is not None and (not isinstance(memory_limit, int) or memory_limit <= 0):
+        raise ValueError("mcp.fabric.policy_activation.memory_limit_bytes must be a positive integer")
     return normalized
 
 

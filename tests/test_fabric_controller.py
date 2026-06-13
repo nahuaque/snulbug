@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import shutil
 from pathlib import Path
 
 from snulbug import (
@@ -12,8 +13,10 @@ from snulbug import (
     EVENT_UPSTREAM_UNHEALTHY,
     FabricControllerStatusServer,
     MemoryFabricRuntimeStateStore,
+    inspect_bundle_lifecycle,
     load_fabric_runtime_status,
     open_fabric_runtime_state_store,
+    promote_bundle_lifecycle,
     reconcile_fabric_controller,
     run_fabric_controller,
     run_fabric_data_plane,
@@ -301,6 +304,60 @@ def test_fabric_controller_status_server_exposes_health_status_and_metrics(tmp_p
     assert json.loads(health["body"]) == {"ok": True}
     assert metrics["status"] == 200
     assert "snulbug_fabric_upstreams 1" in metrics["body"]
+
+
+def test_fabric_controller_activates_approved_policy_bundle(monkeypatch, tmp_path):
+    monkeypatch.setenv("SNULBUG_BUNDLE_SECRET", "dev-secret")
+    bundle = copy_policy_bundle(tmp_path)
+    promote_bundle_lifecycle(bundle, to_state="proposed", secret="dev-secret", key_id="dev")
+    promote_bundle_lifecycle(bundle, to_state="approved", secret="dev-secret", key_id="dev")
+    config = write_policy_activation_config(tmp_path, bundle, mode="promote_approved")
+    state = tmp_path / ".snulbug/fabric-state.json"
+
+    result = reconcile_fabric_controller(config, state_path=state, event_log=None)
+    snapshot = json.loads(state.read_text(encoding="utf-8"))
+    lifecycle = inspect_bundle_lifecycle(bundle)
+
+    assert result["ok"] is True
+    assert result["policy_activation"]["action"] == "activated"
+    assert result["policy_activation"]["previous_state"] == "approved"
+    assert result["policy_activation"]["state"] == "active"
+    assert lifecycle["state"] == "active"
+    assert snapshot["policy_activation"]["state"] == "active"
+    assert snapshot["desired"]["policy_activation"]["state"] == "active"
+
+
+def test_fabric_controller_blocks_unapproved_policy_bundle(monkeypatch, tmp_path):
+    monkeypatch.setenv("SNULBUG_BUNDLE_SECRET", "dev-secret")
+    bundle = copy_policy_bundle(tmp_path)
+    promote_bundle_lifecycle(bundle, to_state="proposed", secret="dev-secret", key_id="dev")
+    config = write_policy_activation_config(tmp_path, bundle, mode="promote_approved")
+
+    result = reconcile_fabric_controller(config, state_path=tmp_path / ".snulbug/fabric-state.json", event_log=None)
+
+    assert result["ok"] is False
+    assert result["policy_activation"]["action"] == "blocked"
+    assert result["policy_activation"]["previous_state"] == "proposed"
+    assert "not approved or active" in result["policy_activation"]["error"]
+    assert inspect_bundle_lifecycle(bundle)["state"] == "proposed"
+
+
+def test_fabric_controller_blocks_tampered_approved_policy_bundle(monkeypatch, tmp_path):
+    monkeypatch.setenv("SNULBUG_BUNDLE_SECRET", "dev-secret")
+    bundle = copy_policy_bundle(tmp_path)
+    promote_bundle_lifecycle(bundle, to_state="proposed", secret="dev-secret", key_id="dev")
+    promote_bundle_lifecycle(bundle, to_state="approved", secret="dev-secret", key_id="dev")
+    policy = bundle / "policy.lua"
+    policy.write_text(policy.read_text(encoding="utf-8") + "\n-- tampered after approval\n", encoding="utf-8")
+    config = write_policy_activation_config(tmp_path, bundle, mode="promote_approved")
+
+    result = reconcile_fabric_controller(config, state_path=tmp_path / ".snulbug/fabric-state.json", event_log=None)
+
+    assert result["ok"] is False
+    assert result["policy_activation"]["action"] == "blocked"
+    assert result["policy_activation"]["previous_state"] == "approved"
+    assert "approved policy bundle verification failed" in result["policy_activation"]["error"]
+    assert inspect_bundle_lifecycle(bundle)["state"] == "approved"
 
 
 def test_fabric_data_plane_runner_starts_controller_and_proxy(tmp_path):
@@ -716,6 +773,40 @@ def write_fabric_run_config(tmp_path: Path) -> Path:
         policy = "policy.snulbug/policy.lua"
         record_out = "traces/session.jsonl"
         audit_out = "traces/audit.jsonl"
+
+        [[mcp.proxy.upstreams]]
+        name = "files"
+        url = "http://127.0.0.1:9001/mcp"
+        """,
+        encoding="utf-8",
+    )
+    return config
+
+
+def copy_policy_bundle(tmp_path: Path) -> Path:
+    destination = tmp_path / "policy.snulbug"
+    shutil.copytree("examples/bundles/idempotency.snulbug", destination)
+    return destination
+
+
+def write_policy_activation_config(tmp_path: Path, bundle: Path, *, mode: str) -> Path:
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        f"""
+        [mcp.fabric]
+        name = "policy-activation-fabric"
+        probe_gateway = false
+        probe_upstreams = false
+
+        [mcp.fabric.policy_activation]
+        mode = "{mode}"
+        key_id = "dev"
+        secret_env = "SNULBUG_BUNDLE_SECRET"
+
+        [mcp.proxy]
+        host = "127.0.0.1"
+        port = 8181
+        policy = "{bundle / "policy.lua"}"
 
         [[mcp.proxy.upstreams]]
         name = "files"

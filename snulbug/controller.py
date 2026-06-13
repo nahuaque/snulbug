@@ -35,6 +35,7 @@ from .fabric_runtime import (
     FabricRuntimeStateStore,
     open_fabric_runtime_state_store,
 )
+from .policy_activation import reconcile_policy_activation
 
 DEFAULT_CONTROLLER_STATE_PATH = Path(".snulbug/fabric-state.json")
 DEFAULT_CONTROLLER_EVENT_LOG_PATH = Path(".snulbug/fabric-events.jsonl")
@@ -63,7 +64,14 @@ def reconcile_fabric_controller(
     observed_at = _utc_now()
 
     try:
+        policy_activation = reconcile_policy_activation(config_path)
         status = fabric_status(config_path)
+        status["policy_activation"] = policy_activation
+        if not policy_activation.get("ok"):
+            status["ok"] = False
+            recommendations = list(status.get("recommendations", []))
+            recommendations.append("Promote and sign the configured policy bundle before starting the fabric.")
+            status["recommendations"] = recommendations
         desired = _desired_state(status)
         load_error = None
     except Exception as exc:
@@ -403,6 +411,7 @@ def format_fabric_controller_report(result: Mapping[str, Any]) -> str:
         lines.append(f"Error: {result.get('error')}")
 
     summary = _mapping(result.get("summary"))
+    policy_activation = _mapping(result.get("policy_activation"))
     lines.extend(
         [
             "",
@@ -413,6 +422,20 @@ def format_fabric_controller_report(result: Mapping[str, Any]) -> str:
             f"- missing required manifests: {summary.get('missing_required_manifests', 0)}",
         ]
     )
+    if policy_activation:
+        lines.extend(
+            [
+                "",
+                "## Policy Activation",
+                f"- mode: `{policy_activation.get('mode', 'off')}`",
+                f"- action: `{policy_activation.get('action', 'unknown')}`",
+                f"- state: `{policy_activation.get('state', policy_activation.get('previous_state', 'unknown'))}`",
+            ]
+        )
+        if policy_activation.get("bundle"):
+            lines.append(f"- bundle: `{policy_activation.get('bundle')}`")
+        if policy_activation.get("error"):
+            lines.append(f"- error: {policy_activation.get('error')}")
 
     changes = _sequence_mappings(result.get("changes"))
     lines.extend(["", "## Changes"])
@@ -645,6 +668,7 @@ def _desired_state(status: Mapping[str, Any]) -> dict[str, Any]:
         "gateway_url": status.get("gateway_url"),
         "require_manifests": status.get("require_manifests"),
         "proxy": _copy_jsonish(status.get("proxy", {})),
+        "policy_activation": _copy_jsonish(status.get("policy_activation", {})),
         "discovery": normalized_discovery,
         "upstreams": upstreams,
         "summary": _copy_jsonish(status.get("summary", {})),
@@ -688,6 +712,7 @@ def _controller_snapshot(
             "require_manifests": desired.get("require_manifests"),
         },
         "proxy": _copy_jsonish(desired.get("proxy", {})),
+        "policy_activation": _copy_jsonish(desired.get("policy_activation", {})),
         "discovery": _copy_jsonish(desired.get("discovery", {})),
         "upstreams": _copy_jsonish(desired.get("upstreams", [])),
         "summary": _copy_jsonish(desired.get("summary", {})),

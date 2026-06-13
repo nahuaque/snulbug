@@ -76,6 +76,7 @@ from .learn import amend_mcp_policy, learn_mcp_policy
 from .leases import LeasePolicyConfig, create_lease, list_leases, revoke_lease
 from .manifests import load_manifest, manifest_digest, sign_upstream_manifest, verify_upstream_manifest, write_manifest
 from .middleware import LuaConfig, LuaMiddleware
+from .policy_activation import POLICY_ACTIVATION_MODES, reconcile_policy_activation
 from .presets import McpPolicyOptions, copy_builtin_preset, generate_mcp_preset, list_builtin_presets
 from .promotion import compare_decisions, diff_policies
 from .proxy import (
@@ -156,6 +157,7 @@ __all__ = [
     "MCP_GUIDE_WORKFLOWS",
     "McpFacadeProxyApp",
     "PolicyFabricRuntimeStateStore",
+    "POLICY_ACTIVATION_MODES",
     "RedisStateStore",
     "RedactionConfig",
     "ResponsePolicyConfig",
@@ -226,6 +228,7 @@ __all__ = [
     "record_audit_event",
     "record_policy_request",
     "reconcile_fabric_controller",
+    "reconcile_policy_activation",
     "register_discovery_provider",
     "redact_secrets",
     "replay_record_log",
