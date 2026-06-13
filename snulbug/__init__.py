@@ -36,6 +36,7 @@ from .middleware import LuaConfig, LuaMiddleware
 from .presets import McpPolicyOptions, copy_builtin_preset, generate_mcp_preset, list_builtin_presets
 from .promotion import compare_decisions, diff_policies
 from .proxy import (
+    FabricConfigReloadMiddleware,
     FacadeUpstream,
     ManagedHolepunchBridge,
     ManagedStdioMcpClient,
@@ -84,6 +85,7 @@ __all__ = [
     "MemoryStateStore",
     "McpPolicyOptions",
     "FacadeUpstream",
+    "FabricConfigReloadMiddleware",
     "FabricControllerStatusServer",
     "ManagedHolepunchBridge",
     "ManagedStdioMcpClient",

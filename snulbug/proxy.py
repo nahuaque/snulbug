@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import http.client
 import json
 import os
 import subprocess
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,8 +15,9 @@ from typing import Any, TextIO
 from urllib.parse import SplitResult, urlsplit
 
 from .cloudflare_access import CloudflareAccessConfig, evaluate_cloudflare_access
+from .config import load_mcp_fabric_config, load_mcp_proxy_config, merge_mcp_proxy_config
 from .confirm import ConfirmationBroker
-from .fabric import annotate_topology_audit
+from .fabric import annotate_topology_audit, build_fabric_audit_metadata
 from .leases import LeasePolicyConfig, enforce_mcp_lease_policy, mcp_lease_error_response
 from .manifests import load_manifest, verify_upstream_manifest
 from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
@@ -425,6 +428,37 @@ class ManagedHolepunchBridge:
         return await asyncio.to_thread(_http_endpoint_reachable, self.url, self.probe_timeout)
 
 
+@dataclass(eq=False)
+class FacadeRouteTable:
+    upstreams: tuple[FacadeUpstream, ...]
+    parsed: dict[str, SplitResult]
+    holepunch_bridges: dict[str, ManagedHolepunchBridge]
+    stdio_clients: dict[str, ManagedStdioMcpClient]
+    default: FacadeUpstream
+    prefixes: tuple[FacadeUpstream, ...]
+    fingerprint: str
+    revision: int
+    active: int = 0
+    retired: bool = False
+
+    async def startup(self) -> None:
+        if not self.holepunch_bridges:
+            return
+        await asyncio.gather(*(bridge.ensure_ready() for bridge in self.holepunch_bridges.values()))
+
+    async def aclose(self) -> None:
+        for client in self.stdio_clients.values():
+            await client.aclose()
+        for bridge in self.holepunch_bridges.values():
+            await bridge.aclose()
+
+    def upstream_for_tool(self, tool_name: str) -> FacadeUpstream | None:
+        for upstream in self.prefixes:
+            if tool_name.startswith(upstream.tool_prefix):
+                return upstream
+        return None
+
+
 class McpFacadeProxyApp:
     """Minimal MCP facade that serves several local MCP HTTP servers as one endpoint."""
 
@@ -439,46 +473,88 @@ class McpFacadeProxyApp:
         tool_schema_store: PolicyStateStore | None = None,
         lease_policy: LeasePolicyConfig | None = None,
     ) -> None:
-        self.upstreams = [_coerce_facade_upstream(upstream) for upstream in upstreams]
-        if not self.upstreams:
-            raise ValueError("facade mode requires at least one upstream")
         self.timeout = timeout
         self.response_policy = response_policy or ResponsePolicyConfig()
         self.tool_pin_store = tool_pin_store
         self.schema_policy = schema_policy or SchemaPolicyConfig()
         self.tool_schema_store = tool_schema_store
         self.lease_policy = lease_policy or LeasePolicyConfig()
-        self._parsed = {
-            upstream.name: _parse_upstream(_required_url(upstream))
-            for upstream in self.upstreams
-            if upstream.transport in {"http", "holepunch"}
+        self._routes = _build_facade_route_table(upstreams, timeout=timeout, revision=1)
+        self._next_revision = 2
+        self._retired_routes: list[FacadeRouteTable] = []
+
+    @property
+    def upstreams(self) -> tuple[FacadeUpstream, ...]:
+        return self._routes.upstreams
+
+    @property
+    def route_fingerprint(self) -> str:
+        return self._routes.fingerprint
+
+    @property
+    def route_revision(self) -> int:
+        return self._routes.revision
+
+    def route_state(self) -> dict[str, Any]:
+        routes = self._routes
+        return {
+            "revision": routes.revision,
+            "fingerprint": routes.fingerprint,
+            "upstreams": [_upstream_metadata(upstream) for upstream in routes.upstreams],
         }
-        self._holepunch_bridges = {
-            upstream.name: ManagedHolepunchBridge(
-                _required_bridge_command(upstream),
-                upstream.bridge_args,
-                url=_required_url(upstream),
-                cwd=upstream.bridge_cwd,
-                env=upstream.bridge_env,
-                ready_timeout=upstream.bridge_ready_timeout,
-                probe_timeout=min(timeout, 1.0),
-            )
-            for upstream in self.upstreams
-            if upstream.transport == "holepunch"
+
+    async def reload_upstreams(
+        self,
+        upstreams: Sequence[FacadeUpstream | Mapping[str, Any]],
+        *,
+        reason: str = "manual",
+    ) -> dict[str, Any]:
+        new_routes = _build_facade_route_table(upstreams, timeout=self.timeout, revision=self._next_revision)
+        current = self._routes
+        if new_routes.fingerprint == current.fingerprint:
+            await new_routes.aclose()
+            return {
+                "ok": True,
+                "reloaded": False,
+                "reason": reason,
+                "revision": current.revision,
+                "fingerprint": current.fingerprint,
+                "upstream_count": len(current.upstreams),
+            }
+
+        self._next_revision += 1
+        self._routes = new_routes
+        await self._retire_routes(current)
+        return {
+            "ok": True,
+            "reloaded": True,
+            "reason": reason,
+            "revision": new_routes.revision,
+            "previous_revision": current.revision,
+            "fingerprint": new_routes.fingerprint,
+            "previous_fingerprint": current.fingerprint,
+            "upstream_count": len(new_routes.upstreams),
+            "upstreams": [upstream.name for upstream in new_routes.upstreams],
         }
-        self._stdio_clients = {
-            upstream.name: ManagedStdioMcpClient(
-                _required_command(upstream),
-                upstream.args,
-                cwd=upstream.cwd,
-                env=upstream.env,
-                timeout=timeout,
-            )
-            for upstream in self.upstreams
-            if upstream.transport == "stdio"
-        }
-        self._default = next((upstream for upstream in self.upstreams if upstream.default), self.upstreams[0])
-        self._prefixes = sorted(self.upstreams, key=lambda upstream: len(upstream.tool_prefix), reverse=True)
+
+    def _acquire_routes(self) -> FacadeRouteTable:
+        routes = self._routes
+        routes.active += 1
+        return routes
+
+    async def _release_routes(self, routes: FacadeRouteTable) -> None:
+        routes.active = max(0, routes.active - 1)
+        if routes.retired and routes.active == 0:
+            if routes in self._retired_routes:
+                self._retired_routes.remove(routes)
+            await routes.aclose()
+
+    async def _retire_routes(self, routes: FacadeRouteTable) -> None:
+        routes.retired = True
+        if routes.active:
+            self._retired_routes.append(routes)
+            return
+        await routes.aclose()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") == "lifespan":
@@ -488,36 +564,47 @@ class McpFacadeProxyApp:
             await _send_response(send, status=404, headers=[], body=b"unsupported scope type")
             return
 
-        body = await _read_body(receive)
+        routes = self._acquire_routes()
         try:
-            request = json.loads(body.decode("utf-8")) if body else {}
-        except json.JSONDecodeError:
-            await self._send_jsonrpc_error(send, request_id=None, code=-32700, message="invalid JSON-RPC body")
-            return
-        if not isinstance(request, Mapping) or isinstance(request, list):
-            await self._send_jsonrpc_error(
-                send,
-                request_id=None,
-                code=-32600,
-                message="facade mode requires one JSON-RPC request",
-            )
-            return
-
-        method = request.get("method")
-        if method == "tools/list":
-            await self._list_tools(scope, request, body, send)
-            return
-        if method == "tools/call":
-            await self._call_tool(scope, request, send)
-            return
-
-        await self._forward_to_default(scope, body, send)
-
-    async def _list_tools(self, scope: Scope, request: Mapping[str, Any], body: bytes, send: Send) -> None:
-        responses = []
-        for upstream in self.upstreams:
+            body = await _read_body(receive)
             try:
-                response = await self._forward(upstream, scope, body, request)
+                request = json.loads(body.decode("utf-8")) if body else {}
+            except json.JSONDecodeError:
+                await self._send_jsonrpc_error(send, request_id=None, code=-32700, message="invalid JSON-RPC body")
+                return
+            if not isinstance(request, Mapping) or isinstance(request, list):
+                await self._send_jsonrpc_error(
+                    send,
+                    request_id=None,
+                    code=-32600,
+                    message="facade mode requires one JSON-RPC request",
+                )
+                return
+
+            method = request.get("method")
+            if method == "tools/list":
+                await self._list_tools(routes, scope, request, body, send)
+                return
+            if method == "tools/call":
+                await self._call_tool(routes, scope, request, send)
+                return
+
+            await self._forward_to_default(routes, scope, body, send)
+        finally:
+            await self._release_routes(routes)
+
+    async def _list_tools(
+        self,
+        routes: FacadeRouteTable,
+        scope: Scope,
+        request: Mapping[str, Any],
+        body: bytes,
+        send: Send,
+    ) -> None:
+        responses = []
+        for upstream in routes.upstreams:
+            try:
+                response = await self._forward(routes, upstream, scope, body, request)
             except Exception as exc:
                 await self._send_upstream_failure(send, upstream, exc)
                 return
@@ -562,9 +649,11 @@ class McpFacadeProxyApp:
             {
                 "facade": True,
                 "operation": "tools/list",
-                "upstreams": [upstream.name for upstream in self.upstreams],
-                "upstream_transports": [_upstream_metadata(upstream) for upstream in self.upstreams],
+                "upstreams": [upstream.name for upstream in routes.upstreams],
+                "upstream_transports": [_upstream_metadata(upstream) for upstream in routes.upstreams],
                 "tool_count": len(tools),
+                "route_revision": routes.revision,
+                "route_fingerprint": routes.fingerprint,
             },
         )
         response, response_metadata = enforce_mcp_response_policy(
@@ -599,7 +688,13 @@ class McpFacadeProxyApp:
             body=response["body"],
         )
 
-    async def _call_tool(self, scope: Scope, request: Mapping[str, Any], send: Send) -> None:
+    async def _call_tool(
+        self,
+        routes: FacadeRouteTable,
+        scope: Scope,
+        request: Mapping[str, Any],
+        send: Send,
+    ) -> None:
         params = request.get("params")
         if not isinstance(params, Mapping) or not isinstance(params.get("name"), str):
             await self._send_jsonrpc_error(
@@ -611,7 +706,7 @@ class McpFacadeProxyApp:
             return
 
         tool_name = params["name"]
-        upstream = self._upstream_for_tool(tool_name)
+        upstream = routes.upstream_for_tool(tool_name)
         if upstream is None:
             await self._send_jsonrpc_error(
                 send,
@@ -639,6 +734,8 @@ class McpFacadeProxyApp:
                     "upstream_metadata": _upstream_metadata(upstream),
                     "tool": tool_name,
                     "lease": lease_metadata,
+                    "route_revision": routes.revision,
+                    "route_fingerprint": routes.fingerprint,
                 },
             )
             await _send_response(
@@ -667,6 +764,8 @@ class McpFacadeProxyApp:
                     "tool": tool_name,
                     "lease": lease_metadata,
                     "schema_validation": schema_request_metadata,
+                    "route_revision": routes.revision,
+                    "route_fingerprint": routes.fingerprint,
                 },
             )
             await _send_response(
@@ -683,7 +782,7 @@ class McpFacadeProxyApp:
         rewritten["params"] = rewritten_params
         body = json.dumps(rewritten, separators=(",", ":")).encode("utf-8")
         try:
-            response = await self._forward(upstream, scope, body, rewritten)
+            response = await self._forward(routes, upstream, scope, body, rewritten)
         except Exception as exc:
             await self._send_upstream_failure(send, upstream, exc)
             return
@@ -707,6 +806,8 @@ class McpFacadeProxyApp:
                 "lease": lease_metadata,
                 "schema_validation": schema_request_metadata,
                 "response_policy": response_metadata,
+                "route_revision": routes.revision,
+                "route_fingerprint": routes.fingerprint,
             },
         )
         await _send_response(
@@ -716,12 +817,18 @@ class McpFacadeProxyApp:
             body=response["body"],
         )
 
-    async def _forward_to_default(self, scope: Scope, body: bytes, send: Send) -> None:
+    async def _forward_to_default(self, routes: FacadeRouteTable, scope: Scope, body: bytes, send: Send) -> None:
         try:
             request = json.loads(body.decode("utf-8")) if body else {}
-            response = await self._forward(self._default, scope, body, request if isinstance(request, Mapping) else {})
+            response = await self._forward(
+                routes,
+                routes.default,
+                scope,
+                body,
+                request if isinstance(request, Mapping) else {},
+            )
         except Exception as exc:
-            await self._send_upstream_failure(send, self._default, exc)
+            await self._send_upstream_failure(send, routes.default, exc)
             return
 
         response, response_metadata = enforce_mcp_response_policy(
@@ -735,10 +842,12 @@ class McpFacadeProxyApp:
             {
                 "facade": True,
                 "operation": "default",
-                "upstream": self._default.name,
-                "upstream_transport": self._default.transport,
-                "upstream_metadata": _upstream_metadata(self._default),
+                "upstream": routes.default.name,
+                "upstream_transport": routes.default.transport,
+                "upstream_metadata": _upstream_metadata(routes.default),
                 "response_policy": response_metadata,
+                "route_revision": routes.revision,
+                "route_fingerprint": routes.fingerprint,
             },
         )
         await _send_response(
@@ -750,19 +859,26 @@ class McpFacadeProxyApp:
 
     async def _forward(
         self,
+        routes: FacadeRouteTable,
         upstream: FacadeUpstream,
         scope: Scope,
         body: bytes,
         request: Mapping[str, Any],
     ) -> dict[str, Any]:
         if upstream.transport == "stdio":
-            return await self._stdio_clients[upstream.name].request(request)
+            return await routes.stdio_clients[upstream.name].request(request)
         if upstream.transport == "holepunch":
-            await self._holepunch_bridges[upstream.name].ensure_ready()
-        return await asyncio.to_thread(self._forward_http, upstream, scope, body)
+            await routes.holepunch_bridges[upstream.name].ensure_ready()
+        return await asyncio.to_thread(self._forward_http, routes, upstream, scope, body)
 
-    def _forward_http(self, upstream: FacadeUpstream, scope: Scope, body: bytes) -> dict[str, Any]:
-        parsed = self._parsed[upstream.name]
+    def _forward_http(
+        self,
+        routes: FacadeRouteTable,
+        upstream: FacadeUpstream,
+        scope: Scope,
+        body: bytes,
+    ) -> dict[str, Any]:
+        parsed = routes.parsed[upstream.name]
         connection = _connection(parsed, self.timeout)
         try:
             headers = _request_headers(scope.get("headers", []), parsed, content_length=len(body))
@@ -777,22 +893,14 @@ class McpFacadeProxyApp:
         finally:
             connection.close()
 
-    def _upstream_for_tool(self, tool_name: str) -> FacadeUpstream | None:
-        for upstream in self._prefixes:
-            if tool_name.startswith(upstream.tool_prefix):
-                return upstream
-        return None
-
     async def aclose(self) -> None:
-        for client in self._stdio_clients.values():
-            await client.aclose()
-        for bridge in self._holepunch_bridges.values():
-            await bridge.aclose()
+        await self._routes.aclose()
+        for routes in list(self._retired_routes):
+            await routes.aclose()
+        self._retired_routes.clear()
 
     async def startup(self) -> None:
-        if not self._holepunch_bridges:
-            return
-        await asyncio.gather(*(bridge.ensure_ready() for bridge in self._holepunch_bridges.values()))
+        await self._routes.startup()
 
     async def _lifespan(self, receive: Receive, send: Send) -> None:
         while True:
@@ -961,6 +1069,96 @@ class CloudflareAccessMiddleware:
         )
 
 
+class FabricConfigReloadMiddleware:
+    """Refresh facade upstream routes from declarative fabric config while serving traffic."""
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        facade: McpFacadeProxyApp,
+        config: str | Path,
+        interval: float = 2.0,
+        proxy_overrides: Mapping[str, Any] | None = None,
+        topology_audit: Mapping[str, Any] | None = None,
+    ) -> None:
+        if interval <= 0:
+            raise ValueError("fabric reload interval must be positive")
+        self.app = app
+        self.facade = facade
+        self.config = Path(config)
+        self.interval = float(interval)
+        self.proxy_overrides = dict(proxy_overrides or {})
+        self.topology_audit = dict(topology_audit or {})
+        self._next_check = 0.0
+        self._lock: asyncio.Lock | None = None
+        self._lock_loop: asyncio.AbstractEventLoop | None = None
+        self._last_reload: dict[str, Any] = {
+            "ok": True,
+            "reloaded": False,
+            "config": str(self.config),
+            "route_revision": facade.route_revision,
+            "route_fingerprint": facade.route_fingerprint,
+        }
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") == "http":
+            await self._maybe_reload()
+            state = _ensure_scope_state(scope)
+            if self.topology_audit:
+                state["snulbug_topology_audit"] = self.topology_audit
+            state["snulbug_fabric_reload"] = dict(self._last_reload)
+        await self.app(scope, receive, send)
+
+    async def _maybe_reload(self) -> None:
+        now = time.monotonic()
+        if now < self._next_check:
+            return
+        lock = self._lock_for_loop()
+        async with lock:
+            now = time.monotonic()
+            if now < self._next_check:
+                return
+            self._next_check = now + self.interval
+            checked_at = _utc_timestamp()
+            try:
+                loaded = await asyncio.to_thread(
+                    _load_fabric_reload_config,
+                    self.config,
+                    self.proxy_overrides,
+                )
+                result = await self.facade.reload_upstreams(
+                    loaded["upstreams"],
+                    reason=f"config:{self.config}",
+                )
+                self.topology_audit = loaded["topology_audit"]
+                self._last_reload = {
+                    **result,
+                    "config": str(self.config),
+                    "checked_at": checked_at,
+                    "route_revision": self.facade.route_revision,
+                    "route_fingerprint": self.facade.route_fingerprint,
+                    "summary": loaded["summary"],
+                }
+            except Exception as exc:
+                self._last_reload = {
+                    "ok": False,
+                    "reloaded": False,
+                    "config": str(self.config),
+                    "checked_at": checked_at,
+                    "error": str(exc),
+                    "route_revision": self.facade.route_revision,
+                    "route_fingerprint": self.facade.route_fingerprint,
+                }
+
+    def _lock_for_loop(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._lock_loop is not loop:
+            self._lock = asyncio.Lock()
+            self._lock_loop = loop
+        return self._lock
+
+
 def create_proxy_application(
     upstream: str | None,
     policy: str | Path,
@@ -995,6 +1193,9 @@ def create_proxy_application(
     cloudflare_access_allowed_emails: Sequence[str] = (),
     cloudflare_access_allowed_domains: Sequence[str] = (),
     topology_audit: Mapping[str, Any] | None = None,
+    fabric_reload_config: str | Path | None = None,
+    fabric_reload_interval: float = 2.0,
+    fabric_reload_overrides: Mapping[str, Any] | None = None,
     confirm: bool = False,
     confirm_handler: Any = None,
 ) -> ASGIApp:
@@ -1028,6 +1229,7 @@ def create_proxy_application(
         tool_schema_store=effective_state_store if schema_validation else None,
         lease_policy=lease_policy,
     )
+    facade_proxy = proxy if isinstance(proxy, McpFacadeProxyApp) else None
     app = LuaMiddleware(
         proxy,
         Path(policy),
@@ -1050,19 +1252,30 @@ def create_proxy_application(
     )
     if cloudflare_access_config.mode != "off":
         app = CloudflareAccessMiddleware(app, config=cloudflare_access_config)
-    if record_out is None and audit_out is None and not console_enabled:
-        return app
-    return ProxyRecorderMiddleware(
-        app,
-        policy=policy,
-        record_out=record_out,
-        audit_out=audit_out,
-        redact_records=redact_records,
-        decision_console=decision_console,
-        decision_console_format=decision_console_format,
-        tunnel_audit=TunnelAuditConfig(provider=tunnel_provider, public_url=tunnel_public_url),
-        topology_audit=topology_audit,
-    )
+    if record_out is not None or audit_out is not None or console_enabled:
+        app = ProxyRecorderMiddleware(
+            app,
+            policy=policy,
+            record_out=record_out,
+            audit_out=audit_out,
+            redact_records=redact_records,
+            decision_console=decision_console,
+            decision_console_format=decision_console_format,
+            tunnel_audit=TunnelAuditConfig(provider=tunnel_provider, public_url=tunnel_public_url),
+            topology_audit=topology_audit,
+        )
+    if fabric_reload_config is not None:
+        if facade_proxy is None:
+            raise ValueError("fabric reload requires facade upstreams")
+        app = FabricConfigReloadMiddleware(
+            app,
+            facade=facade_proxy,
+            config=fabric_reload_config,
+            interval=fabric_reload_interval,
+            proxy_overrides=fabric_reload_overrides,
+            topology_audit=topology_audit,
+        )
+    return app
 
 
 def run_proxy(
@@ -1100,6 +1313,9 @@ def run_proxy(
     cloudflare_access_allowed_emails: Sequence[str] = (),
     cloudflare_access_allowed_domains: Sequence[str] = (),
     topology_audit: Mapping[str, Any] | None = None,
+    fabric_reload_config: str | Path | None = None,
+    fabric_reload_interval: float = 2.0,
+    fabric_reload_overrides: Mapping[str, Any] | None = None,
     confirm: bool = False,
 ) -> None:
     """Run the reverse proxy with uvicorn."""
@@ -1141,6 +1357,9 @@ def run_proxy(
         cloudflare_access_allowed_emails=cloudflare_access_allowed_emails,
         cloudflare_access_allowed_domains=cloudflare_access_allowed_domains,
         topology_audit=topology_audit,
+        fabric_reload_config=fabric_reload_config,
+        fabric_reload_interval=fabric_reload_interval,
+        fabric_reload_overrides=fabric_reload_overrides,
         confirm=confirm,
     )
     uvicorn.run(app, host=host, port=port)
@@ -1178,6 +1397,82 @@ def _proxy_app(
         tool_schema_store=tool_schema_store,
         lease_policy=lease_policy,
     )
+
+
+def _build_facade_route_table(
+    upstreams: Sequence[FacadeUpstream | Mapping[str, Any]],
+    *,
+    timeout: float,
+    revision: int,
+) -> FacadeRouteTable:
+    coerced = tuple(_coerce_facade_upstream(upstream) for upstream in upstreams)
+    if not coerced:
+        raise ValueError("facade mode requires at least one upstream")
+    parsed = {
+        upstream.name: _parse_upstream(_required_url(upstream))
+        for upstream in coerced
+        if upstream.transport in {"http", "holepunch"}
+    }
+    holepunch_bridges = {
+        upstream.name: ManagedHolepunchBridge(
+            _required_bridge_command(upstream),
+            upstream.bridge_args,
+            url=_required_url(upstream),
+            cwd=upstream.bridge_cwd,
+            env=upstream.bridge_env,
+            ready_timeout=upstream.bridge_ready_timeout,
+            probe_timeout=min(timeout, 1.0),
+        )
+        for upstream in coerced
+        if upstream.transport == "holepunch"
+    }
+    stdio_clients = {
+        upstream.name: ManagedStdioMcpClient(
+            _required_command(upstream),
+            upstream.args,
+            cwd=upstream.cwd,
+            env=upstream.env,
+            timeout=timeout,
+        )
+        for upstream in coerced
+        if upstream.transport == "stdio"
+    }
+    default = next((upstream for upstream in coerced if upstream.default), coerced[0])
+    prefixes = tuple(sorted(coerced, key=lambda upstream: len(upstream.tool_prefix), reverse=True))
+    return FacadeRouteTable(
+        upstreams=coerced,
+        parsed=parsed,
+        holepunch_bridges=holepunch_bridges,
+        stdio_clients=stdio_clients,
+        default=default,
+        prefixes=prefixes,
+        fingerprint=_facade_upstreams_fingerprint(coerced),
+        revision=revision,
+    )
+
+
+def _load_fabric_reload_config(config: Path, proxy_overrides: Mapping[str, Any]) -> dict[str, Any]:
+    proxy_config = load_mcp_proxy_config(config)
+    if proxy_overrides:
+        proxy_config = merge_mcp_proxy_config(proxy_config, proxy_overrides)
+    fabric_config = load_mcp_fabric_config(config)
+    fabric_config["proxy"] = proxy_config
+    topology_audit = build_fabric_audit_metadata(fabric_config)
+    return {
+        "upstreams": proxy_config["upstreams"],
+        "topology_audit": topology_audit,
+        "summary": topology_audit.get("summary", {}),
+    }
+
+
+def _facade_upstreams_fingerprint(upstreams: Sequence[FacadeUpstream]) -> str:
+    payload = [_upstream_metadata(upstream) for upstream in upstreams]
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _utc_timestamp() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def _state_store(value: str) -> PolicyStateStore | None:
@@ -1791,10 +2086,15 @@ def _record_metadata(
     proxy_metadata = state.get("snulbug_proxy") if isinstance(state, Mapping) else None
     if isinstance(proxy_metadata, Mapping):
         metadata.update(proxy_metadata)
+    reload_metadata = state.get("snulbug_fabric_reload") if isinstance(state, Mapping) else None
+    if isinstance(reload_metadata, Mapping):
+        metadata["fabric_reload"] = dict(reload_metadata)
     tunnel_metadata = build_tunnel_audit_metadata(scope, config=tunnel_audit)
     if tunnel_metadata:
         metadata["tunnel"] = tunnel_metadata
-    topology_metadata = annotate_topology_audit(topology_audit, metadata)
+    dynamic_topology = state.get("snulbug_topology_audit") if isinstance(state, Mapping) else None
+    effective_topology = dynamic_topology if isinstance(dynamic_topology, Mapping) else topology_audit
+    topology_metadata = annotate_topology_audit(effective_topology, metadata)
     if topology_metadata:
         metadata["topology"] = topology_metadata
     return metadata

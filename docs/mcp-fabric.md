@@ -316,8 +316,21 @@ Endpoints:
   discovery errors, and missing required manifests
 
 This is the control-plane foundation. It does not hot-swap a running proxy route
-table yet; use it today to keep declarative topology, discovery, manifest state,
-and audit metadata observable while the data plane runs.
+table by itself; pair it with proxy fabric reload when you want the running data
+plane to consume those changes:
+
+```bash
+snulbug mcp proxy \
+  --config snulbug.toml \
+  --reload-fabric \
+  --fabric-reload-interval 2
+```
+
+With reload enabled, the facade proxy periodically re-reads the same fabric
+config/discovery sources and swaps its upstream route table for new requests.
+Replay records and audit events include `fabric_reload`, `route_revision`, and
+`route_fingerprint` metadata so a session can be tied back to the exact route
+snapshot that served it.
 
 ## Doctor
 

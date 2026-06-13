@@ -7,10 +7,12 @@ import socket
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 from snulbug import (
     ConfirmationBroker,
+    McpFacadeProxyApp,
     build_fabric_audit_metadata,
     create_lease,
     create_proxy_application,
@@ -519,6 +521,95 @@ def test_mcp_facade_routes_tool_calls_by_prefix_and_records_upstream_metadata(tm
     assert records[0]["metadata"]["tool"] == "git.status"
     assert records[0]["metadata"]["upstream_tool"] == "status"
     assert records[0]["metadata"]["response_policy"]["checked"] is True
+
+
+def test_mcp_facade_can_reload_upstream_route_table(tmp_path):
+    files_server, files_seen = start_mcp_upstream({"read_file": "Read a file"})
+    git_server, git_seen = start_mcp_upstream({"status": "Show git status"})
+    policy = write_policy(tmp_path, "continue")
+    app = create_proxy_application(
+        None,
+        policy,
+        upstreams=[{"name": "files", "url": f"http://127.0.0.1:{files_server.server_port}/mcp"}],
+    )
+
+    async def run_all():
+        first = await run_asgi_once(app, body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}')
+        reload_result = await unwrap_facade(app).reload_upstreams(
+            [{"name": "git", "url": f"http://127.0.0.1:{git_server.server_port}/mcp"}]
+        )
+        second = await run_asgi_once(app, body=b'{"jsonrpc":"2.0","id":"list-2","method":"tools/list"}')
+        await close_app(app)
+        return first, reload_result, second
+
+    try:
+        first, reload_result, second = asyncio.run(run_all())
+    finally:
+        files_server.shutdown()
+        files_server.server_close()
+        git_server.shutdown()
+        git_server.server_close()
+
+    first_payload = json.loads(first[1]["body"])
+    second_payload = json.loads(second[1]["body"])
+    assert reload_result["reloaded"] is True
+    assert reload_result["previous_revision"] == 1
+    assert reload_result["revision"] == 2
+    assert [tool["name"] for tool in first_payload["result"]["tools"]] == ["files.read_file"]
+    assert [tool["name"] for tool in second_payload["result"]["tools"]] == ["git.status"]
+    assert files_seen["calls"] == [{"method": "tools/list", "tool": None}]
+    assert git_seen["calls"] == [{"method": "tools/list", "tool": None}]
+
+
+def test_proxy_can_hot_reload_fabric_config_routes_and_records_metadata(tmp_path):
+    files_server, files_seen = start_mcp_upstream({"read_file": "Read a file"})
+    git_server, git_seen = start_mcp_upstream({"status": "Show git status"})
+    policy = write_policy(tmp_path, "continue")
+    config = tmp_path / "snulbug.toml"
+    record_log = tmp_path / "records.jsonl"
+    write_hot_reload_config(config, upstream_name="files", port=files_server.server_port)
+    app = create_proxy_application(
+        None,
+        policy,
+        upstreams=[{"name": "files", "url": f"http://127.0.0.1:{files_server.server_port}/mcp"}],
+        record_out=record_log,
+        fabric_reload_config=config,
+        fabric_reload_interval=0.001,
+    )
+
+    async def run_all():
+        first = await run_asgi_once(
+            app,
+            body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}',
+        )
+        write_hot_reload_config(config, upstream_name="git", port=git_server.server_port)
+        await asyncio.sleep(0.01)
+        second = await run_asgi_once(
+            app,
+            body=b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"git.status"}}',
+        )
+        await close_app(app)
+        return first, second
+
+    try:
+        first, second = asyncio.run(run_all())
+    finally:
+        files_server.shutdown()
+        files_server.server_close()
+        git_server.shutdown()
+        git_server.server_close()
+
+    first_payload = json.loads(first[1]["body"])
+    second_payload = json.loads(second[1]["body"])
+    records = load_record_log(record_log)
+    assert [tool["name"] for tool in first_payload["result"]["tools"]] == ["files.read_file"]
+    assert second_payload["result"]["content"][0]["text"] == "called status"
+    assert files_seen["calls"] == [{"method": "tools/list", "tool": None}]
+    assert git_seen["calls"] == [{"method": "tools/call", "tool": "status"}]
+    assert records[1]["metadata"]["fabric_reload"]["reloaded"] is True
+    assert records[1]["metadata"]["fabric_reload"]["upstreams"] == ["git"]
+    assert records[1]["metadata"]["topology"]["fabric"]["name"] == "hot-reload-fabric"
+    assert records[1]["metadata"]["topology"]["route"]["upstream"] == "git"
 
 
 def test_mcp_facade_records_topology_aware_audit_fields(tmp_path):
@@ -1544,6 +1635,37 @@ async def close_app(app) -> None:
         current = current.app
     if hasattr(current, "aclose"):
         await current.aclose()
+
+
+def unwrap_facade(app) -> McpFacadeProxyApp:
+    current = app
+    while hasattr(current, "app"):
+        if isinstance(current, McpFacadeProxyApp):
+            return current
+        current = current.app
+    if isinstance(current, McpFacadeProxyApp):
+        return current
+    raise AssertionError("app does not contain McpFacadeProxyApp")
+
+
+def write_hot_reload_config(config: Path, *, upstream_name: str, port: int) -> None:
+    config.write_text(
+        f"""
+        [mcp.fabric]
+        name = "hot-reload-fabric"
+        probe_gateway = false
+        probe_upstreams = false
+
+        [mcp.proxy]
+        host = "127.0.0.1"
+        port = 8181
+
+        [[mcp.proxy.upstreams]]
+        name = "{upstream_name}"
+        url = "http://127.0.0.1:{port}/mcp"
+        """,
+        encoding="utf-8",
+    )
 
 
 def write_policy(tmp_path, action: str):

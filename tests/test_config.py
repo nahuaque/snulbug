@@ -428,6 +428,7 @@ def test_mcp_proxy_cli_loads_config_before_running(monkeypatch, tmp_path):
     assert calls[0]["cloudflare_access"] == "off"
     assert calls[0]["cloudflare_access_require_jwt"] is True
     assert calls[0]["cloudflare_access_require_email"] is False
+    assert calls[0]["fabric_reload_config"] is None
     assert calls[0]["cloudflare_access_require_cf_ray"] is True
     assert calls[0]["cloudflare_access_allowed_emails"] == []
     assert calls[0]["cloudflare_access_allowed_domains"] == []
@@ -473,6 +474,54 @@ def test_mcp_proxy_cli_passes_facade_upstreams_without_config(monkeypatch, tmp_p
             "default": False,
         },
     ]
+
+
+def test_mcp_proxy_cli_can_enable_fabric_reload(monkeypatch, tmp_path):
+    config = write_config(tmp_path)
+    calls = []
+
+    def fake_run_proxy(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("snulbug.proxy.run_proxy", fake_run_proxy)
+
+    status = simulator_main(
+        [
+            "mcp",
+            "proxy",
+            "--config",
+            str(config),
+            "--reload-fabric",
+            "--fabric-reload-interval",
+            "0.5",
+        ]
+    )
+
+    assert status == 0
+    assert calls[0]["fabric_reload_config"] == config
+    assert calls[0]["fabric_reload_interval"] == 0.5
+    assert calls[0]["fabric_reload_overrides"]["upstream"] is None
+
+
+def test_mcp_proxy_cli_rejects_fabric_reload_without_config(tmp_path, capsys):
+    policy = tmp_path / "policy.lua"
+    policy.write_text('return function() return { action = "continue" } end', encoding="utf-8")
+
+    status = simulator_main(
+        [
+            "mcp",
+            "proxy",
+            "--policy",
+            str(policy),
+            "--facade-upstream",
+            "files=http://127.0.0.1:9001/mcp",
+            "--reload-fabric",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert status == 1
+    assert "--reload-fabric requires --config" in captured.err
 
 
 def test_mcp_proxy_cli_can_disable_record_redaction(monkeypatch, tmp_path):

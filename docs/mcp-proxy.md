@@ -118,6 +118,23 @@ CLI flags override config values:
 snulbug mcp proxy --config snulbug.toml --port 8181 --no-trace
 ```
 
+For facade mode, the proxy can hot-reload upstream routes from the declarative
+fabric config while it is running:
+
+```bash
+snulbug mcp proxy \
+  --config snulbug.toml \
+  --reload-fabric \
+  --fabric-reload-interval 2
+```
+
+On each reload check, snulbug re-reads `[mcp.fabric]`, discovery providers, and
+`[[mcp.proxy.upstreams]]`. If the route table changed, new requests use the new
+upstreams without restarting uvicorn. In-flight requests keep the route snapshot
+they started with. If the config is temporarily invalid while you are editing
+it, the proxy keeps serving the previous route table and records the reload
+error in live replay/audit metadata.
+
 Example config:
 
 ```toml

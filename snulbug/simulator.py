@@ -769,6 +769,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="allowed Cloudflare Access authenticated email domain; repeat for multiple domains",
     )
     mcp_proxy.add_argument("--timeout", type=float, help="upstream timeout in seconds")
+    mcp_proxy.add_argument(
+        "--reload-fabric",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="hot-reload facade upstream routes from --config while the proxy runs",
+    )
+    mcp_proxy.add_argument(
+        "--fabric-reload-interval",
+        type=float,
+        default=None,
+        help="fabric hot-reload polling interval in seconds",
+    )
 
     args = parser.parse_args(argv)
     if args.command == "simulate":
@@ -1378,6 +1390,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "cloudflare_access_allowed_domains": args.cloudflare_access_allow_domain,
                     "timeout": args.timeout,
                 }
+                if args.reload_fabric and args.config is None:
+                    sys.stderr.write("snulbug proxy failed: --reload-fabric requires --config\n")
+                    return 1
                 if args.config is not None:
                     proxy_config = merge_mcp_proxy_config(load_mcp_proxy_config(args.config), overrides)
                     fabric_config = load_mcp_fabric_config(args.config)
@@ -1427,6 +1442,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     cloudflare_access_allowed_emails=proxy_config["cloudflare_access_allowed_emails"],
                     cloudflare_access_allowed_domains=proxy_config["cloudflare_access_allowed_domains"],
                     topology_audit=topology_audit,
+                    fabric_reload_config=args.config if args.reload_fabric else None,
+                    fabric_reload_interval=args.fabric_reload_interval or 2.0,
+                    fabric_reload_overrides=overrides if args.reload_fabric else None,
                 )
             except Exception as exc:
                 sys.stderr.write(f"snulbug proxy failed: {exc}\n")
