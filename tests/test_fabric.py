@@ -7,7 +7,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from snulbug import doctor_fabric, fabric_status, sign_upstream_manifest
+from snulbug import (
+    append_audit_event,
+    build_fabric_audit_metadata,
+    doctor_fabric,
+    fabric_status,
+    learn_fabric_profile,
+    sign_upstream_manifest,
+)
 from snulbug.simulator import main as simulator_main
 
 
@@ -158,6 +165,46 @@ def test_mcp_fabric_cli_emits_compact_status_and_doctor(tmp_path, capsys):
     assert doctor_output["summary"]["skipped"] >= 2
 
 
+def test_fabric_learn_profile_from_topology_audit_log(tmp_path):
+    log = write_fabric_learn_log(tmp_path)
+    output = tmp_path / "learned-fabric"
+
+    result = learn_fabric_profile(log, output, kind="audit")
+
+    assert result["ok"] is True
+    assert result["upstreams"] == ["files", "git"]
+    profile = json.loads((output / "fabric.json").read_text(encoding="utf-8"))
+    config = (output / "snulbug.fabric.toml").read_text(encoding="utf-8")
+    report = (output / "FABRIC.md").read_text(encoding="utf-8")
+    upstreams = {upstream["name"]: upstream for upstream in profile["upstreams"]}
+    assert profile["generated_by"] == "snulbug mcp fabric learn"
+    assert profile["fabric"]["name"] == "dev-fabric"
+    assert profile["gateway"]["url"] == "http://127.0.0.1:8080/mcp"
+    assert profile["route_event_count"] == 2
+    assert "files.read_file" in upstreams["files"]["tools"]
+    assert upstreams["files"]["manifest"]["identity"] == "files@local"
+    assert upstreams["git"]["route_count"] == 1
+    assert "[mcp.fabric]" in config
+    assert "[[mcp.proxy.upstreams]]" in config
+    assert 'name = "files"' in config
+    assert 'tool_prefix = "files."' in config
+    assert 'manifest_secret_env = "SNULBUG_MANIFEST_SECRET"' in config
+    assert "files.read_file" in report
+
+
+def test_mcp_fabric_learn_cli_emits_compact_result(tmp_path, capsys):
+    log = write_fabric_learn_log(tmp_path)
+    output = tmp_path / "cli-learned-fabric"
+
+    status = simulator_main(["mcp", "fabric", "learn", str(log), "--out", str(output), "--kind", "audit", "--compact"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert status == 0
+    assert payload["ok"] is True
+    assert payload["upstreams"] == ["files", "git"]
+    assert (output / "fabric.json").is_file()
+
+
 def write_signed_manifest(tmp_path: Path, *, identity: str) -> Path:
     manifest = sign_upstream_manifest(
         {
@@ -173,6 +220,100 @@ def write_signed_manifest(tmp_path: Path, *, identity: str) -> Path:
     path = tmp_path / "files.manifest.json"
     path.write_text(json.dumps(manifest), encoding="utf-8")
     return path
+
+
+def write_fabric_learn_log(tmp_path: Path) -> Path:
+    manifest_path = write_signed_manifest(tmp_path, identity="files@local")
+    topology = build_fabric_audit_metadata(
+        {
+            "name": "dev-fabric",
+            "description": "local MCP fabric",
+            "gateway_url": "http://127.0.0.1:8080/mcp",
+            "require_manifests": True,
+            "proxy": {
+                "host": "127.0.0.1",
+                "port": 8080,
+                "lease_required": True,
+                "upstreams": [
+                    {
+                        "name": "files",
+                        "transport": "http",
+                        "url": "http://127.0.0.1:9001/mcp",
+                        "tool_prefix": "files.",
+                        "manifest": str(manifest_path),
+                    },
+                    {
+                        "name": "git",
+                        "transport": "http",
+                        "url": "http://127.0.0.1:9002/mcp",
+                        "tool_prefix": "git.",
+                    },
+                ],
+            },
+        }
+    )
+    manifest = topology["upstreams"][0]["manifest"]
+    log = tmp_path / "audit.jsonl"
+    append_audit_event(
+        log,
+        fabric_audit_event(
+            topology,
+            route={
+                "mode": "facade",
+                "operation": "tools/list",
+                "fanout": True,
+                "upstreams": ["files", "git"],
+                "upstream_count": 2,
+            },
+            mcp={"method": "tools/list", "body_kind": "object", "valid_json": True},
+        ),
+    )
+    append_audit_event(
+        log,
+        fabric_audit_event(
+            topology,
+            route={
+                "mode": "facade",
+                "operation": "tools/call",
+                "upstream": "files",
+                "upstream_transport": "http",
+                "tool_prefix": "files.",
+                "tool": "files.read_file",
+                "upstream_tool": "read_file",
+                "upstream_identity": manifest["identity"],
+                "manifest_digest": manifest["digest"],
+                "manifest_key_id": manifest["key_id"],
+            },
+            mcp={
+                "method": "tools/call",
+                "tool": "files.read_file",
+                "argument_keys": ["path"],
+                "body_kind": "object",
+                "valid_json": True,
+            },
+        ),
+    )
+    return log
+
+
+def fabric_audit_event(
+    topology: dict[str, Any],
+    *,
+    route: dict[str, Any],
+    mcp: dict[str, Any],
+) -> dict[str, Any]:
+    event_topology = json.loads(json.dumps(topology))
+    event_topology["route"] = route
+    return {
+        "type": "snulbug.audit",
+        "version": 1,
+        "time": "2026-06-12T00:00:00+00:00",
+        "request": {"method": "POST", "path": "/mcp", "headers": {}},
+        "mcp": mcp,
+        "decision": {"action": "continue", "allowed": True},
+        "response": {"status": 200},
+        "topology": event_topology,
+    }
 
 
 def start_mcp_server(*, protected: bool) -> ThreadingHTTPServer:

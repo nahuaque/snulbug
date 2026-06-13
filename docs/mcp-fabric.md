@@ -95,6 +95,48 @@ snulbug mcp fabric doctor \
 Use `fabric doctor` before handing an agent a fabric endpoint or sharing a
 tunnel/peer bridge. Use `tunnel doctor` for public tunnel exposure checks.
 
+## Learn Mode
+
+`learn` compiles topology-aware replay or audit logs into a reviewable fabric
+profile. It is the fabric-level companion to `snulbug mcp learn`: policy learn
+infers least-privilege tool rules, while fabric learn infers the gateway,
+upstreams, routes, transports, bridge metadata, and manifest identities observed
+while proxying.
+
+```bash
+snulbug mcp fabric learn traces/audit.jsonl \
+  --kind audit \
+  --out learned-fabric
+```
+
+The output directory contains:
+
+- `fabric.json`: machine-readable learned topology, traffic counters, upstream
+  identities, and conflicts
+- `snulbug.fabric.toml`: starter config for `[mcp.fabric]`, `[mcp.proxy]`, and
+  learned `[[mcp.proxy.upstreams]]`
+- `FABRIC.md`: human review report with upstreams, observed tools, review notes,
+  and conflicting topology values
+
+Learn mode never writes observed secret values. If it sees a manifest path, the
+starter config uses `manifest_secret_env = "SNULBUG_MANIFEST_SECRET"`. If the
+log does not prove a required address or command, the generated TOML keeps the
+file parseable with `TODO` placeholders so the missing trust decision is visible.
+
+Typical review loop:
+
+```bash
+snulbug mcp fabric learn traces/audit.jsonl --out learned-fabric
+less learned-fabric/FABRIC.md
+$EDITOR learned-fabric/snulbug.fabric.toml
+snulbug mcp fabric doctor --config learned-fabric/snulbug.fabric.toml
+```
+
+Use this after a live facade recording session to convert "what actually routed
+where" into a declarative fabric baseline. Then run `snulbug mcp learn` on the
+same session log if you also want a least-privilege Lua policy for the observed
+tools.
+
 ## Topology-Aware Audit Fields
 
 When proxy mode is started from config, snulbug derives audit-safe topology

@@ -434,6 +434,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="actively probe declared HTTP/Holepunch upstream URLs",
     )
     mcp_fabric_doctor.add_argument("--compact", action="store_true", help="emit compact JSON")
+    mcp_fabric_learn = mcp_fabric_subparsers.add_parser(
+        "learn",
+        help="learn a declarative fabric profile from topology-aware logs",
+    )
+    mcp_fabric_learn.add_argument("log", type=Path, help="topology-aware replay or audit JSONL log")
+    mcp_fabric_learn.add_argument("--out", "--output", type=Path, required=True, help="output fabric profile directory")
+    mcp_fabric_learn.add_argument(
+        "--kind",
+        choices=("auto", "record", "audit"),
+        default="auto",
+        help="input log type",
+    )
+    mcp_fabric_learn.add_argument("--force", action="store_true", help="overwrite the output directory")
+    mcp_fabric_learn.add_argument("--compact", action="store_true", help="emit compact JSON")
 
     mcp_manifest = mcp_subparsers.add_parser("manifest", help="sign and verify MCP upstream manifests")
     mcp_manifest_subparsers = mcp_manifest.add_subparsers(dest="manifest_command", required=True)
@@ -997,7 +1011,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 doctor_fabric,
                 fabric_status,
                 format_fabric_doctor_report,
+                format_fabric_learn_report,
                 format_fabric_status_report,
+                learn_fabric_profile,
             )
             from .tunnel import parse_tunnel_headers
 
@@ -1022,11 +1038,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                         sys.stdout.write(format_fabric_doctor_report(result))
                         sys.stdout.write("\n")
                         return status
+                elif args.fabric_command == "learn":
+                    result = learn_fabric_profile(args.log, args.out, kind=args.kind, force=args.force)
+                    status = 0 if result["ok"] else 1
+                    if not args.compact:
+                        sys.stdout.write(format_fabric_learn_report(result))
+                        sys.stdout.write("\n")
+                        return status
                 else:
                     parser.error(f"unknown mcp fabric command: {args.fabric_command}")
                     return 2
             except Exception as exc:
-                result = {"ok": False, "config": str(args.config), "error": str(exc)}
+                result = {"ok": False, "error": str(exc)}
+                if hasattr(args, "config"):
+                    result["config"] = str(args.config)
+                if hasattr(args, "out"):
+                    result["output"] = str(args.out)
                 status = 1
         elif args.mcp_command == "manifest":
             from .manifests import load_manifest, sign_upstream_manifest, verify_upstream_manifest, write_manifest

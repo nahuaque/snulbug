@@ -12,7 +12,9 @@ from .fabric import (
     doctor_fabric,
     fabric_status,
     format_fabric_doctor_report,
+    format_fabric_learn_report,
     format_fabric_status_report,
+    learn_fabric_profile,
 )
 from .guide import MCP_GUIDE_WORKFLOWS, build_mcp_guide, format_mcp_guide
 from .impact import analyze_mcp_impact, format_mcp_impact_report
@@ -109,6 +111,7 @@ __all__ = [
     "evaluate_cloudflare_access",
     "fabric_status",
     "format_fabric_doctor_report",
+    "format_fabric_learn_report",
     "format_fabric_status_report",
     "format_mcp_inspection_report",
     "format_mcp_impact_report",
@@ -119,6 +122,7 @@ __all__ = [
     "inspect_mcp_log",
     "init_tunnel_provider",
     "learn_mcp_policy",
+    "learn_fabric_profile",
     "load_mcp_proxy_config",
     "load_mcp_fabric_config",
     "load_manifest",
