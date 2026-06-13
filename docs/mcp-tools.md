@@ -4,6 +4,9 @@
 you want reviewable evidence that an MCP server did not silently add tools,
 remove tools, or change descriptions/input schemas before an agent uses it.
 
+For server capabilities, resources, resource templates, prompts, and tool
+output schemas, use [MCP schema discovery](mcp-schemas.md).
+
 Runtime `tool_pinning` protects live proxy traffic. The tool watcher is the
 offline and CI companion: it writes stable JSON snapshots and exits nonzero when
 configured change types appear.

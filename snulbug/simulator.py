@@ -593,6 +593,65 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     mcp_tools_diff.add_argument("--compact", action="store_true", help="emit compact JSON")
 
+    mcp_schemas = mcp_subparsers.add_parser(
+        "schemas",
+        help="discover and diff MCP capability schemas",
+    )
+    mcp_schemas_subparsers = mcp_schemas.add_subparsers(dest="schemas_command", required=True)
+    mcp_schemas_discover = mcp_schemas_subparsers.add_parser(
+        "discover",
+        help="capture MCP initialize, tools, resources, resource templates, and prompts schemas",
+    )
+    mcp_schemas_discover_source = mcp_schemas_discover.add_mutually_exclusive_group(required=True)
+    mcp_schemas_discover_source.add_argument(
+        "--from",
+        dest="source",
+        type=Path,
+        help="JSON file containing MCP method responses or an existing schema catalog",
+    )
+    mcp_schemas_discover_source.add_argument("--url", help="MCP HTTP URL to probe")
+    mcp_schemas_discover.add_argument(
+        "--method",
+        action="append",
+        choices=(
+            "initialize",
+            "tools",
+            "tools/list",
+            "resources",
+            "resources/list",
+            "resource-templates",
+            "resource_templates",
+            "resources/templates/list",
+            "prompts",
+            "prompts/list",
+        ),
+        help="MCP method or surface to discover; repeat to limit the catalog",
+    )
+    mcp_schemas_discover.add_argument("--header", action="append", default=[], help="HTTP header as 'Name: value'")
+    mcp_schemas_discover.add_argument("--token", help="bearer token for live MCP schema discovery")
+    mcp_schemas_discover.add_argument("--timeout", type=float, default=10.0, help="live discovery timeout in seconds")
+    mcp_schemas_discover.add_argument(
+        "--protocol-version",
+        default="2025-06-18",
+        help="MCP protocol version sent in live discovery requests",
+    )
+    mcp_schemas_discover.add_argument("--label", help="human label stored in the catalog")
+    mcp_schemas_discover.add_argument("--out", type=Path, help="write schema catalog JSON to this path")
+    mcp_schemas_discover.add_argument("--report-out", type=Path, help="write a Markdown schema report")
+    mcp_schemas_discover.add_argument("--compact", action="store_true", help="emit compact JSON")
+    mcp_schemas_diff = mcp_schemas_subparsers.add_parser("diff", help="compare two MCP schema catalogs")
+    mcp_schemas_diff.add_argument("baseline", type=Path, help="baseline catalog or response collection JSON")
+    mcp_schemas_diff.add_argument("current", type=Path, help="current catalog or response collection JSON")
+    mcp_schemas_diff.add_argument(
+        "--fail-on",
+        action="append",
+        default=[],
+        choices=("added", "changed", "removed", "any"),
+        help="return exit code 1 when this change type is present; repeat or use any",
+    )
+    mcp_schemas_diff.add_argument("--report-out", type=Path, help="write a Markdown schema diff report")
+    mcp_schemas_diff.add_argument("--compact", action="store_true", help="emit compact JSON")
+
     mcp_fabric = mcp_subparsers.add_parser("fabric", help="inspect and verify declarative MCP fabric config")
     mcp_fabric_subparsers = mcp_fabric.add_subparsers(dest="fabric_command", required=True)
     mcp_fabric_status = mcp_fabric_subparsers.add_parser("status", help="summarize declared MCP fabric topology")
@@ -1880,6 +1939,55 @@ def main(argv: Sequence[str] | None = None) -> int:
                         return status
                 else:
                     parser.error(f"unknown mcp tools command: {args.tools_command}")
+                    return 2
+            except Exception as exc:
+                result = {"ok": False, "error": str(exc)}
+                if hasattr(args, "source") and args.source is not None:
+                    result["source"] = str(args.source)
+                if hasattr(args, "url") and args.url is not None:
+                    result["url"] = args.url
+                status = 1
+        elif args.mcp_command == "schemas":
+            from .mcp_schemas import (
+                diff_mcp_schema_catalogs,
+                discover_mcp_schemas,
+                format_mcp_schema_catalog_report,
+                format_mcp_schema_diff_report,
+                parse_mcp_schema_headers,
+            )
+
+            try:
+                if args.schemas_command == "discover":
+                    result = discover_mcp_schemas(
+                        source=args.source,
+                        url=args.url,
+                        headers=parse_mcp_schema_headers(args.header, token=args.token),
+                        token=args.token,
+                        timeout=args.timeout,
+                        label=args.label,
+                        out=args.out,
+                        report_out=args.report_out,
+                        methods=args.method,
+                        protocol_version=args.protocol_version,
+                    )
+                    status = 0
+                    if not args.compact:
+                        sys.stdout.write(format_mcp_schema_catalog_report(result))
+                        sys.stdout.write("\n")
+                        return status
+                elif args.schemas_command == "diff":
+                    result = diff_mcp_schema_catalogs(args.baseline, args.current, fail_on=args.fail_on)
+                    status = 0 if result["ok"] else 1
+                    if args.report_out is not None:
+                        args.report_out.parent.mkdir(parents=True, exist_ok=True)
+                        args.report_out.write_text(format_mcp_schema_diff_report(result) + "\n", encoding="utf-8")
+                        result["report_out"] = str(args.report_out)
+                    if not args.compact:
+                        sys.stdout.write(format_mcp_schema_diff_report(result))
+                        sys.stdout.write("\n")
+                        return status
+                else:
+                    parser.error(f"unknown mcp schemas command: {args.schemas_command}")
                     return 2
             except Exception as exc:
                 result = {"ok": False, "error": str(exc)}
