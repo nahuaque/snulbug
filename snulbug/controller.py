@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .config import DEFAULT_CONFIG_PATH
 from .fabric import fabric_status
@@ -182,7 +183,7 @@ class FabricControllerStatusServer:
     port: int = 0
     _server: ThreadingHTTPServer | None = field(default=None, init=False, repr=False)
     _thread: threading.Thread | None = field(default=None, init=False, repr=False)
-    _latest: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
+    _latest: dict[str, Any] = field(default_factory=lambda: _initial_controller_status(), init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def start(self) -> None:
@@ -193,15 +194,16 @@ class FabricControllerStatusServer:
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
                 latest = controller.latest()
-                if self.path == "/healthz":
+                path = urlsplit(self.path).path
+                if path == "/healthz":
                     body = json.dumps({"ok": bool(latest.get("ok", False))}, sort_keys=True).encode("utf-8")
                     self._send(200 if latest.get("ok") else 503, body, content_type="application/json")
                     return
-                if self.path == "/status":
+                if path == "/status":
                     body = json.dumps(latest, indent=2, sort_keys=True).encode("utf-8")
                     self._send(200 if latest.get("ok") else 503, body, content_type="application/json")
                     return
-                if self.path == "/metrics":
+                if path == "/metrics":
                     body = _controller_metrics(latest).encode("utf-8")
                     self._send(200, body, content_type="text/plain; version=0.0.4")
                     return
@@ -278,6 +280,7 @@ def _controller_snapshot(
     return {
         "version": 1,
         "generated_by": "snulbug mcp fabric controller",
+        "initialized": True,
         "time": observed_at,
         "config": str(config),
         "state": str(state_path),
@@ -436,12 +439,31 @@ def _controller_metrics(result: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _initial_controller_status() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "generated_by": "snulbug mcp fabric controller",
+        "initialized": False,
+        "ok": False,
+        "changed": False,
+        "summary": {},
+        "changes": [],
+        "recommendations": ["Run the fabric controller reconcile loop to initialize status."],
+    }
+
+
 def _load_previous_state(path: Path) -> Mapping[str, Any] | None:
     if not path.is_file():
         return None
     with path.open("r", encoding="utf-8") as file:
         loaded = json.load(file)
-    return loaded if isinstance(loaded, Mapping) else None
+    if not isinstance(loaded, Mapping):
+        raise ValueError("previous controller state must be a JSON object")
+    if loaded.get("version") != 1:
+        raise ValueError("previous controller state version is unsupported")
+    if not isinstance(loaded.get("fingerprint"), str) or not isinstance(loaded.get("desired"), Mapping):
+        raise ValueError("previous controller state is missing fingerprint or desired state")
+    return loaded
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:

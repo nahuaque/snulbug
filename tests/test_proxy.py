@@ -561,6 +561,39 @@ def test_mcp_facade_can_reload_upstream_route_table(tmp_path):
     assert git_seen["calls"] == [{"method": "tools/list", "tool": None}]
 
 
+def test_mcp_facade_reload_detects_stdio_route_process_changes():
+    facade = McpFacadeProxyApp(
+        [
+            {
+                "name": "git",
+                "transport": "stdio",
+                "command": sys.executable,
+                "args": ["-c", "print('one')"],
+            }
+        ]
+    )
+
+    async def run_all():
+        result = await facade.reload_upstreams(
+            [
+                {
+                    "name": "git",
+                    "transport": "stdio",
+                    "command": sys.executable,
+                    "args": ["-c", "print('two')"],
+                }
+            ]
+        )
+        await facade.aclose()
+        return result
+
+    result = asyncio.run(run_all())
+
+    assert result["reloaded"] is True
+    assert result["previous_revision"] == 1
+    assert result["revision"] == 2
+
+
 def test_proxy_can_hot_reload_fabric_config_routes_and_records_metadata(tmp_path):
     files_server, files_seen = start_mcp_upstream({"read_file": "Read a file"})
     git_server, git_seen = start_mcp_upstream({"status": "Show git status"})
@@ -610,6 +643,55 @@ def test_proxy_can_hot_reload_fabric_config_routes_and_records_metadata(tmp_path
     assert records[1]["metadata"]["fabric_reload"]["upstreams"] == ["git"]
     assert records[1]["metadata"]["topology"]["fabric"]["name"] == "hot-reload-fabric"
     assert records[1]["metadata"]["topology"]["route"]["upstream"] == "git"
+
+
+def test_proxy_fabric_reload_keeps_previous_routes_when_config_is_invalid(tmp_path):
+    files_server, files_seen = start_mcp_upstream({"read_file": "Read a file"})
+    policy = write_policy(tmp_path, "continue")
+    config = tmp_path / "snulbug.toml"
+    record_log = tmp_path / "records.jsonl"
+    write_hot_reload_config(config, upstream_name="files", port=files_server.server_port)
+    app = create_proxy_application(
+        None,
+        policy,
+        upstreams=[{"name": "files", "url": f"http://127.0.0.1:{files_server.server_port}/mcp"}],
+        record_out=record_log,
+        fabric_reload_config=config,
+        fabric_reload_interval=0.001,
+    )
+
+    async def run_all():
+        first = await run_asgi_once(
+            app,
+            body=b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"files.read_file"}}',
+        )
+        config.write_text('[mcp.proxy]\nupstreams = "not-a-list"\n', encoding="utf-8")
+        await asyncio.sleep(0.01)
+        second = await run_asgi_once(
+            app,
+            body=b'{"jsonrpc":"2.0","id":"call-2","method":"tools/call","params":{"name":"files.read_file"}}',
+        )
+        await close_app(app)
+        return first, second
+
+    try:
+        first, second = asyncio.run(run_all())
+    finally:
+        files_server.shutdown()
+        files_server.server_close()
+
+    first_payload = json.loads(first[1]["body"])
+    second_payload = json.loads(second[1]["body"])
+    records = load_record_log(record_log)
+    assert first_payload["result"]["content"][0]["text"] == "called read_file"
+    assert second_payload["result"]["content"][0]["text"] == "called read_file"
+    assert files_seen["calls"] == [
+        {"method": "tools/call", "tool": "read_file"},
+        {"method": "tools/call", "tool": "read_file"},
+    ]
+    assert records[1]["metadata"]["fabric_reload"]["ok"] is False
+    assert "upstreams" in records[1]["metadata"]["fabric_reload"]["error"]
+    assert records[1]["metadata"]["topology"]["route"]["upstream"] == "files"
 
 
 def test_mcp_facade_records_topology_aware_audit_fields(tmp_path):

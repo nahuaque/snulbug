@@ -1466,13 +1466,53 @@ def _load_fabric_reload_config(config: Path, proxy_overrides: Mapping[str, Any])
 
 
 def _facade_upstreams_fingerprint(upstreams: Sequence[FacadeUpstream]) -> str:
-    payload = [_upstream_metadata(upstream) for upstream in upstreams]
+    payload = [_facade_upstream_reload_fingerprint(upstream) for upstream in upstreams]
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
+def _facade_upstream_reload_fingerprint(upstream: FacadeUpstream) -> dict[str, Any]:
+    return {
+        "name": upstream.name,
+        "tool_prefix": upstream.tool_prefix,
+        "default": upstream.default,
+        "transport": upstream.transport,
+        "url": upstream.url,
+        "command": upstream.command,
+        "args": list(upstream.args),
+        "cwd": upstream.cwd,
+        "env_keys": sorted((upstream.env or {}).keys()),
+        "peer": upstream.peer,
+        "local_port": upstream.local_port,
+        "bridge_config": upstream.bridge_config,
+        "bridge_command": upstream.bridge_command,
+        "bridge_args": list(upstream.bridge_args),
+        "bridge_cwd": upstream.bridge_cwd,
+        "bridge_env_keys": sorted((upstream.bridge_env or {}).keys()),
+        "bridge_private": upstream.bridge_private,
+        "bridge_ready_timeout": upstream.bridge_ready_timeout,
+        "manifest": str(upstream.manifest) if upstream.manifest is not None else None,
+        "manifest_required": upstream.manifest_required,
+        "manifest_key_id": upstream.manifest_key_id,
+        "manifest_identity": upstream.manifest_identity,
+        "manifest_metadata": _copy_jsonish(upstream.manifest_metadata or {}),
+    }
+
+
 def _utc_timestamp() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _copy_jsonish(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _copy_jsonish(item) for key, item in value.items() if item is not None}
+    if isinstance(value, list):
+        return [_copy_jsonish(item) for item in value]
+    if isinstance(value, tuple):
+        return [_copy_jsonish(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    return value
 
 
 def _state_store(value: str) -> PolicyStateStore | None:
