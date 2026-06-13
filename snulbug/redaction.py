@@ -93,6 +93,9 @@ def build_audit_event(record: Mapping[str, Any], *, redact: bool = True) -> dict
         cloudflare_access = _mapping(metadata.get("cloudflare_access"))
         if cloudflare_access:
             event["cloudflare_access"] = cloudflare_access
+        topology = _mapping(metadata.get("topology"))
+        if topology:
+            event["topology"] = topology
         facade = _facade_summary(metadata)
         if facade:
             event["facade"] = facade

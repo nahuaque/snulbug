@@ -8,7 +8,7 @@ import shutil
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
-from urllib.parse import SplitResult, urlsplit
+from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from .config import DEFAULT_CONFIG_PATH, load_mcp_fabric_config
 from .manifests import load_manifest, verify_upstream_manifest
@@ -44,6 +44,55 @@ def fabric_status(config: str | Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
         "summary": summary,
         "recommendations": recommendations,
     }
+
+
+def build_fabric_audit_metadata(fabric: Mapping[str, Any]) -> dict[str, Any]:
+    """Build an audit-safe static topology summary from normalized fabric config."""
+
+    proxy = _mapping(fabric.get("proxy"))
+    upstreams = [_topology_upstream(upstream) for upstream in _upstreams(proxy)]
+    summary = _fabric_summary(fabric, proxy, upstreams)
+    return _drop_empty(
+        {
+            "fabric": _drop_empty(
+                {
+                    "name": fabric.get("name"),
+                    "description": fabric.get("description"),
+                    "gateway_url": _audit_url(fabric.get("gateway_url")),
+                    "require_manifests": fabric.get("require_manifests"),
+                }
+            ),
+            "gateway": _drop_empty(
+                {
+                    "url": _audit_url(fabric.get("gateway_url")),
+                    "host": proxy.get("host"),
+                    "port": proxy.get("port"),
+                    "tunnel_provider": proxy.get("tunnel_provider"),
+                    "tunnel_public_url": _audit_url(proxy.get("tunnel_public_url")),
+                    "lease_required": proxy.get("lease_required"),
+                    "cloudflare_access": proxy.get("cloudflare_access"),
+                    "facade": bool(proxy.get("upstreams")),
+                }
+            ),
+            "summary": summary,
+            "upstreams": upstreams,
+        }
+    )
+
+
+def annotate_topology_audit(
+    topology: Mapping[str, Any] | None,
+    proxy_metadata: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Attach the request-specific route to static topology metadata."""
+
+    if not topology:
+        return {}
+    annotated = _copy_jsonish(topology)
+    route = _topology_route(proxy_metadata)
+    if route:
+        annotated["route"] = route
+    return annotated
 
 
 def doctor_fabric(
@@ -263,6 +312,56 @@ def _upstream_status(upstream: Mapping[str, Any]) -> dict[str, Any]:
     if manifest:
         status["manifest"] = manifest
     return status
+
+
+def _topology_upstream(upstream: Mapping[str, Any]) -> dict[str, Any]:
+    manifest = _manifest_status(upstream)
+    transport = upstream.get("transport")
+    command = None
+    if transport == "stdio" and upstream.get("command"):
+        command = Path(str(upstream["command"])).name
+    manifest_summary = _drop_empty(
+        {
+            "path": manifest.get("path"),
+            "required": manifest.get("required"),
+            "exists": manifest.get("exists"),
+            "identity": manifest.get("declared_identity"),
+            "digest": manifest.get("digest"),
+            "key_id": manifest.get("signature_key_id") or manifest.get("configured_key_id"),
+            "algorithm": manifest.get("algorithm"),
+            "schema": manifest.get("declared_schema"),
+            "transport": manifest.get("declared_transport"),
+            "tool_prefix": manifest.get("declared_tool_prefix"),
+            "tool_count": manifest.get("declared_tool_count"),
+        }
+    )
+    return _drop_empty(
+        {
+            "name": upstream.get("name"),
+            "transport": transport,
+            "tool_prefix": upstream.get("tool_prefix"),
+            "default": upstream.get("default", False),
+            "url": _audit_url(upstream.get("url")) if transport in {"http", "holepunch"} else None,
+            "command": command,
+            "cwd": str(upstream.get("cwd")) if upstream.get("cwd") is not None else None,
+            "bridge": _holepunch_topology(upstream) if transport == "holepunch" else None,
+            "manifest": manifest_summary,
+        }
+    )
+
+
+def _holepunch_topology(upstream: Mapping[str, Any]) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "transport": "hypertele",
+            "peer": upstream.get("peer"),
+            "local_port": upstream.get("local_port"),
+            "config": upstream.get("bridge_config"),
+            "command": Path(str(upstream.get("bridge_command"))).name if upstream.get("bridge_command") else None,
+            "private": upstream.get("bridge_private"),
+            "ready_timeout": upstream.get("bridge_ready_timeout"),
+        }
+    )
 
 
 def _manifest_status(upstream: Mapping[str, Any]) -> dict[str, Any]:
@@ -574,6 +673,78 @@ def _doctor_recommendations(checks: Sequence[Mapping[str, Any]], *, headers: Map
     if statuses.get("proxy.facade_enabled") == "warn":
         recommendations.append("Declare [[mcp.proxy.upstreams]] entries to expose multiple MCP servers as one fabric.")
     return recommendations
+
+
+def _topology_route(proxy_metadata: Mapping[str, Any]) -> dict[str, Any]:
+    operation = proxy_metadata.get("operation")
+    if proxy_metadata.get("facade"):
+        route: dict[str, Any] = {
+            "mode": "facade",
+            "operation": operation,
+        }
+        if proxy_metadata.get("upstream"):
+            upstream_metadata = _mapping(proxy_metadata.get("upstream_metadata"))
+            manifest = _mapping(upstream_metadata.get("manifest"))
+            bridge = _mapping(upstream_metadata.get("bridge"))
+            route.update(
+                _drop_empty(
+                    {
+                        "upstream": proxy_metadata.get("upstream"),
+                        "upstream_transport": proxy_metadata.get("upstream_transport"),
+                        "tool_prefix": upstream_metadata.get("tool_prefix"),
+                        "tool": proxy_metadata.get("tool"),
+                        "upstream_tool": proxy_metadata.get("upstream_tool"),
+                        "upstream_identity": manifest.get("identity"),
+                        "manifest_digest": manifest.get("digest"),
+                        "manifest_key_id": manifest.get("key_id"),
+                        "bridge": _drop_empty(
+                            {
+                                "transport": bridge.get("transport"),
+                                "peer": bridge.get("peer"),
+                                "local_port": bridge.get("local_port"),
+                            }
+                        ),
+                    }
+                )
+            )
+            return _drop_empty(route)
+        upstreams = proxy_metadata.get("upstreams")
+        if isinstance(upstreams, list):
+            route.update(
+                {
+                    "fanout": True,
+                    "upstreams": list(upstreams),
+                    "upstream_count": len(upstreams),
+                }
+            )
+        return _drop_empty(route)
+    return _drop_empty(
+        {
+            "mode": "reverse_proxy",
+            "operation": operation,
+            "target": proxy_metadata.get("target"),
+        }
+    )
+
+
+def _audit_url(value: Any) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    parsed = urlsplit(value)
+    if not parsed.scheme or not parsed.netloc:
+        return value
+    host = parsed.hostname or ""
+    if parsed.port is not None:
+        host = f"{host}:{parsed.port}"
+    return urlunsplit(parsed._replace(netloc=host, query="", fragment=""))
+
+
+def _copy_jsonish(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _copy_jsonish(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_copy_jsonish(item) for item in value]
+    return value
 
 
 def _checks_summary(checks: Sequence[Mapping[str, Any]]) -> dict[str, int]:

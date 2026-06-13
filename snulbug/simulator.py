@@ -835,8 +835,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "mcp":
         from .config import (
+            load_mcp_fabric_config,
             load_mcp_proxy_config,
             merge_mcp_proxy_config,
+            normalize_mcp_fabric_config,
             normalize_mcp_proxy_config,
             write_sample_config,
         )
@@ -1213,6 +1215,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not args.compact:
                 return status
         elif args.mcp_command == "proxy":
+            from .fabric import build_fabric_audit_metadata
             from .proxy import run_proxy
 
             try:
@@ -1253,6 +1256,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
                 if args.config is not None:
                     proxy_config = merge_mcp_proxy_config(load_mcp_proxy_config(args.config), overrides)
+                    fabric_config = load_mcp_fabric_config(args.config)
+                    fabric_config["proxy"] = proxy_config
                 else:
                     if args.policy is None or (args.upstream is None and not args.facade_upstream):
                         sys.stderr.write(
@@ -1261,6 +1266,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         )
                         return 1
                     proxy_config = normalize_mcp_proxy_config(overrides)
+                    fabric_config = normalize_mcp_fabric_config({}, proxy_config=proxy_config)
+                topology_audit = build_fabric_audit_metadata(fabric_config)
                 run_proxy(
                     upstream=proxy_config["upstream"],
                     upstreams=proxy_config["upstreams"],
@@ -1295,6 +1302,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     cloudflare_access_require_cf_ray=proxy_config["cloudflare_access_require_cf_ray"],
                     cloudflare_access_allowed_emails=proxy_config["cloudflare_access_allowed_emails"],
                     cloudflare_access_allowed_domains=proxy_config["cloudflare_access_allowed_domains"],
+                    topology_audit=topology_audit,
                 )
             except Exception as exc:
                 sys.stderr.write(f"snulbug proxy failed: {exc}\n")

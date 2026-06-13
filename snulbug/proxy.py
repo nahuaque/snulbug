@@ -14,6 +14,7 @@ from urllib.parse import SplitResult, urlsplit
 
 from .cloudflare_access import CloudflareAccessConfig, evaluate_cloudflare_access
 from .confirm import ConfirmationBroker
+from .fabric import annotate_topology_audit
 from .leases import LeasePolicyConfig, enforce_mcp_lease_policy, mcp_lease_error_response
 from .manifests import load_manifest, verify_upstream_manifest
 from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
@@ -857,6 +858,7 @@ class ProxyRecorderMiddleware:
         decision_console: bool | TextIO = False,
         decision_console_format: str = "text",
         tunnel_audit: TunnelAuditConfig | None = None,
+        topology_audit: Mapping[str, Any] | None = None,
     ) -> None:
         self.app = app
         self.policy = policy
@@ -866,6 +868,7 @@ class ProxyRecorderMiddleware:
         self.decision_console = _console_stream(decision_console)
         self.decision_console_format = decision_console_format
         self.tunnel_audit = tunnel_audit or TunnelAuditConfig()
+        self.topology_audit = dict(topology_audit or {})
         if self.decision_console_format not in {"text", "json"}:
             raise ValueError("decision_console_format must be 'text' or 'json'")
 
@@ -891,7 +894,7 @@ class ProxyRecorderMiddleware:
             _scope_to_record_request(scope, body),
             _trace_result(scope),
             response=response,
-            metadata=_record_metadata(scope, tunnel_audit=self.tunnel_audit),
+            metadata=_record_metadata(scope, tunnel_audit=self.tunnel_audit, topology_audit=self.topology_audit),
             redact=self.redact_records,
         )
         if self.record_out is not None:
@@ -991,6 +994,7 @@ def create_proxy_application(
     cloudflare_access_require_cf_ray: bool = True,
     cloudflare_access_allowed_emails: Sequence[str] = (),
     cloudflare_access_allowed_domains: Sequence[str] = (),
+    topology_audit: Mapping[str, Any] | None = None,
     confirm: bool = False,
     confirm_handler: Any = None,
 ) -> ASGIApp:
@@ -1057,6 +1061,7 @@ def create_proxy_application(
         decision_console=decision_console,
         decision_console_format=decision_console_format,
         tunnel_audit=TunnelAuditConfig(provider=tunnel_provider, public_url=tunnel_public_url),
+        topology_audit=topology_audit,
     )
 
 
@@ -1094,6 +1099,7 @@ def run_proxy(
     cloudflare_access_require_cf_ray: bool = True,
     cloudflare_access_allowed_emails: Sequence[str] = (),
     cloudflare_access_allowed_domains: Sequence[str] = (),
+    topology_audit: Mapping[str, Any] | None = None,
     confirm: bool = False,
 ) -> None:
     """Run the reverse proxy with uvicorn."""
@@ -1134,6 +1140,7 @@ def run_proxy(
         cloudflare_access_require_cf_ray=cloudflare_access_require_cf_ray,
         cloudflare_access_allowed_emails=cloudflare_access_allowed_emails,
         cloudflare_access_allowed_domains=cloudflare_access_allowed_domains,
+        topology_audit=topology_audit,
         confirm=confirm,
     )
     uvicorn.run(app, host=host, port=port)
@@ -1773,7 +1780,12 @@ def _trace_result(scope: Scope) -> dict[str, Any]:
     }
 
 
-def _record_metadata(scope: Scope, *, tunnel_audit: TunnelAuditConfig) -> dict[str, Any]:
+def _record_metadata(
+    scope: Scope,
+    *,
+    tunnel_audit: TunnelAuditConfig,
+    topology_audit: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     metadata: dict[str, Any] = {"source": "proxy"}
     state = scope.get("state")
     proxy_metadata = state.get("snulbug_proxy") if isinstance(state, Mapping) else None
@@ -1782,6 +1794,9 @@ def _record_metadata(scope: Scope, *, tunnel_audit: TunnelAuditConfig) -> dict[s
     tunnel_metadata = build_tunnel_audit_metadata(scope, config=tunnel_audit)
     if tunnel_metadata:
         metadata["tunnel"] = tunnel_metadata
+    topology_metadata = annotate_topology_audit(topology_audit, metadata)
+    if topology_metadata:
+        metadata["topology"] = topology_metadata
     return metadata
 
 

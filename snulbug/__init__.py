@@ -6,7 +6,14 @@ from .bundle import pack_bundle, test_bundle, validate_bundle
 from .cloudflare_access import CloudflareAccessConfig, evaluate_cloudflare_access
 from .config import load_mcp_fabric_config, load_mcp_proxy_config, write_sample_config
 from .confirm import ConfirmationBroker
-from .fabric import doctor_fabric, fabric_status, format_fabric_doctor_report, format_fabric_status_report
+from .fabric import (
+    annotate_topology_audit,
+    build_fabric_audit_metadata,
+    doctor_fabric,
+    fabric_status,
+    format_fabric_doctor_report,
+    format_fabric_status_report,
+)
 from .guide import MCP_GUIDE_WORKFLOWS, build_mcp_guide, format_mcp_guide
 from .impact import analyze_mcp_impact, format_mcp_impact_report
 from .inspection import format_mcp_inspection_report, inspect_mcp_log
@@ -85,7 +92,9 @@ __all__ = [
     "append_record",
     "amend_mcp_policy",
     "analyze_mcp_impact",
+    "annotate_topology_audit",
     "build_audit_event",
+    "build_fabric_audit_metadata",
     "build_tunnel_audit_metadata",
     "compare_decisions",
     "copy_builtin_preset",

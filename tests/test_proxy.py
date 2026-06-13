@@ -11,6 +11,7 @@ from typing import Any
 
 from snulbug import (
     ConfirmationBroker,
+    build_fabric_audit_metadata,
     create_lease,
     create_proxy_application,
     list_leases,
@@ -518,6 +519,74 @@ def test_mcp_facade_routes_tool_calls_by_prefix_and_records_upstream_metadata(tm
     assert records[0]["metadata"]["tool"] == "git.status"
     assert records[0]["metadata"]["upstream_tool"] == "status"
     assert records[0]["metadata"]["response_policy"]["checked"] is True
+
+
+def test_mcp_facade_records_topology_aware_audit_fields(tmp_path):
+    files_server, _files_seen = start_mcp_upstream({"read_file": "Read a file"})
+    git_server, git_seen = start_mcp_upstream({"status": "Show git status"})
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+    topology_audit = build_fabric_audit_metadata(
+        {
+            "name": "dev-fabric",
+            "description": "local fabric",
+            "gateway_url": "http://127.0.0.1:8080/mcp",
+            "require_manifests": False,
+            "proxy": {
+                "host": "127.0.0.1",
+                "port": 8080,
+                "tunnel_provider": "holepunch",
+                "lease_required": True,
+                "upstreams": [
+                    {"name": "files", "transport": "http", "url": f"http://127.0.0.1:{files_server.server_port}/mcp"},
+                    {"name": "git", "transport": "http", "url": f"http://127.0.0.1:{git_server.server_port}/mcp"},
+                ],
+            },
+        }
+    )
+    app = create_proxy_application(
+        None,
+        policy,
+        upstreams=[
+            {"name": "files", "url": f"http://127.0.0.1:{files_server.server_port}/mcp"},
+            {"name": "git", "url": f"http://127.0.0.1:{git_server.server_port}/mcp"},
+        ],
+        record_out=record_log,
+        audit_out=audit_log,
+        topology_audit=topology_audit,
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            body=b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"git.status"}}',
+        )
+    finally:
+        files_server.shutdown()
+        files_server.server_close()
+        git_server.shutdown()
+        git_server.server_close()
+
+    records = load_record_log(record_log)
+    audit = json.loads(audit_log.read_text(encoding="utf-8"))
+    topology = records[0]["metadata"]["topology"]
+    assert sent[0]["status"] == 200
+    assert git_seen["calls"] == [{"method": "tools/call", "tool": "status"}]
+    assert topology["fabric"]["name"] == "dev-fabric"
+    assert topology["gateway"]["url"] == "http://127.0.0.1:8080/mcp"
+    assert topology["gateway"]["facade"] is True
+    assert topology["summary"]["upstream_count"] == 2
+    assert topology["route"] == {
+        "mode": "facade",
+        "operation": "tools/call",
+        "upstream": "git",
+        "upstream_transport": "http",
+        "tool_prefix": "git.",
+        "tool": "git.status",
+        "upstream_tool": "status",
+    }
+    assert audit["topology"] == topology
 
 
 def test_mcp_facade_records_verified_upstream_manifest_metadata(tmp_path, monkeypatch):

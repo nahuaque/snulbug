@@ -94,3 +94,56 @@ snulbug mcp fabric doctor \
 
 Use `fabric doctor` before handing an agent a fabric endpoint or sharing a
 tunnel/peer bridge. Use `tunnel doctor` for public tunnel exposure checks.
+
+## Topology-Aware Audit Fields
+
+When proxy mode is started from config, snulbug derives audit-safe topology
+metadata from `[mcp.fabric]` and `[mcp.proxy]` and writes it into replay records
+and audit events.
+
+Replay records include:
+
+```json
+{
+  "metadata": {
+    "topology": {
+      "fabric": {
+        "name": "local-dev",
+        "gateway_url": "http://127.0.0.1:8080/mcp"
+      },
+      "gateway": {
+        "url": "http://127.0.0.1:8080/mcp",
+        "facade": true,
+        "tunnel_provider": "holepunch"
+      },
+      "summary": {
+        "upstream_count": 2,
+        "transports": {
+          "http": 1,
+          "holepunch": 1
+        }
+      },
+      "route": {
+        "mode": "facade",
+        "operation": "tools/call",
+        "tool": "devbox.read_file",
+        "upstream": "remote-devbox",
+        "upstream_transport": "holepunch",
+        "upstream_tool": "read_file",
+        "upstream_identity": "devbox@peer",
+        "manifest_digest": "sha256:..."
+      }
+    }
+  }
+}
+```
+
+Audit events promote the same object to top-level `topology`, so downstream
+inspection tools can answer which fabric, gateway, route, transport, signed
+manifest, and upstream handled a decision without reverse-engineering facade
+metadata.
+
+Secrets are not copied into topology metadata. URLs are written without query
+strings or userinfo, stdio entries include the command name rather than full
+environment, and manifest entries include only verification metadata such as
+identity, digest, key id, and tool count.
