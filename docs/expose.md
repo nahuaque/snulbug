@@ -41,6 +41,7 @@ the provider and export the matching variable before running doctor:
 ```bash
 export NGROK_URL=https://YOUR-NGROK-FORWARDING-DOMAIN
 export LOCALXPOSE_URL=https://YOUR-LOCALXPOSE-FORWARDING-DOMAIN
+export PINGGY_URL=https://YOUR-PINGGY-FORWARDING-DOMAIN
 export TAILSCALE_FUNNEL_URL=https://HOST.TAILNET.ts.net
 export CLOUDFLARE_TUNNEL_URL=https://mcp.example.com
 ```

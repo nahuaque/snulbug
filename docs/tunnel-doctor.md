@@ -69,6 +69,17 @@ snulbug tunnel doctor \
   --token local-dev-secret
 ```
 
+For Pinggy, use the exact HTTPS URL printed by the SSH tunnel command:
+
+```bash
+export PINGGY_URL=https://YOUR-PINGGY-FORWARDING-DOMAIN
+snulbug tunnel doctor \
+  --provider pinggy \
+  --url "${PINGGY_URL}/mcp" \
+  --config snulbug.toml \
+  --token local-dev-secret
+```
+
 For a Holepunch/Hypertele peer bridge, run doctor from a machine where the
 client-side bridge is listening:
 

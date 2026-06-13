@@ -290,6 +290,40 @@ uv run snulbug tunnel doctor \
   --token local-dev-secret
 ```
 
+### Pinggy with bearer auth
+
+Pinggy's SSH quickstart can expose the default snulbug proxy port without a
+provider-specific binary. Start snulbug first, then expose snulbug rather than
+the upstream MCP server:
+
+```bash
+uv run snulbug tunnel init \
+  --provider pinggy \
+  --config snulbug.toml \
+  --output-dir tunnel.pinggy
+
+uv run snulbug mcp proxy --config snulbug.toml --decision-console
+ssh -p 443 -R0:localhost:8080 free.pinggy.io
+export PINGGY_URL=https://YOUR-PINGGY-FORWARDING-DOMAIN
+```
+
+The MCP client should use the Pinggy URL and bearer header:
+
+```text
+${PINGGY_URL}/mcp
+Authorization: Bearer local-dev-secret
+```
+
+Before sharing the Pinggy URL, run:
+
+```bash
+uv run snulbug tunnel doctor \
+  --provider pinggy \
+  --url "${PINGGY_URL}/mcp" \
+  --config snulbug.toml \
+  --token local-dev-secret
+```
+
 ### Holepunch peer bridge with Hypertele
 
 Use this when both sides can run a local sidecar and you want a private peer

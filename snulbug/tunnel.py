@@ -12,7 +12,7 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 from .config import DEFAULT_CONFIG_PATH, DEFAULT_MCP_PROXY_CONFIG, load_mcp_proxy_config
 from .quickstart import create_mcp_quickstart
 
-TUNNEL_PROVIDERS = ("generic", "ngrok", "cloudflare", "tailscale", "localxpose", "holepunch")
+TUNNEL_PROVIDERS = ("generic", "ngrok", "cloudflare", "tailscale", "localxpose", "pinggy", "holepunch")
 DEFAULT_MCP_PATH = "/mcp"
 DEFAULT_AUTH_FAILURE_STATUSES = (401, 403)
 DEFAULT_TUNNEL_TOKEN_ENV = "SNULBUG_TOKEN"
@@ -22,6 +22,7 @@ DEFAULT_NGROK_FORWARDING_HOST = "YOUR-NGROK-FORWARDING-DOMAIN"
 DEFAULT_CLOUDFLARE_TUNNEL_HOST = "YOUR-CLOUDFLARE-TUNNEL-HOSTNAME"
 DEFAULT_TAILSCALE_FUNNEL_HOST = "YOUR-HOST.YOUR-TAILNET.ts.net"
 DEFAULT_LOCALXPOSE_FORWARDING_HOST = "YOUR-LOCALXPOSE-FORWARDING-DOMAIN"
+DEFAULT_PINGGY_FORWARDING_HOST = "YOUR-PINGGY-FORWARDING-DOMAIN"
 DEFAULT_HOLEPUNCH_CLIENT_ORIGIN = "http://127.0.0.1:18080"
 DEFAULT_PUBLIC_URL_ENVS = {
     "generic": "TUNNEL_URL",
@@ -29,6 +30,7 @@ DEFAULT_PUBLIC_URL_ENVS = {
     "cloudflare": "CLOUDFLARE_TUNNEL_URL",
     "tailscale": "TAILSCALE_FUNNEL_URL",
     "localxpose": "LOCALXPOSE_URL",
+    "pinggy": "PINGGY_URL",
 }
 DEFAULT_PUBLIC_HOSTS = {
     "generic": DEFAULT_GENERIC_TUNNEL_HOST,
@@ -36,6 +38,7 @@ DEFAULT_PUBLIC_HOSTS = {
     "cloudflare": DEFAULT_CLOUDFLARE_TUNNEL_HOST,
     "tailscale": DEFAULT_TAILSCALE_FUNNEL_HOST,
     "localxpose": DEFAULT_LOCALXPOSE_FORWARDING_HOST,
+    "pinggy": DEFAULT_PINGGY_FORWARDING_HOST,
 }
 
 _DOCTOR_REQUEST = {
@@ -77,7 +80,7 @@ class TunnelAuditConfig:
         if self.provider not in {"auto", *TUNNEL_PROVIDERS}:
             raise ValueError(
                 "tunnel provider must be 'auto', 'generic', 'ngrok', 'cloudflare', "
-                "'tailscale', 'localxpose', or 'holepunch'"
+                "'tailscale', 'localxpose', 'pinggy', or 'holepunch'"
             )
 
 
@@ -155,6 +158,12 @@ def build_tunnel_audit_metadata(
         metadata["localxpose"] = _drop_empty(
             {
                 "real_ip": headers.get("x-real-ip"),
+                "request_id": headers.get("x-request-id") or headers.get("x-correlation-id"),
+            }
+        )
+    elif provider == "pinggy":
+        metadata["pinggy"] = _drop_empty(
+            {
                 "request_id": headers.get("x-request-id") or headers.get("x-correlation-id"),
             }
         )
@@ -556,6 +565,8 @@ def _public_endpoint(
         host = hostname or DEFAULT_TAILSCALE_FUNNEL_HOST
     elif provider == "localxpose":
         host = hostname or DEFAULT_LOCALXPOSE_FORWARDING_HOST
+    elif provider == "pinggy":
+        host = hostname or DEFAULT_PINGGY_FORWARDING_HOST
     elif provider == "holepunch":
         origin = f"http://{hostname}" if hostname else DEFAULT_HOLEPUNCH_CLIENT_ORIGIN
         return _normalize_url(origin, path)
@@ -657,6 +668,20 @@ def _provider_plan(
             }
         ]
         traffic_policy = None
+    elif provider == "pinggy":
+        pinggy_target = _pinggy_target(origin)
+        commands = [
+            {
+                "id": "run-pinggy",
+                "title": "Expose snulbug with Pinggy",
+                "description": (
+                    "Point a Pinggy SSH HTTP tunnel at the snulbug proxy origin. "
+                    "Copy the HTTPS forwarding URL printed by Pinggy before running doctor."
+                ),
+                "command": f"ssh -p 443 -R0:{pinggy_target} free.pinggy.io",
+            }
+        ]
+        traffic_policy = None
     elif provider == "holepunch":
         origin_target = _host_port_from_origin(origin)
         client_target = _host_port_from_origin(_url_origin(public_endpoint))
@@ -742,6 +767,12 @@ def _tailscale_target(origin: str) -> str:
     return origin
 
 
+def _pinggy_target(origin: str) -> str:
+    target = _host_port_from_origin(origin)
+    host = "localhost" if target["host"] in {"127.0.0.1", "::1"} else str(target["host"])
+    return f"{host}:{target['port']}"
+
+
 def _host_port_from_origin(origin: str) -> dict[str, Any]:
     parsed = urlsplit(origin)
     return {
@@ -815,6 +846,7 @@ def _default_public_url_report_lines(provider: str) -> list[str]:
         "cloudflare": "Cloudflare Tunnel URL",
         "tailscale": "Tailscale Funnel URL",
         "localxpose": "LocalXpose forwarding URL",
+        "pinggy": "Pinggy forwarding URL",
     }[provider]
     note = {
         "generic": "Set this to the exact public HTTPS origin printed or assigned by your tunnel provider.",
@@ -834,6 +866,10 @@ def _default_public_url_report_lines(provider: str) -> list[str]:
         "localxpose": (
             "Set this to the exact LocalXpose HTTPS URL printed by `loclx tunnel http`. "
             "Pass `--hostname` when you want the generated command to use a reserved LocalXpose domain."
+        ),
+        "pinggy": (
+            "Set this to the exact Pinggy HTTPS URL printed by the SSH tunnel command. "
+            "Free Pinggy URLs commonly use a `pinggy-free.link` domain."
         ),
     }[provider]
     return [
@@ -1344,6 +1380,8 @@ def _infer_tunnel_provider(headers: Mapping[str, str], public_url: str | None) -
         return "tailscale"
     if host.endswith(".loclx.io") or "localxpose" in header_blob or "loclx" in header_blob:
         return "localxpose"
+    if "pinggy" in host or "pinggy" in header_blob:
+        return "pinggy"
     if "holepunch" in header_blob or "hypertele" in header_blob:
         return "holepunch"
     return "generic"
@@ -1384,6 +1422,8 @@ def _edge_request_id(provider: str, headers: Mapping[str, str]) -> str | None:
     if provider == "ngrok":
         return headers.get("x-ngrok-request-id") or headers.get("ngrok-request-id")
     if provider == "localxpose":
+        return headers.get("x-request-id") or headers.get("x-correlation-id")
+    if provider == "pinggy":
         return headers.get("x-request-id") or headers.get("x-correlation-id")
     if provider == "holepunch":
         return headers.get("x-snulbug-bridge-id")
@@ -1548,6 +1588,9 @@ def _provider_hint_check(
     elif provider == "localxpose":
         ok = hostname.endswith(".loclx.io") or "localxpose" in header_blob or "loclx" in header_blob
         message = "public URL or response headers look like LocalXpose"
+    elif provider == "pinggy":
+        ok = "pinggy" in hostname or "pinggy" in header_blob
+        message = "public URL or response headers look like Pinggy"
     else:
         ok = hostname.endswith(".ts.net") or ".ts.net" in hostname
         message = "public URL looks like a Tailscale Funnel hostname"

@@ -196,7 +196,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     tunnel_init = tunnel_subparsers.add_parser("init", help="generate provider-specific tunnel setup snippets")
     tunnel_init.add_argument(
         "--provider",
-        choices=("generic", "ngrok", "cloudflare", "tailscale", "localxpose", "holepunch"),
+        choices=("generic", "ngrok", "cloudflare", "tailscale", "localxpose", "pinggy", "holepunch"),
         required=True,
         help="tunnel provider profile",
     )
@@ -213,7 +213,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     tunnel_doctor = tunnel_subparsers.add_parser("doctor", help="verify tunnel-safe MCP proxy exposure")
     tunnel_doctor.add_argument(
         "--provider",
-        choices=("generic", "ngrok", "cloudflare", "tailscale", "localxpose", "holepunch"),
+        choices=("generic", "ngrok", "cloudflare", "tailscale", "localxpose", "pinggy", "holepunch"),
         default="generic",
         help="tunnel provider profile",
     )
@@ -235,7 +235,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     expose = subparsers.add_parser("expose", help="plan a tunnel-safe MCP exposure session")
     expose.add_argument(
         "--provider",
-        choices=("generic", "ngrok", "cloudflare", "tailscale", "localxpose", "holepunch"),
+        choices=("generic", "ngrok", "cloudflare", "tailscale", "localxpose", "pinggy", "holepunch"),
         required=True,
         help="tunnel provider or peer bridge profile",
     )
@@ -368,7 +368,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     mcp_quickstart.add_argument(
         "--tunnel-provider",
-        choices=("auto", "generic", "ngrok", "cloudflare", "tailscale", "localxpose", "holepunch"),
+        choices=("auto", "generic", "ngrok", "cloudflare", "tailscale", "localxpose", "pinggy", "holepunch"),
         default="auto",
         help="provider label for tunnel-aware audit fields",
     )
@@ -502,7 +502,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_share.add_argument("--directory", type=Path, help="share session directory")
     mcp_share.add_argument(
         "--provider",
-        choices=("generic", "ngrok", "cloudflare", "tailscale", "localxpose", "holepunch"),
+        choices=("generic", "ngrok", "cloudflare", "tailscale", "localxpose", "pinggy", "holepunch"),
         default="holepunch",
         help="tunnel or peer bridge provider",
     )
@@ -1266,7 +1266,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_proxy.add_argument("--lease-header", help="HTTP header carrying the task lease token")
     mcp_proxy.add_argument(
         "--tunnel-provider",
-        choices=("auto", "generic", "ngrok", "cloudflare", "tailscale", "localxpose", "holepunch"),
+        choices=("auto", "generic", "ngrok", "cloudflare", "tailscale", "localxpose", "pinggy", "holepunch"),
         help="provider label for tunnel-aware audit fields",
     )
     mcp_proxy.add_argument("--tunnel-public-url", help="public tunnel URL to include in audit fields")

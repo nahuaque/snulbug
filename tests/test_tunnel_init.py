@@ -289,6 +289,60 @@ def test_tunnel_init_cli_emits_compact_localxpose_plan(tmp_path, monkeypatch, ca
     assert output["config"] == ".snulbug/configs/snulbug.toml"
 
 
+def test_tunnel_init_pinggy_generates_ssh_command_and_url_env(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    result = init_tunnel_provider(provider="pinggy")
+    report = format_tunnel_init_report(result)
+
+    assert result["public_url"] == "https://YOUR-PINGGY-FORWARDING-DOMAIN/mcp"
+    assert result["commands"][0]["command"] == "ssh -p 443 -R0:localhost:8080 free.pinggy.io"
+    assert result["commands"][0]["title"] == "Expose snulbug with Pinggy"
+    assert "  --provider pinggy \\" in result["doctor"]["command"]
+    assert '  --url "${PINGGY_URL}/mcp" \\' in result["doctor"]["command"]
+    assert "Public MCP URL: ${PINGGY_URL}/mcp" in report
+    assert "export PINGGY_URL=https://YOUR-PINGGY-FORWARDING-DOMAIN" in report
+    assert "URL: `${PINGGY_URL}/mcp`" in report
+
+
+def test_tunnel_init_pinggy_uses_local_port_from_url(tmp_path):
+    output_dir = tmp_path / "pinggy"
+
+    result = init_tunnel_provider(
+        provider="pinggy",
+        local_url="http://127.0.0.1:8181/mcp",
+        output_dir=output_dir,
+    )
+
+    readme = output_dir / "README.md"
+    assert result["commands"][0]["command"] == "ssh -p 443 -R0:localhost:8181 free.pinggy.io"
+    assert str(readme) in result["written_files"]
+    assert "ssh -p 443 -R0:localhost:8181 free.pinggy.io" in readme.read_text(encoding="utf-8")
+
+
+def test_tunnel_init_cli_emits_compact_pinggy_plan(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+
+    status = simulator_main(
+        [
+            "tunnel",
+            "init",
+            "--provider",
+            "pinggy",
+            "--local-url",
+            "http://127.0.0.1:8181/mcp",
+            "--compact",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert status == 0
+    assert output["provider"] == "pinggy"
+    assert output["public_url"] == "https://YOUR-PINGGY-FORWARDING-DOMAIN/mcp"
+    assert output["commands"][0]["command"] == "ssh -p 443 -R0:localhost:8181 free.pinggy.io"
+    assert output["config"] == ".snulbug/configs/snulbug.toml"
+
+
 def test_tunnel_init_holepunch_generates_hypertele_bridge_files(tmp_path):
     output_dir = tmp_path / "holepunch"
 

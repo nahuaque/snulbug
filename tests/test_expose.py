@@ -73,3 +73,15 @@ def test_expose_cli_emits_compact_json(tmp_path, monkeypatch, capsys):
     assert output["commands"]["provider"] == ["loclx tunnel http"]
     assert output["config"] == ".snulbug/configs/snulbug.toml"
     assert not (tmp_path / ".snulbug/configs/snulbug.toml").exists()
+
+
+def test_expose_pinggy_dry_run_uses_pinggy_url_env(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    result = plan_exposure_session(provider="pinggy", dry_run=True)
+
+    assert result["provider"] == "pinggy"
+    assert result["public_url_display"] == "${PINGGY_URL}/mcp"
+    assert result["client"]["display_url"] == "${PINGGY_URL}/mcp"
+    assert result["commands"]["provider"] == ["ssh -p 443 -R0:localhost:8080 free.pinggy.io"]
+    assert '  --url "${PINGGY_URL}/mcp" \\' in result["commands"]["doctor"]

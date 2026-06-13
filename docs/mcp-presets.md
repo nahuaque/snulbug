@@ -113,7 +113,7 @@ uv run snulbug mcp init project-path-allowlist \
 ```
 
 `tunnel-safe` is the recommended default for ngrok, Cloudflare Tunnel,
-Tailscale Funnel, LocalXpose, Holepunch peer bridges, or similar tunnel
+Tailscale Funnel, LocalXpose, Pinggy, Holepunch peer bridges, or similar tunnel
 exposure. It requires bearer auth, rejects JSON-RPC batch requests, allows only
 configured safe tools, and rate-limits traffic.
 

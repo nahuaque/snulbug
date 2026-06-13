@@ -71,6 +71,29 @@ def test_tunnel_audit_metadata_infers_localxpose_from_forwarded_host():
     assert metadata["localxpose"] == {"real_ip": "198.51.100.10"}
 
 
+def test_tunnel_audit_metadata_infers_pinggy_from_forwarded_host():
+    metadata = build_tunnel_audit_metadata(
+        {
+            "type": "http",
+            "scheme": "http",
+            "path": "/mcp",
+            "headers": [
+                (b"host", b"127.0.0.1:8080"),
+                (b"x-forwarded-host", b"demo.run.pinggy-free.link"),
+                (b"x-forwarded-proto", b"https"),
+                (b"x-forwarded-for", b"198.51.100.11"),
+            ],
+            "client": ("127.0.0.1", 1234),
+        }
+    )
+
+    assert metadata["provider"] == "pinggy"
+    assert metadata["inferred"] is True
+    assert metadata["public_url"] == "https://demo.run.pinggy-free.link/mcp"
+    assert metadata["public_host"] == "demo.run.pinggy-free.link"
+    assert metadata["source_ip"] == "198.51.100.11"
+
+
 def test_tunnel_audit_metadata_tracks_holepunch_bridge_headers():
     metadata = build_tunnel_audit_metadata(
         {

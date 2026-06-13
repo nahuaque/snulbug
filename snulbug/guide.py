@@ -174,7 +174,8 @@ def _workflows() -> dict[str, dict[str, Any]]:
             "title": "Public Tunnel-Safe MCP Proxy",
             "purpose": (
                 "Put snulbug between an MCP client and a local HTTP MCP server before exposing that server "
-                "through ngrok, Cloudflare Tunnel, LocalXpose, Holepunch, or any public URL/private peer bridge."
+                "through ngrok, Cloudflare Tunnel, Tailscale Funnel, LocalXpose, Pinggy, Holepunch, "
+                "or any public URL/private peer bridge."
             ),
             "when_to_use": "You have one local MCP HTTP server and want a conservative public-tunnel default.",
             "safety_default": (

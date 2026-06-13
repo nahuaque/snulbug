@@ -5,9 +5,9 @@
 the snulbug MCP proxy through a public tunnel or private peer bridge. Pass
 `--output-dir` when you want those files somewhere else.
 
-It does not run ngrok, cloudflared, Tailscale, LocalXpose, or Hypertele for
-you. It gives you the commands, client URL/header values, and doctor command to
-run before sharing the endpoint.
+It does not run ngrok, cloudflared, Tailscale, LocalXpose, Pinggy, or Hypertele
+for you. It gives you the commands, client URL/header values, and doctor
+command to run before sharing the endpoint.
 
 If no `snulbug.toml` is present, init also creates a safe starter under
 `.snulbug/configs/`: `snulbug.toml`, `policy.snulbug/`, and `traces/`. The
@@ -205,6 +205,40 @@ If you have a reserved LocalXpose domain, pass it to init:
 snulbug tunnel init \
   --provider localxpose \
   --hostname mcp-dev.loclx.io
+```
+
+## Pinggy
+
+```bash
+snulbug tunnel init \
+  --provider pinggy \
+  --config snulbug.toml \
+  --output-dir tunnel.pinggy
+```
+
+Generated output includes:
+
+- an SSH `-R0:localhost:8080` command pointed at the snulbug proxy port
+- the public MCP URL for client setup
+- a doctor command that verifies snulbug still blocks unauthenticated public
+  traffic
+
+Pinggy's quickstart SSH tunnel prints public HTTP and HTTPS URLs for the local
+service. Start the tunnel and copy the exact HTTPS URL:
+
+```bash
+ssh -p 443 -R0:localhost:8080 free.pinggy.io
+export PINGGY_URL=https://YOUR-PINGGY-FORWARDING-DOMAIN
+```
+
+Then run doctor before sharing the URL:
+
+```bash
+snulbug tunnel doctor \
+  --provider pinggy \
+  --url "${PINGGY_URL}/mcp" \
+  --config snulbug.toml \
+  --token "${SNULBUG_TOKEN}"
 ```
 
 ## Holepunch peer bridge

@@ -126,6 +126,24 @@ def test_load_mcp_proxy_config_accepts_localxpose_provider(tmp_path):
     assert result["tunnel_public_url"] == "https://dev.loclx.io/mcp"
 
 
+def test_load_mcp_proxy_config_accepts_pinggy_provider(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.proxy]
+        policy = "policy.snulbug/policy.lua"
+        tunnel_provider = "pinggy"
+        tunnel_public_url = "https://demo.run.pinggy-free.link/mcp"
+        """,
+        encoding="utf-8",
+    )
+
+    result = load_mcp_proxy_config(config)
+
+    assert result["tunnel_provider"] == "pinggy"
+    assert result["tunnel_public_url"] == "https://demo.run.pinggy-free.link/mcp"
+
+
 def test_load_mcp_proxy_config_supports_facade_upstreams(tmp_path):
     config = tmp_path / "snulbug.toml"
     config.write_text(
