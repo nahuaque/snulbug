@@ -32,9 +32,10 @@ or `ngrok-free.app`.
 For Cloudflare Access service-token protected apps, pass the Access headers:
 
 ```bash
+export CLOUDFLARE_TUNNEL_URL=https://mcp.example.com
 snulbug tunnel doctor \
   --provider cloudflare \
-  --url https://mcp.example.com/mcp \
+  --url "${CLOUDFLARE_TUNNEL_URL}/mcp" \
   --config snulbug.toml \
   --header "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
   --header "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
@@ -49,9 +50,10 @@ mode, authenticated email when Cloudflare provides it, decision, and
 For Tailscale Funnel, snulbug should still enforce bearer auth or leases:
 
 ```bash
+export TAILSCALE_FUNNEL_URL=https://HOST.TAILNET.ts.net
 snulbug tunnel doctor \
   --provider tailscale \
-  --url https://HOST.TAILNET.ts.net/mcp \
+  --url "${TAILSCALE_FUNNEL_URL}/mcp" \
   --config snulbug.toml \
   --token local-dev-secret
 ```
@@ -88,7 +90,8 @@ want audit events to carry explicit peer-bridge labels.
 Machine-readable output:
 
 ```bash
-snulbug tunnel doctor --url https://YOUR-TUNNEL.example/mcp --token local-dev-secret --compact
+export TUNNEL_URL=https://YOUR-TUNNEL-FORWARDING-DOMAIN
+snulbug tunnel doctor --url "${TUNNEL_URL}/mcp" --token local-dev-secret --compact
 ```
 
 The compact JSON output contains `checks`, `summary`, `recommendations`, and the

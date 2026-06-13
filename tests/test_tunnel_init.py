@@ -127,6 +127,22 @@ def test_tunnel_init_cloudflare_writes_generated_files(tmp_path):
     assert f"cloudflared tunnel --config {config} run snulbug-mcp" in readme_text
 
 
+def test_tunnel_init_cloudflare_without_hostname_uses_url_env(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    result = init_tunnel_provider(provider="cloudflare")
+    report = format_tunnel_init_report(result)
+
+    assert result["public_url"] == "https://YOUR-CLOUDFLARE-TUNNEL-HOSTNAME/mcp"
+    assert '  --url "${CLOUDFLARE_TUNNEL_URL}/mcp" \\' in result["doctor"]["command"]
+    assert "Public MCP URL: ${CLOUDFLARE_TUNNEL_URL}/mcp" in report
+    assert "export CLOUDFLARE_TUNNEL_URL=https://YOUR-CLOUDFLARE-TUNNEL-HOSTNAME" in report
+    assert "URL: `${CLOUDFLARE_TUNNEL_URL}/mcp`" in report
+    assert "hostname: your-cloudflare-tunnel-hostname" in (tmp_path / ".snulbug/configs/cloudflared.yml").read_text(
+        encoding="utf-8"
+    )
+
+
 def test_tunnel_init_refuses_to_overwrite_without_force(tmp_path):
     output_dir = tmp_path / "tunnel"
     init_tunnel_provider(provider="generic", local_url="http://127.0.0.1:8080/mcp", output_dir=output_dir)
@@ -201,6 +217,20 @@ def test_tunnel_init_tailscale_readme_includes_bearer_and_lease_defaults(tmp_pat
     assert "snulbug mcp lease create" in text
     assert "x-snulbug-lease: <lease token>" in text
     assert "lease_required = true" in text
+
+
+def test_tunnel_init_tailscale_without_hostname_uses_url_env(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    result = init_tunnel_provider(provider="tailscale")
+    report = format_tunnel_init_report(result)
+
+    assert result["public_url"] == "https://YOUR-HOST.YOUR-TAILNET.ts.net/mcp"
+    assert result["commands"][0]["command"] == "sudo tailscale funnel 8080"
+    assert '  --url "${TAILSCALE_FUNNEL_URL}/mcp" \\' in result["doctor"]["command"]
+    assert "Public MCP URL: ${TAILSCALE_FUNNEL_URL}/mcp" in report
+    assert "export TAILSCALE_FUNNEL_URL=https://YOUR-HOST.YOUR-TAILNET.ts.net" in report
+    assert "URL: `${TAILSCALE_FUNNEL_URL}/mcp`" in report
 
 
 def test_tunnel_init_holepunch_generates_hypertele_bridge_files(tmp_path):
@@ -290,5 +320,7 @@ def test_format_tunnel_init_report_includes_commands_and_client(tmp_path, monkey
 
     assert "# snulbug tunnel init" in report
     assert "Configure your tunnel provider" in report
-    assert "URL: `https://YOUR-TUNNEL.example/mcp`" in report
+    assert "Public MCP URL: ${TUNNEL_URL}/mcp" in report
+    assert "export TUNNEL_URL=https://YOUR-TUNNEL-FORWARDING-DOMAIN" in report
+    assert "URL: `${TUNNEL_URL}/mcp`" in report
     assert "`Authorization: Bearer ${SNULBUG_TOKEN}`" in report

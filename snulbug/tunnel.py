@@ -17,9 +17,23 @@ DEFAULT_MCP_PATH = "/mcp"
 DEFAULT_AUTH_FAILURE_STATUSES = (401, 403)
 DEFAULT_TUNNEL_TOKEN_ENV = "SNULBUG_TOKEN"
 DEFAULT_TUNNEL_OUTPUT_DIR = ".snulbug/configs"
+DEFAULT_GENERIC_TUNNEL_HOST = "YOUR-TUNNEL-FORWARDING-DOMAIN"
 DEFAULT_NGROK_FORWARDING_HOST = "YOUR-NGROK-FORWARDING-DOMAIN"
-DEFAULT_NGROK_FORWARDING_ORIGIN = f"https://{DEFAULT_NGROK_FORWARDING_HOST}"
+DEFAULT_CLOUDFLARE_TUNNEL_HOST = "YOUR-CLOUDFLARE-TUNNEL-HOSTNAME"
+DEFAULT_TAILSCALE_FUNNEL_HOST = "YOUR-HOST.YOUR-TAILNET.ts.net"
 DEFAULT_HOLEPUNCH_CLIENT_ORIGIN = "http://127.0.0.1:18080"
+DEFAULT_PUBLIC_URL_ENVS = {
+    "generic": "TUNNEL_URL",
+    "ngrok": "NGROK_URL",
+    "cloudflare": "CLOUDFLARE_TUNNEL_URL",
+    "tailscale": "TAILSCALE_FUNNEL_URL",
+}
+DEFAULT_PUBLIC_HOSTS = {
+    "generic": DEFAULT_GENERIC_TUNNEL_HOST,
+    "ngrok": DEFAULT_NGROK_FORWARDING_HOST,
+    "cloudflare": DEFAULT_CLOUDFLARE_TUNNEL_HOST,
+    "tailscale": DEFAULT_TAILSCALE_FUNNEL_HOST,
+}
 
 _DOCTOR_REQUEST = {
     "jsonrpc": "2.0",
@@ -259,13 +273,15 @@ def format_tunnel_init_report(result: Mapping[str, Any]) -> str:
 
     provider = str(result.get("provider"))
     remote_label = "Client bridge MCP URL" if provider == "holepunch" else "Public MCP URL"
+    public_url = str(result.get("public_url") or "")
+    displayed_public_url = _display_public_endpoint(provider, public_url)
     lines = [
         "# snulbug tunnel init",
         "",
         f"Provider: {provider}",
         f"Local origin: {result.get('local_origin')}",
         f"Local MCP URL: {result.get('local_url')}",
-        f"{remote_label}: {result.get('public_url')}",
+        f"{remote_label}: {displayed_public_url}",
         "",
         "## Commands",
     ]
@@ -297,21 +313,8 @@ def format_tunnel_init_report(result: Mapping[str, Any]) -> str:
         ]
     )
 
-    if provider == "ngrok" and _is_default_ngrok_endpoint(str(result.get("public_url", ""))):
-        lines.extend(
-            [
-                "## Ngrok forwarding URL",
-                "",
-                "Set `NGROK_URL` to the exact `Forwarding` HTTPS origin printed by the "
-                "ngrok CLI. Do not assume an `ngrok.app` domain; random free URLs may use "
-                "`ngrok-free.dev`, `ngrok-free.app`, or another ngrok-owned domain.",
-                "",
-                "```bash",
-                f"export NGROK_URL={DEFAULT_NGROK_FORWARDING_ORIGIN}",
-                "```",
-                "",
-            ]
-        )
+    if _is_default_public_endpoint(provider, public_url):
+        lines.extend(_default_public_url_report_lines(provider))
 
     quickstart = result.get("quickstart")
     if isinstance(quickstart, Mapping):
@@ -335,11 +338,12 @@ def format_tunnel_init_report(result: Mapping[str, Any]) -> str:
 
     client = result.get("client", {})
     if client:
+        client_url = _display_public_endpoint(provider, str(client.get("url") or ""))
         lines.extend(
             [
                 "## MCP client",
                 "",
-                f"URL: `{client.get('url')}`",
+                f"URL: `{client_url}`",
                 "",
                 "Headers:",
             ]
@@ -536,14 +540,14 @@ def _public_endpoint(
     if provider == "ngrok":
         host = hostname or DEFAULT_NGROK_FORWARDING_HOST
     elif provider == "cloudflare":
-        host = hostname or "mcp.example.com"
+        host = hostname or DEFAULT_CLOUDFLARE_TUNNEL_HOST
     elif provider == "tailscale":
-        host = hostname or "YOUR-HOST.YOUR-TAILNET.ts.net"
+        host = hostname or DEFAULT_TAILSCALE_FUNNEL_HOST
     elif provider == "holepunch":
         origin = f"http://{hostname}" if hostname else DEFAULT_HOLEPUNCH_CLIENT_ORIGIN
         return _normalize_url(origin, path)
     else:
-        host = hostname or "YOUR-TUNNEL.example"
+        host = hostname or DEFAULT_GENERIC_TUNNEL_HOST
     return f"https://{host}{normalized_path}"
 
 
@@ -568,7 +572,7 @@ def _provider_plan(
     if provider == "ngrok":
         tunnel_target = _ngrok_target(origin)
         public_origin = _url_origin(public_endpoint)
-        url_arg = "" if _is_default_ngrok_endpoint(public_endpoint) else f" --url {public_origin}"
+        url_arg = "" if _is_default_public_endpoint("ngrok", public_endpoint) else f" --url {public_origin}"
         traffic_policy_file = _shell_path(output / "ngrok-traffic-policy.yml")
         commands = [
             {
@@ -591,7 +595,7 @@ def _provider_plan(
             ],
         }
     elif provider == "cloudflare":
-        public_host = urlsplit(public_endpoint).hostname or "mcp.example.com"
+        public_host = urlsplit(public_endpoint).hostname or DEFAULT_CLOUDFLARE_TUNNEL_HOST
         commands = [
             {
                 "id": "create-cloudflare-tunnel",
@@ -718,8 +722,8 @@ def _host_port_from_origin(origin: str) -> dict[str, Any]:
 
 def _doctor_command(provider: str, *, public_endpoint: str, token_env: str, config_path: str | Path) -> str:
     url_arg = (
-        _default_ngrok_doctor_url_arg(public_endpoint)
-        if provider == "ngrok" and _is_default_ngrok_endpoint(public_endpoint)
+        _default_public_url_arg(provider, public_endpoint)
+        if _is_default_public_endpoint(provider, public_endpoint)
         else public_endpoint
     )
     lines = ["snulbug tunnel doctor \\"]
@@ -735,16 +739,72 @@ def _doctor_command(provider: str, *, public_endpoint: str, token_env: str, conf
     return "\n".join(lines)
 
 
-def _is_default_ngrok_endpoint(value: str) -> bool:
-    return _url_origin(value) == DEFAULT_NGROK_FORWARDING_ORIGIN
+def _is_default_public_endpoint(provider: str, value: str) -> bool:
+    default_origin = _default_public_origin(provider)
+    return bool(default_origin and _url_origin(value) == default_origin)
 
 
-def _default_ngrok_doctor_url_arg(public_endpoint: str) -> str:
+def _default_public_origin(provider: str) -> str | None:
+    host = DEFAULT_PUBLIC_HOSTS.get(provider)
+    if host is None:
+        return None
+    return f"https://{host}"
+
+
+def _default_public_url_arg(provider: str, public_endpoint: str) -> str:
+    return f'"{_default_public_url_display(provider, public_endpoint)}"'
+
+
+def _default_public_url_display(provider: str, public_endpoint: str) -> str:
+    env = DEFAULT_PUBLIC_URL_ENVS[provider]
     parsed = urlsplit(public_endpoint)
     suffix = parsed.path or DEFAULT_MCP_PATH
     if parsed.query:
         suffix = f"{suffix}?{parsed.query}"
-    return f'"${{NGROK_URL}}{suffix}"'
+    return f"${{{env}}}{suffix}"
+
+
+def _display_public_endpoint(provider: str, public_endpoint: str) -> str:
+    if _is_default_public_endpoint(provider, public_endpoint):
+        return _default_public_url_display(provider, public_endpoint)
+    return public_endpoint
+
+
+def _default_public_url_report_lines(provider: str) -> list[str]:
+    env = DEFAULT_PUBLIC_URL_ENVS[provider]
+    origin = _default_public_origin(provider) or ""
+    title = {
+        "generic": "Public tunnel URL",
+        "ngrok": "Ngrok forwarding URL",
+        "cloudflare": "Cloudflare Tunnel URL",
+        "tailscale": "Tailscale Funnel URL",
+    }[provider]
+    note = {
+        "generic": "Set this to the exact public HTTPS origin printed or assigned by your tunnel provider.",
+        "ngrok": (
+            "Set this to the exact `Forwarding` HTTPS origin printed by the ngrok CLI. "
+            "Do not assume an `ngrok.app` domain; random free URLs may use `ngrok-free.dev`, "
+            "`ngrok-free.app`, or another ngrok-owned domain."
+        ),
+        "cloudflare": (
+            "Set this to the actual Cloudflare Tunnel HTTPS origin that routes to snulbug. "
+            "For named tunnels, pass `--hostname` or replace the generated placeholder in "
+            "`cloudflared.yml` before running cloudflared."
+        ),
+        "tailscale": (
+            "Set this to the public Funnel HTTPS origin for this machine, usually `https://HOST.TAILNET.ts.net`."
+        ),
+    }[provider]
+    return [
+        f"## {title}",
+        "",
+        note,
+        "",
+        "```bash",
+        f"export {env}={origin}",
+        "```",
+        "",
+    ]
 
 
 def _tunnel_init_files(
@@ -852,6 +912,12 @@ def _tunnel_readme(
     provider_notes = _provider_readme_notes(provider, plan)
     commands = "\n\n".join(command_sections)
     remote_label = "Client bridge MCP URL" if provider == "holepunch" else "Public MCP URL"
+    displayed_public_endpoint = _display_public_endpoint(provider, public_endpoint)
+    public_url_notes = (
+        "\n".join(_default_public_url_report_lines(provider))
+        if _is_default_public_endpoint(provider, public_endpoint)
+        else ""
+    )
     verify_title = "Verify before sharing bridge details" if provider == "holepunch" else "Verify before sharing"
     final_instruction = (
         "Point MCP clients at the client bridge MCP URL only after `snulbug tunnel doctor` passes.\n"
@@ -862,11 +928,12 @@ def _tunnel_readme(
         f"# snulbug {provider} tunnel setup\n\n"
         f"Local snulbug origin: `{origin}`\n\n"
         f"Local MCP URL: `{endpoint}`\n\n"
-        f"{remote_label}: `{public_endpoint}`\n\n"
+        f"{remote_label}: `{displayed_public_endpoint}`\n\n"
         "Set the bearer token before running doctor or configuring an MCP client:\n\n"
         "```bash\n"
         f"export {token_env}=local-dev-secret\n"
         "```\n\n"
+        f"{public_url_notes}"
         f"{commands}\n\n"
         f"{provider_notes}"
         f"## {verify_title}\n\n"
@@ -1008,7 +1075,7 @@ def _hypertele_client_config() -> str:
 
 
 def _cloudflared_config(origin: str, public_endpoint: str) -> str:
-    hostname = urlsplit(public_endpoint).hostname or "mcp.example.com"
+    hostname = urlsplit(public_endpoint).hostname or DEFAULT_CLOUDFLARE_TUNNEL_HOST
     return (
         "tunnel: snulbug-mcp\n"
         "credentials-file: /path/to/snulbug-mcp-credentials.json\n"

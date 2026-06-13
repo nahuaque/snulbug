@@ -61,7 +61,6 @@ curl -sS "${NGROK_URL}/mcp" \
 ```bash
 snulbug tunnel init \
   --provider cloudflare \
-  --hostname mcp.example.com \
   --config snulbug.toml \
   --output-dir tunnel.cloudflare
 ```
@@ -72,12 +71,20 @@ Generated output includes:
 - `cloudflared.yml` ingress config that routes the public hostname to snulbug
 - a doctor command that can include Cloudflare Access headers
 
+If you already know the named tunnel hostname, pass it with
+`--hostname mcp.example.com`. Otherwise replace the generated placeholder in
+`cloudflared.yml` and set the exact public origin before running doctor:
+
+```bash
+export CLOUDFLARE_TUNNEL_URL=https://mcp.example.com
+```
+
 For Access-protected apps, run doctor with service-token headers:
 
 ```bash
 snulbug tunnel doctor \
   --provider cloudflare \
-  --url https://mcp.example.com/mcp \
+  --url "${CLOUDFLARE_TUNNEL_URL}/mcp" \
   --config snulbug.toml \
   --header "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
   --header "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
@@ -100,7 +107,6 @@ cloudflare_access_allowed_domains = ["example.com"]
 ```bash
 snulbug tunnel init \
   --provider tailscale \
-  --hostname HOST.TAILNET.ts.net \
   --config snulbug.toml \
   --output-dir tunnel.tailscale
 ```
@@ -115,6 +121,10 @@ Generated output includes:
 
 Tailscale Funnel exposes a local service over public HTTPS. Keep snulbug's
 `tunnel-safe` preset in front of the MCP server and require the bearer header:
+
+```bash
+export TAILSCALE_FUNNEL_URL=https://HOST.TAILNET.ts.net
+```
 
 ```text
 Authorization: Bearer ${SNULBUG_TOKEN}

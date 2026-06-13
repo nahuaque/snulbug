@@ -175,7 +175,7 @@ uv run snulbug tunnel doctor \
 Point the client at:
 
 ```text
-https://YOUR-TUNNEL.example/mcp
+${NGROK_URL}/mcp
 ```
 
 Keep the same bearer header:
@@ -203,17 +203,17 @@ uv run snulbug mcp proxy --config snulbug.toml --decision-console
 
 uv run snulbug tunnel init \
   --provider tailscale \
-  --hostname HOST.TAILNET.ts.net \
   --config snulbug.toml \
   --output-dir tunnel.tailscale
 
 sudo tailscale funnel 8080
+export TAILSCALE_FUNNEL_URL=https://HOST.TAILNET.ts.net
 ```
 
 The MCP client should use the Funnel URL and bearer header:
 
 ```text
-https://HOST.TAILNET.ts.net/mcp
+${TAILSCALE_FUNNEL_URL}/mcp
 Authorization: Bearer local-dev-secret
 ```
 
@@ -251,7 +251,7 @@ carry an active lease. Before sharing the Funnel URL, run:
 ```bash
 uv run snulbug tunnel doctor \
   --provider tailscale \
-  --url https://HOST.TAILNET.ts.net/mcp \
+  --url "${TAILSCALE_FUNNEL_URL}/mcp" \
   --config snulbug.toml \
   --token local-dev-secret
 ```
