@@ -17,6 +17,7 @@ from snulbug import (
     EVENT_UPSTREAM_DEGRADED,
     EVENT_UPSTREAM_RECOVERED,
     EVENT_UPSTREAM_UNHEALTHY,
+    FABRIC_CONTROL_STATE_SCHEMA,
     ConfirmationBroker,
     McpFacadeProxyApp,
     build_fabric_audit_metadata,
@@ -568,6 +569,59 @@ def test_mcp_facade_can_reload_upstream_route_table(tmp_path):
     assert git_seen["calls"] == [{"method": "tools/list", "tool": None}]
 
 
+def test_mcp_facade_operational_controls_skip_quarantined_upstream(tmp_path):
+    files_server, files_seen = start_mcp_upstream({"read_file": "Read a file"})
+    git_server, git_seen = start_mcp_upstream({"status": "Show git status"})
+    policy = write_policy(tmp_path, "continue")
+    control_state = {
+        "schema": FABRIC_CONTROL_STATE_SCHEMA,
+        "version": 1,
+        "actions": [
+            {
+                "id": "ctrl_test",
+                "type": "quarantine_upstream",
+                "target": "git",
+                "status": "active",
+                "created_at": "2026-01-01T00:00:00+00:00",
+            }
+        ],
+    }
+    app = create_proxy_application(
+        None,
+        policy,
+        upstreams=[
+            {"name": "files", "url": f"http://127.0.0.1:{files_server.server_port}/mcp"},
+            {"name": "git", "url": f"http://127.0.0.1:{git_server.server_port}/mcp"},
+        ],
+        fabric_control_state_provider=lambda: control_state,
+    )
+
+    async def run_all():
+        listed = await run_asgi_once(app, body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}')
+        blocked = await run_asgi_once(
+            app,
+            body=b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"git.status"}}',
+        )
+        await close_app(app)
+        return listed, blocked
+
+    try:
+        listed, blocked = asyncio.run(run_all())
+    finally:
+        files_server.shutdown()
+        files_server.server_close()
+        git_server.shutdown()
+        git_server.server_close()
+
+    listed_payload = json.loads(listed[1]["body"])
+    blocked_payload = json.loads(blocked[1]["body"])
+    assert [tool["name"] for tool in listed_payload["result"]["tools"]] == ["files.read_file"]
+    assert blocked[0]["status"] == 503
+    assert "operational control" in blocked_payload["error"]["message"]
+    assert files_seen["calls"] == [{"method": "tools/list", "tool": None}]
+    assert git_seen["calls"] == []
+
+
 def test_mcp_facade_reload_detects_stdio_route_process_changes():
     facade = McpFacadeProxyApp(
         [
@@ -651,6 +705,60 @@ def test_proxy_can_hot_reload_fabric_config_routes_and_records_metadata(tmp_path
     assert EVENT_ROUTE_CHANGED in records[1]["metadata"]["fabric_reload"]["event_types"]
     assert records[1]["metadata"]["topology"]["fabric"]["name"] == "hot-reload-fabric"
     assert records[1]["metadata"]["topology"]["route"]["upstream"] == "git"
+
+
+def test_proxy_force_reload_control_rebuilds_same_route_table(tmp_path):
+    files_server, files_seen = start_mcp_upstream({"read_file": "Read a file"})
+    policy = write_policy(tmp_path, "continue")
+    config = tmp_path / "snulbug.toml"
+    record_log = tmp_path / "records.jsonl"
+    write_hot_reload_config(config, upstream_name="files", port=files_server.server_port)
+    control_state = {
+        "schema": FABRIC_CONTROL_STATE_SCHEMA,
+        "version": 1,
+        "actions": [
+            {
+                "id": "ctrl_reload",
+                "type": "force_reload",
+                "status": "active",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "expires_at": "2099-01-01T00:00:00+00:00",
+            }
+        ],
+    }
+    app = create_proxy_application(
+        None,
+        policy,
+        upstreams=[{"name": "files", "url": f"http://127.0.0.1:{files_server.server_port}/mcp"}],
+        record_out=record_log,
+        fabric_reload_config=config,
+        fabric_reload_interval=0.001,
+        fabric_control_state_provider=lambda: control_state,
+    )
+
+    async def run_all():
+        response = await run_asgi_once(
+            app,
+            body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}',
+        )
+        await close_app(app)
+        return response
+
+    try:
+        response = asyncio.run(run_all())
+    finally:
+        files_server.shutdown()
+        files_server.server_close()
+        files_server.server_close()
+
+    payload = json.loads(response[1]["body"])
+    records = load_record_log(record_log)
+    assert [tool["name"] for tool in payload["result"]["tools"]] == ["files.read_file"]
+    assert records[0]["metadata"]["fabric_reload"]["reloaded"] is True
+    assert records[0]["metadata"]["fabric_reload"]["force"] is True
+    assert records[0]["metadata"]["fabric_reload"]["reason"] == "control:force_reload"
+    assert records[0]["metadata"]["fabric_reload"]["operational_controls"]["force_reload"] is True
+    assert files_seen["calls"] == [{"method": "tools/list", "tool": None}]
 
 
 def test_mcp_facade_health_routing_degrades_unhealthy_and_skips_fanout(tmp_path):

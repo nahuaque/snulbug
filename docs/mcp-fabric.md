@@ -467,6 +467,25 @@ snulbug mcp fabric runtime status --compact
 snulbug mcp fabric runtime clear
 ```
 
+Operational controls are stored beside the runtime status and are consumed by
+managed `fabric run` instances on each controller/reload tick:
+
+```bash
+snulbug mcp fabric control pause-sharing --reason "rotating tunnel token"
+snulbug mcp fabric control quarantine-upstream files --reason "unexpected tool schema"
+snulbug mcp fabric control drain-upstream git --reason "maintenance"
+snulbug mcp fabric control force-reload
+snulbug mcp fabric control rollback-policy policy.previous.snulbug/policy.lua
+snulbug mcp fabric control list --compact
+snulbug mcp fabric control clear --action quarantine_upstream --target files
+```
+
+`pause-sharing` and `rollback-policy` block `share_gate`. Drained and
+quarantined upstreams stay in the route table for observability, but facade
+routing skips them for `tools/list` fanout and `tools/call`. `force-reload`
+defaults to a short TTL and forces the next reload tick to rebuild the facade
+routes even if the config fingerprint is unchanged.
+
 To gate public sharing on a generated conformance pack:
 
 ```bash

@@ -617,6 +617,62 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="runtime state key for shared stores",
     )
     mcp_fabric_runtime_clear.add_argument("--compact", action="store_true", help="emit compact JSON")
+    mcp_fabric_control = mcp_fabric_subparsers.add_parser(
+        "control",
+        help="issue or inspect live fabric operational controls",
+    )
+    mcp_fabric_control_subparsers = mcp_fabric_control.add_subparsers(dest="control_command", required=True)
+    mcp_fabric_control_list = mcp_fabric_control_subparsers.add_parser(
+        "list",
+        help="list active fabric operational controls",
+    )
+    _add_fabric_control_store_args(mcp_fabric_control_list)
+    mcp_fabric_control_pause = mcp_fabric_control_subparsers.add_parser(
+        "pause-sharing",
+        help="block the fabric share gate until cleared",
+    )
+    _add_fabric_control_store_args(mcp_fabric_control_pause)
+    _add_fabric_control_issue_args(mcp_fabric_control_pause)
+    mcp_fabric_control_drain = mcp_fabric_control_subparsers.add_parser(
+        "drain-upstream",
+        help="skip an upstream for new facade routing until cleared",
+    )
+    mcp_fabric_control_drain.add_argument("upstream", help="upstream name to drain")
+    _add_fabric_control_store_args(mcp_fabric_control_drain)
+    _add_fabric_control_issue_args(mcp_fabric_control_drain)
+    mcp_fabric_control_quarantine = mcp_fabric_control_subparsers.add_parser(
+        "quarantine-upstream",
+        help="quarantine an upstream from facade routing until cleared",
+    )
+    mcp_fabric_control_quarantine.add_argument("upstream", help="upstream name to quarantine")
+    _add_fabric_control_store_args(mcp_fabric_control_quarantine)
+    _add_fabric_control_issue_args(mcp_fabric_control_quarantine)
+    mcp_fabric_control_reload = mcp_fabric_control_subparsers.add_parser(
+        "force-reload",
+        help="force the managed data plane to rebuild facade routes on the next reload tick",
+    )
+    _add_fabric_control_store_args(mcp_fabric_control_reload)
+    _add_fabric_control_issue_args(mcp_fabric_control_reload, default_ttl=60.0)
+    mcp_fabric_control_rollback = mcp_fabric_control_subparsers.add_parser(
+        "rollback-policy",
+        help="record a policy rollback intent and block sharing until cleared",
+    )
+    mcp_fabric_control_rollback.add_argument("policy", type=Path, help="policy path to roll back to")
+    _add_fabric_control_store_args(mcp_fabric_control_rollback)
+    _add_fabric_control_issue_args(mcp_fabric_control_rollback)
+    mcp_fabric_control_clear = mcp_fabric_control_subparsers.add_parser(
+        "clear",
+        help="clear active fabric operational controls",
+    )
+    mcp_fabric_control_clear.add_argument("--id", dest="action_id", help="clear one action id")
+    mcp_fabric_control_clear.add_argument(
+        "--action",
+        choices=("pause_sharing", "drain_upstream", "quarantine_upstream", "force_reload", "rollback_policy"),
+        help="clear active controls of this type",
+    )
+    mcp_fabric_control_clear.add_argument("--target", help="clear active controls for this upstream target")
+    mcp_fabric_control_clear.add_argument("--actor", help="actor recorded on the clear event")
+    _add_fabric_control_store_args(mcp_fabric_control_clear)
     mcp_fabric_controller = mcp_fabric_subparsers.add_parser(
         "controller",
         help="reconcile declarative MCP fabric config into a controller state snapshot",
@@ -1396,6 +1452,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 learn_fabric_profile,
                 run_fabric_conformance_pack,
             )
+            from .fabric_control import (
+                clear_fabric_control_actions,
+                format_fabric_control_report,
+                issue_fabric_control_action,
+                load_fabric_control_state,
+            )
             from .fabric_runtime import (
                 clear_fabric_runtime_status,
                 format_fabric_runtime_report,
@@ -1502,6 +1564,48 @@ def main(argv: Sequence[str] | None = None) -> int:
                     else:
                         parser.error(f"unknown mcp fabric runtime command: {args.runtime_command}")
                         return 2
+                elif args.fabric_command == "control":
+                    if args.control_command == "list":
+                        result = load_fabric_control_state(
+                            args.runtime_state,
+                            key=args.runtime_state_key,
+                        )
+                    elif args.control_command == "clear":
+                        result = clear_fabric_control_actions(
+                            args.runtime_state,
+                            key=args.runtime_state_key,
+                            action_id=args.action_id,
+                            action_type=args.action,
+                            target=args.target,
+                            actor=args.actor,
+                        )
+                    else:
+                        action_map = {
+                            "pause-sharing": "pause_sharing",
+                            "drain-upstream": "drain_upstream",
+                            "quarantine-upstream": "quarantine_upstream",
+                            "force-reload": "force_reload",
+                            "rollback-policy": "rollback_policy",
+                        }
+                        action_type = action_map.get(args.control_command)
+                        if action_type is None:
+                            parser.error(f"unknown mcp fabric control command: {args.control_command}")
+                            return 2
+                        result = issue_fabric_control_action(
+                            args.runtime_state,
+                            key=args.runtime_state_key,
+                            action_type=action_type,
+                            target=getattr(args, "upstream", None),
+                            policy=getattr(args, "policy", None),
+                            reason=args.reason,
+                            actor=args.actor,
+                            ttl_seconds=args.ttl_seconds,
+                        )
+                    status = 0 if result["ok"] else 1
+                    if not args.compact:
+                        sys.stdout.write(format_fabric_control_report(result))
+                        sys.stdout.write("\n")
+                        return status
                 elif args.fabric_command == "controller":
                     event_log = None if args.no_event_log else args.event_log
                     status_server = None
@@ -1886,6 +1990,31 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser.error(f"unknown command: {args.command}")
     return 2
+
+
+def _add_fabric_control_store_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--runtime-state",
+        default=DEFAULT_FABRIC_RUNTIME_STATE,
+        help="'memory', 'none', 'sqlite:/path/to/state.sqlite3', or 'redis://...'",
+    )
+    parser.add_argument(
+        "--runtime-state-key",
+        default=DEFAULT_FABRIC_RUNTIME_STATE_KEY,
+        help="runtime state key for shared stores",
+    )
+    parser.add_argument("--compact", action="store_true", help="emit compact JSON")
+
+
+def _add_fabric_control_issue_args(parser: argparse.ArgumentParser, *, default_ttl: float | None = None) -> None:
+    parser.add_argument("--reason", help="operator reason recorded with the control action")
+    parser.add_argument("--actor", help="operator identity recorded with the control action")
+    parser.add_argument(
+        "--ttl-seconds",
+        type=float,
+        default=default_ttl,
+        help="seconds before the control expires; omit for persistent controls",
+    )
 
 
 def _read_json(path: Path) -> Any:

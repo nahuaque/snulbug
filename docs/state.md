@@ -44,3 +44,17 @@ Use `redis://...` plus `--runtime-state-key` when several containers or hosts
 need one shared MCP fabric runtime view. Runtime state also maintains a lease
 key next to the status key so only one active owner can publish heartbeats for a
 given fabric key at a time.
+
+Operational control actions use the same store and key prefix, but live under a
+separate controls key. That lets an operator pause sharing, drain/quarantine an
+upstream, request a force reload, or record a rollback intent without racing the
+runtime heartbeat writer:
+
+```bash
+snulbug mcp fabric control pause-sharing \
+  --runtime-state redis://127.0.0.1:6379/0 \
+  --runtime-state-key snulbug:fabric:devbox-a
+
+snulbug mcp fabric control list --compact
+snulbug mcp fabric control clear --id ctrl_...
+```

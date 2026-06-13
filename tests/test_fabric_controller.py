@@ -14,6 +14,8 @@ from snulbug import (
     FabricControllerStatusServer,
     MemoryFabricRuntimeStateStore,
     inspect_bundle_lifecycle,
+    issue_fabric_control_action,
+    load_fabric_control_state,
     load_fabric_runtime_status,
     open_fabric_runtime_state_store,
     promote_bundle_lifecycle,
@@ -702,6 +704,112 @@ def test_mcp_fabric_runtime_cli_reads_and_clears_persisted_state(tmp_path, capsy
     assert clear_status == 0
     assert clear_output["cleared"] is True
     assert load_fabric_runtime_status(runtime_state, key=runtime_key)["ok"] is False
+
+
+def test_mcp_fabric_control_cli_issues_lists_and_clears_controls(tmp_path, capsys):
+    runtime_state = f"sqlite:{tmp_path / '.snulbug/fabric-runtime.sqlite3'}"
+    runtime_key = "cli-control"
+
+    issue_status = simulator_main(
+        [
+            "mcp",
+            "fabric",
+            "control",
+            "pause-sharing",
+            "--runtime-state",
+            runtime_state,
+            "--runtime-state-key",
+            runtime_key,
+            "--actor",
+            "test",
+            "--reason",
+            "maintenance",
+            "--compact",
+        ]
+    )
+    issue_output = json.loads(capsys.readouterr().out)
+    list_status = simulator_main(
+        [
+            "mcp",
+            "fabric",
+            "control",
+            "list",
+            "--runtime-state",
+            runtime_state,
+            "--runtime-state-key",
+            runtime_key,
+            "--compact",
+        ]
+    )
+    list_output = json.loads(capsys.readouterr().out)
+    clear_status = simulator_main(
+        [
+            "mcp",
+            "fabric",
+            "control",
+            "clear",
+            "--runtime-state",
+            runtime_state,
+            "--runtime-state-key",
+            runtime_key,
+            "--action",
+            "pause_sharing",
+            "--compact",
+        ]
+    )
+    clear_output = json.loads(capsys.readouterr().out)
+
+    assert issue_status == 0
+    assert issue_output["action"]["type"] == "pause_sharing"
+    assert list_status == 0
+    assert list_output["summary"]["paused"] is True
+    assert list_output["summary"]["active_count"] == 1
+    assert clear_status == 0
+    assert clear_output["cleared"] == 1
+    assert load_fabric_control_state(runtime_state, key=runtime_key)["summary"]["active_count"] == 0
+
+
+def test_fabric_data_plane_runner_exposes_active_operational_controls(tmp_path):
+    config = write_fabric_run_config(tmp_path)
+    runtime_state = f"sqlite:{tmp_path / '.snulbug/fabric-runtime.sqlite3'}"
+    runtime_state_key = "control-runtime"
+    issue_fabric_control_action(
+        runtime_state,
+        key=runtime_state_key,
+        action_type="pause_sharing",
+        reason="operator pause",
+    )
+    started = []
+    proxy_calls = []
+
+    def emit(payload):
+        started.append(payload)
+
+    def fake_proxy_runner(**kwargs):
+        proxy_calls.append(kwargs)
+        proxy_calls.append({"control_state": kwargs["fabric_control_state_provider"]()})
+
+    result = run_fabric_data_plane(
+        config,
+        state_path=tmp_path / ".snulbug/fabric-state.json",
+        event_log=None,
+        controller_interval=0.01,
+        reload_interval=0.02,
+        status_port=0,
+        runtime_state=runtime_state,
+        runtime_state_key=runtime_state_key,
+        emit=emit,
+        proxy_runner=fake_proxy_runner,
+    )
+
+    assert started[0]["operational_controls"]["paused"] is True
+    assert "sharing_paused" in started[0]["share_gate"]["blocked_by"]
+    assert proxy_calls[1]["control_state"]["actions"][0]["type"] == "pause_sharing"
+    assert "sharing_paused" in result["share_gate"]["blocked_by"]
+    assert (
+        load_fabric_runtime_status(runtime_state, key=runtime_state_key)["status"]["operational_controls"]["paused"]
+        is True
+    )
 
 
 def test_fabric_runtime_status_does_not_create_missing_sqlite_store(tmp_path):

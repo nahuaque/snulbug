@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from .fabric_control import control_share_gate_signals
 from .state import PolicyStateStore, RedisStateStore, SQLiteStateStore
 
 FABRIC_RUNTIME_STATE_SCHEMA = "snulbug.fabric-runtime-state.v1"
@@ -22,6 +23,12 @@ class FabricRuntimeStateStore(Protocol):
     def save_status(self, status: Mapping[str, Any], *, lease: Mapping[str, Any] | None = None) -> None: ...
 
     def clear(self) -> bool: ...
+
+    def load_control_state(self) -> dict[str, Any] | None: ...
+
+    def save_control_state(self, state: Mapping[str, Any]) -> None: ...
+
+    def clear_control_state(self) -> bool: ...
 
     def load_lease(self) -> dict[str, Any] | None: ...
 
@@ -49,6 +56,7 @@ class FabricRuntimeStateStore(Protocol):
 class MemoryFabricRuntimeStateStore:
     def __init__(self) -> None:
         self._status: dict[str, Any] | None = None
+        self._control_state: dict[str, Any] | None = None
         self._lease: dict[str, Any] | None = None
         self._generation = 0
         self._lock = threading.RLock()
@@ -67,6 +75,20 @@ class MemoryFabricRuntimeStateStore:
         with self._lock:
             existed = self._status is not None
             self._status = None
+            return existed
+
+    def load_control_state(self) -> dict[str, Any] | None:
+        with self._lock:
+            return None if self._control_state is None else _copy_jsonish(self._control_state)
+
+    def save_control_state(self, state: Mapping[str, Any]) -> None:
+        with self._lock:
+            self._control_state = _copy_jsonish(state)
+
+    def clear_control_state(self) -> bool:
+        with self._lock:
+            existed = self._control_state is not None
+            self._control_state = None
             return existed
 
     def load_lease(self) -> dict[str, Any] | None:
@@ -139,6 +161,7 @@ class PolicyFabricRuntimeStateStore:
         self.key = key
         self.lease_key = f"{key}:lease"
         self.generation_key = f"{key}:generation"
+        self.control_key = f"{key}:controls"
 
     def load_status(self) -> dict[str, Any] | None:
         raw = self.store.get(self.key)
@@ -170,6 +193,24 @@ class PolicyFabricRuntimeStateStore:
 
     def clear(self) -> bool:
         return self.store.delete(self.key)
+
+    def load_control_state(self) -> dict[str, Any] | None:
+        raw = self.store.get(self.control_key)
+        if raw is None:
+            return None
+        try:
+            state = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("fabric control state is not valid JSON") from exc
+        if not isinstance(state, Mapping):
+            raise ValueError("fabric control state must be a JSON object")
+        return _copy_jsonish(state)
+
+    def save_control_state(self, state: Mapping[str, Any]) -> None:
+        self.store.put(self.control_key, json.dumps(_copy_jsonish(state), sort_keys=True, separators=(",", ":")))
+
+    def clear_control_state(self) -> bool:
+        return self.store.delete(self.control_key)
 
     def load_lease(self) -> dict[str, Any] | None:
         raw = self.store.get(self.lease_key)
@@ -537,6 +578,9 @@ def _attach_share_gate(status: Mapping[str, Any]) -> dict[str, Any]:
         blocks.append(f"data_plane_{data_plane.get('status', 'unknown')}")
     if data_plane.get("status") == "running" and _data_plane_heartbeat_stale(data_plane):
         blocks.append("data_plane_heartbeat_stale")
+    control_blocks, control_warnings = control_share_gate_signals(latest.get("operational_controls"))
+    blocks.extend(control_blocks)
+    warnings.extend(control_warnings)
     runtime_owner = _mapping(latest.get("runtime_owner"))
     if runtime_owner.get("lost"):
         blocks.append("runtime_lease_lost")

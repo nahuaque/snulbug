@@ -28,6 +28,7 @@ from .control_events import (
     make_control_event,
 )
 from .fabric import annotate_topology_audit, build_fabric_audit_metadata
+from .fabric_control import summarize_fabric_control_state
 from .leases import LeasePolicyConfig, enforce_mcp_lease_policy, mcp_lease_error_response
 from .manifests import load_manifest, verify_upstream_manifest
 from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
@@ -533,6 +534,7 @@ class McpFacadeProxyApp:
         tool_schema_store: PolicyStateStore | None = None,
         lease_policy: LeasePolicyConfig | None = None,
         health_policy: FacadeHealthPolicy | None = None,
+        control_state_provider: Any = None,
     ) -> None:
         self.timeout = timeout
         self.response_policy = response_policy or ResponsePolicyConfig()
@@ -541,6 +543,7 @@ class McpFacadeProxyApp:
         self.tool_schema_store = tool_schema_store
         self.lease_policy = lease_policy or LeasePolicyConfig()
         self.health_policy = health_policy or FacadeHealthPolicy()
+        self.control_state_provider = control_state_provider
         self._health: dict[str, FacadeUpstreamHealth] = {}
         self._routes = _build_facade_route_table(upstreams, timeout=timeout, revision=1)
         self._sync_health_upstreams(self._routes)
@@ -573,11 +576,12 @@ class McpFacadeProxyApp:
         upstreams: Sequence[FacadeUpstream | Mapping[str, Any]],
         *,
         reason: str = "manual",
+        force: bool = False,
     ) -> dict[str, Any]:
         reloaded_at = _utc_timestamp()
         new_routes = _build_facade_route_table(upstreams, timeout=self.timeout, revision=self._next_revision)
         current = self._routes
-        if new_routes.fingerprint == current.fingerprint:
+        if new_routes.fingerprint == current.fingerprint and not force:
             await new_routes.aclose()
             return {
                 "ok": True,
@@ -612,7 +616,7 @@ class McpFacadeProxyApp:
                     "fingerprint": new_routes.fingerprint,
                     "upstreams": [upstream.name for upstream in new_routes.upstreams],
                 },
-                details={"reason": reason},
+                details={"reason": reason, "force": force},
             )
         ]
         return {
@@ -625,6 +629,7 @@ class McpFacadeProxyApp:
             "previous_fingerprint": current.fingerprint,
             "upstream_count": len(new_routes.upstreams),
             "upstreams": [upstream.name for upstream in new_routes.upstreams],
+            "force": force,
             "control_events": control_events,
             "event_types": event_types(control_events),
         }
@@ -697,13 +702,31 @@ class McpFacadeProxyApp:
                 self._health[upstream.name] = state
         return state
 
-    def _should_route_upstream(self, upstream: FacadeUpstream) -> bool:
+    def _current_operational_controls(self) -> dict[str, Any]:
+        if self.control_state_provider is None:
+            return summarize_fabric_control_state(None)
+        state = self.control_state_provider()
+        return summarize_fabric_control_state(state)
+
+    def _should_route_upstream(self, upstream: FacadeUpstream, controls: Mapping[str, Any] | None = None) -> bool:
+        if self._upstream_disabled_by_controls(upstream, controls):
+            return False
         if not self.health_policy.enabled or not self.health_policy.exclude_unhealthy:
             return True
         state = self._health_state(upstream)
         if state.status != "unhealthy":
             return True
         return state.retry_after is None or time.monotonic() >= state.retry_after
+
+    def _upstream_disabled_by_controls(
+        self,
+        upstream: FacadeUpstream,
+        controls: Mapping[str, Any] | None = None,
+    ) -> bool:
+        control_summary = _mapping(controls)
+        if control_summary.get("paused"):
+            return True
+        return upstream.name in set(control_summary.get("disabled_upstreams", []))
 
     def _record_upstream_success(self, upstream: FacadeUpstream, *, operation: str) -> list[dict[str, Any]]:
         if not self.health_policy.enabled:
@@ -806,6 +829,7 @@ class McpFacadeProxyApp:
             return
 
         routes = self._acquire_routes()
+        controls = self._current_operational_controls()
         try:
             body = await _read_body(receive)
             try:
@@ -824,10 +848,10 @@ class McpFacadeProxyApp:
 
             method = request.get("method")
             if method == "tools/list":
-                await self._list_tools(routes, scope, request, body, send)
+                await self._list_tools(routes, scope, request, body, send, controls=controls)
                 return
             if method == "tools/call":
-                await self._call_tool(routes, scope, request, send)
+                await self._call_tool(routes, scope, request, send, controls=controls)
                 return
 
             await self._forward_to_default(routes, scope, body, send)
@@ -841,13 +865,14 @@ class McpFacadeProxyApp:
         request: Mapping[str, Any],
         body: bytes,
         send: Send,
+        controls: Mapping[str, Any],
     ) -> None:
         responses = []
         skipped: list[str] = []
         failures: list[dict[str, Any]] = []
         health_events: list[dict[str, Any]] = []
         for upstream in routes.upstreams:
-            if not self._should_route_upstream(upstream):
+            if not self._should_route_upstream(upstream, controls):
                 skipped.append(upstream.name)
                 continue
             try:
@@ -903,6 +928,7 @@ class McpFacadeProxyApp:
                     "upstreams": [upstream.name for upstream in routes.upstreams],
                     "route_revision": routes.revision,
                     "route_fingerprint": routes.fingerprint,
+                    "operational_controls": _copy_jsonish(controls),
                     **self._health_metadata_field(
                         routes,
                         skipped=skipped,
@@ -979,6 +1005,7 @@ class McpFacadeProxyApp:
                     "upstreams": [upstream.name for upstream in routes.upstreams],
                     "route_revision": routes.revision,
                     "route_fingerprint": routes.fingerprint,
+                    "operational_controls": _copy_jsonish(controls),
                     **self._health_metadata_field(
                         routes,
                         skipped=skipped,
@@ -1008,6 +1035,7 @@ class McpFacadeProxyApp:
                 "tool_count": len(tools),
                 "route_revision": routes.revision,
                 "route_fingerprint": routes.fingerprint,
+                "operational_controls": _copy_jsonish(controls),
                 **self._health_metadata_field(
                     routes,
                     skipped=skipped,
@@ -1054,6 +1082,7 @@ class McpFacadeProxyApp:
         scope: Scope,
         request: Mapping[str, Any],
         send: Send,
+        controls: Mapping[str, Any],
     ) -> None:
         params = request.get("params")
         if not isinstance(params, Mapping) or not isinstance(params.get("name"), str):
@@ -1077,7 +1106,8 @@ class McpFacadeProxyApp:
             )
             return
 
-        if not self._should_route_upstream(upstream):
+        operationally_disabled = self._upstream_disabled_by_controls(upstream, controls)
+        if operationally_disabled or not self._should_route_upstream(upstream, controls):
             _set_proxy_metadata(
                 scope,
                 {
@@ -1089,6 +1119,7 @@ class McpFacadeProxyApp:
                     "tool": tool_name,
                     "route_revision": routes.revision,
                     "route_fingerprint": routes.fingerprint,
+                    "operational_controls": _copy_jsonish(controls),
                     **self._health_metadata_field(routes, skipped=[upstream.name]),
                 },
             )
@@ -1096,7 +1127,11 @@ class McpFacadeProxyApp:
                 send,
                 request_id=request.get("id"),
                 code=-32000,
-                message=f"facade upstream {upstream.name!r} is unhealthy",
+                message=(
+                    f"facade upstream {upstream.name!r} is unavailable by operational control"
+                    if operationally_disabled
+                    else f"facade upstream {upstream.name!r} is unhealthy"
+                ),
                 status=503,
             )
             return
@@ -1583,6 +1618,7 @@ class FabricConfigReloadMiddleware:
         interval: float = 2.0,
         proxy_overrides: Mapping[str, Any] | None = None,
         topology_audit: Mapping[str, Any] | None = None,
+        control_state_provider: Any = None,
     ) -> None:
         if interval <= 0:
             raise ValueError("fabric reload interval must be positive")
@@ -1592,6 +1628,7 @@ class FabricConfigReloadMiddleware:
         self.interval = float(interval)
         self.proxy_overrides = dict(proxy_overrides or {})
         self.topology_audit = dict(topology_audit or {})
+        self.control_state_provider = control_state_provider
         self._next_check = 0.0
         self._lock: asyncio.Lock | None = None
         self._lock_loop: asyncio.AbstractEventLoop | None = None
@@ -1629,10 +1666,14 @@ class FabricConfigReloadMiddleware:
                     _load_fabric_reload_config,
                     self.config,
                     self.proxy_overrides,
+                    self._load_control_state(),
                 )
                 result = await self.facade.reload_upstreams(
                     loaded["upstreams"],
-                    reason=f"config:{self.config}",
+                    reason="control:force_reload"
+                    if loaded["operational_controls"].get("force_reload")
+                    else f"config:{self.config}",
+                    force=bool(loaded["operational_controls"].get("force_reload")),
                 )
                 self.topology_audit = loaded["topology_audit"]
                 control_events = list(result.get("control_events", []))
@@ -1658,6 +1699,7 @@ class FabricConfigReloadMiddleware:
                     "route_revision": self.facade.route_revision,
                     "route_fingerprint": self.facade.route_fingerprint,
                     "summary": loaded["summary"],
+                    "operational_controls": loaded["operational_controls"],
                     "control_events": control_events,
                     "event_types": event_types(control_events),
                 }
@@ -1695,6 +1737,11 @@ class FabricConfigReloadMiddleware:
             self._lock = asyncio.Lock()
             self._lock_loop = loop
         return self._lock
+
+    def _load_control_state(self) -> Mapping[str, Any] | None:
+        if self.control_state_provider is None:
+            return None
+        return self.control_state_provider()
 
 
 def create_proxy_application(
@@ -1738,6 +1785,7 @@ def create_proxy_application(
     fabric_reload_config: str | Path | None = None,
     fabric_reload_interval: float = 2.0,
     fabric_reload_overrides: Mapping[str, Any] | None = None,
+    fabric_control_state_provider: Any = None,
     confirm: bool = False,
     confirm_handler: Any = None,
 ) -> ASGIApp:
@@ -1777,6 +1825,7 @@ def create_proxy_application(
         tool_schema_store=effective_state_store if schema_validation else None,
         lease_policy=lease_policy,
         health_policy=facade_health_policy,
+        control_state_provider=fabric_control_state_provider,
     )
     facade_proxy = proxy if isinstance(proxy, McpFacadeProxyApp) else None
     app = LuaMiddleware(
@@ -1823,6 +1872,7 @@ def create_proxy_application(
             interval=fabric_reload_interval,
             proxy_overrides=fabric_reload_overrides,
             topology_audit=topology_audit,
+            control_state_provider=fabric_control_state_provider,
         )
     return app
 
@@ -1869,6 +1919,7 @@ def run_proxy(
     fabric_reload_config: str | Path | None = None,
     fabric_reload_interval: float = 2.0,
     fabric_reload_overrides: Mapping[str, Any] | None = None,
+    fabric_control_state_provider: Any = None,
     confirm: bool = False,
 ) -> None:
     """Run the reverse proxy with uvicorn."""
@@ -1917,6 +1968,7 @@ def run_proxy(
         fabric_reload_config=fabric_reload_config,
         fabric_reload_interval=fabric_reload_interval,
         fabric_reload_overrides=fabric_reload_overrides,
+        fabric_control_state_provider=fabric_control_state_provider,
         confirm=confirm,
     )
     uvicorn.run(app, host=host, port=port)
@@ -1933,6 +1985,7 @@ def _proxy_app(
     tool_schema_store: PolicyStateStore | None,
     lease_policy: LeasePolicyConfig,
     health_policy: FacadeHealthPolicy,
+    control_state_provider: Any = None,
 ) -> ASGIApp:
     if upstreams:
         return McpFacadeProxyApp(
@@ -1944,6 +1997,7 @@ def _proxy_app(
             tool_schema_store=tool_schema_store,
             lease_policy=lease_policy,
             health_policy=health_policy,
+            control_state_provider=control_state_provider,
         )
     if upstream is None:
         raise ValueError("upstream is required unless facade upstreams are configured")
@@ -2010,17 +2064,23 @@ def _build_facade_route_table(
     )
 
 
-def _load_fabric_reload_config(config: Path, proxy_overrides: Mapping[str, Any]) -> dict[str, Any]:
+def _load_fabric_reload_config(
+    config: Path,
+    proxy_overrides: Mapping[str, Any],
+    control_state: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     proxy_config = load_mcp_proxy_config(config)
     if proxy_overrides:
         proxy_config = merge_mcp_proxy_config(proxy_config, proxy_overrides)
     fabric_config = load_mcp_fabric_config(config)
     fabric_config["proxy"] = proxy_config
     topology_audit = build_fabric_audit_metadata(fabric_config)
+    operational_controls = summarize_fabric_control_state(control_state)
     return {
         "upstreams": proxy_config["upstreams"],
         "topology_audit": topology_audit,
         "summary": topology_audit.get("summary", {}),
+        "operational_controls": operational_controls,
     }
 
 
@@ -2078,6 +2138,10 @@ def _copy_jsonish(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
     return value
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
 
 
 def _state_store(value: str) -> PolicyStateStore | None:

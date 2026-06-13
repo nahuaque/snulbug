@@ -28,6 +28,11 @@ from .control_events import (
     make_control_event,
 )
 from .fabric import build_fabric_audit_metadata, fabric_status, run_fabric_conformance_pack
+from .fabric_control import (
+    annotate_fabric_status_with_controls,
+    control_share_gate_signals,
+    summarize_fabric_control_state,
+)
 from .fabric_runtime import (
     DEFAULT_FABRIC_RUNTIME_LEASE_TTL_SECONDS,
     DEFAULT_FABRIC_RUNTIME_STATE,
@@ -43,6 +48,7 @@ DEFAULT_CONTROLLER_STATUS_PORT = 8765
 DEFAULT_RUNTIME_HEARTBEAT_TTL_SECONDS = 15.0
 
 FabricProxyRunner = Callable[..., None]
+FabricControlStateProvider = Callable[[], Mapping[str, Any] | None]
 
 
 def reconcile_fabric_controller(
@@ -50,6 +56,7 @@ def reconcile_fabric_controller(
     *,
     state_path: str | Path = DEFAULT_CONTROLLER_STATE_PATH,
     event_log: str | Path | None = DEFAULT_CONTROLLER_EVENT_LOG_PATH,
+    control_state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Reconcile declared fabric config into a durable controller state snapshot."""
 
@@ -67,6 +74,7 @@ def reconcile_fabric_controller(
         policy_activation = reconcile_policy_activation(config_path)
         status = fabric_status(config_path)
         status["policy_activation"] = policy_activation
+        status = annotate_fabric_status_with_controls(status, control_state)
         if not policy_activation.get("ok"):
             status["ok"] = False
             recommendations = list(status.get("recommendations", []))
@@ -138,6 +146,7 @@ def run_fabric_controller(
     max_iterations: int | None = None,
     status_server: FabricControllerStatusServer | None = None,
     stop_event: threading.Event | None = None,
+    control_state_provider: FabricControlStateProvider | None = None,
 ) -> dict[str, Any]:
     """Run the fabric controller reconcile loop."""
 
@@ -148,7 +157,13 @@ def run_fabric_controller(
 
     iterations = 0
     while True:
-        result = reconcile_fabric_controller(config, state_path=state_path, event_log=event_log)
+        control_state = control_state_provider() if control_state_provider is not None else None
+        result = reconcile_fabric_controller(
+            config,
+            state_path=state_path,
+            event_log=event_log,
+            control_state=control_state,
+        )
         iterations += 1
         result["iteration"] = iterations
         if status_server is not None:
@@ -205,6 +220,14 @@ def run_fabric_data_plane(
     controller_errors: list[str] = []
     controller_thread: threading.Thread | None = None
 
+    def load_control_state() -> Mapping[str, Any] | None:
+        if runtime_store is None:
+            return None
+        load = getattr(runtime_store, "load_control_state", None)
+        if not callable(load):
+            return None
+        return load()
+
     try:
         if runtime_store is not None:
             runtime_lease_result = runtime_store.acquire_lease(
@@ -236,6 +259,7 @@ def run_fabric_data_plane(
             interval=controller_interval,
             once=True,
             status_server=status_server,
+            control_state_provider=load_control_state,
         )
         if not initial.get("ok"):
             raise ValueError(f"fabric controller reconcile failed: {initial.get('error') or 'fabric is not healthy'}")
@@ -254,6 +278,7 @@ def run_fabric_data_plane(
                         conformance=conformance_result,
                         require_conformance=require_conformance,
                         heartbeat_ttl_seconds=runtime_heartbeat_ttl,
+                        operational_controls=summarize_fabric_control_state(load_control_state()),
                         error="fabric conformance gate failed",
                     )
                 )
@@ -268,6 +293,7 @@ def run_fabric_data_plane(
                     interval=controller_interval,
                     status_server=status_server,
                     stop_event=stop_event,
+                    control_state_provider=load_control_state,
                 )
             except Exception as exc:  # pragma: no cover - defensive; loop body is covered through reconcile tests.
                 controller_errors.append(str(exc))
@@ -284,6 +310,7 @@ def run_fabric_data_plane(
         controller_thread.start()
 
         proxy_config = load_mcp_proxy_config(config_path)
+        operational_controls = summarize_fabric_control_state(load_control_state())
         fabric_config = load_mcp_fabric_config(config_path)
         fabric_config["proxy"] = proxy_config
         topology_audit = build_fabric_audit_metadata(fabric_config)
@@ -303,6 +330,7 @@ def run_fabric_data_plane(
             conformance=conformance_result,
             require_conformance=require_conformance,
             heartbeat_ttl_seconds=runtime_heartbeat_ttl,
+            operational_controls=operational_controls,
         )
         status_server.update_runtime(started["runtime"])
         if emit is not None:
@@ -352,6 +380,7 @@ def run_fabric_data_plane(
                 fabric_reload_config=config_path,
                 fabric_reload_interval=reload_interval,
                 fabric_reload_overrides={},
+                fabric_control_state_provider=load_control_state,
             )
         except Exception as exc:
             failed_runtime = _fabric_runtime_state(
@@ -362,6 +391,7 @@ def run_fabric_data_plane(
                 conformance=conformance_result,
                 require_conformance=require_conformance,
                 heartbeat_ttl_seconds=runtime_heartbeat_ttl,
+                operational_controls=summarize_fabric_control_state(load_control_state()),
                 error=str(exc),
             )
             status_server.update_runtime(failed_runtime)
@@ -374,6 +404,7 @@ def run_fabric_data_plane(
             conformance=conformance_result,
             require_conformance=require_conformance,
             heartbeat_ttl_seconds=runtime_heartbeat_ttl,
+            operational_controls=summarize_fabric_control_state(load_control_state()),
         )
         status_server.update_runtime(stopped_runtime)
         stopped = _attach_share_gate(
@@ -412,6 +443,7 @@ def format_fabric_controller_report(result: Mapping[str, Any]) -> str:
 
     summary = _mapping(result.get("summary"))
     policy_activation = _mapping(result.get("policy_activation"))
+    operational_controls = _mapping(result.get("operational_controls"))
     lines.extend(
         [
             "",
@@ -436,6 +468,18 @@ def format_fabric_controller_report(result: Mapping[str, Any]) -> str:
             lines.append(f"- bundle: `{policy_activation.get('bundle')}`")
         if policy_activation.get("error"):
             lines.append(f"- error: {policy_activation.get('error')}")
+    if operational_controls:
+        lines.extend(
+            [
+                "",
+                "## Operational Controls",
+                f"- paused: `{str(bool(operational_controls.get('paused'))).lower()}`",
+                f"- active actions: {operational_controls.get('active_count', 0)}",
+                "- disabled upstreams: "
+                f"`{', '.join(str(item) for item in operational_controls.get('disabled_upstreams', [])) or 'none'}`",
+                f"- force reload: `{str(bool(operational_controls.get('force_reload'))).lower()}`",
+            ]
+        )
 
     changes = _sequence_mappings(result.get("changes"))
     lines.extend(["", "## Changes"])
@@ -459,6 +503,7 @@ def format_fabric_controller_report(result: Mapping[str, Any]) -> str:
             "- "
             f"{upstream.get('name')} [{upstream.get('transport')}] "
             f"prefix=`{upstream.get('tool_prefix')}` "
+            f"status=`{upstream.get('operational_status', 'active')}` "
             f"manifest=`{manifest_text}`"
         )
 
@@ -479,6 +524,7 @@ def format_fabric_run_report(result: Mapping[str, Any]) -> str:
     conformance = _mapping(runtime.get("conformance"))
     share_gate = _mapping(result.get("share_gate"))
     runtime_owner = _mapping(result.get("runtime_owner"))
+    operational_controls = _mapping(result.get("operational_controls"))
     lines = [
         "# snulbug fabric run",
         "",
@@ -504,6 +550,7 @@ def format_fabric_run_report(result: Mapping[str, Any]) -> str:
             f"- reload interval: {proxy.get('reload_interval')}s",
             f"- share gate: `{'ok' if share_gate.get('ok') else 'blocked'}`",
             f"- conformance: `{conformance.get('status', 'not_configured')}`",
+            f"- operational controls: {operational_controls.get('active_count', 0)}",
             f"- owner: `{runtime_owner.get('owner_id', 'none')}`",
             f"- fencing token: `{runtime_owner.get('fencing_token', 'none')}`",
             "",
@@ -669,6 +716,7 @@ def _desired_state(status: Mapping[str, Any]) -> dict[str, Any]:
         "require_manifests": status.get("require_manifests"),
         "proxy": _copy_jsonish(status.get("proxy", {})),
         "policy_activation": _copy_jsonish(status.get("policy_activation", {})),
+        "operational_controls": _copy_jsonish(status.get("operational_controls", {})),
         "discovery": normalized_discovery,
         "upstreams": upstreams,
         "summary": _copy_jsonish(status.get("summary", {})),
@@ -713,6 +761,7 @@ def _controller_snapshot(
         },
         "proxy": _copy_jsonish(desired.get("proxy", {})),
         "policy_activation": _copy_jsonish(desired.get("policy_activation", {})),
+        "operational_controls": _copy_jsonish(desired.get("operational_controls", {})),
         "discovery": _copy_jsonish(desired.get("discovery", {})),
         "upstreams": _copy_jsonish(desired.get("upstreams", [])),
         "summary": _copy_jsonish(desired.get("summary", {})),
@@ -1149,8 +1198,10 @@ def _controller_metrics(result: Mapping[str, Any]) -> str:
     runtime = _mapping(result.get("runtime"))
     data_plane = _mapping(runtime.get("data_plane"))
     share_gate = _mapping(result.get("share_gate"))
+    operational_controls = _mapping(result.get("operational_controls"))
     data_plane_running = 1 if data_plane.get("status") == "running" else 0
     shareable = 1 if share_gate.get("ok") is True else 0
+    paused = 1 if operational_controls.get("paused") else 0
     lines = [
         "# HELP snulbug_fabric_controller_ok Whether the last fabric reconcile was healthy.",
         "# TYPE snulbug_fabric_controller_ok gauge",
@@ -1161,6 +1212,12 @@ def _controller_metrics(result: Mapping[str, Any]) -> str:
         "# HELP snulbug_fabric_shareable Whether controller and runtime gates allow sharing the gateway.",
         "# TYPE snulbug_fabric_shareable gauge",
         f"snulbug_fabric_shareable {shareable}",
+        "# HELP snulbug_fabric_operational_controls Number of active fabric operational controls.",
+        "# TYPE snulbug_fabric_operational_controls gauge",
+        f"snulbug_fabric_operational_controls {int(operational_controls.get('active_count', 0) or 0)}",
+        "# HELP snulbug_fabric_sharing_paused Whether sharing is paused by an operational control.",
+        "# TYPE snulbug_fabric_sharing_paused gauge",
+        f"snulbug_fabric_sharing_paused {paused}",
         "# HELP snulbug_fabric_controller_changed Whether the last reconcile changed desired state.",
         "# TYPE snulbug_fabric_controller_changed gauge",
         f"snulbug_fabric_controller_changed {changed}",
@@ -1186,6 +1243,7 @@ def _fabric_runtime_state(
     conformance: Mapping[str, Any] | None = None,
     require_conformance: bool = False,
     heartbeat_ttl_seconds: float = DEFAULT_RUNTIME_HEARTBEAT_TTL_SECONDS,
+    operational_controls: Mapping[str, Any] | None = None,
     error: str | None = None,
 ) -> dict[str, Any]:
     host = proxy_config.get("host")
@@ -1220,6 +1278,7 @@ def _fabric_runtime_state(
                 conformance,
                 required=require_conformance,
             ),
+            "operational_controls": _copy_jsonish(operational_controls or {}),
         }
     )
 
@@ -1265,6 +1324,9 @@ def _attach_share_gate(result: Mapping[str, Any]) -> dict[str, Any]:
         blocks.append(f"data_plane_{data_plane.get('status', 'unknown')}")
     if data_plane.get("status") == "running" and _data_plane_heartbeat_stale(data_plane):
         blocks.append("data_plane_heartbeat_stale")
+    control_blocks, control_warnings = control_share_gate_signals(latest.get("operational_controls"))
+    blocks.extend(control_blocks)
+    warnings.extend(control_warnings)
     runtime_owner = _mapping(latest.get("runtime_owner"))
     if runtime_owner.get("lost"):
         blocks.append("runtime_lease_lost")
@@ -1385,6 +1447,7 @@ def _fabric_run_started_result(
     conformance: Mapping[str, Any] | None,
     require_conformance: bool,
     heartbeat_ttl_seconds: float,
+    operational_controls: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     host = proxy_config.get("host")
     port = proxy_config.get("port")
@@ -1397,6 +1460,7 @@ def _fabric_run_started_result(
         conformance=conformance,
         require_conformance=require_conformance,
         heartbeat_ttl_seconds=heartbeat_ttl_seconds,
+        operational_controls=operational_controls,
     )
     runtime_owner = _runtime_owner_summary(status_server.runtime_lease)
     return _attach_share_gate(
@@ -1428,6 +1492,7 @@ def _fabric_run_started_result(
                 "reload_interval": reload_interval,
             },
             "runtime": runtime,
+            "operational_controls": _copy_jsonish(operational_controls or {}),
             "runtime_owner": runtime_owner,
             "stopped": False,
         }
