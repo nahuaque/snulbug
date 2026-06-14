@@ -628,9 +628,69 @@ def test_mcp_share_auth_doctor_validates_static_oauth_config(tmp_path):
     assert checks["auth.mode"]["status"] == "pass"
     assert checks["auth.resource.matches_public_url"]["status"] == "pass"
     assert checks["auth.audience.matches_public_url"]["status"] == "pass"
+    assert checks["auth.public_url.sources_consistent"]["status"] == "pass"
+    assert checks["auth.resource.indicators_valid"]["status"] == "pass"
+    assert checks["auth.resource.audience_overlap"]["status"] == "pass"
     assert checks["auth.jwks.local"]["status"] == "pass"
     assert checks["auth.protected_resource_metadata.reachable"]["status"] == "skip"
     assert checks["auth.scope_map.tools_discovered"]["status"] == "skip"
+
+
+def test_mcp_share_auth_doctor_flags_public_url_drift_and_resource_audience_mismatch(tmp_path):
+    configured = "https://old-tunnel.example.test/mcp"
+    actual = "https://actual-tunnel.example.test/mcp"
+    config = write_oauth_share_config(tmp_path, resource=configured, issuer="https://issuer.example.test")
+
+    result = doctor_mcp_share_auth(config=config, public_url=actual, live_checks=False)
+    checks = {check["id"]: check for check in result["checks"]}
+
+    assert result["ok"] is False
+    assert checks["auth.public_url.sources_consistent"]["status"] == "fail"
+    assert checks["auth.resource.matches_public_url"]["status"] == "fail"
+    assert checks["auth.audience.matches_public_url"]["status"] == "fail"
+
+
+def test_mcp_share_auth_doctor_accepts_explicit_multi_url_resource_alias_and_audience(tmp_path):
+    primary = "https://mcp.example.test/mcp"
+    alias = "https://preview.example.test/mcp"
+    (tmp_path / "jwks.json").write_text(
+        json.dumps({"keys": [{"kty": "RSA", "kid": "demo", "n": "AQAB", "e": "AQAB"}]}),
+        encoding="utf-8",
+    )
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        f"""
+[mcp.proxy]
+upstream = "http://127.0.0.1:9000/mcp"
+tunnel_public_url = {json.dumps(alias)}
+
+[mcp.auth]
+mode = "oauth-resource"
+resource = {json.dumps(primary)}
+resource_aliases = [{json.dumps(alias)}]
+issuer = "https://issuer.example.test"
+authorization_servers = ["https://issuer.example.test"]
+audience = {json.dumps(primary)}
+audiences = [{json.dumps(alias)}]
+required_scopes = ["mcp:connect"]
+jwks_path = "jwks.json"
+
+[mcp.auth.scope_map]
+"mcp:tools.read" = ["tools/list"]
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    result = doctor_mcp_share_auth(config=config, public_url=alias, live_checks=False)
+    checks = {check["id"]: check for check in result["checks"]}
+
+    assert result["ok"] is True
+    assert checks["auth.public_url.sources_consistent"]["status"] == "pass"
+    assert checks["auth.resource.matches_public_url"]["status"] == "pass"
+    assert checks["auth.audience.matches_public_url"]["status"] == "pass"
+    assert checks["auth.resource.public_url_uses_alias"]["status"] == "warn"
+    assert checks["auth.multi_url.explicit"]["status"] == "warn"
+    assert result["summary"]["warnings"] >= 2
 
 
 def test_mcp_share_auth_doctor_flags_unsafe_oauth_config(tmp_path):

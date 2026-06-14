@@ -290,9 +290,11 @@ tokens before Lua policy or upstream forwarding.
 [mcp.auth]
 mode = "oauth-resource"
 resource = "https://mcp.example.com/mcp"
+# resource_aliases = ["https://preview.example.com/mcp"]
 issuer = "https://issuer.example.com"
 authorization_servers = ["https://issuer.example.com"]
 audience = "https://mcp.example.com/mcp"
+# audiences = ["https://preview.example.com/mcp"]
 required_scopes = ["mcp:connect"]
 scopes_supported = ["mcp:connect", "mcp:tools.read", "mcp:tool.git.status"]
 jwks_path = "auth/jwks.json"
@@ -326,6 +328,8 @@ With this enabled, snulbug:
 - optionally validates opaque or revocation-sensitive tokens with OAuth token
   introspection
 - maps OAuth scopes to MCP methods/tools using `[mcp.auth.scope_map]`
+- can explicitly allow multi-URL shares with `resource_aliases` and
+  `audiences` instead of silently accepting tunnel URL drift
 - exposes sanitized claims to Lua as `context.auth`
 - exposes Lua helpers such as `auth.has_scope("mcp:tool.git.status")` and
   `auth.can("tools/call:git.status")`
@@ -379,6 +383,14 @@ digest for `introspection_cache_seconds`, verifies issuer/audience/time claims
 when present, and never forwards or logs raw caller tokens. `jwt_or_introspection`
 tries JWT first and falls back to introspection; `jwt_and_introspection` requires
 both a valid JWT and an active introspection response.
+
+For public MCP shares, treat `mcp.auth.resource` and `mcp.auth.audience` as exact
+resource indicators: they should match the public MCP URL a client uses, such as
+`https://mcp.example.com/mcp`. If the same gateway is intentionally reachable
+through more than one public URL, add the secondary URLs to both
+`resource_aliases` and `audiences`. The auth doctor fails accidental drift
+between `--url`, share session URLs, `mcp.proxy.tunnel_public_url`, and the auth
+resource/audience settings.
 
 Before sharing an OAuth-protected public MCP URL, run:
 

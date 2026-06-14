@@ -291,6 +291,7 @@ Workflow:
 - optional Cloudflare Access origin-side audit/enforcement
 - optional OAuth protected-resource mode with JWT/JWKS or token-introspection validation and MCP bearer challenges
 - OAuth scope-to-MCP method/tool mapping for least-privilege public shares
+- OAuth resource/audience drift checks for tunnel-safe public shares
 - composable OAuth + task lease + Lua policy access decisions
 - anti-passthrough credential brokering so caller OAuth tokens stop at snulbug
 - learned least-privilege bundles from observed traffic

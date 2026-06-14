@@ -18,9 +18,11 @@ import jwt
 class OAuthResourceConfig:
     mode: str = "off"
     resource: str | None = None
+    resource_aliases: tuple[str, ...] = ()
     issuer: str | None = None
     authorization_servers: tuple[str, ...] = ()
     audience: str | None = None
+    audiences: tuple[str, ...] = ()
     required_scopes: tuple[str, ...] = ()
     scopes_supported: tuple[str, ...] = ()
     jwks_path: Path | None = None
@@ -318,6 +320,7 @@ def _decode_jwt(
     force_refresh: bool,
 ) -> dict[str, Any]:
     jwks = _load_jwks(config, force_refresh=force_refresh)
+    accepted_audiences = _accepted_audiences(config)
     key = _select_jwks_key(
         jwks,
         kid=header.get("kid"),
@@ -329,11 +332,11 @@ def _decode_jwt(
             token,
             key=key,
             algorithms=[algorithm],
-            audience=config.audience,
+            audience=accepted_audiences or None,
             issuer=config.issuer,
             leeway=config.leeway_seconds,
             options={
-                "verify_aud": bool(config.audience),
+                "verify_aud": bool(accepted_audiences),
                 "verify_iss": bool(config.issuer),
             },
         )
@@ -718,9 +721,10 @@ def _validate_introspection_response(response: Mapping[str, Any], *, config: OAu
         issuer = claims.get("iss")
         if isinstance(issuer, str) and issuer.rstrip("/") != config.issuer.rstrip("/"):
             raise ValueError("token introspection issuer mismatch")
-    if config.audience:
+    accepted_audiences = _accepted_audiences(config)
+    if accepted_audiences:
         audiences = _audiences(claims.get("aud"))
-        if config.audience not in audiences:
+        if not any(accepted in audiences for accepted in accepted_audiences):
             raise ValueError("token introspection audience mismatch")
     now = time.time()
     exp = _numeric_claim(claims.get("exp"))
@@ -773,6 +777,21 @@ def _audiences(value: Any) -> list[str]:
     if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
         return [str(item) for item in value]
     return []
+
+
+def _accepted_audiences(config: OAuthResourceConfig) -> list[str]:
+    return _unique_strings([*([config.audience] if config.audience else []), *(config.audiences or ())])
+
+
+def _unique_strings(values: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
 
 
 def _normalize_jwks(loaded: Any) -> dict[str, Any]:

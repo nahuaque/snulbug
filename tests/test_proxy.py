@@ -392,6 +392,41 @@ def test_reverse_proxy_oauth_allows_token_adds_lua_context_and_strips_authorizat
     assert token not in json.dumps(audit)
 
 
+def test_reverse_proxy_oauth_accepts_configured_extra_audience(tmp_path):
+    server, seen = start_upstream()
+    policy = write_oauth_context_policy(tmp_path)
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    token = make_oauth_token(
+        secret,
+        scopes=["mcp:connect", "mcp:tools"],
+        extra_claims={"aud": "https://preview.example.test/mcp"},
+    )
+    auth_config = oauth_auth_config(jwks_path)
+    auth_config["audiences"] = ["https://preview.example.test/mcp"]
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        auth_config=auth_config,
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {token}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert sent[0]["status"] == 200
+    assert seen["count"] == 1
+
+
 def test_reverse_proxy_oauth_fetches_and_caches_remote_jwks(tmp_path):
     server, seen = start_upstream()
     jwks_server = ThreadingHTTPServer(("127.0.0.1", 0), JwksHandler)

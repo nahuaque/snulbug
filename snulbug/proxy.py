@@ -2244,9 +2244,11 @@ def _oauth_resource_config(value: Mapping[str, Any] | OAuthResourceConfig | None
     return OAuthResourceConfig(
         mode=normalized["mode"],
         resource=normalized["resource"],
+        resource_aliases=tuple(normalized["resource_aliases"]),
         issuer=normalized["issuer"],
         authorization_servers=tuple(normalized["authorization_servers"]),
         audience=normalized["audience"],
+        audiences=tuple(normalized["audiences"]),
         required_scopes=tuple(normalized["required_scopes"]),
         scopes_supported=tuple(normalized["scopes_supported"]),
         jwks_path=normalized["jwks_path"],

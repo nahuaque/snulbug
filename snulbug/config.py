@@ -20,9 +20,11 @@ REMOVED_EVENT_OUTPUT_KEYS = {"audit_out", "decision_console", "decision_console_
 DEFAULT_MCP_AUTH_CONFIG = {
     "mode": "off",
     "resource": None,
+    "resource_aliases": [],
     "issuer": None,
     "authorization_servers": [],
     "audience": None,
+    "audiences": [],
     "required_scopes": [],
     "scopes_supported": [],
     "jwks_path": None,
@@ -163,9 +165,11 @@ timeout = 30.0
 # Optional OAuth 2.1 protected-resource mode for public MCP endpoints.
 # mode = "oauth-resource"
 # resource = "https://YOUR-TUNNEL.example/mcp"
+# resource_aliases = [] # additional public MCP URLs that intentionally reach this gateway
 # issuer = "https://issuer.example"
 # authorization_servers = ["https://issuer.example"]
 # audience = "https://YOUR-TUNNEL.example/mcp"
+# audiences = [] # additional accepted aud/resource indicator values
 # required_scopes = ["mcp:connect"]
 # scopes_supported = ["mcp:connect"]
 # jwks_path = "auth/jwks.json"
@@ -517,7 +521,7 @@ def normalize_mcp_auth_config(config: Mapping[str, Any] | None, *, base_dir: str
             raise ValueError(f"mcp.auth.{field} must be a string")
         if value == "":
             normalized[field] = None if field != "realm" else "mcp"
-    for field in ("authorization_servers", "required_scopes", "scopes_supported"):
+    for field in ("authorization_servers", "resource_aliases", "audiences", "required_scopes", "scopes_supported"):
         normalized[field] = _normalize_auth_string_list(normalized.get(field), field=field)
     jwks_path = normalized.get("jwks_path")
     if jwks_path in (None, ""):
@@ -555,6 +559,8 @@ def normalize_mcp_auth_config(config: Mapping[str, Any] | None, *, base_dir: str
     if normalized["mode"] == "oauth-resource":
         if not normalized.get("resource"):
             raise ValueError("mcp.auth.resource is required when mode is 'oauth-resource'")
+        if not normalized.get("audience") and not normalized.get("audiences"):
+            raise ValueError("mcp.auth.audience or mcp.auth.audiences is required when mode is 'oauth-resource'")
         token_validation = normalized["token_validation"]
         uses_jwt = token_validation in {"jwt", "jwt_or_introspection", "jwt_and_introspection"}
         uses_introspection = token_validation in {"introspection", "jwt_or_introspection", "jwt_and_introspection"}

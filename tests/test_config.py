@@ -131,9 +131,11 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
     assert result["auth"] == {
         "mode": "oauth-resource",
         "resource": "https://mcp.example.com/mcp",
+        "resource_aliases": [],
         "issuer": "https://issuer.example.com",
         "authorization_servers": ["https://issuer.example.com"],
         "audience": "https://mcp.example.com/mcp",
+        "audiences": [],
         "required_scopes": ["mcp:connect"],
         "scopes_supported": ["mcp:connect", "mcp:tools"],
         "jwks_path": tmp_path / "auth/jwks.json",
@@ -279,6 +281,31 @@ def test_load_mcp_proxy_config_accepts_introspection_without_jwks_config(tmp_pat
     assert result["auth"]["introspection_endpoint"] == "https://issuer.example.com/oauth/introspect"
     assert result["auth"]["introspection_cache_seconds"] == 10.0
     assert result["auth"]["introspection_fetch_timeout"] == 2.0
+
+
+def test_load_mcp_proxy_config_accepts_resource_aliases_and_extra_audiences(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.proxy]
+        policy = "policy.snulbug/policy.lua"
+
+        [mcp.auth]
+        mode = "oauth-resource"
+        resource = "https://mcp.example.com/mcp"
+        resource_aliases = ["https://preview.example.com/mcp"]
+        issuer = "https://issuer.example.com"
+        audience = "https://mcp.example.com/mcp"
+        audiences = ["https://preview.example.com/mcp"]
+        required_scopes = ["mcp:connect"]
+        """,
+        encoding="utf-8",
+    )
+
+    result = load_mcp_proxy_config(config)
+
+    assert result["auth"]["resource_aliases"] == ["https://preview.example.com/mcp"]
+    assert result["auth"]["audiences"] == ["https://preview.example.com/mcp"]
 
 
 def test_load_mcp_proxy_config_rejects_introspection_without_endpoint_or_discovery(tmp_path):

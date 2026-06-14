@@ -74,10 +74,16 @@ in cache, so issuer key rotation does not require restarting the gateway. Token
 introspection responses are cached by token digest for a short TTL. Use HTTPS
 remote auth URLs except for localhost development.
 
+Resource indicators are treated as exact public MCP URLs. The safest shape is
+`mcp.auth.resource == mcp.auth.audience == <public MCP URL>`. For intentional
+multi-URL shares, configure `mcp.auth.resource_aliases` and `mcp.auth.audiences`
+explicitly. Otherwise, `share auth doctor` flags drift between the share model,
+client config, tunnel URL, proxy config, resource, and audience settings.
+
 Run `snulbug mcp share auth doctor` for OAuth shares. It checks discovery
 metadata, issuer/JWKS/introspection reachability, public URL and audience
-alignment, raw-token logging safeguards, Cloudflare Access conflicts, and
-whether scope maps refer to actual discovered MCP tools.
+alignment, resource indicator drift, raw-token logging safeguards, Cloudflare
+Access conflicts, and whether scope maps refer to actual discovered MCP tools.
 
 Run `uv run snulbug mcp share auth lab` to inspect the composed auth path in a
 self-contained demo. It proves one allowed call and two denied calls across

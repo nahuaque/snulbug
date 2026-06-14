@@ -156,6 +156,13 @@ settings, scope-to-tool mappings, and Cloudflare Access conflicts. Use
 `--no-live-checks` while editing local config, or `--config snulbug.toml` before
 a generated share directory exists.
 
+The auth doctor also checks resource/audience drift. `mcp.auth.resource` and
+`mcp.auth.audience` should exactly match the public MCP URL. If a tunnel URL
+changes, rerun the doctor with `--url` and update stale share/client/config
+URLs. If a share is intentionally reachable through more than one public URL,
+configure both `mcp.auth.resource_aliases` and `mcp.auth.audiences`; otherwise
+snulbug treats multiple public URLs as accidental drift.
+
 Runtime JWT validation can use either a pinned local `jwks_path` or a remote
 `jwks_url` with bounded caching and refresh-on-rotation. If `issuer_discovery`
 is enabled, snulbug can also discover the issuer `jwks_uri` from

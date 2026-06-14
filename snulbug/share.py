@@ -844,13 +844,13 @@ def doctor_mcp_share_auth(
         else parse_mcp_tool_headers([f"{key}: {value}" for key, value in headers.items()], token=token)
     )
     probe_headers = {**client_headers, **supplied_headers}
-    url = _resolve_auth_doctor_public_url(
+    public_url_candidates = _auth_public_url_candidates(
         manifest=manifest,
         session_model=session_model,
         proxy_config=proxy_config,
-        auth=auth,
         public_url=public_url,
     )
+    url = _resolve_auth_doctor_public_url(public_url_candidates=public_url_candidates, auth=auth)
     checks: list[dict[str, Any]] = []
     recommendations: list[str] = []
     live: dict[str, Any] = {}
@@ -882,9 +882,11 @@ def doctor_mcp_share_auth(
     oauth_config = OAuthResourceConfig(
         mode=str(auth.get("mode") or "off"),
         resource=auth.get("resource") if isinstance(auth.get("resource"), str) else None,
+        resource_aliases=tuple(str(item) for item in _sequence(auth.get("resource_aliases"))),
         issuer=auth.get("issuer") if isinstance(auth.get("issuer"), str) else None,
         authorization_servers=tuple(str(item) for item in _sequence(auth.get("authorization_servers"))),
         audience=auth.get("audience") if isinstance(auth.get("audience"), str) else None,
+        audiences=tuple(str(item) for item in _sequence(auth.get("audiences"))),
         required_scopes=tuple(str(item) for item in _sequence(auth.get("required_scopes"))),
         scopes_supported=tuple(str(item) for item in _sequence(auth.get("scopes_supported"))),
         jwks_path=auth.get("jwks_path") if isinstance(auth.get("jwks_path"), Path) else None,
@@ -920,7 +922,7 @@ def doctor_mcp_share_auth(
     )
     metadata_url = oauth_resource_metadata_url(oauth_config)
 
-    _add_auth_url_checks(checks, auth, url, recommendations)
+    _add_auth_url_checks(checks, auth, url, public_url_candidates, recommendations)
     _add_auth_safety_checks(checks, proxy_config, auth, manifest, recommendations)
 
     jwks = _inspect_local_jwks(
@@ -1203,31 +1205,44 @@ def _share_auth_client_headers(
     return {str(name).lower(): str(value) for name, value in headers.items() if value is not None}
 
 
-def _resolve_auth_doctor_public_url(
+def _auth_public_url_candidates(
     *,
     manifest: Mapping[str, Any],
     session_model: Mapping[str, Any],
     proxy_config: Mapping[str, Any],
-    auth: Mapping[str, Any],
     public_url: str | None,
-) -> str | None:
+) -> list[dict[str, str]]:
     tunnel_model = _mapping(session_model.get("tunnel"))
     client_model = _mapping(session_model.get("client"))
     client = _mapping(manifest.get("client"))
     tunnel = _mapping(manifest.get("tunnel"))
-    candidates = (
-        public_url,
-        tunnel_model.get("public_url"),
-        tunnel_model.get("client_url"),
-        client_model.get("url"),
-        client.get("url"),
-        tunnel.get("public_url"),
-        proxy_config.get("tunnel_public_url"),
-        auth.get("resource"),
-    )
-    for candidate in candidates:
-        if isinstance(candidate, str) and candidate:
-            return candidate
+    candidates = []
+    for source, value in (
+        ("cli.url", public_url),
+        ("session.tunnel.public_url", tunnel_model.get("public_url")),
+        ("session.tunnel.client_url", tunnel_model.get("client_url")),
+        ("session.client.url", client_model.get("url")),
+        ("manifest.client.url", client.get("url")),
+        ("manifest.tunnel.public_url", tunnel.get("public_url")),
+        ("config.proxy.tunnel_public_url", proxy_config.get("tunnel_public_url")),
+    ):
+        if isinstance(value, str) and value:
+            candidates.append({"source": source, "url": value, "normalized": _normalize_auth_url(value)})
+    return candidates
+
+
+def _resolve_auth_doctor_public_url(
+    *,
+    public_url_candidates: Sequence[Mapping[str, str]],
+    auth: Mapping[str, Any],
+) -> str | None:
+    for candidate in public_url_candidates:
+        value = candidate.get("url")
+        if isinstance(value, str) and value:
+            return value
+    resource = auth.get("resource")
+    if isinstance(resource, str) and resource:
+        return resource
     return None
 
 
@@ -1237,9 +1252,11 @@ def _auth_doctor_summary(auth: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "mode": auth.get("mode"),
         "resource": auth.get("resource"),
+        "resource_aliases": [str(item) for item in _sequence(auth.get("resource_aliases"))],
         "issuer": auth.get("issuer"),
         "authorization_servers": [str(item) for item in _sequence(auth.get("authorization_servers"))],
         "audience": auth.get("audience"),
+        "audiences": [str(item) for item in _sequence(auth.get("audiences"))],
         "required_scopes": [str(item) for item in _sequence(auth.get("required_scopes"))],
         "scopes_supported": [str(item) for item in _sequence(auth.get("scopes_supported"))],
         "jwks_path": str(jwks_path) if jwks_path else None,
@@ -1266,6 +1283,7 @@ def _add_auth_url_checks(
     checks: list[dict[str, Any]],
     auth: Mapping[str, Any],
     url: str | None,
+    public_url_candidates: Sequence[Mapping[str, str]],
     recommendations: list[str],
 ) -> None:
     _add_share_doctor_check(
@@ -1279,6 +1297,8 @@ def _add_auth_url_checks(
     if not url:
         recommendations.append("Pass --url with the exact public MCP URL before sharing an OAuth-protected endpoint.")
         return
+
+    _add_auth_public_url_drift_check(checks, public_url_candidates, recommendations)
 
     https_ok = _auth_url_is_https_or_local(url)
     _add_share_doctor_check(
@@ -1294,35 +1314,191 @@ def _add_auth_url_checks(
     if not https_ok:
         recommendations.append("Use HTTPS for public MCP OAuth resource URLs; reserve HTTP for localhost only.")
 
-    resource = auth.get("resource")
-    resource_match = _urls_match(resource, url)
+    resource_urls = _auth_resource_urls(auth)
+    accepted_audiences = _auth_accepted_audiences(auth)
+    invalid_resource_urls = _invalid_auth_resource_urls(resource_urls)
+    _add_share_doctor_check(
+        checks,
+        "auth.resource.indicators_valid",
+        not invalid_resource_urls,
+        "configured OAuth resource indicators are absolute HTTPS/local MCP URLs"
+        if not invalid_resource_urls
+        else "configured OAuth resource indicators are not valid public MCP URLs",
+        component="auth",
+        details={"resource_urls": resource_urls, "invalid": invalid_resource_urls},
+    )
+    if invalid_resource_urls:
+        recommendations.append(
+            "Use absolute HTTPS public MCP URLs for mcp.auth.resource and mcp.auth.resource_aliases; "
+            "HTTP is only acceptable for localhost."
+        )
+
+    audience_configured = bool(accepted_audiences)
+    _add_share_doctor_check(
+        checks,
+        "auth.audience.configured",
+        audience_configured,
+        "OAuth audience validation is configured"
+        if audience_configured
+        else "OAuth audience validation is not configured",
+        component="auth",
+        details={"audience": auth.get("audience"), "audiences": _sequence(auth.get("audiences"))},
+    )
+    if not audience_configured:
+        recommendations.append("Set mcp.auth.audience to the exact public MCP URL, or mcp.auth.audiences for aliases.")
+
+    resource_match = _url_in_values(url, resource_urls)
+    canonical_resource_match = _urls_match(auth.get("resource"), url)
     _add_share_doctor_check(
         checks,
         "auth.resource.matches_public_url",
         resource_match,
-        "mcp.auth.resource matches the public/client URL"
+        "mcp.auth.resource or resource_aliases include the public/client URL"
         if resource_match
-        else "mcp.auth.resource does not match the public/client URL",
+        else "mcp.auth.resource/resource_aliases do not include the public/client URL",
         component="auth",
-        details={"resource": resource, "url": url},
+        details={
+            "resource": auth.get("resource"),
+            "resource_aliases": _sequence(auth.get("resource_aliases")),
+            "url": url,
+        },
     )
     if not resource_match:
-        recommendations.append("Set mcp.auth.resource to the exact public MCP URL clients connect to.")
+        recommendations.append(
+            "Set mcp.auth.resource to the exact public MCP URL clients connect to, or add an explicit "
+            "mcp.auth.resource_aliases entry for intentional multi-URL shares."
+        )
+    elif not canonical_resource_match:
+        _add_share_doctor_check(
+            checks,
+            "auth.resource.public_url_uses_alias",
+            False,
+            "public/client URL is accepted through mcp.auth.resource_aliases rather than canonical mcp.auth.resource",
+            component="auth",
+            severity="warning",
+            details={"resource": auth.get("resource"), "url": url},
+        )
 
-    audience = auth.get("audience")
-    audience_match = _urls_match(audience, url)
+    audience_match = _url_in_values(url, accepted_audiences)
     _add_share_doctor_check(
         checks,
         "auth.audience.matches_public_url",
         audience_match,
-        "mcp.auth.audience matches the public/client URL"
+        "mcp.auth.audience/audiences include the public/client URL"
         if audience_match
-        else "mcp.auth.audience does not match the public/client URL",
+        else "mcp.auth.audience/audiences do not include the public/client URL",
         component="auth",
-        details={"audience": audience, "url": url},
+        details={"audience": auth.get("audience"), "audiences": _sequence(auth.get("audiences")), "url": url},
     )
     if not audience_match:
-        recommendations.append("Set mcp.auth.audience to the same public MCP URL as mcp.auth.resource.")
+        recommendations.append(
+            "Set mcp.auth.audience to the exact public MCP URL, or add mcp.auth.audiences entries for "
+            "intentional multi-URL shares."
+        )
+
+    overlap = sorted({value for value in resource_urls if _url_in_values(value, accepted_audiences)})
+    _add_share_doctor_check(
+        checks,
+        "auth.resource.audience_overlap",
+        bool(overlap),
+        "at least one accepted audience matches a configured resource indicator"
+        if overlap
+        else "accepted audiences do not match any configured resource indicator",
+        component="auth",
+        details={"resource_urls": resource_urls, "accepted_audiences": accepted_audiences, "overlap": overlap},
+    )
+    if not overlap:
+        recommendations.append("Keep OAuth resource indicators and accepted audiences aligned exactly.")
+
+    multi_url_explicit = len(resource_urls) > 1 or len(accepted_audiences) > 1
+    if multi_url_explicit:
+        _add_share_doctor_check(
+            checks,
+            "auth.multi_url.explicit",
+            False,
+            "multiple public resource/audience URLs are configured explicitly",
+            component="auth",
+            severity="warning",
+            details={"resource_urls": resource_urls, "accepted_audiences": accepted_audiences},
+        )
+
+
+def _add_auth_public_url_drift_check(
+    checks: list[dict[str, Any]],
+    public_url_candidates: Sequence[Mapping[str, str]],
+    recommendations: list[str],
+) -> None:
+    if not public_url_candidates:
+        _add_share_doctor_check(
+            checks,
+            "auth.public_url.sources_consistent",
+            None,
+            "no share/tunnel public URL sources are configured",
+            component="auth",
+        )
+        return
+    distinct: dict[str, list[dict[str, str]]] = {}
+    for candidate in public_url_candidates:
+        normalized = candidate.get("normalized") or _normalize_auth_url(str(candidate.get("url", "")))
+        distinct.setdefault(normalized, []).append(
+            {"source": str(candidate.get("source")), "url": str(candidate.get("url"))}
+        )
+    ok = len(distinct) == 1
+    _add_share_doctor_check(
+        checks,
+        "auth.public_url.sources_consistent",
+        ok,
+        "share, tunnel, client, and proxy public URL sources agree"
+        if ok
+        else "share, tunnel, client, and proxy public URL sources disagree",
+        component="auth",
+        details={"sources": list(public_url_candidates), "distinct": distinct},
+    )
+    if not ok:
+        recommendations.append(
+            "Update stale share/client/config URLs or pass the exact current --url, then align "
+            "mcp.proxy.tunnel_public_url, mcp.auth.resource, and mcp.auth.audience."
+        )
+
+
+def _auth_resource_urls(auth: Mapping[str, Any]) -> list[str]:
+    return _unique_strings(
+        [
+            *([str(auth["resource"])] if isinstance(auth.get("resource"), str) and auth.get("resource") else []),
+            *(str(item) for item in _sequence(auth.get("resource_aliases"))),
+        ]
+    )
+
+
+def _auth_accepted_audiences(auth: Mapping[str, Any]) -> list[str]:
+    return _unique_strings(
+        [
+            *([str(auth["audience"])] if isinstance(auth.get("audience"), str) and auth.get("audience") else []),
+            *(str(item) for item in _sequence(auth.get("audiences"))),
+        ]
+    )
+
+
+def _invalid_auth_resource_urls(urls: Sequence[str]) -> list[dict[str, Any]]:
+    invalid = []
+    for url in urls:
+        parsed = urlsplit(url)
+        reason = None
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            reason = "not_absolute_http_url"
+        elif not _auth_url_is_https_or_local(url):
+            reason = "not_https_or_localhost"
+        elif parsed.fragment:
+            reason = "fragment_not_allowed"
+        elif parsed.query:
+            reason = "query_not_allowed"
+        if reason:
+            invalid.append({"url": url, "reason": reason})
+    return invalid
+
+
+def _url_in_values(url: str, values: Sequence[str]) -> bool:
+    return any(_urls_match(value, url) for value in values)
 
 
 def _add_auth_safety_checks(
@@ -1972,7 +2148,11 @@ def _auth_url_is_https_or_local(url: str) -> bool:
 def _urls_match(left: Any, right: Any) -> bool:
     if not isinstance(left, str) or not isinstance(right, str) or not left or not right:
         return False
-    return left.rstrip("/") == right.rstrip("/")
+    return _normalize_auth_url(left) == _normalize_auth_url(right)
+
+
+def _normalize_auth_url(value: str) -> str:
+    return value.rstrip("/")
 
 
 def _add_share_status_checks(
