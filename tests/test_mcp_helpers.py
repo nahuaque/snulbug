@@ -442,6 +442,112 @@ def test_access_route_mismatch_builder_returns_standard_access_reason():
     }
 
 
+def test_upstream_helpers_expose_facade_route_context():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return decision.allow("test.upstream_context", {
+            matched = upstream.matched(),
+            name = upstream.name(),
+            transport = upstream.transport(),
+            tool_prefix = upstream.tool_prefix(),
+            tool = upstream.tool(),
+            upstream_tool = upstream.upstream_tool(),
+            manifest_identity = upstream.manifest_identity()
+          })
+        end
+        """
+    )
+
+    decision = script.decide(
+        {"body": "{}"},
+        {
+            "upstream": {
+                "matched": True,
+                "name": "git",
+                "transport": "http",
+                "tool_prefix": "git.",
+                "tool": "git.status",
+                "upstream_tool": "status",
+                "manifest_identity": "git-dev",
+            }
+        },
+    )
+
+    assert decision == {
+        "action": "continue",
+        "reason_code": "test.upstream_context",
+        "context": {
+            "matched": True,
+            "name": "git",
+            "transport": "http",
+            "tool_prefix": "git.",
+            "tool": "git.status",
+            "upstream_tool": "status",
+            "manifest_identity": "git-dev",
+        },
+    }
+
+
+def test_upstream_tenant_issuer_and_profile_guards_use_route_mismatch_builder():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return upstream.require_for_tenant({
+            ["tenant-a"] = { "files" },
+            ["tenant-b"] = { "git" }
+          }) or upstream.require_for_issuer({
+            ["https://issuer.example.test"] = { "files" }
+          }) or upstream.require_for_auth_profile({
+            ["tenant-a-profile"] = { "files" }
+          }) or decision.allow("test.allowed")
+        end
+        """
+    )
+
+    decision = script.decide(
+        {"body": "{}"},
+        {
+            "auth": {
+                "enabled": True,
+                "tenant": "tenant-a",
+                "issuer": "https://issuer.example.test",
+                "profile_id": "tenant-a-profile",
+            },
+            "upstream": {
+                "matched": True,
+                "name": "git",
+                "transport": "http",
+                "tool_prefix": "git.",
+                "tool": "git.status",
+                "upstream_tool": "status",
+                "route_revision": 7,
+            },
+        },
+    )
+
+    assert decision == {
+        "action": "reject",
+        "status": 403,
+        "body": "route not allowed for caller",
+        "reason": "route not allowed for caller",
+        "reason_code": "access.route_mismatch",
+        "context": {
+            "upstream": "git",
+            "required_upstream": ["files"],
+            "tool": "git.status",
+            "upstream_tool": "status",
+            "tool_prefix": "git.",
+            "transport": "http",
+            "route_revision": 7,
+            "tenant": "tenant-a",
+            "issuer": "https://issuer.example.test",
+            "profile_id": "tenant-a-profile",
+            "policy_dimension": "tenant",
+        },
+    }
+
+
 def test_auth_and_lease_guards_delegate_to_standard_access_builders():
     script = compile_lua_script(
         """

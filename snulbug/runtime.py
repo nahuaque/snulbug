@@ -625,6 +625,7 @@ return function(source, source_name, instruction_limit)
 
   local current_auth = {}
   local current_lease = {}
+  local current_upstream = {}
 
   local function merge_context(defaults, context)
     local merged = {}
@@ -670,6 +671,22 @@ return function(source, source_name, instruction_limit)
       lease_required = current_lease.required,
       lease_expires_at = current_lease.expires_at,
     }
+  end
+
+  local function upstream_context(details)
+    return merge_context({
+      upstream = current_upstream.name,
+      required_upstream = nil,
+      tool = current_upstream.tool,
+      upstream_tool = current_upstream.upstream_tool,
+      tool_prefix = current_upstream.tool_prefix,
+      transport = current_upstream.transport,
+      route_revision = current_upstream.route_revision,
+      route_fingerprint = current_upstream.route_fingerprint,
+      tenant = current_auth.tenant,
+      issuer = current_auth.issuer,
+      profile_id = current_auth.profile_id,
+    }, details)
   end
 
   local access = {}
@@ -757,7 +774,7 @@ return function(source, source_name, instruction_limit)
     return access_reject({
       body = "route not allowed for caller",
       reason_code = "access.route_mismatch",
-      context = details,
+      context = upstream_context(details),
     }, options)
   end
 
@@ -779,6 +796,14 @@ return function(source, source_name, instruction_limit)
 
   function auth.subject()
     return current_auth.subject
+  end
+
+  function auth.issuer()
+    return current_auth.issuer
+  end
+
+  function auth.profile_id()
+    return current_auth.profile_id
   end
 
   function auth.client_id()
@@ -884,6 +909,113 @@ return function(source, source_name, instruction_limit)
   end
 
   safe_env.auth = auth
+
+  local function set_upstream_context(context)
+    if type(context) == "table" and type(context.upstream) == "table" then
+      current_upstream = context.upstream
+    else
+      current_upstream = {}
+    end
+  end
+
+  local upstream = {}
+
+  function upstream.info()
+    return current_upstream
+  end
+
+  function upstream.matched()
+    return current_upstream.matched == true
+  end
+
+  function upstream.name()
+    return current_upstream.name
+  end
+
+  function upstream.transport()
+    return current_upstream.transport
+  end
+
+  function upstream.tool_prefix()
+    return current_upstream.tool_prefix
+  end
+
+  function upstream.tool()
+    return current_upstream.tool
+  end
+
+  function upstream.upstream_tool()
+    return current_upstream.upstream_tool
+  end
+
+  function upstream.manifest_identity()
+    return current_upstream.manifest_identity
+  end
+
+  function upstream.is(upstreams)
+    return value_matches(upstream.name(), upstreams)
+  end
+
+  local function allowed_upstreams_for_identity(mapping, identity)
+    if type(mapping) ~= "table" then
+      return nil
+    end
+    local allowed = mapping[identity]
+    if allowed == nil then
+      allowed = mapping["*"]
+    end
+    return allowed
+  end
+
+  function upstream.require(upstreams, options)
+    if upstream.is(upstreams) then
+      return nil
+    end
+    return access.route_mismatch({
+      required_upstream = upstreams,
+    }, options)
+  end
+
+  function upstream.require_for_tenant(mapping, options)
+    local tenant = auth.tenant()
+    local allowed = allowed_upstreams_for_identity(mapping, tenant)
+    if allowed ~= nil and upstream.is(allowed) then
+      return nil
+    end
+    return access.route_mismatch({
+      policy_dimension = "tenant",
+      tenant = tenant,
+      required_upstream = allowed,
+    }, options)
+  end
+
+  function upstream.require_for_issuer(mapping, options)
+    local issuer = auth.issuer()
+    local allowed = allowed_upstreams_for_identity(mapping, issuer)
+    if allowed ~= nil and upstream.is(allowed) then
+      return nil
+    end
+    return access.route_mismatch({
+      policy_dimension = "issuer",
+      issuer = issuer,
+      required_upstream = allowed,
+    }, options)
+  end
+
+  function upstream.require_for_auth_profile(mapping, options)
+    local profile_id = auth.profile_id()
+    local allowed = allowed_upstreams_for_identity(mapping, profile_id)
+    if allowed ~= nil and upstream.is(allowed) then
+      return nil
+    end
+    return access.route_mismatch({
+      policy_dimension = "auth_profile",
+      profile_id = profile_id,
+      required_upstream = allowed,
+    }, options)
+  end
+
+  safe_env.upstream = upstream
 
   local function set_lease_context(context)
     if type(context) == "table" and type(context.lease) == "table" then
@@ -1360,9 +1492,11 @@ return function(source, source_name, instruction_limit)
 
     set_auth_context(context)
     set_lease_context(context)
+    set_upstream_context(context)
     local ok, result = pcall(handler, request, context, state or {})
     set_auth_context({})
     set_lease_context({})
+    set_upstream_context({})
 
     if debug and debug.sethook then
       debug.sethook()

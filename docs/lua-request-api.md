@@ -138,6 +138,60 @@ builders by default. `options.context` is merged into the standard context, and
 `options.body`, `options.reason`, and `options.reason_code` can still override
 the emitted decision when a policy needs a local code.
 
+## Upstream Route Helpers
+
+In facade/fabric mode, Lua policies receive a pre-routing preview as
+`context.upstream` plus an `upstream` helper table. This lets a policy bind
+OAuth identity to a specific upstream route or fabric member before the request
+is forwarded:
+
+```lua
+local wrong_route = upstream.require_for_tenant({
+  ["tenant-a"] = { "files" },
+  ["tenant-b"] = { "git" }
+})
+if wrong_route then
+  return wrong_route
+end
+```
+
+Available helpers:
+
+- `upstream.info()`: return the sanitized `context.upstream` table.
+- `upstream.matched()`: true when the facade route matched the request.
+- `upstream.name()`: selected upstream/fabric member name for a routed call.
+- `upstream.transport()`: selected upstream transport, such as `http`,
+  `stdio`, or `holepunch`.
+- `upstream.tool_prefix()`: client-facing facade tool prefix.
+- `upstream.tool()`: client-facing tool name, such as `git.status`.
+- `upstream.upstream_tool()`: upstream-local tool name after prefix removal.
+- `upstream.manifest_identity()`: signed upstream manifest identity when
+  configured.
+- `upstream.is(upstream_or_upstreams)`: true when the selected upstream matches
+  a string or one entry in an array.
+- `upstream.require(upstream_or_upstreams, options)`: return `nil` when the
+  selected upstream is allowed, otherwise `access.route_mismatch`.
+- `upstream.require_for_tenant(map, options)`: use `auth.tenant()` as a key in
+  `map`, then require the selected upstream to match that value.
+- `upstream.require_for_issuer(map, options)`: use `auth.issuer()` as a key.
+- `upstream.require_for_auth_profile(map, options)`: use `auth.profile_id()` as
+  a key.
+
+Identity maps can use strings or arrays as values:
+
+```lua
+upstream.require_for_issuer({
+  ["https://tenant-a-idp.example.com"] = { "tenant-a-files", "tenant-a-git" },
+  ["https://tenant-b-idp.example.com"] = "tenant-b-files",
+  ["*"] = "public-readonly"
+})
+```
+
+These helpers expose route metadata needed for policy: upstream name,
+transport, tool prefix, selected tool, manifest identity/metadata, bridge peer
+metadata, and route revision/fingerprint. They do not expose upstream
+credentials.
+
 ## Capability guards
 
 The `cap` table provides small guard helpers that return `nil` when allowed or
@@ -221,6 +275,8 @@ Available helpers:
 
 - `auth.claims()`: return the sanitized `context.auth` table.
 - `auth.subject()`: return the JWT subject claim.
+- `auth.issuer()`: return the JWT issuer claim.
+- `auth.profile_id()`: return the matched `[[mcp.auth.issuers]]` profile id.
 - `auth.client_id()`: return `azp` or `client_id` when present.
 - `auth.email()`: return the token email claim when present.
 - `auth.tenant()`: return `tid` or `tenant` when present.

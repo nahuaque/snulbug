@@ -1965,6 +1965,81 @@ def test_mcp_facade_routes_tool_calls_by_prefix_and_records_upstream_metadata(tm
     assert records[0]["metadata"]["response_policy"]["checked"] is True
 
 
+def test_mcp_facade_lua_can_bind_oauth_tenant_to_upstream_route(tmp_path):
+    files_server, files_seen = start_mcp_upstream({"read_file": "Read a file"})
+    git_server, git_seen = start_mcp_upstream({"status": "Show git status"})
+    policy = write_upstream_tenant_route_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    tenant_a_token = make_oauth_token(
+        secret,
+        scopes=["mcp:connect", "mcp:tool.git.status"],
+        extra_claims={"tenant": "tenant-a"},
+    )
+    tenant_b_token = make_oauth_token(
+        secret,
+        scopes=["mcp:connect", "mcp:tool.git.status"],
+        extra_claims={"tenant": "tenant-b"},
+    )
+    app = create_proxy_application(
+        None,
+        policy,
+        upstreams=[
+            {"name": "files", "url": f"http://127.0.0.1:{files_server.server_port}/mcp"},
+            {"name": "git", "url": f"http://127.0.0.1:{git_server.server_port}/mcp"},
+        ],
+        record_out=record_log,
+        auth_config=oauth_auth_config(
+            jwks_path,
+            scope_map={
+                "mcp:tool.git.status": ["tools/call:git.status"],
+                "mcp:tool.files.read": ["tools/call:files.read_file"],
+            },
+        ),
+    )
+
+    try:
+        blocked = run_asgi(
+            app,
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {tenant_a_token}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":"blocked","method":"tools/call","params":{"name":"git.status"}}',
+        )
+        allowed = run_asgi(
+            app,
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {tenant_b_token}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":"allowed","method":"tools/call","params":{"name":"git.status"}}',
+        )
+    finally:
+        files_server.shutdown()
+        files_server.server_close()
+        git_server.shutdown()
+        git_server.server_close()
+
+    records = load_record_log(record_log)
+    allowed_payload = json.loads(allowed[1]["body"])
+    assert blocked[0]["status"] == 403
+    assert blocked[1]["body"] == b"route not allowed for caller"
+    assert allowed[0]["status"] == 200
+    assert allowed_payload["result"]["content"][0]["text"] == "called status"
+    assert files_seen["calls"] == []
+    assert git_seen["calls"] == [{"method": "tools/call", "tool": "status"}]
+    assert records[0]["result"]["decision"]["reason_code"] == "access.route_mismatch"
+    assert records[0]["result"]["decision"]["context"]["tenant"] == "tenant-a"
+    assert records[0]["result"]["decision"]["context"]["upstream"] == "git"
+    assert records[0]["result"]["decision"]["context"]["required_upstream"] == ["files"]
+    assert records[0]["metadata"]["upstream_preview"]["name"] == "git"
+    assert records[0]["metadata"]["upstream_preview"]["upstream_tool"] == "status"
+    assert records[0]["metadata"]["access"]["reason_code"] == "access.route_mismatch"
+    assert records[1]["metadata"]["upstream_preview"]["name"] == "git"
+    assert records[1]["metadata"]["upstream"] == "git"
+
+
 def test_mcp_facade_can_reload_upstream_route_table(tmp_path):
     files_server, files_seen = start_mcp_upstream({"read_file": "Read a file"})
     git_server, git_seen = start_mcp_upstream({"status": "Show git status"})
@@ -3878,6 +3953,35 @@ def write_oauth_lease_policy(tmp_path):
               lease_task = captured_lease.task()
             }
           }
+        end
+        """,
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_upstream_tenant_route_policy(tmp_path):
+    path = tmp_path / "upstream-tenant-route-policy.lua"
+    path.write_text(
+        """
+        return function(request, context, state)
+          local forbidden = auth.require("tools/call:" .. tostring(mcp.tool_name(request)))
+          if forbidden then
+            return forbidden
+          end
+          local wrong_route = upstream.require_for_tenant({
+            ["tenant-a"] = { "files" },
+            ["tenant-b"] = { "git" }
+          })
+          if wrong_route then
+            return wrong_route
+          end
+          return decision.allow("test.upstream_tenant_allowed", {
+            tenant = auth.tenant(),
+            upstream = upstream.name(),
+            tool = upstream.tool(),
+            upstream_tool = upstream.upstream_tool()
+          })
         end
         """,
         encoding="utf-8",

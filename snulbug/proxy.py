@@ -589,6 +589,47 @@ class McpFacadeProxyApp:
             "health": self._health_metadata(routes),
         }
 
+    def route_context_for_request(self, request: Mapping[str, Any] | None) -> dict[str, Any]:
+        routes = self._routes
+        method = request.get("method") if isinstance(request, Mapping) else None
+        context: dict[str, Any] = {
+            "facade": True,
+            "operation": method,
+            "route_revision": routes.revision,
+            "route_fingerprint": routes.fingerprint,
+        }
+        if method == "tools/call" and isinstance(request, Mapping):
+            params = request.get("params")
+            params = params if isinstance(params, Mapping) else {}
+            tool_name = params.get("name")
+            if isinstance(tool_name, str):
+                context["tool"] = tool_name
+                upstream = routes.upstream_for_tool(tool_name)
+                if upstream is not None:
+                    context.update(_facade_upstream_context(upstream))
+                    context["matched"] = True
+                    context["upstream_tool"] = tool_name.removeprefix(upstream.tool_prefix)
+                else:
+                    context["matched"] = False
+                    context["reason_code"] = "facade.unknown_tool_prefix"
+            else:
+                context["matched"] = False
+                context["reason_code"] = "facade.missing_tool_name"
+            return _drop_empty(context)
+        if method == "tools/list":
+            context.update(
+                {
+                    "fanout": True,
+                    "matched": True,
+                    "upstreams": [_facade_upstream_context(upstream) for upstream in routes.upstreams],
+                }
+            )
+            return _drop_empty(context)
+        context.update(_facade_upstream_context(routes.default))
+        context["matched"] = True
+        context["default"] = True
+        return _drop_empty(context)
+
     async def reload_upstreams(
         self,
         upstreams: Sequence[FacadeUpstream | Mapping[str, Any]],
@@ -1651,6 +1692,38 @@ class LeaseContextMiddleware:
         await self.app(child_scope, replay_receive, send)
 
 
+class FacadeRouteContextMiddleware:
+    """Expose resolved facade route/upstream metadata to Lua policy context."""
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        facade: McpFacadeProxyApp,
+        context_scope_key: str = "lua",
+    ) -> None:
+        self.app = app
+        self.facade = facade
+        self.context_scope_key = context_scope_key
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        body, replay_receive = await _capture_body(receive)
+        request = _jsonrpc_request(body)
+        upstream_context = self.facade.route_context_for_request(request)
+        _set_proxy_metadata(scope, {"upstream_preview": upstream_context})
+
+        child_scope = dict(scope)
+        context = child_scope.get(self.context_scope_key)
+        lua_context = dict(context) if isinstance(context, Mapping) else {}
+        lua_context["upstream"] = upstream_context
+        child_scope[self.context_scope_key] = lua_context
+        await self.app(child_scope, replay_receive, send)
+
+
 class OAuthResourceMiddleware:
     """Require OAuth bearer tokens before Lua policy and upstream calls."""
 
@@ -1970,6 +2043,12 @@ def create_proxy_application(
         state_limits=state_limits,
         confirm_handler=confirm_handler or (ConfirmationBroker(enabled=True) if confirm else None),
     )
+    if facade_proxy is not None:
+        app = FacadeRouteContextMiddleware(
+            app,
+            facade=facade_proxy,
+            context_scope_key=lua_config.context_scope_key,
+        )
     if lease_policy.lease_file is not None:
         app = LeaseContextMiddleware(
             app,
@@ -2819,6 +2898,32 @@ def _upstream_metadata(upstream: FacadeUpstream) -> dict[str, Any]:
     if auth:
         metadata["auth"] = auth
     return _drop_empty(metadata)
+
+
+def _facade_upstream_context(upstream: FacadeUpstream) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "name": upstream.name,
+            "transport": upstream.transport,
+            "tool_prefix": upstream.tool_prefix,
+            "default": upstream.default,
+            "manifest_identity": upstream.manifest_identity,
+            "manifest_metadata": _copy_jsonish(upstream.manifest_metadata or {}),
+            "manifest": _drop_empty(
+                {
+                    "identity": upstream.manifest_identity,
+                    "metadata": _copy_jsonish(upstream.manifest_metadata or {}),
+                }
+            ),
+            "bridge": _drop_empty(
+                {
+                    "peer": upstream.peer,
+                    "local_port": upstream.local_port,
+                    "private": upstream.bridge_private,
+                }
+            ),
+        }
+    )
 
 
 def _parse_upstream(upstream: str) -> SplitResult:
