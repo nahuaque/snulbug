@@ -127,6 +127,27 @@ def enforce_mcp_lease_policy(
 ) -> tuple[bool, dict[str, Any]]:
     """Validate a tools/call request against a task-scoped lease."""
 
+    return _evaluate_mcp_lease_policy(request, scope, config=config, consume=True)
+
+
+def preview_mcp_lease_policy(
+    request: Mapping[str, Any] | None,
+    scope: Scope,
+    *,
+    config: LeasePolicyConfig,
+) -> tuple[bool, dict[str, Any]]:
+    """Validate a presented task lease without consuming a lease use."""
+
+    return _evaluate_mcp_lease_policy(request, scope, config=config, consume=False)
+
+
+def _evaluate_mcp_lease_policy(
+    request: Mapping[str, Any] | None,
+    scope: Scope,
+    *,
+    config: LeasePolicyConfig,
+    consume: bool,
+) -> tuple[bool, dict[str, Any]]:
     method = request.get("method") if isinstance(request, Mapping) else None
     metadata: dict[str, Any] = {
         "enabled": config.lease_file is not None,
@@ -134,6 +155,7 @@ def enforce_mcp_lease_policy(
         "header": config.header.lower(),
         "checked": False,
         "method": method,
+        "consume": consume,
     }
     if config.lease_file is None or method != "tools/call":
         return True, metadata
@@ -187,7 +209,8 @@ def enforce_mcp_lease_policy(
         metadata["blocked"] = True
         return False, metadata
 
-    _record_lease_use(config.lease_file, store, lease, tool if isinstance(tool, str) else None)
+    if consume:
+        _record_lease_use(config.lease_file, store, lease, tool if isinstance(tool, str) else None)
     metadata["allowed"] = True
     metadata["use_count"] = int(lease.get("use_count") or 0)
     metadata["last_used_at"] = lease.get("last_used_at")

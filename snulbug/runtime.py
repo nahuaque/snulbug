@@ -703,6 +703,79 @@ return function(source, source_name, instruction_limit)
 
   safe_env.auth = auth
 
+  local current_lease = {}
+
+  local function set_lease_context(context)
+    if type(context) == "table" and type(context.lease) == "table" then
+      current_lease = context.lease
+    else
+      current_lease = {}
+    end
+  end
+
+  local lease = {}
+
+  function lease.info()
+    return current_lease
+  end
+
+  function lease.enabled()
+    return current_lease.enabled == true
+  end
+
+  function lease.required()
+    return current_lease.required == true
+  end
+
+  function lease.checked()
+    return current_lease.checked == true
+  end
+
+  function lease.allowed()
+    return current_lease.allowed == true
+  end
+
+  function lease.active()
+    return lease.allowed()
+  end
+
+  function lease.id()
+    return current_lease.id
+  end
+
+  function lease.task()
+    return current_lease.task
+  end
+
+  function lease.reason_code()
+    return current_lease.reason_code
+  end
+
+  function lease.require(options)
+    if not lease.enabled() then
+      return nil
+    end
+    if current_lease.method ~= "tools/call" then
+      return nil
+    end
+    if lease.allowed() then
+      return nil
+    end
+    options = options_table(options)
+    local reason_code = options.reason_code or current_lease.reason_code or "lease.required"
+    local body = options.body or "active task lease required"
+    return decision.reject(options.status or 403, body, {
+      reason = options.reason or body,
+      reason_code = reason_code,
+      context = {
+        lease_reason_code = current_lease.reason_code,
+        lease_required = current_lease.required,
+      },
+    })
+  end
+
+  safe_env.lease = lease
+
   local mcp = {}
 
   function mcp.body(request)
@@ -1113,8 +1186,10 @@ return function(source, source_name, instruction_limit)
     end
 
     set_auth_context(context)
+    set_lease_context(context)
     local ok, result = pcall(handler, request, context, state or {})
     set_auth_context({})
+    set_lease_context({})
 
     if debug and debug.sethook then
       debug.sethook()

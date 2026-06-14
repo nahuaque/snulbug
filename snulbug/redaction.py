@@ -96,6 +96,9 @@ def build_audit_event(record: Mapping[str, Any], *, redact: bool = True) -> dict
         auth = _mapping(metadata.get("auth"))
         if auth:
             event["auth"] = auth
+        access = _mapping(metadata.get("access"))
+        if access:
+            event["access"] = access
         topology = _mapping(metadata.get("topology"))
         if topology:
             event["topology"] = topology

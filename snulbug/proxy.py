@@ -30,7 +30,7 @@ from .credentials import apply_credential_header, credential_metadata, normalize
 from .events import build_event_dispatcher, decision_console_event
 from .fabric import annotate_topology_audit, build_fabric_audit_metadata
 from .fabric_control import summarize_fabric_control_state
-from .leases import LeasePolicyConfig, enforce_mcp_lease_policy, mcp_lease_error_response
+from .leases import LeasePolicyConfig, enforce_mcp_lease_policy, mcp_lease_error_response, preview_mcp_lease_policy
 from .manifests import load_manifest, verify_upstream_manifest
 from .mcp_auth import (
     OAuthResourceConfig,
@@ -197,6 +197,7 @@ class ReverseProxyApp:
                 {
                     **_mcp_request_metadata(request),
                     "lease": lease_metadata,
+                    "access": _composed_access_metadata(scope, lease=lease_metadata),
                 },
             )
             await _send_response(
@@ -217,6 +218,8 @@ class ReverseProxyApp:
                 scope,
                 {
                     **_mcp_request_metadata(request),
+                    "lease": lease_metadata,
+                    "access": _composed_access_metadata(scope, lease=lease_metadata),
                     "schema_validation": schema_request_metadata,
                 },
             )
@@ -258,6 +261,7 @@ class ReverseProxyApp:
             {
                 **_mcp_request_metadata(request),
                 "lease": lease_metadata,
+                "access": _composed_access_metadata(scope, lease=lease_metadata),
                 "schema_validation": _schema_metadata(schema_request_metadata, schema_observe_metadata),
                 "response_policy": response_metadata,
             },
@@ -1166,6 +1170,7 @@ class McpFacadeProxyApp:
                     "upstream_metadata": _upstream_metadata(upstream),
                     "tool": tool_name,
                     "lease": lease_metadata,
+                    "access": _composed_access_metadata(scope, lease=lease_metadata),
                     "route_revision": routes.revision,
                     "route_fingerprint": routes.fingerprint,
                 },
@@ -1195,6 +1200,7 @@ class McpFacadeProxyApp:
                     "upstream_metadata": _upstream_metadata(upstream),
                     "tool": tool_name,
                     "lease": lease_metadata,
+                    "access": _composed_access_metadata(scope, lease=lease_metadata),
                     "schema_validation": schema_request_metadata,
                     "route_revision": routes.revision,
                     "route_fingerprint": routes.fingerprint,
@@ -1279,6 +1285,7 @@ class McpFacadeProxyApp:
                 "tool": tool_name,
                 "upstream_tool": rewritten_params["name"],
                 "lease": lease_metadata,
+                "access": _composed_access_metadata(scope, lease=lease_metadata),
                 "schema_validation": schema_request_metadata,
                 "response_policy": response_metadata,
                 "route_revision": routes.revision,
@@ -1606,6 +1613,43 @@ class CloudflareAccessMiddleware:
         )
 
 
+class LeaseContextMiddleware:
+    """Expose non-consuming task lease status to Lua policy context."""
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        config: LeasePolicyConfig | None = None,
+        context_scope_key: str = "lua",
+    ) -> None:
+        self.app = app
+        self.config = config or LeasePolicyConfig()
+        self.context_scope_key = context_scope_key
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http" or self.config.lease_file is None:
+            await self.app(scope, receive, send)
+            return
+
+        body, replay_receive = await _capture_body(receive)
+        request = _jsonrpc_request(body)
+        _allowed, lease_metadata = preview_mcp_lease_policy(
+            request,
+            scope,
+            config=self.config,
+        )
+        lease_context = _lease_context_metadata(lease_metadata)
+        _set_proxy_metadata(scope, {"lease_preview": lease_context})
+
+        child_scope = dict(scope)
+        context = child_scope.get(self.context_scope_key)
+        lua_context = dict(context) if isinstance(context, Mapping) else {}
+        lua_context["lease"] = lease_context
+        child_scope[self.context_scope_key] = lua_context
+        await self.app(child_scope, replay_receive, send)
+
+
 class OAuthResourceMiddleware:
     """Require OAuth bearer tokens before Lua policy and upstream calls."""
 
@@ -1911,18 +1955,25 @@ def create_proxy_application(
         control_state_provider=fabric_control_state_provider,
     )
     facade_proxy = proxy if isinstance(proxy, McpFacadeProxyApp) else None
+    lua_config = LuaConfig(
+        read_body=True,
+        max_body_bytes=max_body_bytes,
+        trace=(trace or record_out is not None or event_dispatcher is not None),
+    )
     app = LuaMiddleware(
         proxy,
         Path(policy),
-        config=LuaConfig(
-            read_body=True,
-            max_body_bytes=max_body_bytes,
-            trace=(trace or record_out is not None or event_dispatcher is not None),
-        ),
+        config=lua_config,
         state_store=effective_state_store,
         state_limits=state_limits,
         confirm_handler=confirm_handler or (ConfirmationBroker(enabled=True) if confirm else None),
     )
+    if lease_policy.lease_file is not None:
+        app = LeaseContextMiddleware(
+            app,
+            config=lease_policy,
+            context_scope_key=lua_config.context_scope_key,
+        )
     oauth_config = _oauth_resource_config(auth_config)
     if oauth_config.enabled:
         app = OAuthResourceMiddleware(app, config=oauth_config)
@@ -2355,6 +2406,123 @@ def _schema_metadata(request_metadata: Mapping[str, Any], observe_metadata: Mapp
     if observe_metadata.get("observed") or observe_metadata.get("json_error"):
         merged["tools_list"] = dict(observe_metadata)
     return merged
+
+
+def _lease_context_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "enabled": metadata.get("enabled"),
+            "required": metadata.get("required"),
+            "header": metadata.get("header"),
+            "checked": metadata.get("checked"),
+            "method": metadata.get("method"),
+            "skipped": metadata.get("skipped"),
+            "reason_code": metadata.get("reason_code"),
+            "blocked": metadata.get("blocked"),
+            "allowed": metadata.get("allowed"),
+            "id": metadata.get("id"),
+            "task": metadata.get("task"),
+            "expires_at": metadata.get("expires_at"),
+            "use_count": metadata.get("use_count"),
+            "max_calls": metadata.get("max_calls"),
+            "last_used_at": metadata.get("last_used_at"),
+            "tool": metadata.get("tool"),
+            "path": metadata.get("path"),
+            "host": metadata.get("host"),
+            "command": metadata.get("command"),
+            "preview": metadata.get("consume") is False,
+        }
+    )
+
+
+def _composed_access_metadata(scope: Scope, *, lease: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    state = scope.get("state")
+    proxy_metadata = state.get("snulbug_proxy") if isinstance(state, Mapping) else {}
+    proxy_metadata = proxy_metadata if isinstance(proxy_metadata, Mapping) else {}
+    auth = _mapping(proxy_metadata.get("auth"))
+    lease_metadata = _mapping(lease or proxy_metadata.get("lease") or proxy_metadata.get("lease_preview"))
+    trace = _trace_result(scope)
+    decision = _mapping(trace.get("decision"))
+
+    oauth_enabled = auth.get("enabled") is True
+    oauth_allowed = None if not oauth_enabled else auth.get("allowed") is True
+    scope_map = _mapping(auth.get("scope_map"))
+    scope_map_enabled = scope_map.get("enabled") is True
+    scope_allowed = None if not scope_map_enabled else scope_map.get("allowed") is True
+    lease_enabled = lease_metadata.get("enabled") is True
+    lease_required = lease_metadata.get("required") is True
+    if lease_enabled and lease_metadata.get("checked"):
+        lease_allowed = lease_metadata.get("allowed") is True
+    else:
+        lease_allowed = None
+    lua_action = decision.get("action") or trace.get("action")
+    lua_allowed = lua_action in {"continue", "set_context", "rewrite", "rate_limit"}
+
+    allowed = (
+        (not oauth_enabled or oauth_allowed is True)
+        and (not scope_map_enabled or scope_allowed is True)
+        and (not lease_required or lease_allowed is True)
+        and lua_allowed
+    )
+    reason_code = "access.allowed"
+    if oauth_enabled and oauth_allowed is not True:
+        reason_code = str(auth.get("reason_code") or "oauth.rejected")
+    elif scope_map_enabled and scope_allowed is not True:
+        reason_code = str(scope_map.get("reason_code") or "oauth.scope_map_denied")
+    elif lease_required and lease_allowed is not True:
+        reason_code = str(lease_metadata.get("reason_code") or "lease.required")
+    elif not lua_allowed:
+        reason_code = str(decision.get("reason_code") or "lua.rejected")
+    elif oauth_enabled and lease_required:
+        reason_code = "access.oauth_scope_lease_lua_allowed"
+
+    return _drop_empty(
+        {
+            "model": "oauth_scope_lease_lua",
+            "allowed": allowed,
+            "reason_code": reason_code,
+            "auth": _drop_empty(
+                {
+                    "enabled": oauth_enabled,
+                    "allowed": oauth_allowed,
+                    "subject": auth.get("subject"),
+                    "issuer": auth.get("issuer"),
+                    "client_id": auth.get("client_id"),
+                    "reason_code": auth.get("reason_code"),
+                    "scope_match": auth.get("scope_match"),
+                }
+            ),
+            "scope": _drop_empty(
+                {
+                    "enabled": scope_map_enabled,
+                    "allowed": scope_allowed,
+                    "matched_scope": scope_map.get("matched_scope"),
+                    "matched_selector": scope_map.get("matched_selector"),
+                    "matched_request_selector": scope_map.get("matched_request_selector"),
+                    "reason_code": scope_map.get("reason_code"),
+                }
+            ),
+            "lease": _drop_empty(
+                {
+                    "enabled": lease_enabled,
+                    "required": lease_required,
+                    "checked": lease_metadata.get("checked"),
+                    "allowed": lease_allowed,
+                    "id": lease_metadata.get("id"),
+                    "task": lease_metadata.get("task"),
+                    "tool": lease_metadata.get("tool"),
+                    "reason_code": lease_metadata.get("reason_code"),
+                }
+            ),
+            "lua": _drop_empty(
+                {
+                    "allowed": lua_allowed,
+                    "action": lua_action,
+                    "reason_code": decision.get("reason_code"),
+                }
+            ),
+        }
+    )
 
 
 def _coerce_facade_upstream(upstream: FacadeUpstream | Mapping[str, Any]) -> FacadeUpstream:
@@ -2885,6 +3053,15 @@ def _record_metadata(
     proxy_metadata = state.get("snulbug_proxy") if isinstance(state, Mapping) else None
     if isinstance(proxy_metadata, Mapping):
         metadata.update(proxy_metadata)
+    if "access" not in metadata and (
+        isinstance(metadata.get("auth"), Mapping)
+        or isinstance(metadata.get("lease"), Mapping)
+        or isinstance(metadata.get("lease_preview"), Mapping)
+    ):
+        metadata["access"] = _composed_access_metadata(
+            scope,
+            lease=_mapping(metadata.get("lease") or metadata.get("lease_preview")),
+        )
     reload_metadata = state.get("snulbug_fabric_reload") if isinstance(state, Mapping) else None
     if isinstance(reload_metadata, Mapping):
         metadata["fabric_reload"] = dict(reload_metadata)

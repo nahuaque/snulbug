@@ -47,6 +47,13 @@ not an authorization server and does not mint tokens. When
 `[mcp.auth.scope_map]` is configured, snulbug also rejects MCP methods/tools
 whose selector is not covered by the token's scopes.
 
+OAuth can be composed with snulbug task leases. OAuth answers who the caller is
+and which MCP scopes they hold; leases answer which temporary task capability is
+currently active. For public shares, the recommended high-assurance path is:
+valid OAuth subject, required MCP scopes, active task lease, and Lua policy
+approval. Audit events expose this as `metadata.access` without logging raw
+tokens.
+
 Do not reuse caller OAuth tokens as upstream credentials. The default OAuth
 proxy behavior strips the caller `Authorization` header before forwarding.
 Use `mcp.proxy.upstream_credential` or per-facade-upstream `auth` references to

@@ -314,6 +314,8 @@ With this enabled, snulbug:
 - exposes sanitized claims to Lua as `context.auth`
 - exposes Lua helpers such as `auth.has_scope("mcp:tool.git.status")` and
   `auth.can("tools/call:git.status")`
+- composes with task-scoped leases, so a tool call can require both an OAuth
+  subject/scope and an active snulbug lease
 - records redacted `auth` audit metadata
 - strips the caller `Authorization` header before forwarding upstream by
   default
@@ -342,6 +344,18 @@ The auth doctor verifies protected-resource metadata, issuer metadata, JWKS or
 introspection reachability, resource/audience alignment, HTTPS requirements,
 raw-token logging safeguards, scope-map selectors against live `tools/list`, and
 Cloudflare Access conflicts.
+
+For task-oriented shares, OAuth and leases answer different questions:
+
+- OAuth: who is this caller, and which MCP methods/tools did the token scope
+  allow?
+- snulbug leases: what temporary task capability is active for this request?
+- Lua policy: what local rule should still apply before forwarding?
+
+The strongest public-share path is all of them together: valid OAuth subject,
+required MCP scopes, active task lease, and Lua approval. Audit records include
+`metadata.auth`, `metadata.lease`, and `metadata.access` so this composition is
+reviewable after the session.
 
 ### Token Anti-Passthrough
 
@@ -434,6 +448,11 @@ lease_file = "leases.json"
 lease_required = true
 lease_header = "x-snulbug-lease"
 ```
+
+When a lease file is configured, Lua receives a non-consuming preview as
+`context.lease` and can use helpers such as `lease.require()`, `lease.id()`, and
+`lease.task()`. The proxy still performs the final lease check and only consumes
+a lease use when the request reaches the upstream.
 
 Useful operations:
 

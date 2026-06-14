@@ -214,7 +214,8 @@ uv run snulbug mcp share lease create \
 
 Send the returned `x-snulbug-lease` header with MCP requests. Set
 `lease_required = true` in `snulbug.toml` when every `tools/call` must carry an
-active lease.
+active lease. OAuth-protected shares can require both a valid scoped OAuth token
+and an active task lease before Lua allows the tool call.
 
 After a session, inspect the logs:
 
@@ -279,6 +280,7 @@ Workflow:
 - optional Cloudflare Access origin-side audit/enforcement
 - optional OAuth protected-resource mode with JWT/JWKS validation and MCP bearer challenges
 - OAuth scope-to-MCP method/tool mapping for least-privilege public shares
+- composable OAuth + task lease + Lua policy access decisions
 - anti-passthrough credential brokering so caller OAuth tokens stop at snulbug
 - learned least-privilege bundles from observed traffic
 - candidate amendments for blocked legitimate requests

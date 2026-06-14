@@ -175,3 +175,44 @@ Available helpers:
 
 `auth.can` uses the same `[mcp.auth.scope_map]` selectors enforced by the
 proxy, so Lua policy and pre-Lua OAuth enforcement stay aligned.
+
+## Task Lease Helpers
+
+When `mcp.proxy.lease_file` is configured, Lua policies also get a non-consuming
+lease preview in `context.lease` and a `lease` helper table. The preview checks
+the presented `x-snulbug-lease` token before Lua runs, but the lease is consumed
+only later if the request reaches the upstream.
+
+```lua
+return function(request, context)
+  local denied = lease.require({
+    reason_code = "lease.active_task_lease_required"
+  })
+  if denied then
+    return denied
+  end
+
+  return decision.allow("mcp.allowed", {
+    lease_id = lease.id(),
+    lease_task = lease.task(),
+  })
+end
+```
+
+Available helpers:
+
+- `lease.info()`: return the sanitized `context.lease` table.
+- `lease.enabled()`: true when a lease file is configured.
+- `lease.required()`: true when `lease_required = true`.
+- `lease.checked()`: true when a presented lease token was checked.
+- `lease.allowed()` / `lease.active()`: true when the presented lease covers
+  the current `tools/call`.
+- `lease.id()`: return the matched lease id.
+- `lease.task()`: return the matched lease task label.
+- `lease.reason_code()`: return the lease denial reason, such as
+  `lease.missing` or `lease.path_not_allowed`.
+- `lease.require(options)`: return `nil` when no lease is needed or the active
+  lease covers the request, otherwise a `decision.reject`.
+
+For public shares, the intended composition is: valid OAuth subject, required
+MCP scopes, active snulbug task lease, and Lua policy approval.

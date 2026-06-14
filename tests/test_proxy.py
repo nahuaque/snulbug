@@ -617,6 +617,123 @@ def test_reverse_proxy_oauth_scope_map_allows_tool_and_lua_auth_helpers(tmp_path
     assert audit["decision"]["reason_code"] == "test.oauth_scope_helper"
 
 
+def test_reverse_proxy_oauth_scope_and_task_lease_compose_for_tool_call(tmp_path):
+    server, seen = start_upstream()
+    lease_file = tmp_path / "leases.json"
+    lease = create_lease(
+        lease_file,
+        task="Inspect git status",
+        allow_tools=["git.status"],
+        ttl="30m",
+        token="sbl_test-token",
+    )
+    policy = write_oauth_lease_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    token = make_oauth_token(secret, scopes=["mcp:connect", "mcp:tool.git.status"])
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        event_sinks=audit_event_sinks(audit_log),
+        lease_file=lease_file,
+        lease_required=True,
+        auth_config=oauth_auth_config(jwks_path, scope_map=oauth_scope_map()),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {token}".encode("ascii")),
+                (b"x-snulbug-lease", b"sbl_test-token"),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"git.status"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    record = load_record_log(record_log)[0]
+    audit = json.loads(audit_log.read_text(encoding="utf-8"))
+    leases = list_leases(lease_file)
+    assert sent[0]["status"] == 200
+    assert seen["count"] == 1
+    assert record["result"]["decision"]["context"]["auth_subject"] == "user-1"
+    assert record["result"]["decision"]["context"]["lease_active"] is True
+    assert record["result"]["decision"]["context"]["lease_id"] == lease["lease"]["id"]
+    assert record["metadata"]["auth"]["subject"] == "user-1"
+    assert record["metadata"]["auth"]["scope_map"]["matched_scope"] == "mcp:tool.git.status"
+    assert record["metadata"]["lease_preview"]["allowed"] is True
+    assert record["metadata"]["lease_preview"]["preview"] is True
+    assert record["metadata"]["lease"]["allowed"] is True
+    assert record["metadata"]["lease"]["id"] == lease["lease"]["id"]
+    assert record["metadata"]["access"]["allowed"] is True
+    assert record["metadata"]["access"]["reason_code"] == "access.oauth_scope_lease_lua_allowed"
+    assert record["metadata"]["access"]["auth"]["subject"] == "user-1"
+    assert record["metadata"]["access"]["scope"]["matched_selector"] == "tools/call:git.status"
+    assert record["metadata"]["access"]["lease"]["id"] == lease["lease"]["id"]
+    assert record["metadata"]["access"]["lua"]["reason_code"] == "test.oauth_lease_context"
+    assert audit["access"]["reason_code"] == "access.oauth_scope_lease_lua_allowed"
+    assert audit["metadata"]["lease"]["allowed"] is True
+    assert leases["leases"][0]["use_count"] == 1
+    assert token not in json.dumps(record)
+
+
+def test_reverse_proxy_oauth_scope_with_missing_task_lease_is_rejected_before_upstream(tmp_path):
+    server, seen = start_upstream()
+    lease_file = tmp_path / "leases.json"
+    create_lease(
+        lease_file,
+        task="Inspect git status",
+        allow_tools=["git.status"],
+        ttl="30m",
+        token="sbl_test-token",
+    )
+    policy = write_oauth_lease_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    token = make_oauth_token(secret, scopes=["mcp:connect", "mcp:tool.git.status"])
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        lease_file=lease_file,
+        lease_required=True,
+        auth_config=oauth_auth_config(jwks_path, scope_map=oauth_scope_map()),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {token}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"git.status"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    record = load_record_log(record_log)[0]
+    leases = list_leases(lease_file)
+    assert sent[0]["status"] == 403
+    assert seen["count"] == 0
+    assert record["result"]["decision"]["reason_code"] == "test.active_lease_required"
+    assert record["metadata"]["auth"]["subject"] == "user-1"
+    assert record["metadata"]["lease_preview"]["reason_code"] == "lease.missing"
+    assert record["metadata"]["access"]["allowed"] is False
+    assert record["metadata"]["access"]["reason_code"] == "lease.missing"
+    assert record["metadata"]["access"]["lease"]["required"] is True
+    assert record["metadata"]["access"]["lua"]["reason_code"] == "test.active_lease_required"
+    assert leases["leases"][0]["use_count"] == 0
+
+
 def test_reverse_proxy_does_not_call_upstream_when_policy_rejects(tmp_path):
     server, seen = start_upstream()
     policy = write_policy(tmp_path, "reject")
@@ -2740,6 +2857,45 @@ def write_oauth_scope_helper_policy(tmp_path):
               auth_subject = captured_auth.subject(),
               auth_client_id = captured_auth.client_id(),
               auth_can_git_status = captured_auth.can("tools/call:git.status")
+            }
+          }
+        end
+        """,
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_oauth_lease_policy(tmp_path):
+    path = tmp_path / "oauth-lease-policy.lua"
+    path.write_text(
+        """
+        local captured_auth = auth
+        local captured_lease = lease
+
+        return function(request, context, state)
+          local forbidden = captured_auth.require("tools/call:git.status", {
+            reason_code = "test.git_status_not_mapped"
+          })
+          if forbidden then
+            return forbidden
+          end
+          local missing_lease = captured_lease.require({
+            reason_code = "test.active_lease_required",
+            body = "active task lease required"
+          })
+          if missing_lease then
+            return missing_lease
+          end
+          return {
+            action = "continue",
+            reason = "request allowed",
+            reason_code = "test.oauth_lease_context",
+            context = {
+              auth_subject = captured_auth.subject(),
+              lease_active = captured_lease.active(),
+              lease_id = captured_lease.id(),
+              lease_task = captured_lease.task()
             }
           }
         end
