@@ -441,54 +441,26 @@ return function(source, source_name, instruction_limit)
     return value
   end
 
-  local mcp = {}
-
-  function mcp.body(request)
-    if request.__mcp_body_cached then
-      return request.__mcp_body
+  local function options_table(options)
+    if type(options) == "table" then
+      return options
     end
-    local ok, value = pcall(json_decode, request.body or "")
-    request.__mcp_body_cached = true
-    if not ok or type(value) ~= "table" then
-      return nil
-    end
-    request.__mcp_body = value
-    return value
+    return {}
   end
 
-  function mcp.method(request)
-    local body = mcp.body(request)
-    if type(body) ~= "table" or type(body.method) ~= "string" then
-      return nil
+  local function copy_option(result, options, key)
+    if options[key] ~= nil then
+      result[key] = options[key]
     end
-    return body.method
   end
 
-  function mcp.params(request)
-    local body = mcp.body(request)
-    if type(body) ~= "table" or type(body.params) ~= "table" then
-      return {}
-    end
-    return body.params
-  end
-
-  function mcp.is_method(request, method)
-    return mcp.method(request) == method
-  end
-
-  function mcp.is_tool_call(request)
-    return mcp.is_method(request, "tools/call")
-  end
-
-  function mcp.tool_name(request)
-    if not mcp.is_tool_call(request) then
-      return nil
-    end
-    local params = mcp.params(request)
-    if type(params.name) ~= "string" then
-      return nil
-    end
-    return params.name
+  local function with_options(result, options)
+    options = options_table(options)
+    copy_option(result, options, "reason")
+    copy_option(result, options, "reason_code")
+    copy_option(result, options, "context")
+    copy_option(result, options, "headers")
+    return result
   end
 
   local function list_contains(values, needle)
@@ -504,6 +476,229 @@ return function(source, source_name, instruction_limit)
       end
     end
     return false
+  end
+
+  local function table_is_array(value)
+    if type(value) ~= "table" then
+      return false
+    end
+    return type(value[1]) == "table"
+  end
+
+  local function starts_with(value, prefix)
+    return string.sub(value, 1, #prefix) == prefix
+  end
+
+  local function ends_with(value, suffix)
+    return suffix == "" or string.sub(value, -#suffix) == suffix
+  end
+
+  local decision = {}
+
+  decision["continue"] = function(options)
+    return with_options({ action = "continue" }, options)
+  end
+
+  function decision.allow(reason_code, context)
+    if type(reason_code) == "table" then
+      return decision["continue"](reason_code)
+    end
+    return decision["continue"]({
+      reason_code = reason_code,
+      context = context,
+    })
+  end
+
+  function decision.set_context(context, options)
+    local result = { action = "set_context", context = context or {} }
+    return with_options(result, options)
+  end
+
+  function decision.respond(status, body, options)
+    local result = {
+      action = "respond",
+      status = status or 200,
+      body = body or "",
+    }
+    return with_options(result, options)
+  end
+
+  function decision.reject(status, body, options)
+    local message = body or "forbidden"
+    local result = {
+      action = "reject",
+      status = status or 403,
+      body = message,
+      reason = message,
+    }
+    return with_options(result, options)
+  end
+
+  function decision.challenge(options)
+    options = options_table(options)
+    local result = {
+      action = "challenge",
+      status = options.status or 401,
+      body = options.body or "authentication required",
+    }
+    copy_option(result, options, "scheme")
+    copy_option(result, options, "realm")
+    copy_option(result, options, "error")
+    copy_option(result, options, "error_description")
+    return with_options(result, options)
+  end
+
+  function decision.redirect(location, options)
+    local result = {
+      action = "redirect",
+      location = location,
+      status = options_table(options).status or 307,
+    }
+    return with_options(result, options)
+  end
+
+  function decision.rate_limit(key, limit, window, options)
+    local result = {
+      action = "rate_limit",
+      key = key,
+      limit = limit,
+      window = window,
+    }
+    return with_options(result, options)
+  end
+
+  function decision.confirm(prompt, options)
+    options = options_table(options)
+    local result = {
+      action = "confirm",
+      prompt = prompt or options.prompt,
+      status = options.status or 403,
+      body = options.body or "confirmation denied",
+    }
+    copy_option(result, options, "remember_key")
+    copy_option(result, options, "timeout_seconds")
+    return with_options(result, options)
+  end
+
+  safe_env.decision = decision
+
+  local mcp = {}
+
+  function mcp.body(request)
+    if request.__mcp_body_cached then
+      return request.__mcp_body
+    end
+    local ok, value = pcall(json_decode, request.body or "")
+    request.__mcp_body_cached = true
+    if not ok or type(value) ~= "table" then
+      return nil
+    end
+    request.__mcp_body = value
+    return value
+  end
+
+  function mcp.call(request)
+    if request.__mcp_call_cached then
+      return request.__mcp_call
+    end
+
+    local body = mcp.body(request)
+    local call = {
+      body = body,
+      params = {},
+      args = {},
+      invalid = false,
+      batch = false,
+      is_tool_call = false,
+      is_read = false,
+      is_write = false,
+    }
+    request.__mcp_call_cached = true
+    request.__mcp_call = call
+
+    if type(body) ~= "table" then
+      call.invalid = true
+      call.error = "invalid MCP JSON-RPC body"
+      return call
+    end
+
+    if table_is_array(body) then
+      call.batch = true
+      call.error = "batch JSON-RPC request"
+      return call
+    end
+
+    call.id = body.id
+    if type(body.method) ~= "string" then
+      call.invalid = true
+      call.error = "missing JSON-RPC method"
+      return call
+    end
+
+    call.method = body.method
+    if type(body.params) == "table" then
+      call.params = body.params
+    end
+
+    if call.method == "tools/call" then
+      call.is_tool_call = true
+      call.is_write = true
+      if type(call.params.name) == "string" then
+        call.tool = call.params.name
+      end
+      if type(call.params.arguments) == "table" then
+        call.args = call.params.arguments
+      end
+      return call
+    end
+
+    if call.method == "resources/read" then
+      call.is_read = true
+      if type(call.params.uri) == "string" then
+        call.resource_uri = call.params.uri
+      end
+      return call
+    end
+
+    if call.method == "prompts/get" then
+      call.is_read = true
+      if type(call.params.name) == "string" then
+        call.prompt = call.params.name
+      end
+      if type(call.params.arguments) == "table" then
+        call.args = call.params.arguments
+      end
+      return call
+    end
+
+    if call.method == "tools/list"
+      or call.method == "resources/list"
+      or call.method == "resources/templates/list"
+      or call.method == "prompts/list" then
+      call.is_read = true
+    end
+
+    return call
+  end
+
+  function mcp.method(request)
+    return mcp.call(request).method
+  end
+
+  function mcp.params(request)
+    return mcp.call(request).params
+  end
+
+  function mcp.is_method(request, method)
+    return mcp.method(request) == method
+  end
+
+  function mcp.is_tool_call(request)
+    return mcp.call(request).is_tool_call
+  end
+
+  function mcp.tool_name(request)
+    return mcp.call(request).tool
   end
 
   function mcp.tool_allowed(request, allowed)
@@ -543,6 +738,163 @@ return function(source, source_name, instruction_limit)
   end
 
   safe_env.mcp = mcp
+
+  local cap = {}
+
+  local function rejection(options, body, reason_code)
+    options = options_table(options)
+    return decision.reject(options.status or 403, options.body or body, {
+      reason = options.reason or body,
+      reason_code = options.reason_code or reason_code,
+      context = options.context,
+      headers = options.headers,
+    })
+  end
+
+  local function value_allowed(value, allowed)
+    return list_contains(allowed, value)
+  end
+
+  function cap.allowed(value, allowed)
+    return value_allowed(value, allowed)
+  end
+
+  function cap.method(request_or_method, allowed, options)
+    local method = request_or_method
+    if type(request_or_method) == "table" then
+      method = mcp.method(request_or_method)
+    end
+    if value_allowed(method, allowed) then
+      return nil
+    end
+    return rejection(options, "MCP method not allowed: " .. tostring(method), "mcp.method_not_allowed")
+  end
+
+  function cap.tool(request_or_name, allowed, options)
+    local name = request_or_name
+    if type(request_or_name) == "table" then
+      if not mcp.is_tool_call(request_or_name) then
+        return nil
+      end
+      name = mcp.tool_name(request_or_name)
+    end
+    if value_allowed(name, allowed) then
+      return nil
+    end
+    return rejection(options, "MCP tool not allowed: " .. tostring(name), "mcp.tool_not_allowed")
+  end
+
+  local function normalize_relative_path(path)
+    while starts_with(path, "./") do
+      path = string.sub(path, 3)
+    end
+    return path
+  end
+
+  local function contains_parent_segment(path)
+    return path == ".."
+      or starts_with(path, "../")
+      or ends_with(path, "/..")
+      or string.find(path, "/../", 1, true) ~= nil
+  end
+
+  local function path_under(path, root)
+    if type(root) ~= "string" or root == "" then
+      return false
+    end
+    if root == "." or root == "./" then
+      return true
+    end
+    root = normalize_relative_path(root)
+    while ends_with(root, "/") and root ~= "" do
+      root = string.sub(root, 1, #root - 1)
+    end
+    if root == "" then
+      return false
+    end
+    return path == root or starts_with(path, root .. "/")
+  end
+
+  function cap.path(path, allowed_paths, options)
+    if type(path) ~= "string" or path == "" then
+      return rejection(options, "path must be a non-empty string", "mcp.path_invalid")
+    end
+    path = normalize_relative_path(path)
+    if starts_with(path, "/") then
+      return rejection(options, "absolute paths are not allowed", "mcp.path_absolute")
+    end
+    if contains_parent_segment(path) then
+      return rejection(options, "parent path traversal is not allowed", "mcp.path_traversal")
+    end
+    if value_allowed(path, allowed_paths) then
+      return nil
+    end
+    if type(allowed_paths) == "table" then
+      for _, root in ipairs(allowed_paths) do
+        if path_under(path, root) then
+          return nil
+        end
+      end
+    end
+    return rejection(options, "path not allowed: " .. path, "mcp.path_not_allowed")
+  end
+
+  local function extract_host(value)
+    if type(value) ~= "string" or value == "" then
+      return nil
+    end
+    local host = string.match(value, "^[%a][%w+.-]*://([^/:/%?#]+)")
+    if host == nil then
+      host = string.match(value, "^([^/:/%?#]+)")
+    end
+    if host == nil or host == "" then
+      return nil
+    end
+    return string.lower(host)
+  end
+
+  local function host_allowed(host, allowed_hosts)
+    if value_allowed(host, allowed_hosts) then
+      return true
+    end
+    if type(allowed_hosts) ~= "table" then
+      return false
+    end
+    for _, allowed in ipairs(allowed_hosts) do
+      if type(allowed) == "string" then
+        allowed = string.lower(allowed)
+        if starts_with(allowed, "*.") and ends_with(host, string.sub(allowed, 2)) then
+          return true
+        end
+      end
+    end
+    return false
+  end
+
+  function cap.host(value, allowed_hosts, options)
+    local host = extract_host(value)
+    if host ~= nil and host_allowed(host, allowed_hosts) then
+      return nil
+    end
+    return rejection(options, "host not allowed: " .. tostring(host), "mcp.host_not_allowed")
+  end
+
+  local function command_name(command)
+    if type(command) ~= "string" then
+      return nil
+    end
+    return string.match(command, "^%s*([^%s]+)")
+  end
+
+  function cap.command(command, allowed_commands, options)
+    local name = command_name(command)
+    if value_allowed(name, allowed_commands) then
+      return nil
+    end
+    return rejection(options, "command not allowed: " .. tostring(name), "mcp.command_not_allowed")
+  end
+
+  safe_env.cap = cap
 
   local loader = loadstring or load
   local chunk, err
