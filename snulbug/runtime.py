@@ -511,6 +511,19 @@ return function(source, source_name, instruction_limit)
     return suffix == "" or string.sub(value, -#suffix) == suffix
   end
 
+  local function selector_matches(configured, requested)
+    if type(configured) ~= "string" or type(requested) ~= "string" then
+      return false
+    end
+    if configured == requested or configured == "*" then
+      return true
+    end
+    if ends_with(configured, "*") then
+      return starts_with(requested, string.sub(configured, 1, #configured - 1))
+    end
+    return false
+  end
+
   local decision = {}
 
   decision["continue"] = function(options)
@@ -599,6 +612,96 @@ return function(source, source_name, instruction_limit)
   end
 
   safe_env.decision = decision
+
+  local current_auth = {}
+
+  local function set_auth_context(context)
+    if type(context) == "table" and type(context.auth) == "table" then
+      current_auth = context.auth
+    else
+      current_auth = {}
+    end
+  end
+
+  local auth = {}
+
+  function auth.claims()
+    return current_auth
+  end
+
+  function auth.subject()
+    return current_auth.subject
+  end
+
+  function auth.client_id()
+    return current_auth.client_id
+  end
+
+  function auth.scopes()
+    if type(current_auth.scopes) == "table" then
+      return current_auth.scopes
+    end
+    return {}
+  end
+
+  function auth.has_scope(scope)
+    return list_contains(auth.scopes(), scope)
+  end
+
+  function auth.can(selector)
+    if type(current_auth.scope_map) ~= "table" then
+      return false
+    end
+    for _, scope in ipairs(auth.scopes()) do
+      local selectors = current_auth.scope_map[scope]
+      if type(selectors) == "table" then
+        for _, configured in ipairs(selectors) do
+          if selector_matches(configured, selector) then
+            return true
+          end
+        end
+      end
+    end
+    return false
+  end
+
+  function auth.require_scope(scope, options)
+    if auth.has_scope(scope) then
+      return nil
+    end
+    options = options_table(options)
+    local reason_code = options.reason_code or "oauth.missing_scope"
+    local body = options.body or "insufficient scope"
+    return decision.challenge({
+      error = "insufficient_scope",
+      body = body,
+      reason = options.reason or body,
+      reason_code = reason_code,
+      context = {
+        missing_scope = scope,
+      },
+    })
+  end
+
+  function auth.require(selector, options)
+    if auth.can(selector) then
+      return nil
+    end
+    options = options_table(options)
+    local reason_code = options.reason_code or "oauth.scope_map_denied"
+    local body = options.body or "insufficient scope"
+    return decision.challenge({
+      error = "insufficient_scope",
+      body = body,
+      reason = options.reason or body,
+      reason_code = reason_code,
+      context = {
+        selector = selector,
+      },
+    })
+  end
+
+  safe_env.auth = auth
 
   local mcp = {}
 
@@ -1009,7 +1112,9 @@ return function(source, source_name, instruction_limit)
       debug.sethook(check_instruction_limit, "", 1000)
     end
 
+    set_auth_context(context)
     local ok, result = pcall(handler, request, context, state or {})
+    set_auth_context({})
 
     if debug and debug.sethook then
       debug.sethook()

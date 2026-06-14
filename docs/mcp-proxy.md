@@ -295,9 +295,14 @@ issuer = "https://issuer.example.com"
 authorization_servers = ["https://issuer.example.com"]
 audience = "https://mcp.example.com/mcp"
 required_scopes = ["mcp:connect"]
-scopes_supported = ["mcp:connect"]
+scopes_supported = ["mcp:connect", "mcp:tools.read", "mcp:tool.git.status"]
 jwks_path = "auth/jwks.json"
 strip_authorization_upstream = true
+
+[mcp.auth.scope_map]
+"mcp:tools.read" = ["tools/list", "resources/list"]
+"mcp:tool.files.read" = ["tools/call:filesystem.read_file"]
+"mcp:tool.git.status" = ["tools/call:git.status"]
 ```
 
 With this enabled, snulbug:
@@ -305,10 +310,19 @@ With this enabled, snulbug:
 - serves `GET /.well-known/oauth-protected-resource`
 - challenges missing or invalid tokens with `WWW-Authenticate: Bearer ...`
 - rejects insufficient scopes before Lua and upstream calls
+- maps OAuth scopes to MCP methods/tools using `[mcp.auth.scope_map]`
 - exposes sanitized claims to Lua as `context.auth`
+- exposes Lua helpers such as `auth.has_scope("mcp:tool.git.status")` and
+  `auth.can("tools/call:git.status")`
 - records redacted `auth` audit metadata
 - strips the caller `Authorization` header before forwarding upstream by
   default
+
+Scope-map selectors match exact MCP methods such as `tools/list` or
+tool-specific selectors such as `tools/call:git.status`. A selector ending in
+`*` matches by prefix, for example `tools/call:filesystem.*`. MCP handshake
+messages such as `initialize`, `ping`, and `notifications/*` are allowed once
+`required_scopes` has passed, so you do not need to map protocol setup traffic.
 
 The JWT verifier uses `PyJWT[crypto]`. This mode does not perform dynamic
 client registration, token introspection, or authorization-code flows; use your

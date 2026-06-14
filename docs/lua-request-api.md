@@ -136,3 +136,42 @@ return cap.tool(request, { "files.read_file" }, {
   reason_code = "mcp.policy.tool_rejected"
 })
 ```
+
+## OAuth Auth Helpers
+
+When `[mcp.auth]` runs in OAuth protected-resource mode, Lua policies also get
+a request-scoped `auth` helper table. The helper reads the sanitized auth
+context produced by the proxy; it never exposes the raw bearer token.
+
+```lua
+return function(request, context)
+  local denied = auth.require("tools/call:git.status", {
+    reason_code = "oauth.git_status_scope_required"
+  })
+  if denied then
+    return denied
+  end
+
+  return decision.allow("mcp.allowed", {
+    subject = auth.subject(),
+    client_id = auth.client_id(),
+  })
+end
+```
+
+Available helpers:
+
+- `auth.claims()`: return the sanitized `context.auth` table.
+- `auth.subject()`: return the JWT subject claim.
+- `auth.client_id()`: return `azp` or `client_id` when present.
+- `auth.scopes()`: return the token scopes as an array.
+- `auth.has_scope(scope)`: true when the token includes `scope`.
+- `auth.can(selector)`: true when the token has a scope mapped to an MCP
+  selector such as `tools/list` or `tools/call:git.status`.
+- `auth.require_scope(scope, options)`: return `nil` when present, otherwise a
+  `decision.challenge` with `error = "insufficient_scope"`.
+- `auth.require(selector, options)`: return `nil` when `auth.can(selector)` is
+  true, otherwise a `decision.challenge`.
+
+`auth.can` uses the same `[mcp.auth.scope_map]` selectors enforced by the
+proxy, so Lua policy and pre-Lua OAuth enforcement stay aligned.

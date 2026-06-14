@@ -22,6 +22,8 @@ Use these controls:
 - optional OAuth protected-resource mode with JWT/JWKS validation, bearer
   challenges, sanitized `context.auth`, and upstream authorization-header
   stripping
+- OAuth scope-to-MCP selector mapping so scopes can authorize exact methods and
+  tools such as `tools/list` or `tools/call:git.status`
 
 For hostile third-party scripts, add an external isolation boundary. A separate process, container, VM, or WebAssembly runtime is a stronger boundary than the in-process Lua runtime.
 
@@ -39,7 +41,9 @@ observed schemas, and leave replayable audit evidence.
 
 When OAuth protected-resource mode is enabled, snulbug validates bearer JWT
 signature, issuer, audience, and required scopes before Lua policy runs. It is
-not an authorization server and does not mint tokens.
+not an authorization server and does not mint tokens. When
+`[mcp.auth.scope_map]` is configured, snulbug also rejects MCP methods/tools
+whose selector is not covered by the token's scopes.
 
 It can also reduce risk from a compromised or surprising upstream MCP server by
 redacting likely secrets from results, detecting suspicious instruction-like

@@ -1621,8 +1621,13 @@ class OAuthResourceMiddleware:
             await self._send_protected_resource_metadata(scope, send)
             return
 
+        body = None
+        replay_receive = receive
+        if self.config.mapped_scopes:
+            body, replay_receive = await _capture_body(receive)
+
         _ensure_scope_state(scope)
-        decision = evaluate_oauth_request(scope, config=self.config)
+        decision = evaluate_oauth_request(scope, config=self.config, body=body)
         _set_proxy_metadata(scope, {"auth": decision.metadata})
         if decision.allowed:
             child_scope = dict(scope)
@@ -1632,7 +1637,7 @@ class OAuthResourceMiddleware:
             child_scope["lua"] = lua_context
             if self.config.strip_authorization_upstream:
                 child_scope["headers"] = _strip_authorization_header(scope.get("headers", []))
-            await self.app(child_scope, receive, send)
+            await self.app(child_scope, replay_receive, send)
             return
 
         body = decision.body.decode("utf-8", errors="replace")
@@ -2179,6 +2184,7 @@ def _oauth_resource_config(value: Mapping[str, Any] | OAuthResourceConfig | None
         realm=normalized["realm"],
         leeway_seconds=normalized["leeway_seconds"],
         strip_authorization_upstream=normalized["strip_authorization_upstream"],
+        scope_map={scope: tuple(selectors) for scope, selectors in normalized["scope_map"].items()},
     )
 
 

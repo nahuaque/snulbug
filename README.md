@@ -270,6 +270,7 @@ Workflow:
 - provider-aware tunnel audit fields for ngrok, Cloudflare, Tailscale, LocalXpose, Pinggy, Holepunch, and generic forwarders
 - optional Cloudflare Access origin-side audit/enforcement
 - optional OAuth protected-resource mode with JWT/JWKS validation and MCP bearer challenges
+- OAuth scope-to-MCP method/tool mapping for least-privilege public shares
 - learned least-privilege bundles from observed traffic
 - candidate amendments for blocked legitimate requests
 - a decision console for live local tunnel traffic

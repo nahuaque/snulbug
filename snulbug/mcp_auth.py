@@ -24,10 +24,15 @@ class OAuthResourceConfig:
     realm: str = "mcp"
     leeway_seconds: float = 60.0
     strip_authorization_upstream: bool = True
+    scope_map: Mapping[str, tuple[str, ...]] | None = None
 
     @property
     def enabled(self) -> bool:
         return self.mode == "oauth-resource"
+
+    @property
+    def mapped_scopes(self) -> dict[str, tuple[str, ...]]:
+        return {str(scope): tuple(selectors) for scope, selectors in (self.scope_map or {}).items()}
 
 
 @dataclass(frozen=True)
@@ -52,8 +57,15 @@ def protected_resource_metadata(config: OAuthResourceConfig) -> dict[str, Any]:
         "resource": config.resource,
         "authorization_servers": authorization_servers,
     }
-    if config.scopes_supported:
-        metadata["scopes_supported"] = list(config.scopes_supported)
+    scopes_supported = sorted(
+        {
+            *config.scopes_supported,
+            *config.required_scopes,
+            *config.mapped_scopes,
+        }
+    )
+    if scopes_supported:
+        metadata["scopes_supported"] = scopes_supported
     return _drop_empty(metadata)
 
 
@@ -78,7 +90,12 @@ def oauth_bearer_challenge(config: OAuthResourceConfig, *, error: str | None = N
     return ", ".join(parts)
 
 
-def evaluate_oauth_request(scope: Mapping[str, Any], *, config: OAuthResourceConfig) -> OAuthDecision:
+def evaluate_oauth_request(
+    scope: Mapping[str, Any],
+    *,
+    config: OAuthResourceConfig,
+    body: bytes | None = None,
+) -> OAuthDecision:
     if not config.enabled:
         return OAuthDecision(
             allowed=True,
@@ -110,16 +127,30 @@ def evaluate_oauth_request(scope: Mapping[str, Any], *, config: OAuthResourceCon
             details={"missing_scopes": missing},
         )
     context = oauth_context(claims, scopes=scopes, config=config)
+    scope_map_decision = evaluate_scope_map(body=body, scopes=scopes, config=config)
+    if not scope_map_decision["allowed"]:
+        return _reject(
+            config,
+            status=403,
+            reason_code=str(scope_map_decision["reason_code"]),
+            error="insufficient_scope",
+            details={"scope_map": scope_map_decision},
+        )
+    if scope_map_decision["enabled"]:
+        context["scope_decision"] = scope_map_decision
     return OAuthDecision(
         allowed=True,
         status=200,
         body=b"",
         headers=[],
-        metadata={
-            **context,
-            "allowed": True,
-            "reason_code": "oauth.allowed",
-        },
+        metadata=_drop_empty(
+            {
+                **context,
+                "allowed": True,
+                "reason_code": "oauth.allowed",
+                "scope_map": scope_map_decision if scope_map_decision["enabled"] else None,
+            }
+        ),
         context=context,
     )
 
@@ -181,13 +212,107 @@ def oauth_context(
             "email": claims.get("email"),
             "tenant": claims.get("tid") or claims.get("tenant"),
             "groups": group_values,
+            "scope_map": {scope: list(selectors) for scope, selectors in sorted(config.mapped_scopes.items())},
         }
     )
+
+
+def evaluate_scope_map(
+    *,
+    body: bytes | None,
+    scopes: Sequence[str],
+    config: OAuthResourceConfig,
+) -> dict[str, Any]:
+    scope_map = config.mapped_scopes
+    if not scope_map:
+        return {"enabled": False, "allowed": True}
+
+    target = mcp_scope_target(body)
+    if target.get("allow_without_scope_map"):
+        return {
+            "enabled": True,
+            "allowed": True,
+            "reason_code": "oauth.scope_map_protocol_allowed",
+            "target": target,
+            "candidate_selectors": target.get("selectors", []),
+        }
+    selectors = target.get("selectors")
+    selectors = selectors if isinstance(selectors, Sequence) and not isinstance(selectors, str | bytes) else []
+    if not selectors:
+        return {
+            "enabled": True,
+            "allowed": False,
+            "reason_code": "oauth.scope_map_unmapped_request",
+            "target": target,
+            "candidate_selectors": [],
+            "accepted_scopes": [],
+        }
+
+    matched = _scope_map_match(scopes=scopes, selectors=[str(selector) for selector in selectors], scope_map=scope_map)
+    return {
+        "enabled": True,
+        "allowed": bool(matched),
+        "reason_code": "oauth.scope_map_allowed" if matched else "oauth.scope_map_denied",
+        "target": target,
+        "candidate_selectors": [str(selector) for selector in selectors],
+        "accepted_scopes": _accepted_scopes_for_selectors(
+            selectors=[str(selector) for selector in selectors],
+            scope_map=scope_map,
+        ),
+        **(matched or {}),
+    }
+
+
+def mcp_scope_target(body: bytes | None) -> dict[str, Any]:
+    if body is None:
+        return {"kind": "unknown", "reason": "body_not_available", "selectors": []}
+    if not body:
+        return {"kind": "unknown", "reason": "empty_body", "selectors": []}
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {"kind": "unknown", "reason": "invalid_json", "selectors": []}
+    if isinstance(payload, Sequence) and not isinstance(payload, str | bytes | bytearray):
+        return {"kind": "batch", "reason": "batch_not_supported", "selectors": []}
+    if not isinstance(payload, Mapping):
+        return {"kind": "unknown", "reason": "non_object_body", "selectors": []}
+    method = payload.get("method")
+    if not isinstance(method, str) or not method:
+        return {"kind": "unknown", "reason": "missing_method", "selectors": []}
+
+    params = payload.get("params")
+    params = params if isinstance(params, Mapping) else {}
+    selectors = [method]
+    target: dict[str, Any] = {
+        "kind": "mcp",
+        "method": method,
+        "selectors": selectors,
+    }
+    if method in {"initialize", "initialized", "notifications/initialized", "ping"}:
+        target["allow_without_scope_map"] = True
+        return target
+    if method.startswith("notifications/"):
+        target["allow_without_scope_map"] = True
+        return target
+    if method == "tools/call" and isinstance(params.get("name"), str):
+        tool_name = params["name"]
+        target["tool"] = tool_name
+        selectors.insert(0, f"tools/call:{tool_name}")
+    elif method == "prompts/get" and isinstance(params.get("name"), str):
+        prompt_name = params["name"]
+        target["prompt"] = prompt_name
+        selectors.insert(0, f"prompts/get:{prompt_name}")
+    elif method == "resources/read" and isinstance(params.get("uri"), str):
+        uri = params["uri"]
+        target["uri"] = uri
+        selectors.insert(0, f"resources/read:{uri}")
+    return target
 
 
 def _reject(
     config: OAuthResourceConfig,
     *,
+    status: int = 401,
     reason_code: str,
     error: str,
     details: Mapping[str, Any] | None = None,
@@ -201,7 +326,7 @@ def _reject(
     body = b"authentication required"
     return OAuthDecision(
         allowed=False,
-        status=401,
+        status=status,
         body=body,
         headers=[
             (b"content-type", b"text/plain; charset=utf-8"),
@@ -254,6 +379,46 @@ def _claim_scopes(claims: Mapping[str, Any]) -> list[str]:
     elif isinstance(raw_scp, Sequence) and not isinstance(raw_scp, str | bytes | bytearray):
         scopes.extend(str(item) for item in raw_scp if item)
     return sorted(set(scopes))
+
+
+def _scope_map_match(
+    *,
+    scopes: Sequence[str],
+    selectors: Sequence[str],
+    scope_map: Mapping[str, Sequence[str]],
+) -> dict[str, Any] | None:
+    for scope in scopes:
+        for configured in scope_map.get(scope, ()):
+            for selector in selectors:
+                if _selector_matches(configured, selector):
+                    return {
+                        "matched_scope": scope,
+                        "matched_selector": configured,
+                        "matched_request_selector": selector,
+                    }
+    return None
+
+
+def _accepted_scopes_for_selectors(
+    *,
+    selectors: Sequence[str],
+    scope_map: Mapping[str, Sequence[str]],
+) -> list[str]:
+    accepted = []
+    for scope, configured_selectors in scope_map.items():
+        if any(
+            _selector_matches(configured, selector) for configured in configured_selectors for selector in selectors
+        ):
+            accepted.append(scope)
+    return sorted(set(accepted))
+
+
+def _selector_matches(configured: str, requested: str) -> bool:
+    if configured == requested or configured == "*":
+        return True
+    if configured.endswith("*"):
+        return requested.startswith(configured[:-1])
+    return False
 
 
 def _bearer_token(raw_headers: Any) -> str | None:

@@ -430,6 +430,126 @@ def test_reverse_proxy_oauth_blocks_insufficient_scope_before_lua_and_upstream(t
     assert token not in json.dumps(record)
 
 
+def test_reverse_proxy_oauth_scope_map_blocks_unmapped_tool_before_lua_and_upstream(tmp_path):
+    server, seen = start_upstream()
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    token = make_oauth_token(secret, scopes=["mcp:connect", "mcp:tools.read"])
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        event_sinks=audit_event_sinks(audit_log),
+        auth_config=oauth_auth_config(jwks_path, scope_map=oauth_scope_map()),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {token}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"git.status"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    record = load_record_log(record_log)[0]
+    audit = json.loads(audit_log.read_text(encoding="utf-8"))
+    scope_map = record["metadata"]["auth"]["scope_map"]
+    assert sent[0]["status"] == 403
+    assert seen["count"] == 0
+    assert record["result"]["action"] == "challenge"
+    assert record["metadata"]["auth"]["reason_code"] == "oauth.scope_map_denied"
+    assert scope_map["target"]["tool"] == "git.status"
+    assert scope_map["candidate_selectors"] == ["tools/call:git.status", "tools/call"]
+    assert scope_map["accepted_scopes"] == ["mcp:tool.git.status"]
+    assert audit["auth"]["scope_map"]["reason_code"] == "oauth.scope_map_denied"
+    assert token not in json.dumps(record)
+
+
+def test_reverse_proxy_oauth_scope_map_allows_method_selector(tmp_path):
+    server, seen = start_upstream()
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    token = make_oauth_token(secret, scopes=["mcp:connect", "mcp:tools.read"])
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        auth_config=oauth_auth_config(jwks_path, scope_map=oauth_scope_map()),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {token}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    record = load_record_log(record_log)[0]
+    assert sent[0]["status"] == 200
+    assert seen["count"] == 1
+    assert record["metadata"]["auth"]["scope_map"]["matched_scope"] == "mcp:tools.read"
+    assert record["metadata"]["auth"]["scope_map"]["matched_selector"] == "tools/list"
+
+
+def test_reverse_proxy_oauth_scope_map_allows_tool_and_lua_auth_helpers(tmp_path):
+    server, seen = start_upstream()
+    policy = write_oauth_scope_helper_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    token = make_oauth_token(secret, scopes=["mcp:connect", "mcp:tool.git.status"])
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        event_sinks=audit_event_sinks(audit_log),
+        auth_config=oauth_auth_config(jwks_path, scope_map=oauth_scope_map()),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {token}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"git.status"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    record = load_record_log(record_log)[0]
+    audit = json.loads(audit_log.read_text(encoding="utf-8"))
+    assert sent[0]["status"] == 200
+    assert seen["count"] == 1
+    assert "authorization" not in payload["headers"]
+    assert record["metadata"]["auth"]["scope_map"]["reason_code"] == "oauth.scope_map_allowed"
+    assert record["metadata"]["auth"]["scope_map"]["matched_scope"] == "mcp:tool.git.status"
+    assert record["metadata"]["auth"]["scope_map"]["matched_selector"] == "tools/call:git.status"
+    assert record["result"]["decision"]["context"]["auth_subject"] == "user-1"
+    assert record["result"]["decision"]["context"]["auth_can_git_status"] is True
+    assert audit["decision"]["reason_code"] == "test.oauth_scope_helper"
+
+
 def test_reverse_proxy_does_not_call_upstream_when_policy_rejects(tmp_path):
     server, seen = start_upstream()
     policy = write_policy(tmp_path, "reject")
@@ -2382,7 +2502,7 @@ def make_oauth_token(secret: str, *, scopes: list[str]) -> str:
     )
 
 
-def oauth_auth_config(jwks_path: Path) -> dict[str, Any]:
+def oauth_auth_config(jwks_path: Path, *, scope_map: dict[str, list[str]] | None = None) -> dict[str, Any]:
     return {
         "mode": "oauth-resource",
         "resource": "https://mcp.example.test/mcp",
@@ -2391,6 +2511,14 @@ def oauth_auth_config(jwks_path: Path) -> dict[str, Any]:
         "audience": "https://mcp.example.test/mcp",
         "required_scopes": ["mcp:connect"],
         "jwks_path": jwks_path,
+        "scope_map": scope_map or {},
+    }
+
+
+def oauth_scope_map() -> dict[str, list[str]]:
+    return {
+        "mcp:tools.read": ["tools/list", "resources/list"],
+        "mcp:tool.git.status": ["tools/call:git.status"],
     }
 
 
@@ -2455,6 +2583,42 @@ def write_oauth_context_policy(tmp_path):
             context = {
               auth_subject = context.auth.subject,
               auth_client_id = context.auth.client_id
+            }
+          }
+        end
+        """,
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_oauth_scope_helper_policy(tmp_path):
+    path = tmp_path / "oauth-scope-helper-policy.lua"
+    path.write_text(
+        """
+        local captured_auth = auth
+
+        return function(request, context, state)
+          local missing = captured_auth.require_scope("mcp:tool.git.status", {
+            reason_code = "test.missing_git_status_scope"
+          })
+          if missing then
+            return missing
+          end
+          local forbidden = captured_auth.require("tools/call:git.status", {
+            reason_code = "test.git_status_not_mapped"
+          })
+          if forbidden then
+            return forbidden
+          end
+          return {
+            action = "continue",
+            reason = "request allowed",
+            reason_code = "test.oauth_scope_helper",
+            context = {
+              auth_subject = captured_auth.subject(),
+              auth_client_id = captured_auth.client_id(),
+              auth_can_git_status = captured_auth.can("tools/call:git.status")
             }
           }
         end

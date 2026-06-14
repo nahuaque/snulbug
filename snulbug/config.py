@@ -30,6 +30,7 @@ DEFAULT_MCP_AUTH_CONFIG = {
     "realm": "mcp",
     "leeway_seconds": 60.0,
     "strip_authorization_upstream": True,
+    "scope_map": {},
 }
 
 DEFAULT_MCP_PROXY_CONFIG = {
@@ -158,6 +159,12 @@ timeout = 30.0
 # realm = "mcp"
 # leeway_seconds = 60.0
 # strip_authorization_upstream = true
+#
+# Optional MCP-aware scope-to-method/tool mapping:
+# [mcp.auth.scope_map]
+# "mcp:tools.read" = ["tools/list", "resources/list"]
+# "mcp:tool.files.read" = ["tools/call:filesystem.read_file"]
+# "mcp:tool.git.status" = ["tools/call:git.status"]
 
 [mcp.fabric]
 name = "local-dev"
@@ -473,13 +480,19 @@ def normalize_mcp_auth_config(config: Mapping[str, Any] | None, *, base_dir: str
     normalized["leeway_seconds"] = float(normalized["leeway_seconds"])
     if not isinstance(normalized.get("strip_authorization_upstream"), bool):
         raise ValueError("mcp.auth.strip_authorization_upstream must be a boolean")
+    normalized["scope_map"] = _normalize_auth_scope_map(normalized.get("scope_map", {}))
     if normalized["mode"] == "oauth-resource":
         if not normalized.get("resource"):
             raise ValueError("mcp.auth.resource is required when mode is 'oauth-resource'")
         if not normalized.get("jwks_path"):
             raise ValueError("mcp.auth.jwks_path is required when mode is 'oauth-resource'")
-        if not normalized["scopes_supported"] and normalized["required_scopes"]:
-            normalized["scopes_supported"] = list(normalized["required_scopes"])
+        if not normalized["scopes_supported"]:
+            normalized["scopes_supported"] = sorted(
+                {
+                    *normalized["required_scopes"],
+                    *normalized["scope_map"],
+                }
+            )
     return normalized
 
 
@@ -593,6 +606,26 @@ def _normalize_auth_string_list(value: Any, *, field: str) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ValueError(f"mcp.auth.{field} must be a list of strings")
     return list(value)
+
+
+def _normalize_auth_scope_map(value: Any) -> dict[str, list[str]]:
+    if value in (None, ""):
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("mcp.auth.scope_map must be a table")
+    result: dict[str, list[str]] = {}
+    for scope, selectors in value.items():
+        if not isinstance(scope, str) or not scope:
+            raise ValueError("mcp.auth.scope_map keys must be non-empty scope strings")
+        if selectors in (None, ""):
+            result[scope] = []
+            continue
+        if not isinstance(selectors, list) or not all(isinstance(selector, str) for selector in selectors):
+            raise ValueError(f"mcp.auth.scope_map.{scope} must be a list of strings")
+        if any(not selector for selector in selectors):
+            raise ValueError(f"mcp.auth.scope_map.{scope} selectors must be non-empty strings")
+        result[scope] = list(selectors)
+    return result
 
 
 def _normalize_upstreams(value: Any, *, base_dir: Path = Path(".")) -> list[dict[str, Any]]:

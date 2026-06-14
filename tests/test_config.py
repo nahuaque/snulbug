@@ -70,6 +70,11 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         leeway_seconds = 30
         strip_authorization_upstream = true
 
+        [mcp.auth.scope_map]
+        "mcp:tools.read" = ["tools/list", "resources/list"]
+        "mcp:tool.files.read" = ["tools/call:filesystem.read_file"]
+        "mcp:tool.git.status" = ["tools/call:git.status"]
+
         [[mcp.events.sinks]]
         type = "audit_jsonl"
         path = "events/audit.jsonl"
@@ -133,6 +138,11 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         "realm": "mcp",
         "leeway_seconds": 30.0,
         "strip_authorization_upstream": True,
+        "scope_map": {
+            "mcp:tools.read": ["tools/list", "resources/list"],
+            "mcp:tool.files.read": ["tools/call:filesystem.read_file"],
+            "mcp:tool.git.status": ["tools/call:git.status"],
+        },
     }
     assert result["event_sinks"] == [
         {
