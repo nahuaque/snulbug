@@ -1295,6 +1295,7 @@ def _auth_doctor_summary(auth: Mapping[str, Any]) -> dict[str, Any]:
             "default_action": claim_policy.get("default_action"),
             "rules": [_auth_claim_policy_rule_summary(rule) for rule in _sequence(claim_policy.get("rules"))],
         },
+        "issuers": [_auth_issuer_profile_summary(profile) for profile in _sequence(auth.get("issuers"))],
     }
 
 
@@ -2269,6 +2270,36 @@ def _auth_claim_policy_rule_summary(rule: Any) -> dict[str, Any]:
         "allow_tools": [str(value) for value in _sequence(item.get("allow_tools"))],
         "allow_tool_prefixes": [str(value) for value in _sequence(item.get("allow_tool_prefixes"))],
         "allow_selectors": [str(value) for value in _sequence(item.get("allow_selectors"))],
+    }
+
+
+def _auth_issuer_profile_summary(profile: Any) -> dict[str, Any]:
+    item = _mapping(profile)
+    jwks_path = item.get("jwks_path")
+    scope_map = _mapping(item.get("scope_map"))
+    claim_policy = _mapping(item.get("claim_policy"))
+    return {
+        "id": item.get("id"),
+        "issuer": item.get("issuer"),
+        "authorization_servers": [str(value) for value in _sequence(item.get("authorization_servers"))],
+        "audience": item.get("audience"),
+        "audiences": [str(value) for value in _sequence(item.get("audiences"))],
+        "required_scopes": [str(value) for value in _sequence(item.get("required_scopes"))],
+        "required_claims": {
+            str(claim): [str(value) for value in _sequence(values)]
+            for claim, values in _mapping(item.get("required_claims")).items()
+        },
+        "jwks_path": str(jwks_path) if jwks_path else None,
+        "jwks_url": item.get("jwks_url"),
+        "token_validation": item.get("token_validation"),
+        "scope_map": {
+            str(scope): [str(selector) for selector in _sequence(selectors)] for scope, selectors in scope_map.items()
+        },
+        "claim_policy": {
+            "enabled": claim_policy.get("enabled") is True,
+            "default_action": claim_policy.get("default_action"),
+            "rules": [_auth_claim_policy_rule_summary(rule) for rule in _sequence(claim_policy.get("rules"))],
+        },
     }
 
 

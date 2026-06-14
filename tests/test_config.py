@@ -185,6 +185,8 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
                 }
             ],
         },
+        "required_claims": {},
+        "issuers": [],
     }
     assert result["event_sinks"] == [
         {
@@ -223,6 +225,70 @@ def test_load_mcp_proxy_config_accepts_holepunch_provider(tmp_path):
 
     assert result["tunnel_provider"] == "holepunch"
     assert result["tunnel_public_url"] == "http://127.0.0.1:18080/mcp"
+
+
+def test_load_mcp_proxy_config_accepts_auth_issuer_profiles(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.proxy]
+        policy = "policy.snulbug/policy.lua"
+
+        [mcp.auth]
+        mode = "oauth-resource"
+        resource = "https://mcp.example.test/mcp"
+        strip_authorization_upstream = true
+
+        [[mcp.auth.issuers]]
+        id = "tenant-a"
+        issuer = "https://tenant-a-idp.example.test"
+        audience = "https://mcp.example.test/mcp"
+        jwks_path = "auth/tenant-a-jwks.json"
+        required_scopes = ["mcp:connect"]
+        required_claims = { tenant = ["tenant-a"] }
+
+        [mcp.auth.issuers.scope_map]
+        "mcp:tenant-a.files" = ["tools/call:tenant_a.*"]
+
+        [mcp.auth.issuers.claim_policy]
+        enabled = true
+        default_action = "deny"
+
+        [[mcp.auth.issuers.claim_policy.rules]]
+        id = "tenant-a-tools"
+        claim = "tenant"
+        values = ["tenant-a"]
+        allow_tool_prefixes = ["tenant_a."]
+
+        [[mcp.auth.issuers]]
+        id = "tenant-b"
+        issuer = "https://tenant-b-idp.example.test"
+        audience = "https://mcp.example.test/mcp"
+        jwks_path = "auth/tenant-b-jwks.json"
+        required_scopes = ["mcp:connect"]
+        required_claims = { tenant = ["tenant-b"] }
+
+        [mcp.auth.issuers.scope_map]
+        "mcp:tenant-b.files" = ["tools/call:tenant_b.*"]
+        """,
+        encoding="utf-8",
+    )
+
+    result = load_mcp_proxy_config(config)
+    issuers = result["auth"]["issuers"]
+
+    assert result["auth"]["audience"] is None
+    assert result["auth"]["jwks_path"] is None
+    assert result["auth"]["scopes_supported"] == ["mcp:connect", "mcp:tenant-a.files", "mcp:tenant-b.files"]
+    assert [issuer["id"] for issuer in issuers] == ["tenant-a", "tenant-b"]
+    assert issuers[0]["issuer"] == "https://tenant-a-idp.example.test"
+    assert issuers[0]["jwks_path"] == tmp_path / "auth/tenant-a-jwks.json"
+    assert issuers[0]["required_claims"] == {"tenant": ["tenant-a"]}
+    assert issuers[0]["scope_map"] == {"mcp:tenant-a.files": ["tools/call:tenant_a.*"]}
+    assert issuers[0]["claim_policy"]["rules"][0]["allow_tool_prefixes"] == ["tenant_a."]
+    assert issuers[1]["issuer"] == "https://tenant-b-idp.example.test"
+    assert issuers[1]["jwks_path"] == tmp_path / "auth/tenant-b-jwks.json"
+    assert issuers[1]["scope_map"] == {"mcp:tenant-b.files": ["tools/call:tenant_b.*"]}
 
 
 def test_load_mcp_proxy_config_accepts_remote_jwks_without_local_file(tmp_path):

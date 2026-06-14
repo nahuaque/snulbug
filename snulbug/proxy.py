@@ -1673,7 +1673,7 @@ class OAuthResourceMiddleware:
 
         body = None
         replay_receive = receive
-        if self.config.mapped_scopes or self.config.has_claim_policy:
+        if self.config.requires_body:
             body, replay_receive = await _capture_body(receive)
 
         _ensure_scope_state(scope)
@@ -2241,6 +2241,10 @@ def _oauth_resource_config(value: Mapping[str, Any] | OAuthResourceConfig | None
     if isinstance(value, OAuthResourceConfig):
         return value
     normalized = normalize_mcp_auth_config(value or {})
+    return _oauth_resource_config_from_normalized(normalized)
+
+
+def _oauth_resource_config_from_normalized(normalized: Mapping[str, Any]) -> OAuthResourceConfig:
     return OAuthResourceConfig(
         mode=normalized["mode"],
         resource=normalized["resource"],
@@ -2269,6 +2273,9 @@ def _oauth_resource_config(value: Mapping[str, Any] | OAuthResourceConfig | None
         strip_authorization_upstream=normalized["strip_authorization_upstream"],
         scope_map={scope: tuple(selectors) for scope, selectors in normalized["scope_map"].items()},
         claim_policy=normalized["claim_policy"],
+        required_claims={claim: tuple(values) for claim, values in normalized.get("required_claims", {}).items()},
+        profile_id=normalized.get("id") if isinstance(normalized.get("id"), str) else None,
+        profiles=tuple(_oauth_resource_config_from_normalized(profile) for profile in normalized.get("issuers", [])),
     )
 
 
@@ -2506,6 +2513,7 @@ def _composed_access_metadata(scope: Scope, *, lease: Mapping[str, Any] | None =
                 {
                     "enabled": oauth_enabled,
                     "allowed": oauth_allowed,
+                    "profile_id": auth.get("profile_id"),
                     "subject": auth.get("subject"),
                     "issuer": auth.get("issuer"),
                     "client_id": auth.get("client_id"),

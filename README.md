@@ -16,11 +16,27 @@ It gives you a tight loop for agent-tool safety:
 - learn a least-privilege policy from observed traffic
 - amend blocked requests into reviewable candidate bundles
 - use task-scoped leases for temporary tool/path grants
-- map OAuth claims to MCP tool allowlists before Lua policy runs
+- turn OAuth identity into MCP-specific tool permissions
 - pin facade upstream identity with signed manifests
 
 The standalone ASGI Lua middleware is still available, but it is an
 implementation surface. The main use case is protecting local MCP traffic.
+
+## Auth Model
+
+snulbug can act as an MCP OAuth protected resource, but the useful part is the
+MCP-specific authorization layer on top:
+
+- validate JWTs with local or remote JWKS, issuer discovery, or token introspection
+- enforce exact resource/audience settings so tunnel URLs do not drift silently
+- trust multiple issuer or tenant profiles for facade and fabric gateways
+- map OAuth scopes to concrete MCP methods and tools
+- map tenant, group, subject, client ID, or custom claims to tool allowlists
+- strip caller OAuth tokens before upstream calls and inject separate upstream credentials
+- compose OAuth identity with task-scoped leases and Lua policy before a tool call is allowed
+
+Audit records include the selected auth profile, scope/claim-policy decisions,
+lease state, and Lua decision without logging raw bearer tokens.
 
 ## Install
 

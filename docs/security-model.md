@@ -51,6 +51,9 @@ whose selector is not covered by the token's scopes.
 When `[mcp.auth.claim_policy]` is configured, snulbug can also map sanitized
 JWT/introspection claims such as tenant, subject, group, or client ID to exact
 tool names, prefixes, or selectors before Lua or the upstream runs.
+For facade/fabric gateways, `[[mcp.auth.issuers]]` lets one protected resource
+trust multiple issuer or tenant profiles while keeping issuer, audience, JWKS,
+required claims, scope maps, and claim policies separated per profile.
 
 OAuth can be composed with snulbug task leases. OAuth answers who the caller is
 and which MCP scopes they hold; leases answer which temporary task capability is

@@ -46,6 +46,9 @@ class OAuthResourceConfig:
     strip_authorization_upstream: bool = True
     scope_map: Mapping[str, tuple[str, ...]] | None = None
     claim_policy: Mapping[str, Any] | None = None
+    required_claims: Mapping[str, tuple[str, ...]] | None = None
+    profile_id: str | None = None
+    profiles: tuple["OAuthResourceConfig", ...] = ()
 
     @property
     def enabled(self) -> bool:
@@ -59,6 +62,12 @@ class OAuthResourceConfig:
     def has_claim_policy(self) -> bool:
         policy = self.claim_policy if isinstance(self.claim_policy, Mapping) else {}
         return policy.get("enabled") is True and bool(policy.get("rules"))
+
+    @property
+    def requires_body(self) -> bool:
+        return bool(
+            self.mapped_scopes or self.has_claim_policy or any(profile.requires_body for profile in self.profiles)
+        )
 
 
 @dataclass(frozen=True)
@@ -167,17 +176,21 @@ def protected_resource_metadata(config: OAuthResourceConfig) -> dict[str, Any]:
     authorization_servers = list(config.authorization_servers)
     if not authorization_servers and config.issuer:
         authorization_servers = [config.issuer]
+    for profile in config.profiles:
+        profile_servers = list(profile.authorization_servers)
+        if not profile_servers and profile.issuer:
+            profile_servers = [profile.issuer]
+        authorization_servers.extend(profile_servers)
     metadata: dict[str, Any] = {
         "resource": config.resource,
-        "authorization_servers": authorization_servers,
+        "authorization_servers": _ordered_unique(authorization_servers),
     }
-    scopes_supported = sorted(
-        {
-            *config.scopes_supported,
-            *config.required_scopes,
-            *config.mapped_scopes,
-        }
-    )
+    scopes = {*config.scopes_supported, *config.required_scopes, *config.mapped_scopes}
+    for profile in config.profiles:
+        scopes.update(profile.scopes_supported)
+        scopes.update(profile.required_scopes)
+        scopes.update(profile.mapped_scopes)
+    scopes_supported = sorted(scopes)
     if scopes_supported:
         metadata["scopes_supported"] = scopes_supported
     return _drop_empty(metadata)
@@ -222,45 +235,110 @@ def evaluate_oauth_request(
     token = _bearer_token(scope.get("headers", []))
     if not token:
         return _reject(config, reason_code="oauth.missing_token", error="invalid_token")
+    if config.profiles:
+        return _evaluate_oauth_profiles(token, parent_config=config, body=body)
+    return _evaluate_oauth_token(token, config=config, challenge_config=config, body=body)
+
+
+def _evaluate_oauth_profiles(
+    token: str,
+    *,
+    parent_config: OAuthResourceConfig,
+    body: bytes | None,
+) -> OAuthDecision:
+    decisions = [
+        _evaluate_oauth_token(token, config=profile, challenge_config=parent_config, body=body)
+        for profile in parent_config.profiles
+    ]
+    for decision in decisions:
+        if decision.allowed:
+            return decision
+
+    profile_errors = [_profile_error_metadata(decision) for decision in decisions]
+    non_invalid = [
+        decision
+        for decision in decisions
+        if decision.metadata.get("reason_code") not in {"oauth.invalid_token", "oauth.no_matching_profile"}
+    ]
+    if not decisions or not non_invalid:
+        return _reject(
+            parent_config,
+            status=401,
+            reason_code="oauth.no_matching_profile",
+            error="invalid_token",
+            details={"profile_errors": profile_errors},
+        )
+
+    selected = sorted(non_invalid, key=_profile_failure_rank)[0]
+    reason_code = str(selected.metadata.get("reason_code") or "oauth.rejected")
+    status = int(selected.status or 403)
+    error = "invalid_token" if status == 401 else "insufficient_scope"
+    return _reject(
+        parent_config,
+        status=status,
+        reason_code=reason_code,
+        error=error,
+        details={**dict(selected.metadata), "profile_errors": profile_errors},
+    )
+
+
+def _evaluate_oauth_token(
+    token: str,
+    *,
+    config: OAuthResourceConfig,
+    challenge_config: OAuthResourceConfig,
+    body: bytes | None,
+) -> OAuthDecision:
     try:
         claims, validation_method = _verify_token_with_method(token, config=config)
     except Exception as exc:
         return _reject(
-            config,
+            challenge_config,
             reason_code="oauth.invalid_token",
             error="invalid_token",
-            details={"error_kind": type(exc).__name__},
+            details={**_auth_profile_metadata(config), "error_kind": type(exc).__name__},
         )
     scopes = _claim_scopes(claims)
     missing = [scope_name for scope_name in config.required_scopes if scope_name not in scopes]
     if missing:
         return _reject(
-            config,
+            challenge_config,
             reason_code="oauth.insufficient_scope",
             error="insufficient_scope",
-            details={"missing_scopes": missing},
+            details={**_auth_profile_metadata(config), "missing_scopes": missing},
+        )
+    required_claims_decision = evaluate_required_claims(claims=claims, config=config)
+    if not required_claims_decision["allowed"]:
+        return _reject(
+            challenge_config,
+            status=403,
+            reason_code=str(required_claims_decision["reason_code"]),
+            error="insufficient_scope",
+            details={**_auth_profile_metadata(config), "required_claims": required_claims_decision},
         )
     context = oauth_context(claims, scopes=scopes, config=config)
+    if required_claims_decision["enabled"]:
+        context["required_claims"] = required_claims_decision
     scope_map_decision = evaluate_scope_map(body=body, scopes=scopes, config=config)
     scope_match = scope_match_metadata(scope_map_decision)
     if not scope_map_decision["allowed"]:
         return _reject(
-            config,
+            challenge_config,
             status=403,
             reason_code=str(scope_map_decision["reason_code"]),
             error="insufficient_scope",
-            details={"scope_map": scope_map_decision, "scope_match": scope_match},
+            details={**_auth_profile_metadata(config), "scope_map": scope_map_decision, "scope_match": scope_match},
         )
     if scope_map_decision["enabled"]:
         context["scope_decision"] = scope_map_decision
     claim_policy_decision = evaluate_claim_policy(body=body, claims=claims, config=config)
     if not claim_policy_decision["allowed"]:
         return _reject(
-            config,
+            challenge_config,
             status=403,
             reason_code=str(claim_policy_decision["reason_code"]),
             error="insufficient_scope",
-            details={"claim_policy": claim_policy_decision},
+            details={**_auth_profile_metadata(config), "claim_policy": claim_policy_decision},
         )
     if claim_policy_decision["enabled"]:
         context["claim_policy"] = claim_policy_decision
@@ -276,6 +354,7 @@ def evaluate_oauth_request(
                 "allowed": True,
                 "reason_code": "oauth.allowed",
                 "validation_method": validation_method,
+                "required_claims": required_claims_decision if required_claims_decision["enabled"] else None,
                 "scope_map": scope_map_decision if scope_map_decision["enabled"] else None,
                 "scope_match": scope_match,
                 "claim_policy": claim_policy_decision if claim_policy_decision["enabled"] else None,
@@ -395,6 +474,7 @@ def oauth_context(
             "issuer": claims.get("iss"),
             "audience": audiences,
             "client_id": claims.get("azp") or claims.get("client_id"),
+            "profile_id": config.profile_id,
             "scopes": sorted(set(scopes)),
             "email": claims.get("email"),
             "tenant": claims.get("tid") or claims.get("tenant"),
@@ -402,6 +482,34 @@ def oauth_context(
             "scope_map": {scope: list(selectors) for scope, selectors in sorted(config.mapped_scopes.items())},
         }
     )
+
+
+def evaluate_required_claims(
+    *,
+    claims: Mapping[str, Any],
+    config: OAuthResourceConfig,
+) -> dict[str, Any]:
+    required_claims = {str(claim): tuple(values) for claim, values in (config.required_claims or {}).items() if values}
+    if not required_claims:
+        return {"enabled": False, "allowed": True}
+
+    matched: dict[str, list[str]] = {}
+    missing: dict[str, list[str]] = {}
+    for claim, expected in required_claims.items():
+        actual = _claim_values(claims, claim)
+        matched_values = _matching_claim_values(actual, expected)
+        if matched_values:
+            matched[claim] = matched_values
+        else:
+            missing[claim] = sorted(set(str(value) for value in expected))
+
+    return {
+        "enabled": True,
+        "allowed": not missing,
+        "reason_code": "oauth.required_claims_allowed" if not missing else "oauth.required_claims_denied",
+        "matched": matched,
+        "missing": missing,
+    }
 
 
 def evaluate_scope_map(
@@ -968,6 +1076,48 @@ def _accepted_scopes_for_selectors(
     return sorted(set(accepted))
 
 
+def _auth_profile_metadata(config: OAuthResourceConfig) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "profile_id": config.profile_id,
+            "profile": _drop_empty(
+                {
+                    "id": config.profile_id,
+                    "issuer": config.issuer,
+                    "audience": config.audience,
+                    "audiences": list(config.audiences),
+                }
+            ),
+        }
+    )
+
+
+def _profile_error_metadata(decision: OAuthDecision) -> dict[str, Any]:
+    metadata = decision.metadata
+    return _drop_empty(
+        {
+            "profile_id": metadata.get("profile_id"),
+            "profile": metadata.get("profile"),
+            "status": decision.status,
+            "reason_code": metadata.get("reason_code"),
+            "missing_scopes": metadata.get("missing_scopes"),
+            "required_claims": metadata.get("required_claims"),
+            "scope_match": metadata.get("scope_match"),
+            "claim_policy": metadata.get("claim_policy"),
+            "error_kind": metadata.get("error_kind"),
+        }
+    )
+
+
+def _profile_failure_rank(decision: OAuthDecision) -> int:
+    reason_code = str(decision.metadata.get("reason_code") or "")
+    if reason_code == "oauth.required_claims_denied":
+        return 30
+    if reason_code == "oauth.invalid_token":
+        return 40
+    return 10
+
+
 def _claim_policy_rules(policy: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     rules = policy.get("rules")
     if isinstance(rules, Sequence) and not isinstance(rules, str | bytes | bytearray):
@@ -1095,3 +1245,14 @@ def _quote_header(value: str) -> str:
 
 def _drop_empty(value: Mapping[str, Any]) -> dict[str, Any]:
     return {key: item for key, item in value.items() if item not in (None, "", [], {})}
+
+
+def _ordered_unique(values: Sequence[str]) -> list[str]:
+    seen = set()
+    result = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result

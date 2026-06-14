@@ -49,6 +49,8 @@ DEFAULT_MCP_AUTH_CONFIG = {
         "default_action": "deny",
         "rules": [],
     },
+    "required_claims": {},
+    "issuers": [],
 }
 
 DEFAULT_MCP_PROXY_CONFIG = {
@@ -212,6 +214,20 @@ timeout = 30.0
 # allow_tool_prefixes = ["tenant_a.", "shared."]
 # allow_tools = ["filesystem.read_file"]
 # allow_selectors = ["tools/call:git.status"]
+#
+# Optional multi-issuer / multi-tenant profiles. Each profile inherits unset
+# fields from [mcp.auth] and can override issuer, audience, JWKS, scope_map,
+# required_claims, and claim_policy.
+# [[mcp.auth.issuers]]
+# id = "tenant-a"
+# issuer = "https://tenant-a-idp.example"
+# audience = "https://YOUR-TUNNEL.example/mcp"
+# jwks_url = "https://tenant-a-idp.example/.well-known/jwks.json"
+# required_scopes = ["mcp:connect"]
+# required_claims = { tenant = ["tenant-a"] }
+#
+# [mcp.auth.issuers.scope_map]
+# "mcp:tenant-a.files" = ["tools/call:tenant_a.*"]
 
 [mcp.fabric]
 name = "local-dev"
@@ -575,32 +591,25 @@ def normalize_mcp_auth_config(config: Mapping[str, Any] | None, *, base_dir: str
         raise ValueError("mcp.auth.strip_authorization_upstream must be a boolean")
     normalized["scope_map"] = _normalize_auth_scope_map(normalized.get("scope_map", {}))
     normalized["claim_policy"] = _normalize_auth_claim_policy(normalized.get("claim_policy", {}))
+    normalized["required_claims"] = _normalize_auth_required_claims(normalized.get("required_claims", {}))
     if normalized["mode"] == "oauth-resource":
         if not normalized.get("resource"):
             raise ValueError("mcp.auth.resource is required when mode is 'oauth-resource'")
-        if not normalized.get("audience") and not normalized.get("audiences"):
-            raise ValueError("mcp.auth.audience or mcp.auth.audiences is required when mode is 'oauth-resource'")
-        token_validation = normalized["token_validation"]
-        uses_jwt = token_validation in {"jwt", "jwt_or_introspection", "jwt_and_introspection"}
-        uses_introspection = token_validation in {"introspection", "jwt_or_introspection", "jwt_and_introspection"}
-        has_issuer_discovery = bool(normalized.get("issuer_discovery") and normalized.get("issuer"))
-        if uses_jwt and not normalized.get("jwks_path") and not normalized.get("jwks_url") and not has_issuer_discovery:
-            raise ValueError(
-                "mcp.auth.jwks_path, mcp.auth.jwks_url, or mcp.auth.issuer discovery is required "
-                "when JWT validation is enabled"
-            )
-        if uses_introspection and not normalized.get("introspection_endpoint") and not has_issuer_discovery:
-            raise ValueError(
-                "mcp.auth.introspection_endpoint or mcp.auth.issuer discovery is required "
-                "when token introspection is enabled"
-            )
+        normalized["issuers"] = _normalize_auth_issuer_profiles(
+            normalized.get("issuers", []),
+            parent=normalized,
+            base_dir=Path(base_dir),
+        )
+        if not normalized["issuers"]:
+            _validate_oauth_token_config(normalized, field="mcp.auth")
         if not normalized["scopes_supported"]:
-            normalized["scopes_supported"] = sorted(
-                {
-                    *normalized["required_scopes"],
-                    *normalized["scope_map"],
-                }
-            )
+            normalized["scopes_supported"] = _auth_scopes_supported(normalized)
+    else:
+        normalized["issuers"] = _normalize_auth_issuer_profiles(
+            normalized.get("issuers", []),
+            parent=normalized,
+            base_dir=Path(base_dir),
+        )
     return normalized
 
 
@@ -734,6 +743,187 @@ def _normalize_auth_scope_map(value: Any) -> dict[str, list[str]]:
             raise ValueError(f"mcp.auth.scope_map.{scope} selectors must be non-empty strings")
         result[scope] = list(selectors)
     return result
+
+
+def _normalize_auth_required_claims(value: Any, *, field: str = "required_claims") -> dict[str, list[str]]:
+    if value in (None, ""):
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError(f"mcp.auth.{field} must be a table")
+    result: dict[str, list[str]] = {}
+    for claim, expected in value.items():
+        if not isinstance(claim, str) or not claim:
+            raise ValueError(f"mcp.auth.{field} keys must be non-empty claim strings")
+        expected_values = _normalize_auth_string_list(expected, field=f"{field}.{claim}")
+        if not expected_values or any(not item for item in expected_values):
+            raise ValueError(f"mcp.auth.{field}.{claim} must contain non-empty strings")
+        result[claim] = expected_values
+    return result
+
+
+def _normalize_auth_issuer_profiles(
+    value: Any,
+    *,
+    parent: Mapping[str, Any],
+    base_dir: Path,
+) -> list[dict[str, Any]]:
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        raise ValueError("mcp.auth.issuers must be a list of tables")
+    profiles = []
+    ids = set()
+    for index, item in enumerate(value):
+        profile = _normalize_auth_issuer_profile(item, parent=parent, base_dir=base_dir, index=index)
+        if profile["id"] in ids:
+            raise ValueError(f"mcp.auth.issuers[{index}].id must be unique")
+        ids.add(profile["id"])
+        profiles.append(profile)
+    return profiles
+
+
+def _normalize_auth_issuer_profile(
+    value: Any,
+    *,
+    parent: Mapping[str, Any],
+    base_dir: Path,
+    index: int,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"mcp.auth.issuers[{index}] must be a table")
+    profile_id = value.get("id")
+    if not isinstance(profile_id, str) or not profile_id:
+        raise ValueError(f"mcp.auth.issuers[{index}].id must be a non-empty string")
+
+    inherited_fields = (
+        "mode",
+        "resource",
+        "resource_aliases",
+        "issuer",
+        "authorization_servers",
+        "audience",
+        "audiences",
+        "required_scopes",
+        "scopes_supported",
+        "jwks_path",
+        "jwks_url",
+        "jwks_cache_seconds",
+        "jwks_fetch_timeout",
+        "issuer_metadata_url",
+        "issuer_discovery",
+        "token_validation",
+        "introspection_endpoint",
+        "introspection_client_id",
+        "introspection_client_secret_env",
+        "introspection_cache_seconds",
+        "introspection_fetch_timeout",
+        "resource_metadata_url",
+        "realm",
+        "leeway_seconds",
+        "strip_authorization_upstream",
+        "scope_map",
+        "claim_policy",
+        "required_claims",
+    )
+    profile = {field: parent.get(field) for field in inherited_fields}
+    profile.update({key: item for key, item in value.items() if item is not None})
+    profile["id"] = profile_id
+
+    for field in (
+        "resource",
+        "issuer",
+        "audience",
+        "jwks_url",
+        "issuer_metadata_url",
+        "token_validation",
+        "introspection_endpoint",
+        "introspection_client_id",
+        "introspection_client_secret_env",
+        "resource_metadata_url",
+        "realm",
+    ):
+        item = profile.get(field)
+        if item is not None and not isinstance(item, str):
+            raise ValueError(f"mcp.auth.issuers[{index}].{field} must be a string")
+        if item == "":
+            profile[field] = None if field != "realm" else "mcp"
+    for field in ("authorization_servers", "resource_aliases", "audiences", "required_scopes", "scopes_supported"):
+        profile[field] = _normalize_auth_string_list(profile.get(field), field=f"issuers[{index}].{field}")
+
+    jwks_path = profile.get("jwks_path")
+    if jwks_path in (None, ""):
+        profile["jwks_path"] = None
+    elif isinstance(jwks_path, str | Path):
+        profile["jwks_path"] = _resolve_path(base_dir, jwks_path)
+    else:
+        raise ValueError(f"mcp.auth.issuers[{index}].jwks_path must be a string path")
+
+    if profile["token_validation"] not in {"jwt", "introspection", "jwt_or_introspection", "jwt_and_introspection"}:
+        raise ValueError(
+            f"mcp.auth.issuers[{index}].token_validation must be 'jwt', 'introspection', "
+            "'jwt_or_introspection', or 'jwt_and_introspection'"
+        )
+    if not isinstance(profile.get("issuer_discovery"), bool):
+        raise ValueError(f"mcp.auth.issuers[{index}].issuer_discovery must be a boolean")
+    for field in (
+        "jwks_cache_seconds",
+        "jwks_fetch_timeout",
+        "introspection_cache_seconds",
+        "introspection_fetch_timeout",
+    ):
+        if not isinstance(profile.get(field), int | float) or float(profile[field]) < 0:
+            raise ValueError(f"mcp.auth.issuers[{index}].{field} must be a non-negative number")
+        profile[field] = float(profile[field])
+    if profile["jwks_fetch_timeout"] <= 0:
+        raise ValueError(f"mcp.auth.issuers[{index}].jwks_fetch_timeout must be positive")
+    if profile["introspection_fetch_timeout"] <= 0:
+        raise ValueError(f"mcp.auth.issuers[{index}].introspection_fetch_timeout must be positive")
+    if not isinstance(profile.get("leeway_seconds"), int | float) or float(profile["leeway_seconds"]) < 0:
+        raise ValueError(f"mcp.auth.issuers[{index}].leeway_seconds must be a non-negative number")
+    profile["leeway_seconds"] = float(profile["leeway_seconds"])
+    if not isinstance(profile.get("strip_authorization_upstream"), bool):
+        raise ValueError(f"mcp.auth.issuers[{index}].strip_authorization_upstream must be a boolean")
+    profile["scope_map"] = _normalize_auth_scope_map(profile.get("scope_map", {}))
+    profile["claim_policy"] = _normalize_auth_claim_policy(profile.get("claim_policy", {}))
+    profile["required_claims"] = _normalize_auth_required_claims(
+        profile.get("required_claims", {}),
+        field=f"issuers[{index}].required_claims",
+    )
+    _validate_oauth_token_config(profile, field=f"mcp.auth.issuers[{index}]")
+    if not profile["scopes_supported"]:
+        profile["scopes_supported"] = _auth_scopes_supported(profile)
+    return profile
+
+
+def _validate_oauth_token_config(config: Mapping[str, Any], *, field: str) -> None:
+    if not config.get("audience") and not config.get("audiences"):
+        raise ValueError(f"{field}.audience or {field}.audiences is required when mode is 'oauth-resource'")
+    token_validation = config["token_validation"]
+    uses_jwt = token_validation in {"jwt", "jwt_or_introspection", "jwt_and_introspection"}
+    uses_introspection = token_validation in {"introspection", "jwt_or_introspection", "jwt_and_introspection"}
+    has_issuer_discovery = bool(config.get("issuer_discovery") and config.get("issuer"))
+    if uses_jwt and not config.get("jwks_path") and not config.get("jwks_url") and not has_issuer_discovery:
+        raise ValueError(
+            f"{field}.jwks_path, {field}.jwks_url, or {field}.issuer discovery is required "
+            "when JWT validation is enabled"
+        )
+    if uses_introspection and not config.get("introspection_endpoint") and not has_issuer_discovery:
+        raise ValueError(
+            f"{field}.introspection_endpoint or {field}.issuer discovery is required "
+            "when token introspection is enabled"
+        )
+
+
+def _auth_scopes_supported(config: Mapping[str, Any]) -> list[str]:
+    scopes = {
+        *config.get("required_scopes", []),
+        *_normalize_auth_scope_map(config.get("scope_map", {})),
+    }
+    for profile in config.get("issuers", []):
+        if isinstance(profile, Mapping):
+            scopes.update(profile.get("required_scopes", []))
+            scopes.update(_normalize_auth_scope_map(profile.get("scope_map", {})))
+    return sorted(str(scope) for scope in scopes)
 
 
 def _normalize_auth_claim_policy(value: Any) -> dict[str, Any]:

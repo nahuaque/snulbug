@@ -327,6 +327,17 @@ claim = "tenant"
 values = ["tenant-a"]
 allow_tool_prefixes = ["tenant_a.", "shared."]
 allow_tools = ["filesystem.read_file"]
+
+[[mcp.auth.issuers]]
+id = "tenant-a"
+issuer = "https://tenant-a-idp.example.com"
+audience = "https://mcp.example.com/mcp"
+jwks_url = "https://tenant-a-idp.example.com/.well-known/jwks.json"
+required_scopes = ["mcp:connect"]
+required_claims = { tenant = ["tenant-a"] }
+
+[mcp.auth.issuers.scope_map]
+"mcp:tenant-a.files" = ["tools/call:tenant_a.*"]
 ```
 
 With this enabled, snulbug:
@@ -341,6 +352,9 @@ With this enabled, snulbug:
 - maps OAuth scopes to MCP methods/tools using `[mcp.auth.scope_map]`
 - maps OAuth claims such as tenant, subject, client ID, group, or nested custom
   claims to allowed MCP tools using `[mcp.auth.claim_policy]`
+- accepts multiple issuer/tenant profiles with `[[mcp.auth.issuers]]`, each
+  with its own issuer, audience, JWKS, required claims, scope map, and claim
+  policy
 - can explicitly allow multi-URL shares with `resource_aliases` and
   `audiences` instead of silently accepting tunnel URL drift
 - exposes sanitized claims to Lua as `context.auth`
@@ -389,6 +403,46 @@ literal custom claim keys such as `https://example.com/tenant.slug`, or nested
 paths such as `tenant.slug`. Requests still pass through Lua after the
 declarative check, so use this for broad identity fences and Lua for
 task-specific or stateful decisions.
+
+For a facade or fabric gateway, use `[[mcp.auth.issuers]]` when different
+tenants, upstream route families, or dev environments trust different identity
+providers or need different MCP mappings. The gateway still advertises one
+protected resource, but validates each token against the configured profiles
+until one fully passes issuer/audience validation, required scopes, required
+claims, scope-map checks, and claim policy:
+
+```toml
+[mcp.auth]
+mode = "oauth-resource"
+resource = "https://mcp.example.com/mcp"
+
+[[mcp.auth.issuers]]
+id = "tenant-a"
+issuer = "https://tenant-a-idp.example.com"
+audience = "https://mcp.example.com/mcp"
+jwks_url = "https://tenant-a-idp.example.com/.well-known/jwks.json"
+required_scopes = ["mcp:connect"]
+required_claims = { tenant = ["tenant-a"] }
+
+[mcp.auth.issuers.scope_map]
+"mcp:tenant-a.files" = ["tools/call:tenant_a.*"]
+
+[[mcp.auth.issuers]]
+id = "tenant-b"
+issuer = "https://tenant-b-idp.example.com"
+audience = "https://mcp.example.com/mcp"
+jwks_url = "https://tenant-b-idp.example.com/.well-known/jwks.json"
+required_scopes = ["mcp:connect"]
+required_claims = { tenant = ["tenant-b"] }
+
+[mcp.auth.issuers.scope_map]
+"mcp:tenant-b.files" = ["tools/call:tenant_b.*"]
+```
+
+Unset profile fields inherit from `[mcp.auth]`, so shared resource, audience,
+timeouts, and token-validation mode can live globally while tenant-specific
+issuer/JWKS/scope-map details stay in each profile. Audit metadata includes
+`auth.profile_id` and `access.auth.profile_id`.
 
 Use Lua identity helpers when authorization depends on who is using a share,
 not just what scope the token carries:

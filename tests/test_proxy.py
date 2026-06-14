@@ -858,6 +858,148 @@ def test_reverse_proxy_oauth_claim_policy_blocks_unmatched_tool_before_lua_and_u
     assert token not in json.dumps(record)
 
 
+def test_reverse_proxy_oauth_multi_issuer_profiles_select_scope_map_before_lua(tmp_path):
+    server, seen = start_upstream()
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+    jwks_a, secret_a = write_hs256_jwks_file(
+        tmp_path,
+        name="tenant-a-jwks.json",
+        secret="tenant-a-oauth-signing-secret-32b",
+        kid="tenant-a-key",
+    )
+    jwks_b, secret_b = write_hs256_jwks_file(
+        tmp_path,
+        name="tenant-b-jwks.json",
+        secret="tenant-b-oauth-signing-secret-32b",
+        kid="tenant-b-key",
+    )
+    token_a = make_oauth_token(
+        secret_a,
+        scopes=["mcp:connect", "mcp:tenant-a.files"],
+        extra_claims={"iss": "https://tenant-a-idp.example.test", "tenant": "tenant-a"},
+        key_id="tenant-a-key",
+    )
+    token_b = make_oauth_token(
+        secret_b,
+        scopes=["mcp:connect", "mcp:tenant-b.files"],
+        extra_claims={"iss": "https://tenant-b-idp.example.test", "tenant": "tenant-b"},
+        key_id="tenant-b-key",
+    )
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        event_sinks=audit_event_sinks(audit_log),
+        auth_config=oauth_multi_issuer_auth_config(jwks_a, jwks_b),
+    )
+
+    try:
+        metadata = run_asgi(app, method="GET", path="/.well-known/oauth-protected-resource")
+        sent_a = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {token_a}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tenant_a.read_file"}}',
+        )
+        sent_b = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {token_b}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tenant_b.read_file"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    records = load_record_log(record_log)[-2:]
+    audit_events = [json.loads(line) for line in audit_log.read_text(encoding="utf-8").splitlines()][-2:]
+    metadata_body = json.loads(metadata[1]["body"])
+    assert metadata_body["authorization_servers"] == [
+        "https://tenant-a-idp.example.test",
+        "https://tenant-b-idp.example.test",
+    ]
+    assert metadata_body["scopes_supported"] == [
+        "mcp:connect",
+        "mcp:tenant-a.files",
+        "mcp:tenant-b.files",
+    ]
+    assert sent_a[0]["status"] == 200
+    assert sent_b[0]["status"] == 200
+    assert seen["count"] == 2
+    assert records[0]["metadata"]["auth"]["profile_id"] == "tenant-a"
+    assert records[0]["metadata"]["auth"]["scope_map"]["matched_scope"] == "mcp:tenant-a.files"
+    assert records[0]["metadata"]["access"]["auth"]["profile_id"] == "tenant-a"
+    assert records[1]["metadata"]["auth"]["profile_id"] == "tenant-b"
+    assert records[1]["metadata"]["auth"]["scope_map"]["matched_scope"] == "mcp:tenant-b.files"
+    assert audit_events[0]["auth"]["profile_id"] == "tenant-a"
+    assert audit_events[1]["auth"]["profile_id"] == "tenant-b"
+    assert token_a not in json.dumps(records)
+    assert token_b not in json.dumps(records)
+
+
+def test_reverse_proxy_oauth_tenant_profile_blocks_cross_tenant_tool_before_upstream(tmp_path):
+    server, seen = start_upstream()
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    jwks_a, _secret_a = write_hs256_jwks_file(
+        tmp_path,
+        name="tenant-a-jwks.json",
+        secret="tenant-a-oauth-signing-secret-32b",
+        kid="tenant-a-key",
+    )
+    jwks_b, secret_b = write_hs256_jwks_file(
+        tmp_path,
+        name="tenant-b-jwks.json",
+        secret="tenant-b-oauth-signing-secret-32b",
+        kid="tenant-b-key",
+    )
+    token_b = make_oauth_token(
+        secret_b,
+        scopes=["mcp:connect", "mcp:tenant-b.files"],
+        extra_claims={"iss": "https://tenant-b-idp.example.test", "tenant": "tenant-b"},
+        key_id="tenant-b-key",
+    )
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        auth_config=oauth_multi_issuer_auth_config(jwks_a, jwks_b),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {token_b}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tenant_a.read_file"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    record = load_record_log(record_log)[0]
+    assert sent[0]["status"] == 403
+    assert seen["count"] == 0
+    assert record["metadata"]["auth"]["reason_code"] == "oauth.scope_map_denied"
+    assert record["metadata"]["auth"]["scope_map"]["target"]["tool"] == "tenant_a.read_file"
+    assert record["metadata"]["auth"]["profile_errors"][0]["profile_id"] == "tenant-a"
+    assert record["metadata"]["auth"]["profile_errors"][1]["profile_id"] == "tenant-b"
+    assert record["metadata"]["auth"]["profile_errors"][1]["reason_code"] == "oauth.scope_map_denied"
+    assert record["metadata"]["access"]["reason_code"] == "oauth.scope_map_denied"
+    assert token_b not in json.dumps(record)
+
+
 def test_reverse_proxy_oauth_scope_map_blocks_unmapped_tool_before_lua_and_upstream(tmp_path):
     server, seen = start_upstream()
     policy = write_policy(tmp_path, "continue")
@@ -3185,6 +3327,12 @@ def write_hs256_jwks(tmp_path) -> tuple[Path, str]:
     return path, secret
 
 
+def write_hs256_jwks_file(tmp_path: Path, *, name: str, secret: str, kid: str) -> tuple[Path, str]:
+    path = tmp_path / name
+    path.write_text(json.dumps(hs256_jwks(secret, kid=kid)), encoding="utf-8")
+    return path, secret
+
+
 def make_oauth_token(
     secret: str,
     *,
@@ -3303,6 +3451,33 @@ def oauth_claim_policy() -> dict[str, Any]:
                 "allow_tool_prefixes": ["tenant_a."],
                 "allow_selectors": [],
             }
+        ],
+    }
+
+
+def oauth_multi_issuer_auth_config(jwks_a: Path, jwks_b: Path) -> dict[str, Any]:
+    return {
+        "mode": "oauth-resource",
+        "resource": "https://mcp.example.test/mcp",
+        "issuers": [
+            {
+                "id": "tenant-a",
+                "issuer": "https://tenant-a-idp.example.test",
+                "audience": "https://mcp.example.test/mcp",
+                "required_scopes": ["mcp:connect"],
+                "jwks_path": jwks_a,
+                "required_claims": {"tenant": ["tenant-a"]},
+                "scope_map": {"mcp:tenant-a.files": ["tools/call:tenant_a.*"]},
+            },
+            {
+                "id": "tenant-b",
+                "issuer": "https://tenant-b-idp.example.test",
+                "audience": "https://mcp.example.test/mcp",
+                "required_scopes": ["mcp:connect"],
+                "jwks_path": jwks_b,
+                "required_claims": {"tenant": ["tenant-b"]},
+                "scope_map": {"mcp:tenant-b.files": ["tools/call:tenant_b.*"]},
+            },
         ],
     }
 
