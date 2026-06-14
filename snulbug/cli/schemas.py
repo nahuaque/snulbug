@@ -1,0 +1,273 @@
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+from ..cli_helpers import (
+    add_allow_path_arg,
+    add_compact_arg,
+    add_force_arg,
+    add_report_out_arg,
+    add_token_arg,
+    add_token_env_arg,
+    add_validate_arg,
+    write_json_output,
+    write_report_output,
+    write_result_output,
+)
+
+
+def add_mcp_tools_command(mcp_subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    mcp_tools = mcp_subparsers.add_parser("tools", help=argparse.SUPPRESS)
+    mcp_tools_subparsers = mcp_tools.add_subparsers(dest="tools_command", required=True)
+    mcp_tools_snapshot = mcp_tools_subparsers.add_parser(
+        "snapshot",
+        help="capture a stable MCP tools/list snapshot from a response file or live endpoint",
+    )
+    mcp_tools_snapshot_source = mcp_tools_snapshot.add_mutually_exclusive_group(required=True)
+    mcp_tools_snapshot_source.add_argument(
+        "--from",
+        dest="source",
+        type=Path,
+        help="JSON file containing a tools/list response, tools array, or existing snapshot",
+    )
+    mcp_tools_snapshot_source.add_argument("--url", help="MCP HTTP URL to call with tools/list")
+    mcp_tools_snapshot.add_argument("--header", action="append", default=[], help="HTTP header as 'Name: value'")
+    add_token_arg(mcp_tools_snapshot, help="bearer token for live MCP tools/list calls")
+    mcp_tools_snapshot.add_argument("--timeout", type=float, default=10.0, help="live tools/list timeout in seconds")
+    mcp_tools_snapshot.add_argument("--label", help="human label stored in the snapshot")
+    mcp_tools_snapshot.add_argument("--out", type=Path, help="write snapshot JSON to this path")
+    add_compact_arg(mcp_tools_snapshot)
+
+    mcp_tools_diff = mcp_tools_subparsers.add_parser("diff", help="compare two MCP tool snapshots")
+    mcp_tools_diff.add_argument("baseline", type=Path, help="baseline snapshot or tools/list response JSON")
+    mcp_tools_diff.add_argument("current", type=Path, help="current snapshot or tools/list response JSON")
+    mcp_tools_diff.add_argument(
+        "--fail-on",
+        action="append",
+        default=[],
+        choices=("added", "changed", "removed", "any"),
+        help="return exit code 1 when this change type is present; repeat or use any",
+    )
+    add_compact_arg(mcp_tools_diff)
+
+    mcp_subparsers._choices_actions = [  # type: ignore[attr-defined]
+        action for action in mcp_subparsers._choices_actions if getattr(action, "dest", None) != "tools"
+    ]
+
+
+def add_mcp_schemas_command(mcp_subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    mcp_schemas = mcp_subparsers.add_parser(
+        "schemas",
+        help="discover and diff MCP capability schemas",
+    )
+    mcp_schemas_subparsers = mcp_schemas.add_subparsers(dest="schemas_command", required=True)
+    mcp_schemas_discover = mcp_schemas_subparsers.add_parser(
+        "discover",
+        help="capture MCP initialize, tools, resources, resource templates, and prompts schemas",
+    )
+    mcp_schemas_discover_source = mcp_schemas_discover.add_mutually_exclusive_group(required=True)
+    mcp_schemas_discover_source.add_argument(
+        "--from",
+        dest="source",
+        type=Path,
+        help="JSON file containing MCP method responses or an existing schema catalog",
+    )
+    mcp_schemas_discover_source.add_argument("--url", help="MCP HTTP URL to probe")
+    mcp_schemas_discover.add_argument(
+        "--method",
+        action="append",
+        choices=(
+            "initialize",
+            "tools",
+            "tools/list",
+            "resources",
+            "resources/list",
+            "resource-templates",
+            "resource_templates",
+            "resources/templates/list",
+            "prompts",
+            "prompts/list",
+        ),
+        help="MCP method or surface to discover; repeat to limit the catalog",
+    )
+    mcp_schemas_discover.add_argument("--header", action="append", default=[], help="HTTP header as 'Name: value'")
+    add_token_arg(mcp_schemas_discover, help="bearer token for live MCP schema discovery")
+    mcp_schemas_discover.add_argument("--timeout", type=float, default=10.0, help="live discovery timeout in seconds")
+    mcp_schemas_discover.add_argument(
+        "--protocol-version",
+        default="2025-06-18",
+        help="MCP protocol version sent in live discovery requests",
+    )
+    mcp_schemas_discover.add_argument("--label", help="human label stored in the catalog")
+    mcp_schemas_discover.add_argument("--out", type=Path, help="write schema catalog JSON to this path")
+    add_report_out_arg(mcp_schemas_discover, help="write a Markdown schema report")
+    add_compact_arg(mcp_schemas_discover)
+
+    mcp_schemas_diff = mcp_schemas_subparsers.add_parser("diff", help="compare two MCP schema catalogs")
+    mcp_schemas_diff.add_argument("baseline", type=Path, help="baseline catalog or response collection JSON")
+    mcp_schemas_diff.add_argument("current", type=Path, help="current catalog or response collection JSON")
+    mcp_schemas_diff.add_argument(
+        "--fail-on",
+        action="append",
+        default=[],
+        choices=("added", "changed", "removed", "any"),
+        help="return exit code 1 when this change type is present; repeat or use any",
+    )
+    add_report_out_arg(mcp_schemas_diff, help="write a Markdown schema diff report")
+    add_compact_arg(mcp_schemas_diff)
+
+    mcp_schemas_policy = mcp_schemas_subparsers.add_parser(
+        "policy",
+        help="generate a reviewable policy bundle from an MCP schema catalog",
+    )
+    mcp_schemas_policy.add_argument("catalog", type=Path, help="MCP schema catalog JSON")
+    mcp_schemas_policy.add_argument(
+        "--out",
+        "--output",
+        type=Path,
+        required=True,
+        help="output policy bundle directory",
+    )
+    add_force_arg(mcp_schemas_policy, help="overwrite the output directory")
+    add_token_arg(mcp_schemas_policy, help="bearer token to render into the generated policy")
+    add_token_env_arg(
+        mcp_schemas_policy,
+        help="context key used by generated policy for env-derived token lookup",
+    )
+    add_allow_path_arg(
+        mcp_schemas_policy,
+        help="allowed project path or prefix for path-like tool arguments; repeat to add multiple",
+    )
+    mcp_schemas_policy.add_argument(
+        "--high-risk-action",
+        choices=("allow", "confirm", "reject"),
+        default="confirm",
+        help="action for tools scored high risk from the discovered schema",
+    )
+    add_validate_arg(mcp_schemas_policy, help="validate and test the generated policy bundle")
+    add_compact_arg(mcp_schemas_policy)
+
+
+def handle_mcp_tools_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    from ..mcp_tools import (
+        diff_mcp_tool_snapshots,
+        format_mcp_tool_diff_report,
+        format_mcp_tool_snapshot_report,
+        parse_mcp_tool_headers,
+        snapshot_mcp_tools,
+    )
+
+    try:
+        if args.tools_command == "snapshot":
+            result = snapshot_mcp_tools(
+                source=args.source,
+                url=args.url,
+                headers=parse_mcp_tool_headers(args.header, token=args.token),
+                token=args.token,
+                timeout=args.timeout,
+                label=args.label,
+                out=args.out,
+            )
+            status = 0
+            if not args.compact:
+                write_result_output(result, compact=False, formatter=format_mcp_tool_snapshot_report)
+                return status
+        elif args.tools_command == "diff":
+            result = diff_mcp_tool_snapshots(args.baseline, args.current, fail_on=args.fail_on)
+            status = 0 if result["ok"] else 1
+            if not args.compact:
+                write_result_output(result, compact=False, formatter=format_mcp_tool_diff_report)
+                return status
+        else:
+            parser.error(f"unknown mcp tools command: {args.tools_command}")
+            return 2
+    except Exception as exc:
+        result = {"ok": False, "error": str(exc)}
+        if hasattr(args, "source") and args.source is not None:
+            result["source"] = str(args.source)
+        if hasattr(args, "url") and args.url is not None:
+            result["url"] = args.url
+        status = 1
+
+    write_json_output(result, compact=args.compact)
+    return status
+
+
+def handle_mcp_schemas_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    from ..mcp_schema_policy import (
+        SchemaPolicyOptions,
+        format_mcp_schema_policy_report,
+        generate_mcp_schema_policy,
+    )
+    from ..mcp_schemas import (
+        diff_mcp_schema_catalogs,
+        discover_mcp_schemas,
+        format_mcp_schema_catalog_report,
+        format_mcp_schema_diff_report,
+        parse_mcp_schema_headers,
+    )
+
+    try:
+        if args.schemas_command == "discover":
+            result = discover_mcp_schemas(
+                source=args.source,
+                url=args.url,
+                headers=parse_mcp_schema_headers(args.header, token=args.token),
+                token=args.token,
+                timeout=args.timeout,
+                label=args.label,
+                out=args.out,
+                report_out=args.report_out,
+                methods=args.method,
+                protocol_version=args.protocol_version,
+            )
+            status = 0
+            if not args.compact:
+                write_result_output(result, compact=False, formatter=format_mcp_schema_catalog_report)
+                return status
+        elif args.schemas_command == "diff":
+            result = diff_mcp_schema_catalogs(args.baseline, args.current, fail_on=args.fail_on)
+            status = 0 if result["ok"] else 1
+            if args.report_out is not None:
+                write_report_output(
+                    args.report_out,
+                    format_mcp_schema_diff_report(result),
+                    result,
+                    trailing_newline=True,
+                )
+            if not args.compact:
+                write_result_output(result, compact=False, formatter=format_mcp_schema_diff_report)
+                return status
+        elif args.schemas_command == "policy":
+            result = generate_mcp_schema_policy(
+                args.catalog,
+                args.out,
+                options=SchemaPolicyOptions(
+                    token=args.token,
+                    token_env=args.token_env,
+                    allowed_paths=args.allow_path,
+                    high_risk_action=args.high_risk_action,
+                ),
+                force=args.force,
+                validate=args.validate,
+            )
+            status = 0 if result["ok"] else 1
+            if not args.compact:
+                write_result_output(result, compact=False, formatter=format_mcp_schema_policy_report)
+                return status
+        else:
+            parser.error(f"unknown mcp schemas command: {args.schemas_command}")
+            return 2
+    except Exception as exc:
+        result = {"ok": False, "error": str(exc)}
+        if hasattr(args, "source") and args.source is not None:
+            result["source"] = str(args.source)
+        if hasattr(args, "catalog") and args.catalog is not None:
+            result["catalog"] = str(args.catalog)
+        if hasattr(args, "url") and args.url is not None:
+            result["url"] = args.url
+        status = 1
+
+    write_json_output(result, compact=args.compact)
+    return status
