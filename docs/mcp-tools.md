@@ -1,17 +1,32 @@
-# MCP tool change watcher
+# Legacy tools/list shortcut
 
-`snulbug mcp tools` snapshots and diffs `tools/list` declarations. Use it when
-you want reviewable evidence that an MCP server did not silently add tools,
-remove tools, or change descriptions/input schemas before an agent uses it.
+`snulbug mcp tools` is a focused shortcut for tools-only pinning. It remains
+available for small CI checks, but the primary review surface is now
+[`snulbug mcp schemas`](mcp-schemas.md), which captures tools, server
+capabilities, resources, resource templates, prompts, output schemas, and tool
+annotations.
 
-For server capabilities, resources, resource templates, prompts, and tool
-output schemas, use [MCP schema discovery](mcp-schemas.md).
+Prefer schema discovery for new workflows:
 
-Runtime `tool_pinning` protects live proxy traffic. The tool watcher is the
-offline and CI companion: it writes stable JSON snapshots and exits nonzero when
-configured change types appear.
+```bash
+uv run snulbug mcp schemas discover \
+  --url http://127.0.0.1:8080/mcp \
+  --method tools \
+  --label local-gateway \
+  --out .snulbug/schemas/tools-only.json
+```
 
-## Snapshot a live endpoint
+Diff tools-only schema catalogs with the normal schema diff command:
+
+```bash
+uv run snulbug mcp schemas diff \
+  .snulbug/schemas/tools-baseline.json \
+  .snulbug/schemas/tools-current.json \
+  --fail-on added \
+  --fail-on changed
+```
+
+The legacy shortcut still writes a compact tool snapshot:
 
 ```bash
 uv run snulbug mcp tools snapshot \
@@ -21,44 +36,7 @@ uv run snulbug mcp tools snapshot \
   --out .snulbug/tools/local-gateway.json
 ```
 
-For custom auth or provider headers:
-
-```bash
-uv run snulbug mcp tools snapshot \
-  --url https://YOUR-TUNNEL.example/mcp \
-  --header "Authorization: Bearer ${SNULBUG_TOKEN}" \
-  --header "Accept: application/json, text/event-stream" \
-  --out .snulbug/tools/tunnel.json
-```
-
-The live snapshot command sends a JSON-RPC `tools/list` request and accepts
-plain JSON or Streamable HTTP/SSE responses.
-
-## Snapshot from a saved response
-
-```bash
-uv run snulbug mcp tools snapshot \
-  --from tools-list-response.json \
-  --label baseline \
-  --out .snulbug/tools/baseline.json
-```
-
-`--from` accepts:
-
-- a full JSON-RPC `tools/list` response with `result.tools`
-- a raw object with `tools`
-- a raw tools array
-- an existing snulbug tool snapshot
-
-## Diff snapshots
-
-```bash
-uv run snulbug mcp tools diff \
-  .snulbug/tools/baseline.json \
-  .snulbug/tools/current.json
-```
-
-Add CI gates with `--fail-on`:
+And it still diffs those snapshots:
 
 ```bash
 uv run snulbug mcp tools diff \
@@ -68,16 +46,6 @@ uv run snulbug mcp tools diff \
   --fail-on changed
 ```
 
-Use `--fail-on removed` for stricter compatibility checks, or `--fail-on any`
-to fail on every change type.
-
-## Snapshot contents
-
-Snapshots are sorted by tool name and hash the fields snulbug cares about for
-MCP rug-pull detection:
-
-- `name`
-- `description`
-- `inputSchema`
-
-The hash is stable JSON SHA-256, so snapshots are suitable for code review.
+Tool snapshots and tools-only schema catalogs now share the same normalized tool
+shape and hash inputs: `name`, `title`, `description`, `inputSchema`,
+`outputSchema`, and `annotations`.

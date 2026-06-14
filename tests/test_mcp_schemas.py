@@ -5,6 +5,7 @@ import json
 from snulbug import (
     MCP_SCHEMA_CATALOG_SCHEMA,
     build_mcp_schema_catalog,
+    build_mcp_tool_snapshot,
     diff_mcp_schema_catalogs,
     discover_mcp_schemas,
     parse_mcp_schema_headers,
@@ -133,6 +134,29 @@ def test_diff_mcp_schema_catalogs_reports_added_changed_and_removed():
     assert informational["removed"][0]["surface"] == "resources"
     assert blocking["ok"] is False
     assert blocking["failing_changes"] == {"added": 0, "changed": 1, "removed": 1}
+
+
+def test_discover_mcp_schemas_accepts_tools_only_inputs(tmp_path):
+    tools = [
+        {
+            "name": "read_file",
+            "title": "Read File",
+            "description": "Read a file",
+            "inputSchema": {"type": "object"},
+            "outputSchema": {"type": "object"},
+        }
+    ]
+    raw_tools = tmp_path / "tools.json"
+    tool_snapshot = tmp_path / "tools.snapshot.json"
+    raw_tools.write_text(json.dumps(tools), encoding="utf-8")
+    tool_snapshot.write_text(json.dumps(build_mcp_tool_snapshot(tools)), encoding="utf-8")
+
+    raw_catalog = discover_mcp_schemas(source=raw_tools, methods=("tools",))
+    snapshot_catalog = discover_mcp_schemas(source=tool_snapshot, methods=("tools",))
+
+    assert raw_catalog["ok"] is True
+    assert raw_catalog["summary"] == {"tools": 1, "resources": 0, "resource_templates": 0, "prompts": 0, "errors": 0}
+    assert snapshot_catalog["surfaces"]["tools"] == raw_catalog["surfaces"]["tools"]
 
 
 def test_mcp_schemas_cli_discover_and_diff(tmp_path, capsys):

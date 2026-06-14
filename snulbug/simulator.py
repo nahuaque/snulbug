@@ -220,7 +220,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     add_compact_arg(expose)
 
     mcp = subparsers.add_parser("mcp", help="work with local-dev MCP policy helpers and presets")
-    mcp_subparsers = mcp.add_subparsers(dest="mcp_command", required=True)
+    mcp_subparsers = mcp.add_subparsers(
+        dest="mcp_command",
+        required=True,
+        metavar=(
+            "{guide,policy,quickstart,codespace,share,config,schemas,fabric,manifest,lease,"
+            "record,replay,inspect,impact,lab,proxy}"
+        ),
+    )
 
     mcp_guide = mcp_subparsers.add_parser("guide", help="print agent-oriented MCP workflow guidance")
     mcp_guide.add_argument(
@@ -284,36 +291,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     add_validate_arg(mcp_policy_amend, help="validate the generated policy bundle")
     add_compact_arg(mcp_policy_amend)
-    mcp_policy_from_schema = mcp_policy_subparsers.add_parser(
-        "from-schema",
-        help="generate a reviewable policy bundle from an MCP schema catalog",
-    )
-    mcp_policy_from_schema.add_argument("catalog", type=Path, help="MCP schema catalog JSON")
-    mcp_policy_from_schema.add_argument(
-        "--out",
-        "--output",
-        type=Path,
-        required=True,
-        help="output policy bundle directory",
-    )
-    add_force_arg(mcp_policy_from_schema, help="overwrite the output directory")
-    add_token_arg(mcp_policy_from_schema, help="bearer token to render into the generated policy")
-    add_token_env_arg(
-        mcp_policy_from_schema,
-        help="context key used by generated policy for env-derived token lookup",
-    )
-    add_allow_path_arg(
-        mcp_policy_from_schema,
-        help="allowed project path or prefix for path-like tool arguments; repeat to add multiple",
-    )
-    mcp_policy_from_schema.add_argument(
-        "--high-risk-action",
-        choices=("allow", "confirm", "reject"),
-        default="confirm",
-        help="action for tools scored high risk from the discovered schema",
-    )
-    add_validate_arg(mcp_policy_from_schema, help="validate and test the generated policy bundle")
-    add_compact_arg(mcp_policy_from_schema)
     mcp_policy_lifecycle = mcp_policy_subparsers.add_parser(
         "lifecycle",
         help="inspect, sign, verify, or promote policy bundle lifecycle state",
@@ -649,7 +626,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     add_force_arg(mcp_config_init, help="overwrite the config file when it exists")
     add_compact_arg(mcp_config_init)
 
-    mcp_tools = mcp_subparsers.add_parser("tools", help="snapshot and diff MCP tools/list declarations")
+    mcp_tools = mcp_subparsers.add_parser("tools", help=argparse.SUPPRESS)
     mcp_tools_subparsers = mcp_tools.add_subparsers(dest="tools_command", required=True)
     mcp_tools_snapshot = mcp_tools_subparsers.add_parser(
         "snapshot",
@@ -680,6 +657,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="return exit code 1 when this change type is present; repeat or use any",
     )
     add_compact_arg(mcp_tools_diff)
+    mcp_subparsers._choices_actions = [  # type: ignore[attr-defined]
+        action for action in mcp_subparsers._choices_actions if getattr(action, "dest", None) != "tools"
+    ]
 
     mcp_schemas = mcp_subparsers.add_parser(
         "schemas",
@@ -739,6 +719,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     add_report_out_arg(mcp_schemas_diff, help="write a Markdown schema diff report")
     add_compact_arg(mcp_schemas_diff)
+    mcp_schemas_policy = mcp_schemas_subparsers.add_parser(
+        "policy",
+        help="generate a reviewable policy bundle from an MCP schema catalog",
+    )
+    mcp_schemas_policy.add_argument("catalog", type=Path, help="MCP schema catalog JSON")
+    mcp_schemas_policy.add_argument(
+        "--out",
+        "--output",
+        type=Path,
+        required=True,
+        help="output policy bundle directory",
+    )
+    add_force_arg(mcp_schemas_policy, help="overwrite the output directory")
+    add_token_arg(mcp_schemas_policy, help="bearer token to render into the generated policy")
+    add_token_env_arg(
+        mcp_schemas_policy,
+        help="context key used by generated policy for env-derived token lookup",
+    )
+    add_allow_path_arg(
+        mcp_schemas_policy,
+        help="allowed project path or prefix for path-like tool arguments; repeat to add multiple",
+    )
+    mcp_schemas_policy.add_argument(
+        "--high-risk-action",
+        choices=("allow", "confirm", "reject"),
+        default="confirm",
+        help="action for tools scored high risk from the discovered schema",
+    )
+    add_validate_arg(mcp_schemas_policy, help="validate and test the generated policy bundle")
+    add_compact_arg(mcp_schemas_policy)
     mcp_fabric = mcp_subparsers.add_parser("fabric", help="inspect and verify declarative MCP fabric config")
     mcp_fabric_subparsers = mcp_fabric.add_subparsers(dest="fabric_command", required=True)
     mcp_fabric_status = mcp_fabric_subparsers.add_parser("status", help="summarize declared MCP fabric topology")
@@ -1695,29 +1705,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                         allow_risky=args.allow_risky,
                     )
                     status = 0 if result["ok"] else 1
-                elif args.policy_command == "from-schema":
-                    from .mcp_schema_policy import (
-                        SchemaPolicyOptions,
-                        format_mcp_schema_policy_report,
-                        generate_mcp_schema_policy,
-                    )
-
-                    result = generate_mcp_schema_policy(
-                        args.catalog,
-                        args.out,
-                        options=SchemaPolicyOptions(
-                            token=args.token,
-                            token_env=args.token_env,
-                            allowed_paths=args.allow_path,
-                            high_risk_action=args.high_risk_action,
-                        ),
-                        force=args.force,
-                        validate=args.validate,
-                    )
-                    status = 0 if result["ok"] else 1
-                    if not args.compact:
-                        write_result_output(result, compact=False, formatter=format_mcp_schema_policy_report)
-                        return status
                 elif args.policy_command == "lifecycle":
                     from .bundle import (
                         inspect_bundle_lifecycle,
@@ -2032,6 +2019,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     result["url"] = args.url
                 status = 1
         elif args.mcp_command == "schemas":
+            from .mcp_schema_policy import (
+                SchemaPolicyOptions,
+                format_mcp_schema_policy_report,
+                generate_mcp_schema_policy,
+            )
             from .mcp_schemas import (
                 diff_mcp_schema_catalogs,
                 discover_mcp_schemas,
@@ -2070,6 +2062,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                         )
                     if not args.compact:
                         write_result_output(result, compact=False, formatter=format_mcp_schema_diff_report)
+                        return status
+                elif args.schemas_command == "policy":
+                    result = generate_mcp_schema_policy(
+                        args.catalog,
+                        args.out,
+                        options=SchemaPolicyOptions(
+                            token=args.token,
+                            token_env=args.token_env,
+                            allowed_paths=args.allow_path,
+                            high_risk_action=args.high_risk_action,
+                        ),
+                        force=args.force,
+                        validate=args.validate,
+                    )
+                    status = 0 if result["ok"] else 1
+                    if not args.compact:
+                        write_result_output(result, compact=False, formatter=format_mcp_schema_policy_report)
                         return status
                 else:
                     parser.error(f"unknown mcp schemas command: {args.schemas_command}")

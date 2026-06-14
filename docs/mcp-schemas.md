@@ -111,7 +111,7 @@ surface must match exactly.
 Turn a discovered schema catalog into a reviewable policy bundle:
 
 ```bash
-uv run snulbug mcp policy from-schema \
+uv run snulbug mcp schemas policy \
   .snulbug/schemas/local-gateway.json \
   --out policy.schema.snulbug \
   --token "${SNULBUG_TOKEN}"
@@ -144,7 +144,7 @@ The generated policy:
 Customize the policy guardrails while generating:
 
 ```bash
-uv run snulbug mcp policy from-schema \
+uv run snulbug mcp schemas policy \
   .snulbug/schemas/local-gateway.json \
   --out policy.schema.snulbug \
   --allow-path README.md \
@@ -167,6 +167,14 @@ contains:
 - resource template `uriTemplate`, metadata, and annotations
 - prompt `name`, `title`, `description`, and typed arguments
 
-This is broader than the MCP tool change watcher. Use `snulbug mcp tools` when
-you only need a focused `tools/list` pinning artifact; use `snulbug mcp schemas`
-when the whole MCP contract should be reviewable.
+For focused tool pinning, limit discovery to `tools/list`:
+
+```bash
+uv run snulbug mcp schemas discover \
+  --url http://127.0.0.1:8080/mcp \
+  --method tools \
+  --out .snulbug/schemas/tools-only.json
+```
+
+`snulbug mcp tools` remains available as a legacy shortcut for tools-only
+pinning, but schema catalogs are the primary review artifact.

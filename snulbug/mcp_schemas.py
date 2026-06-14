@@ -14,6 +14,7 @@ MCP_SCHEMA_CATALOG_SCHEMA = "snulbug.mcp-schema-catalog.v1"
 MCP_SCHEMA_CATALOG_VERSION = 1
 MCP_SCHEMA_DIFF_SCHEMA = "snulbug.mcp-schema-diff.v1"
 MCP_SCHEMA_DIFF_VERSION = 1
+MCP_TOOL_SNAPSHOT_SCHEMA = "snulbug.mcp-tools-snapshot.v1"
 DEFAULT_MCP_PROTOCOL_VERSION = "2025-06-18"
 
 MCP_SCHEMA_METHODS = (
@@ -465,17 +466,23 @@ def _jsonrpc_request(method: str, *, protocol_version: str) -> dict[str, Any]:
 
 
 def _responses_from_payload(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, Sequence) and not isinstance(payload, str | bytes | bytearray):
+        return {"tools/list": {"result": {"tools": list(payload)}}}
     if not isinstance(payload, Mapping):
         raise ValueError("MCP schema discovery source must be an object")
     responses = payload.get("responses")
     if isinstance(responses, Mapping):
         return {normalize_mcp_schema_method(str(method)): response for method, response in responses.items()}
+    if payload.get("schema") == MCP_TOOL_SNAPSHOT_SCHEMA:
+        return {"tools/list": {"result": {"tools": payload.get("tools") or []}}}
     parsed: dict[str, Any] = {}
     for method in MCP_SCHEMA_METHODS:
         if method in payload:
             parsed[method] = payload[method]
     if parsed:
         return parsed
+    if isinstance(payload.get("tools"), Sequence) and not isinstance(payload.get("tools"), str | bytes | bytearray):
+        return {"tools/list": {"result": {"tools": payload["tools"]}}}
     if isinstance(payload.get("result"), Mapping):
         result = payload["result"]
         if "tools" in result:

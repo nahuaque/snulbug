@@ -287,7 +287,6 @@ Start with:
 - [MCP learn and amend mode](docs/mcp-learn.md)
 - [MCP impact preview](docs/mcp-impact.md)
 - [MCP recorder and replay](docs/mcp-recorder.md)
-- [MCP tool change watcher](docs/mcp-tools.md)
 - [MCP schema discovery](docs/mcp-schemas.md)
 - [MCP presets](docs/mcp-presets.md)
 - [Security model](docs/security-model.md)
