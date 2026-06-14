@@ -1,0 +1,40 @@
+[mcp.proxy]
+upstream = "http://127.0.0.1:9000"
+policy = "policy.lua"
+tunnel_provider = "generic"
+tunnel_public_url = "https://tenant-a-share.example.com/mcp"
+tool_pinning = false
+schema_validation = false
+timeout = 10.0
+
+[mcp.auth]
+mode = "oauth-resource"
+resource = "https://tenant-a-share.example.com/mcp"
+issuer = "https://idp.example.com/realms/tenant-a"
+authorization_servers = ["https://idp.example.com/realms/tenant-a"]
+audience = "https://tenant-a-share.example.com/mcp"
+required_scopes = ["mcp:connect"]
+scopes_supported = ["mcp:connect", "mcp:tools.read", "mcp:tenant-a.tools"]
+issuer_discovery = true
+token_validation = "jwt"
+strip_authorization_upstream = true
+required_claims = { tenant = ["tenant-a"] }
+
+[mcp.auth.scope_map]
+"mcp:tools.read" = ["tools/list", "resources/list"]
+"mcp:tenant-a.tools" = ["tools/call:tenant_a.*", "tools/call:shared.read_*"]
+
+[mcp.auth.claim_policy]
+enabled = true
+default_action = "deny"
+
+[[mcp.auth.claim_policy.rules]]
+id = "tenant-a-tool-family"
+claim = "tenant"
+values = ["tenant-a"]
+allow_tool_prefixes = ["tenant_a.", "shared.read_"]
+
+[[mcp.events.sinks]]
+type = "audit_jsonl"
+path = "traces/tenant-a-audit.jsonl"
+

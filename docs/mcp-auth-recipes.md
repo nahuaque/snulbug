@@ -125,3 +125,10 @@ For a runnable Keycloak setup, see
 The demo checks in the output of `snulbug mcp share auth init --provider
 keycloak`, imports a matching Keycloak realm with client scopes and an audience
 mapper, then runs snulbug as an OAuth protected MCP resource in Docker Compose.
+
+## Claim-Policy Examples
+
+For explicit identity-to-tool patterns, see
+[`examples/auth_claim_patterns`](../examples/auth_claim_patterns/README.md).
+It includes tenant isolation, group-gated tools, and GitHub Actions
+OIDC/workload identity configs that are parsed and exercised by the test suite.

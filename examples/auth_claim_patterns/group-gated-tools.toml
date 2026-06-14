@@ -1,0 +1,57 @@
+[mcp.proxy]
+upstream = "http://127.0.0.1:9000"
+policy = "policy.lua"
+tunnel_provider = "generic"
+tunnel_public_url = "https://group-share.example.com/mcp"
+tool_pinning = false
+schema_validation = false
+timeout = 10.0
+
+[mcp.auth]
+mode = "oauth-resource"
+resource = "https://group-share.example.com/mcp"
+issuer = "https://idp.example.com/realms/dev"
+authorization_servers = ["https://idp.example.com/realms/dev"]
+audience = "https://group-share.example.com/mcp"
+required_scopes = ["mcp:connect"]
+scopes_supported = ["mcp:connect", "mcp:tools.read"]
+issuer_discovery = true
+token_validation = "jwt"
+strip_authorization_upstream = true
+
+[mcp.auth.scope_map]
+"mcp:tools.read" = ["tools/list", "resources/list"]
+
+[mcp.auth.claim_policy]
+enabled = true
+default_action = "deny"
+
+[[mcp.auth.claim_policy.rules]]
+id = "readers-filesystem-read"
+claim = "groups"
+values = ["mcp-readers"]
+allow_selectors = [
+  "tools/call:filesystem.read_file",
+  "tools/call:filesystem.list_directory",
+]
+
+[[mcp.auth.claim_policy.rules]]
+id = "platform-dev-git-read"
+claim = "groups"
+values = ["platform-dev"]
+allow_selectors = [
+  "tools/call:git.status",
+  "tools/call:git.diff",
+  "tools/call:git.log",
+]
+
+[[mcp.auth.claim_policy.rules]]
+id = "mcp-admins-local-admin"
+claim = "groups"
+values = ["mcp-admins"]
+allow_tool_prefixes = ["filesystem.", "git."]
+
+[[mcp.events.sinks]]
+type = "audit_jsonl"
+path = "traces/group-audit.jsonl"
+

@@ -404,6 +404,9 @@ paths such as `tenant.slug`. Requests still pass through Lua after the
 declarative check, so use this for broad identity fences and Lua for
 task-specific or stateful decisions.
 
+For copy-pasteable tenant, group, and CI/workload identity patterns, see
+[`examples/auth_claim_patterns`](../examples/auth_claim_patterns/README.md).
+
 For a facade or fabric gateway, use `[[mcp.auth.issuers]]` when different
 tenants, upstream route families, or dev environments trust different identity
 providers or need different MCP mappings. The gateway still advertises one

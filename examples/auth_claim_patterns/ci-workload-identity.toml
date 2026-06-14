@@ -1,0 +1,41 @@
+[mcp.proxy]
+upstream = "http://127.0.0.1:9000"
+policy = "policy.lua"
+lease_file = "leases.json"
+lease_required = true
+tunnel_provider = "generic"
+tunnel_public_url = "https://ci-share.example.com/mcp"
+tool_pinning = false
+schema_validation = false
+timeout = 10.0
+
+[mcp.auth]
+mode = "oauth-resource"
+resource = "https://ci-share.example.com/mcp"
+issuer = "https://token.actions.githubusercontent.com"
+authorization_servers = ["https://token.actions.githubusercontent.com"]
+audience = "https://ci-share.example.com/mcp"
+required_scopes = []
+scopes_supported = []
+issuer_discovery = true
+token_validation = "jwt"
+strip_authorization_upstream = true
+required_claims = { repository = ["acme/widget-service"], ref = ["refs/heads/main"], event_name = ["workflow_dispatch"] }
+
+[mcp.auth.claim_policy]
+enabled = true
+default_action = "deny"
+
+[[mcp.auth.claim_policy.rules]]
+id = "release-workflow-readonly"
+claim = "job_workflow_ref"
+values = ["acme/widget-service/.github/workflows/snulbug-demo.yml@refs/heads/main"]
+allow_selectors = [
+  "tools/call:github.get_file_contents",
+  "tools/call:github.list_pull_requests",
+  "tools/call:ci.read_logs",
+]
+
+[[mcp.events.sinks]]
+type = "audit_jsonl"
+path = "traces/ci-audit.jsonl"
