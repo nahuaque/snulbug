@@ -24,6 +24,8 @@ Use these controls:
   stripping
 - OAuth scope-to-MCP selector mapping so scopes can authorize exact methods and
   tools such as `tools/list` or `tools/call:git.status`
+- token anti-passthrough: caller OAuth bearer tokens terminate at snulbug, and
+  separate upstream credentials can be brokered from snulbug config
 
 For hostile third-party scripts, add an external isolation boundary. A separate process, container, VM, or WebAssembly runtime is a stronger boundary than the in-process Lua runtime.
 
@@ -44,6 +46,11 @@ signature, issuer, audience, and required scopes before Lua policy runs. It is
 not an authorization server and does not mint tokens. When
 `[mcp.auth.scope_map]` is configured, snulbug also rejects MCP methods/tools
 whose selector is not covered by the token's scopes.
+
+Do not reuse caller OAuth tokens as upstream credentials. The default OAuth
+proxy behavior strips the caller `Authorization` header before forwarding.
+Use `mcp.proxy.upstream_credential` or per-facade-upstream `auth` references to
+inject credentials intended for each upstream resource.
 
 It can also reduce risk from a compromised or surprising upstream MCP server by
 redacting likely secrets from results, detecting suspicious instruction-like

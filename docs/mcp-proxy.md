@@ -317,6 +317,7 @@ With this enabled, snulbug:
 - records redacted `auth` audit metadata
 - strips the caller `Authorization` header before forwarding upstream by
   default
+- can inject a separate upstream credential from snulbug credential config
 
 Scope-map selectors match exact MCP methods such as `tools/list` or
 tool-specific selectors such as `tools/call:git.status`. A selector ending in
@@ -327,6 +328,34 @@ messages such as `initialize`, `ping`, and `notifications/*` are allowed once
 The JWT verifier uses `PyJWT[crypto]`. This mode does not perform dynamic
 client registration, token introspection, or authorization-code flows; use your
 identity provider or tunnel/access layer for those pieces.
+
+### Token Anti-Passthrough
+
+OAuth tokens are terminated at snulbug. By default,
+`strip_authorization_upstream = true` removes the caller `Authorization` header
+before proxying so a token minted for the public snulbug resource is not reused
+against a different MCP upstream.
+
+For single-upstream proxy mode, inject a separate upstream credential by
+referencing `[mcp.fabric.credentials]`:
+
+```toml
+[mcp.fabric.credentials.local_api]
+type = "env"
+env = "LOCAL_MCP_TOKEN"
+scheme = "bearer"
+header = "Authorization"
+
+[mcp.proxy]
+upstream = "http://127.0.0.1:9001/mcp"
+upstream_credential = "local_api"
+```
+
+For facade mode, keep using per-upstream `auth = "credential_id"` entries.
+In both modes, snulbug records safe audit metadata such as `auth.subject`,
+`auth.issuer`, `auth.scope_match`, `auth.anti_passthrough`, and
+`metadata.upstream_auth` or `facade.upstream_metadata.auth`. It does not record
+raw caller bearer tokens or upstream credential values.
 
 ## Cloudflare Access Adapter
 

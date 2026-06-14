@@ -392,6 +392,34 @@ def test_load_mcp_proxy_config_attaches_fabric_credentials_to_upstreams(tmp_path
     }
 
 
+def test_load_mcp_proxy_config_attaches_single_upstream_credential(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.fabric.credentials.local_api]
+        type = "env"
+        env = "LOCAL_MCP_TOKEN"
+        scheme = "bearer"
+
+        [mcp.proxy]
+        policy = "policy.snulbug/policy.lua"
+        upstream = "http://127.0.0.1:9001/mcp"
+        upstream_credential = "local_api"
+        """,
+        encoding="utf-8",
+    )
+
+    result = load_mcp_proxy_config(config)
+
+    assert result["upstream_credential"] == {
+        "id": "local_api",
+        "type": "env",
+        "env": "LOCAL_MCP_TOKEN",
+        "scheme": "bearer",
+        "header": "Authorization",
+    }
+
+
 def test_load_mcp_proxy_config_rejects_unknown_upstream_credential_ref(tmp_path):
     config = tmp_path / "snulbug.toml"
     config.write_text(
@@ -403,6 +431,21 @@ def test_load_mcp_proxy_config_rejects_unknown_upstream_credential_ref(tmp_path)
         name = "files"
         url = "http://127.0.0.1:9001/mcp"
         auth = "missing"
+        """,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unknown mcp.fabric.credentials"):
+        load_mcp_proxy_config(config)
+
+
+def test_load_mcp_proxy_config_rejects_unknown_single_upstream_credential_ref(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.proxy]
+        policy = "policy.snulbug/policy.lua"
+        upstream_credential = "missing"
         """,
         encoding="utf-8",
     )

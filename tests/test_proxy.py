@@ -389,6 +389,69 @@ def test_reverse_proxy_oauth_allows_token_adds_lua_context_and_strips_authorizat
     assert token not in json.dumps(audit)
 
 
+def test_reverse_proxy_oauth_brokers_single_upstream_credential_without_token_passthrough(tmp_path, monkeypatch):
+    server, seen = start_upstream()
+    policy = write_oauth_context_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    token = make_oauth_token(secret, scopes=["mcp:connect", "mcp:tools"])
+    monkeypatch.setenv("LOCAL_MCP_TOKEN", "upstream-secret")
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        upstream_credential={
+            "id": "local-api",
+            "type": "env",
+            "env": "LOCAL_MCP_TOKEN",
+            "scheme": "bearer",
+            "header": "Authorization",
+        },
+        record_out=record_log,
+        event_sinks=audit_event_sinks(audit_log),
+        auth_config=oauth_auth_config(jwks_path),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {token}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    record = load_record_log(record_log)[0]
+    audit = json.loads(audit_log.read_text(encoding="utf-8"))
+    assert sent[0]["status"] == 200
+    assert seen["count"] == 1
+    assert payload["headers"]["authorization"] == "Bearer upstream-secret"
+    assert "Bearer " + token != payload["headers"]["authorization"]
+    assert record["metadata"]["auth"]["subject"] == "user-1"
+    assert record["metadata"]["auth"]["issuer"] == "https://issuer.example.test"
+    assert record["metadata"]["auth"]["anti_passthrough"] == {
+        "enabled": True,
+        "authorization_header_present": True,
+        "strip_authorization_upstream": True,
+        "client_authorization": "stripped",
+        "reason_code": "oauth.client_authorization_stripped",
+    }
+    assert record["metadata"]["upstream_auth"]["id"] == "local-api"
+    assert record["metadata"]["upstream_auth"]["source"] == "env"
+    assert record["metadata"]["upstream_auth"]["header"] == "Authorization"
+    assert audit["auth"]["anti_passthrough"] == record["metadata"]["auth"]["anti_passthrough"]
+    assert token not in json.dumps(record)
+    assert token not in json.dumps(audit)
+    assert "upstream-secret" not in json.dumps(record)
+    assert "upstream-secret" not in json.dumps(audit)
+
+
 def test_reverse_proxy_oauth_blocks_insufficient_scope_before_lua_and_upstream(tmp_path):
     server, seen = start_upstream()
     policy = write_policy(tmp_path, "continue")
@@ -469,6 +532,8 @@ def test_reverse_proxy_oauth_scope_map_blocks_unmapped_tool_before_lua_and_upstr
     assert scope_map["target"]["tool"] == "git.status"
     assert scope_map["candidate_selectors"] == ["tools/call:git.status", "tools/call"]
     assert scope_map["accepted_scopes"] == ["mcp:tool.git.status"]
+    assert record["metadata"]["auth"]["scope_match"]["allowed"] is False
+    assert record["metadata"]["auth"]["scope_match"]["reason_code"] == "oauth.scope_map_denied"
     assert audit["auth"]["scope_map"]["reason_code"] == "oauth.scope_map_denied"
     assert token not in json.dumps(record)
 
@@ -505,6 +570,7 @@ def test_reverse_proxy_oauth_scope_map_allows_method_selector(tmp_path):
     assert seen["count"] == 1
     assert record["metadata"]["auth"]["scope_map"]["matched_scope"] == "mcp:tools.read"
     assert record["metadata"]["auth"]["scope_map"]["matched_selector"] == "tools/list"
+    assert record["metadata"]["auth"]["scope_match"]["matched_scope"] == "mcp:tools.read"
 
 
 def test_reverse_proxy_oauth_scope_map_allows_tool_and_lua_auth_helpers(tmp_path):
@@ -545,6 +611,7 @@ def test_reverse_proxy_oauth_scope_map_allows_tool_and_lua_auth_helpers(tmp_path
     assert record["metadata"]["auth"]["scope_map"]["reason_code"] == "oauth.scope_map_allowed"
     assert record["metadata"]["auth"]["scope_map"]["matched_scope"] == "mcp:tool.git.status"
     assert record["metadata"]["auth"]["scope_map"]["matched_selector"] == "tools/call:git.status"
+    assert record["metadata"]["auth"]["scope_match"]["matched_request_selector"] == "tools/call:git.status"
     assert record["result"]["decision"]["context"]["auth_subject"] == "user-1"
     assert record["result"]["decision"]["context"]["auth_can_git_status"] is True
     assert audit["decision"]["reason_code"] == "test.oauth_scope_helper"
@@ -937,6 +1004,60 @@ def test_mcp_facade_injects_upstream_credential_header(tmp_path, monkeypatch):
     assert auth_metadata["source"] == "env"
     assert auth_metadata["header"] == "Authorization"
     assert "upstream-secret" not in json.dumps(records)
+    assert "upstream-secret" not in json.dumps(audit)
+
+
+def test_mcp_facade_oauth_terminates_client_token_and_brokers_upstream_credential(tmp_path, monkeypatch):
+    files_server, files_seen = start_mcp_upstream({"read_file": "Read a file"})
+    policy = write_oauth_context_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    token = make_oauth_token(secret, scopes=["mcp:connect", "mcp:tools"])
+    monkeypatch.setenv("FILES_MCP_TOKEN", "upstream-secret")
+    app = create_proxy_application(
+        None,
+        policy,
+        upstreams=[
+            {
+                "name": "files",
+                "url": f"http://127.0.0.1:{files_server.server_port}/mcp",
+                "credential": {
+                    "id": "files-api",
+                    "type": "env",
+                    "env": "FILES_MCP_TOKEN",
+                    "scheme": "bearer",
+                    "header": "Authorization",
+                },
+            }
+        ],
+        record_out=record_log,
+        event_sinks=audit_event_sinks(audit_log),
+        auth_config=oauth_auth_config(jwks_path),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {token}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}',
+        )
+    finally:
+        files_server.shutdown()
+        files_server.server_close()
+
+    record = load_record_log(record_log)[0]
+    audit = json.loads(audit_log.read_text(encoding="utf-8"))
+    assert sent[0]["status"] == 200
+    assert files_seen["headers"][0]["authorization"] == "Bearer upstream-secret"
+    assert record["metadata"]["auth"]["anti_passthrough"]["client_authorization"] == "stripped"
+    assert record["metadata"]["upstream_transports"][0]["auth"]["id"] == "files-api"
+    assert token not in json.dumps(record)
+    assert token not in json.dumps(audit)
+    assert "upstream-secret" not in json.dumps(record)
     assert "upstream-secret" not in json.dumps(audit)
 
 

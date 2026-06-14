@@ -609,6 +609,23 @@ gateway/client bearer token from being accidentally forwarded to the upstream.
 Run `fabric doctor` to check that all referenced env vars or files are present
 before starting or sharing the fabric.
 
+Single-upstream proxy mode can use the same credential registry:
+
+```toml
+[mcp.fabric.credentials.local_api]
+type = "env"
+env = "LOCAL_MCP_TOKEN"
+scheme = "bearer"
+
+[mcp.proxy]
+upstream = "http://127.0.0.1:9001/mcp"
+upstream_credential = "local_api"
+```
+
+This is the recommended shape when snulbug terminates OAuth for a public share:
+client tokens stop at snulbug, and upstreams receive only their own configured
+credentials.
+
 ## Doctor
 
 `doctor` is the active readiness gate. It verifies configured manifests, checks

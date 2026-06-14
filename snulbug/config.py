@@ -35,6 +35,7 @@ DEFAULT_MCP_AUTH_CONFIG = {
 
 DEFAULT_MCP_PROXY_CONFIG = {
     "upstream": "http://127.0.0.1:9000",
+    "upstream_credential": None,
     "upstreams": [],
     "policy": "policy.snulbug/policy.lua",
     "host": "127.0.0.1",
@@ -112,6 +113,8 @@ def format_event_sinks_toml(event_sinks: Sequence[Mapping[str, Any]]) -> str:
 
 SAMPLE_CONFIG = """[mcp.proxy]
 upstream = "http://127.0.0.1:9000"
+# Optional single-upstream credential reference from [mcp.fabric.credentials].
+# upstream_credential = "local_api"
 policy = "policy.snulbug/policy.lua"
 host = "127.0.0.1"
 port = 8080
@@ -427,6 +430,20 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         raise ValueError("mcp.proxy.cloudflare_access must be 'off', 'audit', or 'enforce'")
 
     normalized["upstreams"] = _normalize_upstreams(normalized.get("upstreams", []), base_dir=base)
+    upstream_credential = normalized.get("upstream_credential")
+    if upstream_credential in (None, ""):
+        normalized["upstream_credential"] = None
+    elif isinstance(upstream_credential, Mapping):
+        normalized["upstream_credential"] = normalize_upstream_credential(
+            upstream_credential,
+            field="mcp.proxy.upstream_credential",
+            base_dir=base,
+            resolve_relative_paths=True,
+        )
+    else:
+        raise ValueError(
+            "mcp.proxy.upstream_credential must be a credential table or a reference to mcp.fabric.credentials"
+        )
     normalized["cloudflare_access_allowed_emails"] = _normalize_string_list(
         normalized.get("cloudflare_access_allowed_emails", []),
         field="cloudflare_access_allowed_emails",

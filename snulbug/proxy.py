@@ -161,6 +161,7 @@ class ReverseProxyApp:
         schema_policy: SchemaPolicyConfig | None = None,
         tool_schema_store: PolicyStateStore | None = None,
         lease_policy: LeasePolicyConfig | None = None,
+        upstream_credential: Mapping[str, Any] | None = None,
     ) -> None:
         parsed = urlsplit(upstream)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -172,6 +173,7 @@ class ReverseProxyApp:
         self.schema_policy = schema_policy or SchemaPolicyConfig()
         self.tool_schema_store = tool_schema_store
         self.lease_policy = lease_policy or LeasePolicyConfig()
+        self.upstream_credential = upstream_credential
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") == "lifespan":
@@ -226,6 +228,9 @@ class ReverseProxyApp:
             )
             return
         try:
+            credential_broker = credential_metadata(self.upstream_credential)
+            if credential_broker:
+                _set_proxy_metadata(scope, {"upstream_auth": credential_broker})
             response = await asyncio.to_thread(self._forward, scope, body)
         except Exception as exc:
             await _send_response(
@@ -269,6 +274,7 @@ class ReverseProxyApp:
         try:
             target = self._target(scope)
             headers = _request_headers(scope.get("headers", []), self._upstream)
+            headers = apply_credential_header(headers, self.upstream_credential)
             connection.request(str(scope.get("method", "GET")), target, body=body, headers=headers)
             response = connection.getresponse()
             response_body = response.read()
@@ -1628,12 +1634,18 @@ class OAuthResourceMiddleware:
 
         _ensure_scope_state(scope)
         decision = evaluate_oauth_request(scope, config=self.config, body=body)
-        _set_proxy_metadata(scope, {"auth": decision.metadata})
+        auth_metadata = dict(decision.metadata)
+        if decision.allowed:
+            auth_metadata["anti_passthrough"] = _anti_passthrough_metadata(scope, self.config)
+        _set_proxy_metadata(scope, {"auth": auth_metadata})
         if decision.allowed:
             child_scope = dict(scope)
             context = child_scope.get("lua")
             lua_context = dict(context) if isinstance(context, Mapping) else {}
-            lua_context["auth"] = decision.context
+            lua_context["auth"] = {
+                **decision.context,
+                "anti_passthrough": auth_metadata["anti_passthrough"],
+            }
             child_scope["lua"] = lua_context
             if self.config.strip_authorization_upstream:
                 child_scope["headers"] = _strip_authorization_header(scope.get("headers", []))
@@ -1816,6 +1828,7 @@ def create_proxy_application(
     upstream: str | None,
     policy: str | Path,
     *,
+    upstream_credential: Mapping[str, Any] | None = None,
     upstreams: Sequence[FacadeUpstream | Mapping[str, Any]] | None = None,
     state_store: PolicyStateStore | None = None,
     state_limits: StateLimits | None = None,
@@ -1886,6 +1899,7 @@ def create_proxy_application(
     )
     proxy = _proxy_app(
         upstream,
+        upstream_credential=upstream_credential,
         upstreams=upstreams,
         timeout=timeout,
         response_policy=response_policy,
@@ -1951,6 +1965,7 @@ def run_proxy(
     *,
     upstream: str | None,
     policy: str | Path,
+    upstream_credential: Mapping[str, Any] | None = None,
     upstreams: Sequence[FacadeUpstream | Mapping[str, Any]] | None = None,
     host: str = "127.0.0.1",
     port: int = 8080,
@@ -2001,6 +2016,7 @@ def run_proxy(
     app = create_proxy_application(
         upstream,
         policy,
+        upstream_credential=upstream_credential,
         upstreams=upstreams,
         state_store=_state_store(state),
         trace=trace,
@@ -2059,6 +2075,7 @@ def proxy_config_run_kwargs(
     effective_topology_audit = topology_audit or build_fabric_audit_metadata(effective_fabric_config)
     return {
         "upstream": proxy_config["upstream"],
+        "upstream_credential": proxy_config.get("upstream_credential"),
         "upstreams": proxy_config["upstreams"],
         "policy": proxy_config["policy"],
         "host": proxy_config["host"],
@@ -2132,6 +2149,7 @@ def run_mcp_proxy_config(
 def _proxy_app(
     upstream: str | None,
     *,
+    upstream_credential: Mapping[str, Any] | None,
     upstreams: Sequence[FacadeUpstream | Mapping[str, Any]] | None,
     timeout: float,
     response_policy: ResponsePolicyConfig,
@@ -2159,6 +2177,7 @@ def _proxy_app(
     return ReverseProxyApp(
         upstream,
         timeout=timeout,
+        upstream_credential=upstream_credential,
         response_policy=response_policy,
         tool_pin_store=tool_pin_store,
         schema_policy=schema_policy,
@@ -2663,6 +2682,28 @@ def _strip_authorization_header(raw_headers: Any) -> list[tuple[bytes, bytes]]:
             continue
         stripped.append((raw_name, raw_value))
     return stripped
+
+
+def _anti_passthrough_metadata(scope: Scope, config: OAuthResourceConfig) -> dict[str, Any]:
+    authorization_present = any(
+        (name if isinstance(name, bytes) else str(name).encode("latin-1")).lower() == b"authorization"
+        for name, _value in scope.get("headers", []) or []
+    )
+    if config.strip_authorization_upstream:
+        disposition = "stripped" if authorization_present else "absent"
+        reason_code = (
+            "oauth.client_authorization_stripped" if authorization_present else "oauth.client_authorization_absent"
+        )
+    else:
+        disposition = "forwarding_explicitly_allowed" if authorization_present else "absent"
+        reason_code = "oauth.client_authorization_forwarding_explicitly_allowed"
+    return {
+        "enabled": True,
+        "authorization_header_present": authorization_present,
+        "strip_authorization_upstream": config.strip_authorization_upstream,
+        "client_authorization": disposition,
+        "reason_code": reason_code,
+    }
 
 
 def _is_oauth_resource_metadata_request(scope: Scope, config: OAuthResourceConfig) -> bool:

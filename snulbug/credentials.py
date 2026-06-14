@@ -48,11 +48,21 @@ def attach_upstream_credentials(
 ) -> dict[str, Any]:
     """Attach resolved credential reference metadata to proxy upstream tables."""
 
+    attached = dict(proxy)
+    proxy_credential_ref = attached.get("upstream_credential")
+    if isinstance(proxy_credential_ref, str):
+        credential = credentials.get(proxy_credential_ref)
+        if credential is None:
+            raise ValueError(
+                "mcp.proxy.upstream_credential references unknown "
+                f"mcp.fabric.credentials entry: {proxy_credential_ref!r}"
+            )
+        attached["upstream_credential"] = dict(credential)
+
     upstreams = proxy.get("upstreams")
     if not isinstance(upstreams, list) or not upstreams:
-        return dict(proxy)
+        return attached
 
-    attached = dict(proxy)
     normalized_upstreams = []
     for index, upstream in enumerate(upstreams):
         if not isinstance(upstream, Mapping):

@@ -128,13 +128,14 @@ def evaluate_oauth_request(
         )
     context = oauth_context(claims, scopes=scopes, config=config)
     scope_map_decision = evaluate_scope_map(body=body, scopes=scopes, config=config)
+    scope_match = scope_match_metadata(scope_map_decision)
     if not scope_map_decision["allowed"]:
         return _reject(
             config,
             status=403,
             reason_code=str(scope_map_decision["reason_code"]),
             error="insufficient_scope",
-            details={"scope_map": scope_map_decision},
+            details={"scope_map": scope_map_decision, "scope_match": scope_match},
         )
     if scope_map_decision["enabled"]:
         context["scope_decision"] = scope_map_decision
@@ -149,6 +150,7 @@ def evaluate_oauth_request(
                 "allowed": True,
                 "reason_code": "oauth.allowed",
                 "scope_map": scope_map_decision if scope_map_decision["enabled"] else None,
+                "scope_match": scope_match,
             }
         ),
         context=context,
@@ -261,6 +263,23 @@ def evaluate_scope_map(
         ),
         **(matched or {}),
     }
+
+
+def scope_match_metadata(scope_map_decision: Mapping[str, Any]) -> dict[str, Any]:
+    if not scope_map_decision.get("enabled"):
+        return {}
+    return _drop_empty(
+        {
+            "allowed": scope_map_decision.get("allowed"),
+            "reason_code": scope_map_decision.get("reason_code"),
+            "matched_scope": scope_map_decision.get("matched_scope"),
+            "matched_selector": scope_map_decision.get("matched_selector"),
+            "matched_request_selector": scope_map_decision.get("matched_request_selector"),
+            "accepted_scopes": scope_map_decision.get("accepted_scopes"),
+            "candidate_selectors": scope_map_decision.get("candidate_selectors"),
+            "target": scope_map_decision.get("target"),
+        }
+    )
 
 
 def mcp_scope_target(body: bytes | None) -> dict[str, Any]:
