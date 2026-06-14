@@ -99,6 +99,39 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
 
     share_auth = share_subparsers.add_parser("auth", help="diagnose share authentication")
     share_auth_subparsers = share_auth.add_subparsers(dest="share_auth_command", required=True)
+    share_auth_init = share_auth_subparsers.add_parser(
+        "init",
+        help="generate provider auth setup files for an MCP share",
+    )
+    share_auth_init.add_argument("--provider", choices=AUTH_RECIPE_PROVIDERS, required=True)
+    share_auth_init.add_argument(
+        "--url",
+        "--public-url",
+        dest="url",
+        required=True,
+        help="public MCP URL clients connect to",
+    )
+    share_auth_init.add_argument("--issuer", help="provider issuer URL override")
+    share_auth_init.add_argument("--audience", help="token audience/resource indicator override")
+    share_auth_init.add_argument("--client-id", help="provider client/application id")
+    share_auth_init.add_argument("--tenant", help="provider tenant id/name")
+    share_auth_init.add_argument("--domain", help="provider domain/base URL")
+    share_auth_init.add_argument("--realm", help="Keycloak realm")
+    share_auth_init.add_argument("--auth-server-id", help="Okta authorization server id")
+    share_auth_init.add_argument(
+        "--scope",
+        action="append",
+        default=[],
+        help="MCP OAuth scope to include; repeat for multiple scopes",
+    )
+    share_auth_init.add_argument(
+        "--output-dir",
+        "--dir",
+        type=Path,
+        help="directory for generated auth setup files; defaults to .snulbug/auth/<provider>",
+    )
+    add_force_arg(share_auth_init, help="overwrite generated auth setup files when they exist")
+    add_compact_arg(share_auth_init)
     share_auth_doctor = share_auth_subparsers.add_parser(
         "doctor",
         help="verify OAuth protected-resource readiness for a share or config",
@@ -222,7 +255,12 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
 
 
 def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
-    from ..auth_recipes import format_mcp_auth_recipe_report, generate_mcp_auth_recipe
+    from ..auth_recipes import (
+        format_mcp_auth_init_report,
+        format_mcp_auth_recipe_report,
+        generate_mcp_auth_init,
+        generate_mcp_auth_recipe,
+    )
     from ..config import write_sample_config
     from ..leases import create_lease, list_leases, revoke_lease
     from ..quickstart import create_mcp_quickstart
@@ -464,6 +502,23 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
             return status
 
         if command == "auth":
+            if args.share_auth_command == "init":
+                result = generate_mcp_auth_init(
+                    args.provider,
+                    public_url=args.url,
+                    issuer=args.issuer,
+                    audience=args.audience,
+                    client_id=args.client_id,
+                    tenant=args.tenant,
+                    domain=args.domain,
+                    realm=args.realm,
+                    auth_server_id=args.auth_server_id,
+                    scopes=args.scope or None,
+                    output_dir=args.output_dir,
+                    force=args.force,
+                )
+                write_result_output(result, compact=args.compact, formatter=format_mcp_auth_init_report)
+                return 0
             if args.share_auth_command == "doctor":
                 directory = args.directory
                 if directory is None and args.config is None and share_session_model_path(Path.cwd()).is_file():

@@ -163,15 +163,20 @@ URLs. If a share is intentionally reachable through more than one public URL,
 configure both `mcp.auth.resource_aliases` and `mcp.auth.audiences`; otherwise
 snulbug treats multiple public URLs as accidental drift.
 
-To generate provider-specific setup guidance without implementing dynamic
-client registration inside snulbug, use:
+To generate provider-specific setup files without implementing dynamic client
+registration inside snulbug, use:
 
 ```bash
-uv run snulbug mcp share auth recipe \
+uv run snulbug mcp share auth init \
   --provider keycloak \
   --url "${PUBLIC_MCP_URL}" \
   --issuer "${ISSUER_URL}"
 ```
+
+This writes `.snulbug/auth/<provider>/README.md`, `snulbug.auth.toml`,
+`client-token-request.json`, `commands.json`, and `auth-init.json`. Merge the
+generated TOML into the share's `snulbug.toml`, complete provider setup, then
+run the generated auth doctor command.
 
 Runtime JWT validation can use either a pinned local `jwks_path` or a remote
 `jwks_url` with bounded caching and refresh-on-rotation. If `issuer_discovery`

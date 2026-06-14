@@ -309,7 +309,7 @@ Workflow:
 - optional OAuth protected-resource mode with JWT/JWKS or token-introspection validation and MCP bearer challenges
 - OAuth scope-to-MCP method/tool mapping for least-privilege public shares
 - OAuth resource/audience drift checks for tunnel-safe public shares
-- generated auth interop recipes for Keycloak, Auth0, Okta, Entra, Cloudflare Access, and GitHub OIDC
+- generated auth setup flows for Keycloak, Auth0, Okta, Entra, Cloudflare Access, and GitHub OIDC
 - composable OAuth + task lease + Lua policy access decisions
 - anti-passthrough credential brokering so caller OAuth tokens stop at snulbug
 - learned least-privilege bundles from observed traffic

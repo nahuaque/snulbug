@@ -4,7 +4,9 @@ __version__ = "0.1.0"
 
 from .auth_recipes import (
     AUTH_RECIPE_PROVIDERS,
+    format_mcp_auth_init_report,
     format_mcp_auth_recipe_report,
+    generate_mcp_auth_init,
     generate_mcp_auth_recipe,
 )
 from .bundle import (
@@ -453,6 +455,7 @@ __all__ = [
     "format_mcp_tool_diff_report",
     "format_mcp_tool_snapshot_report",
     "format_mcp_auth_lab_report",
+    "format_mcp_auth_init_report",
     "format_mcp_auth_recipe_report",
     "format_event_sinks_toml",
     "format_scaffold_report",
@@ -465,6 +468,7 @@ __all__ = [
     "format_tunnel_init_report",
     "generate_fabric_conformance_pack",
     "generate_mcp_preset",
+    "generate_mcp_auth_init",
     "generate_mcp_auth_recipe",
     "generate_mcp_schema_policy",
     "heartbeat_fabric_member",

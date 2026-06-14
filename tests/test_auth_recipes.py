@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from snulbug import generate_mcp_auth_recipe
+from snulbug import generate_mcp_auth_init, generate_mcp_auth_recipe
 from snulbug.simulator import main as simulator_main
 
 
@@ -81,3 +81,61 @@ def test_share_auth_recipe_cli_emits_compact_json(tmp_path, capsys):
     assert output["output"] == str(output_path)
     assert output_path.is_file()
     assert "Auth0" in output_path.read_text(encoding="utf-8")
+
+
+def test_generate_auth_init_writes_provider_setup_files(tmp_path):
+    result = generate_mcp_auth_init(
+        "keycloak",
+        public_url="https://mcp.example.test/mcp",
+        issuer="https://idp.example.test/realms/dev",
+        client_id="mcp-agent",
+        output_dir=tmp_path / "auth/keycloak",
+    )
+
+    files = result["files"]
+    metadata = json.loads((tmp_path / "auth/keycloak/auth-init.json").read_text(encoding="utf-8"))
+
+    assert result["ok"] is True
+    assert result["provider"] == "keycloak"
+    assert files["readme"] == str(tmp_path / "auth/keycloak/README.md")
+    assert files["config"] == str(tmp_path / "auth/keycloak/snulbug.auth.toml")
+    assert files["client_request"] == str(tmp_path / "auth/keycloak/client-token-request.json")
+    assert files["commands"] == str(tmp_path / "auth/keycloak/commands.json")
+    assert 'mode = "oauth-resource"' in (tmp_path / "auth/keycloak/snulbug.auth.toml").read_text(encoding="utf-8")
+    assert "snulbug auth recipe: Keycloak" in (tmp_path / "auth/keycloak/README.md").read_text(encoding="utf-8")
+    assert metadata["written_files"] == result["written_files"]
+    assert "share auth doctor" in result["commands"]["doctor"]
+
+
+def test_share_auth_init_cli_emits_compact_json_and_writes_files(tmp_path, capsys):
+    output_dir = tmp_path / "auth0"
+    status = simulator_main(
+        [
+            "mcp",
+            "share",
+            "auth",
+            "init",
+            "--provider",
+            "auth0",
+            "--url",
+            "https://mcp.example.test/mcp",
+            "--domain",
+            "tenant.example.test",
+            "--client-id",
+            "mcp-agent",
+            "--output-dir",
+            str(output_dir),
+            "--compact",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+
+    assert status == 0
+    assert output["kind"] == "snulbug.auth.init"
+    assert output["provider"] == "auth0"
+    assert output["directory"] == str(output_dir)
+    assert output["files"]["readme"] == str(output_dir / "README.md")
+    assert (output_dir / "README.md").is_file()
+    assert (output_dir / "snulbug.auth.toml").is_file()
+    assert "Auth0" in (output_dir / "README.md").read_text(encoding="utf-8")

@@ -1,25 +1,36 @@
 # MCP auth interop recipes
 
 snulbug does not implement dynamic client registration or act as an
-authorization server. Instead, it can generate provider setup recipes for the
+authorization server. Instead, it can generate provider setup flows for the
 identity systems you already use:
 
 ```bash
-uv run snulbug mcp share auth recipe \
+uv run snulbug mcp share auth init \
   --provider keycloak \
   --url https://mcp.example.com/mcp \
   --issuer https://idp.example.com/realms/dev
 ```
 
-Use `--compact` for JSON output an agent can inspect, or `--output` to write the
-Markdown recipe:
+`init` writes a generated setup directory with provider instructions, an auth
+TOML overlay, a client token request shape, and next commands:
+
+```bash
+uv run snulbug mcp share auth init \
+  --provider auth0 \
+  --url https://mcp.example.com/mcp \
+  --domain tenant.example.com \
+  --client-id mcp-agent \
+  --output-dir .snulbug/auth/auth0
+```
+
+Use `--compact` for JSON output an agent can inspect. Use `recipe` when you only
+want the Markdown guidance and do not want files:
 
 ```bash
 uv run snulbug mcp share auth recipe \
   --provider auth0 \
   --url https://mcp.example.com/mcp \
   --domain tenant.example.com \
-  --client-id mcp-agent \
   --output .snulbug/auth/auth0.md
 ```
 
@@ -31,6 +42,16 @@ Supported providers:
 - `entra`
 - `cloudflare-access`
 - `github-oidc`
+
+## What Init Generates
+
+The setup directory contains:
+
+- `README.md`: provider setup plus snulbug next steps
+- `snulbug.auth.toml`: auth-focused TOML to merge into a share config
+- `client-token-request.json`: issuer/audience/client/scopes the MCP client should request
+- `commands.json`: run and doctor commands
+- `auth-init.json`: machine-readable metadata for agentic harnesses
 
 ## What a Recipe Contains
 

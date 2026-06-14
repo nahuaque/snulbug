@@ -21,6 +21,8 @@ DEFAULT_AUTH_SCOPES = (
     "mcp:tool.git.status",
 )
 
+DEFAULT_AUTH_INIT_ROOT = Path(".snulbug/auth")
+
 PROVIDER_DOCS = {
     "keycloak": "https://www.keycloak.org/docs/latest/server_admin/#_clients",
     "auth0": "https://auth0.com/docs/get-started/auth0-overview/create-applications",
@@ -96,6 +98,76 @@ def generate_mcp_auth_recipe(
     return recipe
 
 
+def generate_mcp_auth_init(
+    provider: str,
+    *,
+    public_url: str,
+    issuer: str | None = None,
+    audience: str | None = None,
+    client_id: str | None = None,
+    tenant: str | None = None,
+    domain: str | None = None,
+    realm: str | None = None,
+    auth_server_id: str | None = None,
+    scopes: Sequence[str] | None = None,
+    output_dir: str | Path | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Generate a provider auth setup directory for an MCP share."""
+
+    recipe = generate_mcp_auth_recipe(
+        provider,
+        public_url=public_url,
+        issuer=issuer,
+        audience=audience,
+        client_id=client_id,
+        tenant=tenant,
+        domain=domain,
+        realm=realm,
+        auth_server_id=auth_server_id,
+        scopes=scopes,
+    )
+    normalized_provider = str(recipe["provider"])
+    directory = Path(output_dir) if output_dir is not None else DEFAULT_AUTH_INIT_ROOT / normalized_provider
+    files = {
+        "readme": directory / "README.md",
+        "config": directory / "snulbug.auth.toml",
+        "client_request": directory / "client-token-request.json",
+        "metadata": directory / "auth-init.json",
+        "commands": directory / "commands.json",
+    }
+    existing = [path for path in files.values() if path.exists()]
+    if existing and not force:
+        raise FileExistsError(f"auth init output already exists: {existing[0]}")
+
+    directory.mkdir(parents=True, exist_ok=True)
+    commands = _auth_init_commands(recipe, directory=directory)
+    metadata = {
+        "ok": True,
+        "kind": "snulbug.auth.init",
+        "provider": normalized_provider,
+        "public_url": recipe["public_url"],
+        "directory": str(directory),
+        "files": {key: str(path) for key, path in files.items()},
+        "commands": commands,
+        "next_steps": _auth_init_next_steps(recipe, directory=directory),
+        "recipe": _auth_init_recipe_summary(recipe),
+    }
+    metadata["written_files"] = [str(path) for path in files.values()]
+
+    _write_auth_init_file(files["readme"], _format_auth_init_readme(recipe, metadata), force=force)
+    _write_auth_init_file(files["config"], str(recipe.get("snulbug_config") or ""), force=force)
+    _write_auth_init_file(
+        files["client_request"],
+        json.dumps(recipe.get("client_request") or {}, indent=2, sort_keys=True) + "\n",
+        force=force,
+    )
+    _write_auth_init_file(files["commands"], json.dumps(commands, indent=2, sort_keys=True) + "\n", force=force)
+    _write_auth_init_file(files["metadata"], json.dumps(metadata, indent=2, sort_keys=True) + "\n", force=force)
+
+    return metadata
+
+
 def format_mcp_auth_recipe_report(recipe: Mapping[str, Any]) -> str:
     """Render an auth interop recipe as Markdown."""
 
@@ -156,6 +228,41 @@ def format_mcp_auth_recipe_report(recipe: Mapping[str, Any]) -> str:
     if docs:
         lines.extend(["## Provider Docs", ""])
         lines.extend(f"- {item}" for item in docs)
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def format_mcp_auth_init_report(result: Mapping[str, Any]) -> str:
+    """Render a generated auth init flow as Markdown."""
+
+    recipe = _mapping(result.get("recipe"))
+    files = _mapping(result.get("files"))
+    commands = _mapping(result.get("commands"))
+    lines = [
+        "# snulbug mcp share auth init",
+        "",
+        f"Provider: `{result.get('provider')}`",
+        f"Public MCP URL: `{result.get('public_url')}`",
+        f"Directory: `{result.get('directory')}`",
+        "",
+    ]
+    if recipe.get("title"):
+        lines.extend([str(recipe["title"]), ""])
+    if files:
+        lines.extend(["## Files", ""])
+        for name, path in files.items():
+            lines.append(f"- `{name}`: `{path}`")
+        lines.append("")
+    next_steps = _sequence(result.get("next_steps"))
+    if next_steps:
+        lines.extend(["## Next Steps", ""])
+        for index, step in enumerate(next_steps, start=1):
+            lines.append(f"{index}. {step}")
+        lines.append("")
+    if commands:
+        lines.extend(["## Commands", ""])
+        for name, command in commands.items():
+            lines.append(f"- `{name}`: `{command}`")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -480,6 +587,72 @@ def _auth_recipe_commands(public_url: str) -> dict[str, str]:
             f"uv run snulbug mcp share auth doctor --config snulbug.toml --url {public_url} --token $ACCESS_TOKEN"
         ),
     }
+
+
+def _auth_init_commands(recipe: Mapping[str, Any], *, directory: Path) -> dict[str, str]:
+    public_url = str(recipe.get("public_url") or "")
+    config = directory / "snulbug.auth.toml"
+    return {
+        "review": f"less {directory / 'README.md'}",
+        "show_config": f"cat {config}",
+        "run": "uv run snulbug mcp share run --config snulbug.toml",
+        "doctor": (
+            f"uv run snulbug mcp share auth doctor --config snulbug.toml --url {public_url} --token $ACCESS_TOKEN"
+        ),
+    }
+
+
+def _auth_init_next_steps(recipe: Mapping[str, Any], *, directory: Path) -> list[str]:
+    commands = _auth_init_commands(recipe, directory=directory)
+    return [
+        f"Review `{directory / 'README.md'}` and complete the provider setup.",
+        f"Merge `{directory / 'snulbug.auth.toml'}` into the share's `snulbug.toml`.",
+        commands["run"],
+        commands["doctor"],
+    ]
+
+
+def _auth_init_recipe_summary(recipe: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "kind": recipe.get("kind"),
+        "provider": recipe.get("provider"),
+        "title": recipe.get("title"),
+        "issuer": recipe.get("issuer"),
+        "audience": recipe.get("audience"),
+        "client_id": recipe.get("client_id"),
+        "scopes": list(_sequence(recipe.get("scopes"))),
+        "docs": list(_sequence(recipe.get("docs"))),
+    }
+
+
+def _format_auth_init_readme(recipe: Mapping[str, Any], result: Mapping[str, Any]) -> str:
+    lines = [
+        f"# snulbug auth init: {recipe.get('title') or recipe.get('provider')}",
+        "",
+        "This directory is generated by `snulbug mcp share auth init`.",
+        "Use it to configure your identity provider and merge the generated auth snippet into a share config.",
+        "",
+        "## Generated Files",
+        "",
+    ]
+    files = _mapping(result.get("files"))
+    for name, path in files.items():
+        lines.append(f"- `{name}`: `{Path(path).name}`")
+    lines.extend(["", "## Provider Recipe", "", format_mcp_auth_recipe_report(recipe).rstrip(), ""])
+    lines.extend(["## Next Steps", ""])
+    for index, step in enumerate(_sequence(result.get("next_steps")), start=1):
+        lines.append(f"{index}. {step}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _write_auth_init_file(path: Path, content: str, *, force: bool) -> None:
+    if path.exists() and not force:
+        raise FileExistsError(f"auth init output already exists: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if content and not content.endswith("\n"):
+        content += "\n"
+    path.write_text(content, encoding="utf-8")
 
 
 def _provider_title(provider: str) -> str:
