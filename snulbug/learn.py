@@ -6,8 +6,9 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .bundle import load_bundle, validate_bundle
+from .bundle import load_bundle
 from .inspection import _load_events
+from .mcp_policy_bundles import write_mcp_policy_bundle
 from .recorder import RECORD_TYPE, load_record_log
 from .simulator import simulate_policy
 
@@ -25,24 +26,24 @@ def learn_mcp_policy(
     events = _load_events(log, kind=kind)
     model = _LearnedPolicy.from_events(events)
     output_path = Path(output)
-    policy_path, manifest_path, report_path = _write_policy_bundle(
-        model,
+    bundle = write_mcp_policy_bundle(
         output_path,
+        policy=model.to_lua(),
         manifest=model.manifest(log),
         report=model.report(log),
+        report_name="LEARNED.md",
         force=force,
         exists_label="learn output",
-        report_name="LEARNED.md",
+        validate=validate,
     )
 
-    validation = validate_bundle(output_path) if validate else None
     return {
-        "ok": bool(validation["ok"]) if validation is not None else True,
+        "ok": bundle.ok,
         "log": str(log),
         "output": str(output_path),
-        "policy": str(policy_path),
-        "manifest": str(manifest_path),
-        "report": str(report_path),
+        "policy": str(bundle.policy),
+        "manifest": str(bundle.manifest),
+        "report": str(bundle.report),
         "event_count": model.event_count,
         "allowed_event_count": model.allowed_event_count,
         "blocked_event_count": model.blocked_event_count,
@@ -50,12 +51,8 @@ def learn_mcp_policy(
         "tools": sorted(model.tools),
         "resources": sorted(model.resources),
         "prompts": sorted(model.prompts),
-        "validation": validation,
-        "next_steps": [
-            f"uv run snulbug bundle validate {output_path}",
-            f"uv run snulbug bundle test {output_path}",
-            f"uv run snulbug mcp proxy --policy {policy_path} --upstream http://127.0.0.1:9000",
-        ],
+        "validation": bundle.validation,
+        "next_steps": bundle.next_steps,
     }
 
 
@@ -88,38 +85,34 @@ def amend_mcp_policy(
         "rejected": amendment.rejected,
         "ignored": amendment.ignored,
     }
-    policy_path, manifest_path, report_path = _write_policy_bundle(
-        model,
+    generated = write_mcp_policy_bundle(
         output_path,
+        policy=model.to_lua(),
         manifest=manifest,
         report=amendment.report(source.root, log, model),
+        report_name="AMEND.md",
         force=force,
         exists_label="amend output",
-        report_name="AMEND.md",
+        validate=validate,
     )
 
-    validation = validate_bundle(output_path) if validate else None
-    baseline = _verify_baseline_records(policy_path, source.manifest.get("generated_from"))
-    ok = bool(validation["ok"]) if validation is not None else True
+    baseline = _verify_baseline_records(generated.policy, source.manifest.get("generated_from"))
+    ok = generated.ok
     ok = ok and bool(baseline["ok"])
     return {
         "ok": ok,
         "bundle": str(source.root),
         "log": str(log),
         "output": str(output_path),
-        "policy": str(policy_path),
-        "manifest": str(manifest_path),
-        "report": str(report_path),
+        "policy": str(generated.policy),
+        "manifest": str(generated.manifest),
+        "report": str(generated.report),
         "additions": amendment.additions,
         "rejected": amendment.rejected,
         "ignored": amendment.ignored,
-        "validation": validation,
+        "validation": generated.validation,
         "baseline": baseline,
-        "next_steps": [
-            f"uv run snulbug bundle validate {output_path}",
-            f"uv run snulbug bundle test {output_path}",
-            f"uv run snulbug mcp proxy --policy {policy_path} --upstream http://127.0.0.1:9000",
-        ],
+        "next_steps": generated.next_steps,
     }
 
 
@@ -537,28 +530,6 @@ class _Amendment:
         if parent is not None:
             item["parent"] = parent
         self.ignored.append(item)
-
-
-def _write_policy_bundle(
-    model: _LearnedPolicy,
-    output_path: Path,
-    *,
-    manifest: Mapping[str, Any],
-    report: str,
-    force: bool,
-    exists_label: str,
-    report_name: str,
-) -> tuple[Path, Path, Path]:
-    if output_path.exists() and not force:
-        raise FileExistsError(f"{exists_label} already exists: {output_path}")
-    output_path.mkdir(parents=True, exist_ok=True)
-    policy_path = output_path / "policy.lua"
-    manifest_path = output_path / "manifest.json"
-    report_path = output_path / report_name
-    policy_path.write_text(model.to_lua(), encoding="utf-8")
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    report_path.write_text(report, encoding="utf-8")
-    return policy_path, manifest_path, report_path
 
 
 def _verify_baseline_records(policy_path: Path, source_log: Any) -> dict[str, Any]:

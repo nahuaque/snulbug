@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import json
-import shutil
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .bundle import test_bundle, validate_bundle
+from .mcp_policy_bundles import write_mcp_policy_bundle
 from .mcp_schemas import MCP_SCHEMA_CATALOG_SCHEMA, discover_mcp_schemas, normalize_mcp_schema_catalog
 
 MCP_SCHEMA_POLICY_SCHEMA = "snulbug.mcp-schema-policy.v1"
@@ -107,37 +106,33 @@ def generate_mcp_schema_policy(
     normalized_catalog = _load_catalog(catalog)
     model = _SchemaPolicyModel.from_catalog(normalized_catalog, options=policy_options)
     output_path = Path(output)
-    if output_path.exists() and not force:
-        raise FileExistsError(f"schema policy output already exists: {output_path}")
-    if output_path.exists():
-        shutil.rmtree(output_path)
-    output_path.mkdir(parents=True, exist_ok=True)
-    fixtures_dir = output_path / "fixtures"
-    fixtures_dir.mkdir()
-
-    policy_path = output_path / "policy.lua"
-    manifest_path = output_path / "manifest.json"
-    report_path = output_path / "SCHEMA_POLICY.md"
-
-    policy_path.write_text(model.to_lua(), encoding="utf-8")
-    fixtures = _write_fixtures(fixtures_dir, model, policy_options)
+    fixtures, fixture_files = _fixture_documents(model, policy_options)
     manifest = model.manifest(catalog, fixtures)
     report = model.report()
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    report_path.write_text(format_mcp_schema_policy_report(report), encoding="utf-8")
+    bundle = write_mcp_policy_bundle(
+        output_path,
+        policy=model.to_lua(),
+        manifest=manifest,
+        report=format_mcp_schema_policy_report(report),
+        report_name="SCHEMA_POLICY.md",
+        force=force,
+        exists_label="schema policy output",
+        clean=True,
+        extra_files=fixture_files,
+        validate=validate,
+        run_tests=validate,
+    )
 
-    validation = validate_bundle(output_path) if validate else None
-    tests = test_bundle(output_path) if validate and validation is not None and validation["ok"] else None
     return {
-        "ok": bool((validation or {"ok": True})["ok"] and (tests or {"ok": True})["ok"]),
+        "ok": bundle.ok,
         "schema": MCP_SCHEMA_POLICY_SCHEMA,
         "version": MCP_SCHEMA_POLICY_VERSION,
         "catalog_hash": normalized_catalog.get("hash"),
         "catalog": report["catalog"],
         "output": str(output_path),
-        "policy": str(policy_path),
-        "manifest": str(manifest_path),
-        "report": str(report_path),
+        "policy": str(bundle.policy),
+        "manifest": str(bundle.manifest),
+        "report": str(bundle.report),
         "tool_count": len(model.tools),
         "resource_count": len(model.resources),
         "prompt_count": len(model.prompts),
@@ -145,13 +140,9 @@ def generate_mcp_schema_policy(
         "high_risk_action": policy_options.high_risk_action,
         "lease_suggestions": model.lease_suggestions(),
         "tools": report["tools"],
-        "validation": validation,
-        "tests": tests,
-        "next_steps": [
-            f"uv run snulbug bundle validate {output_path}",
-            f"uv run snulbug bundle test {output_path}",
-            f"uv run snulbug mcp proxy --policy {policy_path} --upstream http://127.0.0.1:9000",
-        ],
+        "validation": bundle.validation,
+        "tests": bundle.tests,
+        "next_steps": bundle.next_steps,
     }
 
 
@@ -823,10 +814,14 @@ def _is_path_key(value: str) -> bool:
     return lowered in _PATH_KEYS or lowered.endswith("_path") or lowered.endswith("_paths")
 
 
-def _write_fixtures(root: Path, model: _SchemaPolicyModel, options: SchemaPolicyOptions) -> list[dict[str, Any]]:
+def _fixture_documents(
+    model: _SchemaPolicyModel,
+    options: SchemaPolicyOptions,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    fixture_files: dict[str, str] = {}
     fixtures = [
-        _write_fixture(
-            root,
+        _fixture_document(
+            fixture_files,
             "list-tools.json",
             "listed methods are allowed",
             _mcp_request("tools/list", {}, options),
@@ -841,8 +836,8 @@ def _write_fixtures(root: Path, model: _SchemaPolicyModel, options: SchemaPolicy
             expected_action = "reject"
             expected_reason = "mcp.schema.high_risk_rejected"
         fixtures.append(
-            _write_fixture(
-                root,
+            _fixture_document(
+                fixture_files,
                 "allowed-tool.json",
                 "declared tool follows generated schema policy",
                 _mcp_request(
@@ -854,26 +849,25 @@ def _write_fixtures(root: Path, model: _SchemaPolicyModel, options: SchemaPolicy
             )
         )
         fixtures.append(
-            _write_fixture(
-                root,
+            _fixture_document(
+                fixture_files,
                 "unknown-tool.json",
                 "unknown tools are denied",
                 _mcp_request("tools/call", {"name": "__snulbug_unknown_tool__", "arguments": {}}, options),
                 {"action": "reject", "status": 403, "decision.reason_code": "mcp.schema.tool_not_allowed"},
             )
         )
-    return fixtures
+    return fixtures, fixture_files
 
 
-def _write_fixture(
-    root: Path,
+def _fixture_document(
+    fixture_files: dict[str, str],
     filename: str,
     name: str,
     request: Mapping[str, Any],
     expect: Mapping[str, Any],
 ) -> dict[str, Any]:
-    path = root / filename
-    path.write_text(json.dumps(request, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    fixture_files[f"fixtures/{filename}"] = json.dumps(request, indent=2, sort_keys=True) + "\n"
     return {"name": name, "request": f"fixtures/{filename}", "expect": dict(expect)}
 
 
