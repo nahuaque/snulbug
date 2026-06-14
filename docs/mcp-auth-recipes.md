@@ -43,6 +43,22 @@ Supported providers:
 - `cloudflare-access`
 - `github-oidc`
 
+## Demo Status
+
+The checked-in real-provider demo coverage is intentionally narrow until each
+provider can be validated against a live dev account:
+
+- Keycloak: runnable Docker Compose demo in
+  [`examples/keycloak_oauth_demo`](../examples/keycloak_oauth_demo/README.md).
+- Auth0: generated setup recipe is available; live provider demo forthcoming.
+- Okta: generated setup recipe is available; live provider demo forthcoming.
+- Microsoft Entra: generated setup recipe is available; live provider demo
+  forthcoming.
+- Cloudflare Access: generated origin-side adapter recipe is available; live
+  provider demo forthcoming.
+- GitHub OIDC: generated workload-identity recipe is available; live provider
+  demo forthcoming.
+
 ## What Init Generates
 
 The setup directory contains:

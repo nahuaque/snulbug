@@ -211,6 +211,10 @@ runs Keycloak, snulbug, and a demo MCP upstream together. It uses generated
 discovery, maps Keycloak scopes to MCP tools, and proves caller OAuth tokens are
 not forwarded upstream.
 
+Other provider flows are generated setup recipes until their live demos are
+validated against dev accounts. See
+[MCP auth interop recipes](docs/mcp-auth-recipes.md) for the current status.
+
 For Codespaces, start the bundled mock MCP server in the Codespace terminal:
 
 ```bash
