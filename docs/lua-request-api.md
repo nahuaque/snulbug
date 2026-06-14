@@ -301,6 +301,58 @@ Available helpers:
 - `auth.require(selector, options)`: return `nil` when `auth.can(selector)` is
   true, otherwise `access.scope_denied(selector, options)`.
 
+Provider-aware helpers read normalized claim shapes from `context.auth.provider`
+so policies do not need to know each provider's raw JWT/header layout:
+
+- Keycloak:
+  - `auth.keycloak_realm_roles()`: return realm roles from
+    `realm_access.roles`.
+  - `auth.keycloak_client_roles(client_id)`: return roles from
+    `resource_access[client_id].roles`.
+  - `auth.keycloak_has_role(role, client_id)`: true when the role is present;
+    omit `client_id` to check realm roles and all client role sets.
+- Cloudflare Access:
+  - `auth.cloudflare_email()`: return the normalized Access email header.
+  - `auth.cloudflare_groups()`: return normalized Access groups.
+  - `auth.cloudflare_has_group(group_or_groups)`: true when any group matches.
+- GitHub Actions OIDC:
+  - `auth.github_repository()`, `auth.github_workflow()`,
+    `auth.github_workflow_ref()`, `auth.github_job_workflow_ref()`,
+    `auth.github_ref()`, and `auth.github_event_name()`: return normalized
+    GitHub Actions claims.
+  - `auth.github_matches(options)`: true when all supplied fields match. It
+    accepts `repository`, `repository_owner`, `workflow`, `workflow_ref`,
+    `job_workflow_ref`, `ref`, `event_name`, `actor`, and `environment`.
+- Entra:
+  - `auth.entra_groups()`: return Entra group IDs from `groups`.
+  - `auth.entra_has_group(group_or_groups)`: true when any group matches.
+  - `auth.entra_app_roles()`: return app roles from `roles`.
+  - `auth.entra_has_app_role(role_or_roles)`: true when any app role matches.
+  - `auth.entra_tenant_id()` and `auth.entra_app_id()`: return `tid` and
+    `appid`/`azp`/`client_id`.
+
+```lua
+local denied = nil
+if not auth.keycloak_has_role("mcp-admin") then
+  denied = access.wrong_group("mcp-admin", {
+    reason_code = "oauth.keycloak_role_required"
+  })
+end
+if denied then
+  return denied
+end
+
+if not auth.github_matches({
+  repository = "acme/widget",
+  ref = "refs/heads/main",
+  event_name = "workflow_dispatch"
+}) then
+  return access.wrong_subject("github-actions-main", {
+    reason_code = "oauth.github_actions_ref_denied"
+  })
+end
+```
+
 `auth.can` uses the same `[mcp.auth.scope_map]` selectors enforced by the
 proxy, so Lua policy and pre-Lua OAuth enforcement stay aligned.
 Use `[mcp.auth.claim_policy]` when tenant, subject, group, client ID, or custom

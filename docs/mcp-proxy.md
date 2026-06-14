@@ -362,6 +362,9 @@ With this enabled, snulbug:
   `auth.can("tools/call:git.status")`
 - exposes identity policy helpers such as `auth.require_subject(...)`,
   `auth.require_tenant(...)`, and `auth.require_group(...)`
+- exposes provider-aware Lua helpers for Keycloak roles, Cloudflare Access
+  email/groups, GitHub Actions OIDC repository/workflow/ref claims, and Entra
+  groups/app roles
 - composes with task-scoped leases, so a tool call can require both an OAuth
   subject/scope and an active snulbug lease
 - records redacted `auth` audit metadata

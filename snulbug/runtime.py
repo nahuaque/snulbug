@@ -845,6 +845,166 @@ return function(source, source_name, instruction_limit)
     return list_contains(auth.groups(), groups)
   end
 
+  local function auth_provider(name)
+    if type(current_auth.provider) == "table" and type(current_auth.provider[name]) == "table" then
+      return current_auth.provider[name]
+    end
+    return {}
+  end
+
+  local function provider_list(provider_name, key)
+    local provider = auth_provider(provider_name)
+    if type(provider[key]) == "table" then
+      return provider[key]
+    end
+    return {}
+  end
+
+  function auth.keycloak_realm_roles()
+    return provider_list("keycloak", "realm_roles")
+  end
+
+  function auth.keycloak_client_roles(client_id)
+    local keycloak = auth_provider("keycloak")
+    local client_roles = keycloak.client_roles
+    if type(client_roles) ~= "table" then
+      return {}
+    end
+    local roles = client_roles[client_id]
+    if type(roles) == "table" then
+      return roles
+    end
+    return {}
+  end
+
+  function auth.keycloak_has_role(role, client_id)
+    if client_id ~= nil then
+      return list_contains(auth.keycloak_client_roles(client_id), role)
+    end
+    if list_contains(auth.keycloak_realm_roles(), role) then
+      return true
+    end
+    local keycloak = auth_provider("keycloak")
+    if type(keycloak.client_roles) == "table" then
+      for _, roles in pairs(keycloak.client_roles) do
+        if list_contains(roles, role) then
+          return true
+        end
+      end
+    end
+    return false
+  end
+
+  function auth.cloudflare_email()
+    return auth_provider("cloudflare_access").email
+  end
+
+  function auth.cloudflare_groups()
+    return provider_list("cloudflare_access", "groups")
+  end
+
+  function auth.cloudflare_has_group(groups)
+    if type(groups) == "table" then
+      for _, group in ipairs(groups) do
+        if list_contains(auth.cloudflare_groups(), group) then
+          return true
+        end
+      end
+      return false
+    end
+    return list_contains(auth.cloudflare_groups(), groups)
+  end
+
+  local function github_actions()
+    return auth_provider("github_actions")
+  end
+
+  function auth.github_repository()
+    return github_actions().repository
+  end
+
+  function auth.github_workflow()
+    return github_actions().workflow
+  end
+
+  function auth.github_workflow_ref()
+    return github_actions().workflow_ref
+  end
+
+  function auth.github_job_workflow_ref()
+    return github_actions().job_workflow_ref
+  end
+
+  function auth.github_ref()
+    return github_actions().ref
+  end
+
+  function auth.github_event_name()
+    return github_actions().event_name
+  end
+
+  function auth.github_matches(options)
+    options = options_table(options)
+    local github = github_actions()
+    local fields = {
+      "repository",
+      "repository_owner",
+      "workflow",
+      "workflow_ref",
+      "job_workflow_ref",
+      "ref",
+      "event_name",
+      "actor",
+      "environment",
+    }
+    for _, field in ipairs(fields) do
+      if options[field] ~= nil and not value_matches(github[field], options[field]) then
+        return false
+      end
+    end
+    return true
+  end
+
+  function auth.entra_groups()
+    return provider_list("entra", "groups")
+  end
+
+  function auth.entra_has_group(groups)
+    if type(groups) == "table" then
+      for _, group in ipairs(groups) do
+        if list_contains(auth.entra_groups(), group) then
+          return true
+        end
+      end
+      return false
+    end
+    return list_contains(auth.entra_groups(), groups)
+  end
+
+  function auth.entra_app_roles()
+    return provider_list("entra", "app_roles")
+  end
+
+  function auth.entra_has_app_role(roles)
+    if type(roles) == "table" then
+      for _, role in ipairs(roles) do
+        if list_contains(auth.entra_app_roles(), role) then
+          return true
+        end
+      end
+      return false
+    end
+    return list_contains(auth.entra_app_roles(), roles)
+  end
+
+  function auth.entra_tenant_id()
+    return auth_provider("entra").tenant_id
+  end
+
+  function auth.entra_app_id()
+    return auth_provider("entra").app_id
+  end
+
   function auth.scopes()
     if type(current_auth.scopes) == "table" then
       return current_auth.scopes

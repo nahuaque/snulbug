@@ -306,6 +306,45 @@ def test_reverse_proxy_cloudflare_access_allows_and_strips_credentials_from_upst
     assert "raw.jwt.value" not in str(record["metadata"]["cloudflare_access"])
 
 
+def test_reverse_proxy_cloudflare_access_provider_helpers_reach_lua(tmp_path):
+    server, seen = start_upstream()
+    policy = write_cloudflare_access_provider_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        cloudflare_access="enforce",
+        cloudflare_access_allowed_domains=("example.com",),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"cf-ray", b"abc123-LHR"),
+                (b"cf-access-jwt-assertion", b"raw.jwt.value"),
+                (b"cf-access-authenticated-user-email", b"Dev@Example.com"),
+                (b"cf-access-authenticated-user-groups", b"platform-dev, docs"),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    record = load_record_log(record_log)[0]
+    context = record["result"]["decision"]["context"]
+    assert sent[0]["status"] == 200
+    assert seen["count"] == 1
+    assert record["result"]["decision"]["reason_code"] == "test.cloudflare_access_provider"
+    assert context["cloudflare_email"] == "dev@example.com"
+    assert context["cloudflare_group_count"] == 2
+    assert record["metadata"]["cloudflare_access"]["groups"] == ["docs", "platform-dev"]
+    assert "raw.jwt.value" not in json.dumps(record)
+
+
 def test_reverse_proxy_oauth_serves_protected_resource_metadata_and_challenges(tmp_path):
     server, seen = start_upstream()
     policy = write_policy(tmp_path, "continue")
@@ -391,6 +430,66 @@ def test_reverse_proxy_oauth_allows_token_adds_lua_context_and_strips_authorizat
     assert audit["auth"]["scopes"] == ["mcp:connect", "mcp:tools"]
     assert token not in json.dumps(record)
     assert token not in json.dumps(audit)
+
+
+def test_reverse_proxy_oauth_provider_claim_helpers(tmp_path):
+    server, seen = start_upstream()
+    policy = write_provider_claim_helpers_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    token = make_oauth_token(
+        secret,
+        scopes=["mcp:connect", "mcp:tools"],
+        extra_claims={
+            "realm_access": {"roles": ["realm-admin"]},
+            "resource_access": {"mcp-client": {"roles": ["writer"]}},
+            "repository": "acme/widget-service",
+            "workflow": "deploy",
+            "ref": "refs/heads/main",
+            "event_name": "workflow_dispatch",
+            "tid": "tenant-a",
+            "groups": ["group-1"],
+            "roles": ["Files.Read"],
+            "appid": "app-123",
+        },
+    )
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        auth_config=oauth_auth_config(jwks_path),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {token}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    record = load_record_log(record_log)[0]
+    context = record["result"]["decision"]["context"]
+    assert sent[0]["status"] == 200
+    assert seen["count"] == 1
+    assert context["keycloak_realm_admin"] is True
+    assert context["keycloak_client_writer"] is True
+    assert context["github_repository"] == "acme/widget-service"
+    assert context["github_ref"] == "refs/heads/main"
+    assert context["github_match"] is True
+    assert context["entra_group"] is True
+    assert context["entra_role"] is True
+    assert context["entra_tenant_id"] == "tenant-a"
+    assert context["entra_app_id"] == "app-123"
+    assert record["metadata"]["auth"]["provider"]["github_actions"]["repository"] == "acme/widget-service"
+    assert record["metadata"]["auth"]["provider"]["keycloak"]["realm_roles"] == ["realm-admin"]
+    assert token not in json.dumps(record)
 
 
 def test_reverse_proxy_oauth_accepts_configured_extra_audience(tmp_path):
@@ -3914,6 +4013,60 @@ def write_oauth_identity_helper_policy(tmp_path):
               auth_is_subject = captured_auth.is_subject("user-1")
             }
           }
+        end
+        """,
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_provider_claim_helpers_policy(tmp_path):
+    path = tmp_path / "provider-claim-helpers-policy.lua"
+    path.write_text(
+        """
+        return function(request, context, state)
+          return decision.allow("test.provider_claim_helpers", {
+            keycloak_realm_admin = auth.keycloak_has_role("realm-admin"),
+            keycloak_client_writer = auth.keycloak_has_role("writer", "mcp-client"),
+            github_repository = auth.github_repository(),
+            github_ref = auth.github_ref(),
+            github_match = auth.github_matches({
+              repository = "acme/widget-service",
+              workflow = "deploy",
+              ref = "refs/heads/main",
+              event_name = "workflow_dispatch"
+            }),
+            entra_group = auth.entra_has_group("group-1"),
+            entra_role = auth.entra_has_app_role("Files.Read"),
+            entra_tenant_id = auth.entra_tenant_id(),
+            entra_app_id = auth.entra_app_id()
+          })
+        end
+        """,
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_cloudflare_access_provider_policy(tmp_path):
+    path = tmp_path / "cloudflare-access-provider-policy.lua"
+    path.write_text(
+        """
+        return function(request, context, state)
+          if auth.cloudflare_email() ~= "dev@example.com" then
+            return decision.reject(403, "wrong cloudflare email", {
+              reason_code = "test.cloudflare_email"
+            })
+          end
+          if not auth.cloudflare_has_group("platform-dev") then
+            return decision.reject(403, "missing cloudflare group", {
+              reason_code = "test.cloudflare_group"
+            })
+          end
+          return decision.allow("test.cloudflare_access_provider", {
+            cloudflare_email = auth.cloudflare_email(),
+            cloudflare_group_count = #auth.cloudflare_groups()
+          })
         end
         """,
         encoding="utf-8",

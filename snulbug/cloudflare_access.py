@@ -50,6 +50,11 @@ def evaluate_cloudflare_access(
     email = _normalize_email(headers.get("cf-access-authenticated-user-email"))
     email_domain = _email_domain(email)
     cf_ray = headers.get("cf-ray")
+    groups = _normalize_group_list(
+        headers.get("cf-access-authenticated-user-groups")
+        or headers.get("cf-access-groups")
+        or headers.get("cf-access-group")
+    )
     service_token_present = bool(headers.get("cf-access-client-id") or headers.get("cf-access-client-secret"))
 
     checks = {
@@ -75,6 +80,7 @@ def evaluate_cloudflare_access(
         "jwt_validated": False,
         "email": email,
         "email_domain": email_domain,
+        "groups": groups,
         "cf_ray": cf_ray,
         "connecting_ip": headers.get("cf-connecting-ip"),
         "ip_country": headers.get("cf-ipcountry"),
@@ -164,6 +170,17 @@ def _normalize_domain_list(values: Sequence[str]) -> tuple[str, ...]:
         if domain:
             domains.append(domain)
     return tuple(domains)
+
+
+def _normalize_group_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+    groups = []
+    for item in value.replace(";", ",").split(","):
+        group = item.strip()
+        if group:
+            groups.append(group)
+    return sorted(set(groups))
 
 
 def _iter_values(values: Sequence[str]) -> Sequence[str]:

@@ -1617,9 +1617,11 @@ class CloudflareAccessMiddleware:
         app: ASGIApp,
         *,
         config: CloudflareAccessConfig | None = None,
+        context_scope_key: str = "lua",
     ) -> None:
         self.app = app
         self.config = config or CloudflareAccessConfig()
+        self.context_scope_key = context_scope_key
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http" or self.config.mode == "off":
@@ -1631,6 +1633,13 @@ class CloudflareAccessMiddleware:
         _set_proxy_metadata(scope, {"cloudflare_access": decision.metadata})
         if decision.allowed:
             child_scope = dict(scope)
+            context = child_scope.get(self.context_scope_key)
+            lua_context = dict(context) if isinstance(context, Mapping) else {}
+            lua_context["auth"] = _merge_lua_auth_context(
+                _mapping(lua_context.get("auth")),
+                _cloudflare_access_auth_context(decision.metadata),
+            )
+            child_scope[self.context_scope_key] = lua_context
             child_scope["headers"] = _strip_cloudflare_access_credentials(scope.get("headers", []))
             await self.app(child_scope, receive, send)
             return
@@ -1761,10 +1770,13 @@ class OAuthResourceMiddleware:
             child_scope = dict(scope)
             context = child_scope.get("lua")
             lua_context = dict(context) if isinstance(context, Mapping) else {}
-            lua_context["auth"] = {
-                **decision.context,
-                "anti_passthrough": auth_metadata["anti_passthrough"],
-            }
+            lua_context["auth"] = _merge_lua_auth_context(
+                _mapping(lua_context.get("auth")),
+                {
+                    **decision.context,
+                    "anti_passthrough": auth_metadata["anti_passthrough"],
+                },
+            )
             child_scope["lua"] = lua_context
             if self.config.strip_authorization_upstream:
                 child_scope["headers"] = _strip_authorization_header(scope.get("headers", []))
@@ -2067,7 +2079,11 @@ def create_proxy_application(
         allowed_domains=cloudflare_access_allowed_domains,
     )
     if cloudflare_access_config.mode != "off":
-        app = CloudflareAccessMiddleware(app, config=cloudflare_access_config)
+        app = CloudflareAccessMiddleware(
+            app,
+            config=cloudflare_access_config,
+            context_scope_key=lua_config.context_scope_key,
+        )
     if record_out is not None or event_dispatcher is not None:
         app = ProxyRecorderMiddleware(
             app,
@@ -2491,6 +2507,39 @@ def _copy_jsonish(value: Any) -> Any:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _merge_lua_auth_context(existing: Mapping[str, Any], incoming: Mapping[str, Any]) -> dict[str, Any]:
+    merged = {**dict(existing), **dict(incoming)}
+    provider = {
+        **dict(_mapping(existing.get("provider"))),
+        **dict(_mapping(incoming.get("provider"))),
+    }
+    if provider:
+        merged["provider"] = provider
+    return _drop_empty(merged)
+
+
+def _cloudflare_access_auth_context(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    provider_context = _drop_empty(
+        {
+            "enabled": metadata.get("enabled"),
+            "mode": metadata.get("mode"),
+            "allowed": metadata.get("allowed"),
+            "reason_code": metadata.get("reason_code"),
+            "email": metadata.get("email"),
+            "email_domain": metadata.get("email_domain"),
+            "groups": metadata.get("groups"),
+            "service_token_present": metadata.get("service_token_present"),
+            "cf_ray": metadata.get("cf_ray"),
+        }
+    )
+    auth_context: dict[str, Any] = {"provider": {"cloudflare_access": provider_context}}
+    if metadata.get("email"):
+        auth_context["email"] = metadata.get("email")
+    if metadata.get("groups"):
+        auth_context["groups"] = metadata.get("groups")
+    return _drop_empty(auth_context)
 
 
 def _state_store(value: str) -> PolicyStateStore | None:

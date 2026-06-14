@@ -740,7 +740,69 @@ def oauth_context(
             "email": claims.get("email"),
             "tenant": claims.get("tid") or claims.get("tenant"),
             "groups": group_values,
+            "provider": _provider_claim_context(claims),
             "scope_map": {scope: list(selectors) for scope, selectors in sorted(config.mapped_scopes.items())},
+        }
+    )
+
+
+def _provider_claim_context(claims: Mapping[str, Any]) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "keycloak": _keycloak_claim_context(claims),
+            "github_actions": _github_actions_claim_context(claims),
+            "entra": _entra_claim_context(claims),
+        }
+    )
+
+
+def _keycloak_claim_context(claims: Mapping[str, Any]) -> dict[str, Any]:
+    realm_access = claims.get("realm_access")
+    realm_access = realm_access if isinstance(realm_access, Mapping) else {}
+    resource_access = claims.get("resource_access")
+    resource_access = resource_access if isinstance(resource_access, Mapping) else {}
+    client_roles: dict[str, list[str]] = {}
+    for client_id, access in resource_access.items():
+        if not isinstance(access, Mapping):
+            continue
+        roles = _sequence_strings(access.get("roles"))
+        if roles:
+            client_roles[str(client_id)] = roles
+    return _drop_empty(
+        {
+            "realm_roles": _sequence_strings(realm_access.get("roles")),
+            "client_roles": client_roles,
+        }
+    )
+
+
+def _github_actions_claim_context(claims: Mapping[str, Any]) -> dict[str, Any]:
+    fields = (
+        "repository",
+        "repository_owner",
+        "repository_id",
+        "workflow",
+        "workflow_ref",
+        "job_workflow_ref",
+        "ref",
+        "ref_type",
+        "event_name",
+        "actor",
+        "environment",
+        "run_id",
+        "run_attempt",
+    )
+    return _drop_empty({field: _first_claim_value(claims.get(field)) for field in fields})
+
+
+def _entra_claim_context(claims: Mapping[str, Any]) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "tenant_id": _first_claim_value(claims.get("tid")),
+            "object_id": _first_claim_value(claims.get("oid")),
+            "app_id": _first_claim_value(claims.get("appid") or claims.get("azp") or claims.get("client_id")),
+            "groups": _sequence_strings(claims.get("groups")),
+            "app_roles": _sequence_strings(claims.get("roles")),
         }
     )
 
@@ -1478,6 +1540,11 @@ def _sequence_strings(value: Any) -> list[str]:
     if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
         return [str(item) for item in value if item not in (None, "")]
     return [str(value)] if value != "" else []
+
+
+def _first_claim_value(value: Any) -> str | None:
+    values = _sequence_strings(value)
+    return values[0] if values else None
 
 
 def _selector_matches(configured: str, requested: str) -> bool:

@@ -580,6 +580,73 @@ def test_auth_and_lease_guards_delegate_to_standard_access_builders():
     assert lease_decision["body"] == "task lease expired"
 
 
+def test_provider_aware_auth_helpers_read_normalized_claims():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return decision.allow("test.provider_claims", {
+            keycloak_realm_admin = auth.keycloak_has_role("realm-admin"),
+            keycloak_client_writer = auth.keycloak_has_role("writer", "mcp-client"),
+            cloudflare_email = auth.cloudflare_email(),
+            cloudflare_platform = auth.cloudflare_has_group("platform-dev"),
+            github_repository = auth.github_repository(),
+            github_ref = auth.github_ref(),
+            github_match = auth.github_matches({
+              repository = "acme/widget",
+              ref = { "refs/heads/main", "refs/tags/v1" },
+              workflow = "deploy"
+            }),
+            entra_group = auth.entra_has_group("group-1"),
+            entra_role = auth.entra_has_app_role("Files.Read")
+          })
+        end
+        """
+    )
+
+    decision = script.decide(
+        {"body": "{}"},
+        {
+            "auth": {
+                "provider": {
+                    "keycloak": {
+                        "realm_roles": ["realm-admin"],
+                        "client_roles": {"mcp-client": ["writer"]},
+                    },
+                    "cloudflare_access": {
+                        "email": "dev@example.com",
+                        "groups": ["platform-dev"],
+                    },
+                    "github_actions": {
+                        "repository": "acme/widget",
+                        "workflow": "deploy",
+                        "ref": "refs/heads/main",
+                    },
+                    "entra": {
+                        "groups": ["group-1"],
+                        "app_roles": ["Files.Read"],
+                    },
+                }
+            }
+        },
+    )
+
+    assert decision == {
+        "action": "continue",
+        "reason_code": "test.provider_claims",
+        "context": {
+            "keycloak_realm_admin": True,
+            "keycloak_client_writer": True,
+            "cloudflare_email": "dev@example.com",
+            "cloudflare_platform": True,
+            "github_repository": "acme/widget",
+            "github_ref": "refs/heads/main",
+            "github_match": True,
+            "entra_group": True,
+            "entra_role": True,
+        },
+    }
+
+
 def test_mcp_allow_tools_carries_confirmation_options():
     script = compile_lua_script(
         """
