@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import http.client
 import json
 import secrets
 import shlex
 import shutil
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import SplitResult, urlsplit
 
 from .config import default_event_sink_configs
 from .gateway_templates import GatewayTemplate, render_gateway_toml
@@ -15,6 +18,7 @@ from .inspection import format_mcp_inspection_report, inspect_mcp_log
 from .leases import create_lease
 from .presets import DEFAULT_ALLOWED_PATHS, DEFAULT_ALLOWED_TOOLS, McpPolicyOptions, generate_mcp_preset
 from .quickstart import create_mcp_quickstart
+from .redaction import SECRET_REPLACEMENT, build_audit_event
 from .scaffolds import (
     GeneratedArtifact,
     GeneratedClient,
@@ -324,7 +328,12 @@ def load_mcp_share(directory: str | Path) -> dict[str, Any]:
     return dict(manifest)
 
 
-def share_status(directory: str | Path) -> dict[str, Any]:
+def share_status(
+    directory: str | Path,
+    *,
+    timeout: float = 1.0,
+    live_checks: bool = True,
+) -> dict[str, Any]:
     """Summarize a generated MCP share session without starting processes."""
 
     share_dir = Path(directory)
@@ -353,6 +362,7 @@ def share_status(directory: str | Path) -> dict[str, Any]:
             "id": lease_id,
             "active": bool(matched.get("active")) if isinstance(matched, Mapping) else False,
             "matched": matched,
+            "leases": leases,
         }
 
     file_status = {
@@ -360,6 +370,15 @@ def share_status(directory: str | Path) -> dict[str, Any]:
         for key, value in files.items()
         if isinstance(value, str) and key != "manifest"
     }
+    session_model = session_model or build_share_session_model(manifest, directory=share_dir)
+    gateway = _share_gateway_status(share_dir, manifest, session_model, timeout=timeout, live_checks=live_checks)
+    upstreams = _share_upstream_statuses(share_dir, manifest, timeout=timeout, live_checks=live_checks)
+    traffic = _share_traffic_summary(share_dir, session_model)
+    recordings = _share_recordings_status(share_dir, session_model)
+    policy = _mapping(session_model.get("policy"))
+    amendments = _share_amendment_status(session_model)
+    tunnel = _share_tunnel_status(manifest, session_model)
+    findings = _share_findings(gateway=gateway, upstreams=upstreams, traffic=traffic, tunnel=tunnel, policy=policy)
     return {
         "ok": True,
         "session": manifest.get("session", {}),
@@ -367,11 +386,64 @@ def share_status(directory: str | Path) -> dict[str, Any]:
         "directory": str(share_dir),
         "client": manifest.get("client", {}),
         "lease": lease_status,
+        "leases": _share_leases_summary(lease_status),
         "files": file_status,
         "commands": manifest.get("commands", {}),
         "session_model": session_model,
         "session_model_path": str(model_path),
+        "gateway": gateway,
+        "upstreams": upstreams,
+        "tunnel_doctor": tunnel,
+        "policy": policy,
+        "amendments": amendments,
+        "traffic": traffic,
+        "recordings": recordings,
+        "findings": findings,
     }
+
+
+def share_report(
+    directory: str | Path,
+    *,
+    output: str | Path | None = None,
+    timeout: float = 1.0,
+    live_checks: bool = True,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Generate a human-readable report for a share session."""
+
+    status = share_status(directory, timeout=timeout, live_checks=live_checks)
+    report = format_share_report(status)
+    output_path = Path(output) if output is not None else None
+    if output_path is not None:
+        if output_path.exists() and not force:
+            raise FileExistsError(f"share report already exists: {output_path}")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(report, encoding="utf-8")
+    return {
+        "ok": status["ok"],
+        "share": str(directory),
+        "path": str(output_path) if output_path is not None else None,
+        "report": report,
+        "status": status,
+    }
+
+
+def format_share_status_report(result: Mapping[str, Any]) -> str:
+    """Render share status as Markdown."""
+
+    lines = _share_report_lines(result, title="# snulbug mcp share status")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def format_share_report(result: Mapping[str, Any]) -> str:
+    """Render a full human-readable share report."""
+
+    lines = _share_report_lines(result, title="# snulbug MCP share report")
+    traffic = _mapping(result.get("traffic"))
+    if traffic.get("inspection_report"):
+        lines.extend(["", "## Evidence Detail", "", str(traffic["inspection_report"]).rstrip()])
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def doctor_mcp_share(
@@ -406,7 +478,22 @@ def doctor_mcp_share(
         headers=parse_tunnel_headers([f"{key}: {value}" for key, value in headers.items()]),
         timeout=timeout,
     )
-    _update_share_manifest(share_dir, state="verified" if result.get("ok") else "doctor_failed")
+    _update_share_manifest(
+        share_dir,
+        state="verified" if result.get("ok") else "doctor_failed",
+        health={
+            "last_checked_at": _now_iso(),
+            "last_summary": result.get("summary"),
+            "tunnel_doctor": {
+                "ok": result.get("ok"),
+                "provider": result.get("provider"),
+                "url": result.get("url"),
+                "local_url": result.get("local_url"),
+                "summary": result.get("summary"),
+                "recommendations": result.get("recommendations", []),
+            },
+        },
+    )
     result["share"] = str(share_dir)
     return result
 
@@ -432,6 +519,473 @@ def share_client_config(
     if output_format in {"json", "claude-desktop", "cursor"}:
         return {"ok": True, "share": str(share_dir), "format": output_format, "config": config}
     raise ValueError("output_format must be one of: json, claude-desktop, cursor, path")
+
+
+def _share_gateway_status(
+    share_dir: Path,
+    manifest: Mapping[str, Any],
+    session_model: Mapping[str, Any],
+    *,
+    timeout: float,
+    live_checks: bool,
+) -> dict[str, Any]:
+    gateway = _mapping(session_model.get("gateway"))
+    url = gateway.get("local_url")
+    result: dict[str, Any] = {
+        "url": url,
+        "checked": bool(live_checks and isinstance(url, str) and url),
+        "reachable": None,
+    }
+    if not result["checked"]:
+        return result
+    client = _mapping(manifest.get("client"))
+    headers = _mapping(client.get("headers"))
+    probe = _probe_mcp_url(str(url), headers=headers, timeout=timeout)
+    result.update(probe)
+    return result
+
+
+def _share_upstream_statuses(
+    share_dir: Path,
+    manifest: Mapping[str, Any],
+    *,
+    timeout: float,
+    live_checks: bool,
+) -> list[dict[str, Any]]:
+    upstreams = _share_upstream_configs(share_dir, manifest)
+    statuses = []
+    for upstream in upstreams:
+        status = dict(upstream)
+        url = status.get("url")
+        if live_checks and isinstance(url, str) and url.startswith(("http://", "https://")):
+            status.update(_probe_mcp_url(url, headers={}, timeout=timeout))
+            status["checked"] = True
+        else:
+            status["checked"] = False
+            status["reachable"] = None
+        statuses.append(status)
+    return statuses
+
+
+def _share_upstream_configs(share_dir: Path, manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
+    files = _mapping(manifest.get("files"))
+    config = files.get("config")
+    if isinstance(config, str) and config:
+        try:
+            from .config import load_mcp_proxy_config
+
+            proxy_config = load_mcp_proxy_config(_resolve_share_path(share_dir, config))
+        except Exception:
+            proxy_config = {}
+        upstreams = proxy_config.get("upstreams") if isinstance(proxy_config, Mapping) else None
+        if isinstance(upstreams, Sequence) and not isinstance(upstreams, str | bytes | bytearray) and upstreams:
+            result = []
+            for upstream in upstreams:
+                if isinstance(upstream, Mapping):
+                    result.append(
+                        {
+                            "name": upstream.get("name"),
+                            "transport": upstream.get("transport", "http"),
+                            "url": upstream.get("url"),
+                            "tool_prefix": upstream.get("tool_prefix"),
+                        }
+                    )
+            return result
+        upstream = proxy_config.get("upstream") if isinstance(proxy_config, Mapping) else None
+        if isinstance(upstream, str) and upstream:
+            return [{"name": "default", "transport": "http", "url": upstream}]
+    session = _mapping(manifest.get("session"))
+    upstream = session.get("upstream")
+    return [{"name": "default", "transport": "http", "url": upstream}] if isinstance(upstream, str) else []
+
+
+def _share_tunnel_status(manifest: Mapping[str, Any], session_model: Mapping[str, Any]) -> dict[str, Any]:
+    tunnel = _mapping(session_model.get("tunnel"))
+    health = _mapping(manifest.get("health"))
+    doctor = _mapping(health.get("tunnel_doctor"))
+    configured = bool(tunnel.get("public_url"))
+    return {
+        "configured": configured,
+        "provider": tunnel.get("provider"),
+        "public_url": tunnel.get("public_url"),
+        "checked": bool(doctor),
+        "last_checked_at": health.get("last_checked_at"),
+        "ok": doctor.get("ok"),
+        "summary": doctor.get("summary"),
+        "recommendations": doctor.get("recommendations", []),
+    }
+
+
+def _share_traffic_summary(share_dir: Path, session_model: Mapping[str, Any]) -> dict[str, Any]:
+    evidence = _mapping(session_model.get("evidence"))
+    audit_path = _resolve_share_path(share_dir, evidence.get("audit_log", "traces/audit.jsonl"))
+    record_path = _resolve_share_path(share_dir, evidence.get("record_log", "traces/session.jsonl"))
+    source_path = audit_path if audit_path.exists() else record_path
+    source_kind = "audit" if source_path == audit_path else "auto"
+    summary: dict[str, Any] = {
+        "source": str(source_path),
+        "source_kind": source_kind,
+        "exists": source_path.exists(),
+        "event_count": 0,
+        "allowed": 0,
+        "blocked": 0,
+        "confirmed": 0,
+        "confirmation_approved": 0,
+        "confirmation_denied": 0,
+        "redacted_events": 0,
+        "response_redacted": 0,
+        "record_redacted": 0,
+        "methods": [],
+        "tools": [],
+        "clients": [],
+        "source_ips": [],
+        "inspection": None,
+        "inspection_report": None,
+    }
+    if not source_path.exists():
+        return summary
+
+    methods: Counter[str] = Counter()
+    tools: Counter[str] = Counter()
+    clients: Counter[str] = Counter()
+    source_ips: Counter[str] = Counter()
+    for event in _load_share_events(source_path):
+        summary["event_count"] += 1
+        decision = _mapping(event.get("decision"))
+        mcp = _mapping(event.get("mcp"))
+        tunnel = _mapping(event.get("tunnel"))
+        metadata = _mapping(event.get("metadata"))
+        response_policy = _mapping(metadata.get("response_policy"))
+        if decision.get("allowed") is False:
+            summary["blocked"] += 1
+        else:
+            summary["allowed"] += 1
+        if event.get("redacted") is True:
+            summary["record_redacted"] += 1
+        if response_policy.get("redacted") is True:
+            summary["response_redacted"] += 1
+        if _event_has_redaction_marker(event):
+            summary["redacted_events"] += 1
+        confirmation = _mapping(decision.get("confirmation"))
+        if confirmation:
+            summary["confirmed"] += 1
+            if confirmation.get("approved") is True:
+                summary["confirmation_approved"] += 1
+            else:
+                summary["confirmation_denied"] += 1
+        _count_if(methods, mcp.get("method"))
+        _count_if(tools, mcp.get("tool") or mcp.get("target"))
+        client = _mapping(mcp.get("client"))
+        client_name = client.get("name")
+        if client_name:
+            _count_if(clients, client_name)
+        _count_if(source_ips, tunnel.get("source_ip"))
+
+    summary["methods"] = _counter_entries(methods)
+    summary["tools"] = _counter_entries(tools)
+    summary["clients"] = _counter_entries(clients)
+    summary["source_ips"] = _counter_entries(source_ips)
+    try:
+        inspection = inspect_mcp_log(source_path, kind=source_kind)
+        summary["inspection"] = inspection
+        summary["inspection_report"] = format_mcp_inspection_report(inspection)
+    except Exception as exc:
+        summary["inspection_error"] = str(exc)
+    return summary
+
+
+def _share_recordings_status(share_dir: Path, session_model: Mapping[str, Any]) -> dict[str, Any]:
+    evidence = _mapping(session_model.get("evidence"))
+    result = {}
+    for name, fallback in (("record_log", "traces/session.jsonl"), ("audit_log", "traces/audit.jsonl")):
+        path = _resolve_share_path(share_dir, evidence.get(name, fallback))
+        result[name] = {
+            "path": str(path),
+            "exists": path.exists(),
+            "bytes": path.stat().st_size if path.exists() else 0,
+        }
+    return result
+
+
+def _share_amendment_status(session_model: Mapping[str, Any]) -> dict[str, Any]:
+    amendments = _mapping(session_model.get("amendments"))
+    candidates = [item for item in _sequence(amendments.get("candidates")) if isinstance(item, Mapping)]
+    return {
+        "last": amendments.get("last"),
+        "candidate_count": len(candidates),
+        "candidates": candidates,
+    }
+
+
+def _share_leases_summary(lease_status: Mapping[str, Any]) -> dict[str, Any]:
+    all_leases = [lease for lease in _sequence(lease_status.get("leases")) if isinstance(lease, Mapping)]
+    return {
+        "file": lease_status.get("file"),
+        "active_count": sum(1 for lease in all_leases if lease.get("active")),
+        "current": lease_status.get("matched"),
+        "leases": all_leases,
+    }
+
+
+def _share_findings(
+    *,
+    gateway: Mapping[str, Any],
+    upstreams: Sequence[Mapping[str, Any]],
+    traffic: Mapping[str, Any],
+    tunnel: Mapping[str, Any],
+    policy: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    if gateway.get("checked") and gateway.get("reachable") is not True:
+        findings.append(
+            {
+                "severity": "warning",
+                "type": "gateway_unreachable",
+                "message": "local gateway is not reachable",
+            }
+        )
+    for upstream in upstreams:
+        if upstream.get("checked") and upstream.get("reachable") is not True:
+            findings.append(
+                {
+                    "severity": "warning",
+                    "type": "upstream_unreachable",
+                    "message": f"upstream {upstream.get('name') or upstream.get('url')} is not reachable",
+                }
+            )
+    if tunnel.get("configured") and tunnel.get("checked") and tunnel.get("ok") is False:
+        findings.append({"severity": "error", "type": "tunnel_doctor_failed", "message": "last tunnel doctor failed"})
+    if traffic.get("blocked", 0):
+        findings.append(
+            {
+                "severity": "warning",
+                "type": "blocked_requests",
+                "message": f"{traffic.get('blocked')} blocked requests observed",
+            }
+        )
+    risky_tools = [item for item in _sequence(traffic.get("tools")) if _risky_tool_name(str(item.get("value", "")))]
+    if risky_tools:
+        findings.append(
+            {
+                "severity": "warning",
+                "type": "risky_tools_observed",
+                "message": "risky tool-like names observed: "
+                + ", ".join(str(item.get("value")) for item in risky_tools[:5]),
+            }
+        )
+    if policy.get("lifecycle_state") not in {None, "active"}:
+        findings.append(
+            {
+                "severity": "info",
+                "type": "policy_not_active",
+                "message": f"policy lifecycle state is {policy.get('lifecycle_state')}",
+            }
+        )
+    inspection = _mapping(traffic.get("inspection"))
+    for finding in _sequence(inspection.get("findings")):
+        if isinstance(finding, Mapping):
+            findings.append(dict(finding))
+    return findings
+
+
+def _share_report_lines(result: Mapping[str, Any], *, title: str) -> list[str]:
+    session = _mapping(result.get("session"))
+    gateway = _mapping(result.get("gateway"))
+    tunnel = _mapping(result.get("tunnel_doctor"))
+    policy = _mapping(result.get("policy"))
+    amendments = _mapping(result.get("amendments"))
+    traffic = _mapping(result.get("traffic"))
+    recordings = _mapping(result.get("recordings"))
+    leases = _mapping(result.get("leases"))
+    lines = [
+        title,
+        "",
+        "## Overview",
+        "",
+        f"- Share: `{result.get('directory')}`",
+        f"- State: `{result.get('state')}`",
+        f"- Provider: `{session.get('provider')}`",
+        f"- Public URL: `{tunnel.get('public_url') or _mapping(result.get('client')).get('url') or '-'}`",
+        f"- Local gateway: `{gateway.get('url') or '-'}`",
+        f"- Gateway reachable: `{_yes_no_unknown(gateway.get('reachable'))}`",
+        "",
+        "## Upstreams",
+        "",
+    ]
+    upstreams = _sequence(result.get("upstreams"))
+    if upstreams:
+        for upstream in upstreams:
+            if isinstance(upstream, Mapping):
+                lines.append(
+                    f"- `{upstream.get('name') or 'upstream'}` {upstream.get('transport') or 'http'} "
+                    f"`{upstream.get('url') or '-'}` reachable=`{_yes_no_unknown(upstream.get('reachable'))}`"
+                )
+    else:
+        lines.append("- None configured")
+    lines.extend(
+        [
+            "",
+            "## Tunnel",
+            "",
+            f"- Configured: `{_yes_no_unknown(tunnel.get('configured'))}`",
+            f"- Last doctor checked: `{tunnel.get('last_checked_at') or '-'}`",
+            f"- Last doctor ok: `{_yes_no_unknown(tunnel.get('ok'))}`",
+            "",
+            "## Policy",
+            "",
+            f"- Bundle: `{policy.get('bundle') or '-'}`",
+            f"- Active policy: `{policy.get('active_policy') or '-'}`",
+            f"- Lifecycle: `{policy.get('lifecycle_state') or 'observed'}`",
+            f"- Signed: `{_yes_no_unknown(policy.get('lifecycle_signed'))}`",
+            "",
+            "## Policy Amendments",
+            "",
+            f"- Last amendment: `{amendments.get('last') or '-'}`",
+            f"- Proposed candidates: `{amendments.get('candidate_count', 0)}`",
+            "",
+            "## Traffic",
+            "",
+            f"- Events: `{traffic.get('event_count', 0)}`",
+            f"- Allowed: `{traffic.get('allowed', 0)}`",
+            f"- Blocked: `{traffic.get('blocked', 0)}`",
+            f"- Confirmed: `{traffic.get('confirmed', 0)}`",
+            f"- Confirmed approved: `{traffic.get('confirmation_approved', 0)}`",
+            f"- Confirmed denied: `{traffic.get('confirmation_denied', 0)}`",
+            f"- Secrets redacted events: `{traffic.get('redacted_events', 0)}`",
+            f"- Response redactions: `{traffic.get('response_redacted', 0)}`",
+            "",
+            "### Tools",
+            "",
+            *_count_lines(traffic.get("tools")),
+            "",
+            "### Clients / Sources",
+            "",
+            *_count_lines(traffic.get("clients")),
+            *_count_lines(traffic.get("source_ips"), label="source ip"),
+            "",
+            "## Leases",
+            "",
+            f"- File: `{leases.get('file') or '-'}`",
+            f"- Active leases: `{leases.get('active_count', 0)}`",
+            "",
+            "## Recordings",
+            "",
+            f"- Replay log: `{_mapping(recordings.get('record_log')).get('path') or '-'}` "
+            f"exists=`{_yes_no_unknown(_mapping(recordings.get('record_log')).get('exists'))}`",
+            f"- Audit log: `{_mapping(recordings.get('audit_log')).get('path') or '-'}` "
+            f"exists=`{_yes_no_unknown(_mapping(recordings.get('audit_log')).get('exists'))}`",
+            "",
+            "## Findings",
+            "",
+        ]
+    )
+    findings = _sequence(result.get("findings"))
+    if findings:
+        for finding in findings:
+            if isinstance(finding, Mapping):
+                message = finding.get("message", finding.get("count", ""))
+                lines.append(f"- `{finding.get('severity', 'info')}` {finding.get('type')}: {message}")
+    else:
+        lines.append("- None")
+    commands = _mapping(result.get("commands"))
+    if commands:
+        lines.extend(["", "## Next Commands", ""])
+        for name in ("run", "doctor", "client", "close", "inspect_audit", "inspect_session"):
+            command = commands.get(name)
+            if isinstance(command, str):
+                lines.append(f"- `{name}`: `{command}`")
+    return lines
+
+
+def _probe_mcp_url(url: str, *, headers: Mapping[str, Any], timeout: float) -> dict[str, Any]:
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return {"reachable": False, "status": None, "error": f"unsupported URL: {url}"}
+    body = json.dumps({"jsonrpc": "2.0", "id": "snulbug-share-status", "method": "tools/list", "params": {}})
+    request_headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "user-agent": "snulbug-share-status",
+        **{str(key): str(value) for key, value in headers.items()},
+    }
+    connection_class = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    connection = connection_class(parsed.hostname, parsed.port, timeout=timeout)
+    try:
+        connection.request("POST", _request_target(parsed), body=body, headers=request_headers)
+        response = connection.getresponse()
+        response.read()
+        return {
+            "reachable": True,
+            "status": int(response.status),
+            "error": None,
+            "mcp_ok": 200 <= int(response.status) < 300,
+        }
+    except Exception as exc:
+        return {"reachable": False, "status": None, "error": str(exc), "mcp_ok": False}
+    finally:
+        connection.close()
+
+
+def _request_target(parsed: SplitResult) -> str:
+    path = parsed.path or "/"
+    return f"{path}?{parsed.query}" if parsed.query else path
+
+
+def _load_share_events(path: Path) -> list[dict[str, Any]]:
+    events = []
+    with path.open("r", encoding="utf-8") as file:
+        for line in file:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            value = json.loads(stripped)
+            if not isinstance(value, Mapping):
+                continue
+            if value.get("type") == "snulbug.request_record":
+                events.append(build_audit_event(value))
+            else:
+                events.append(dict(value))
+    return events
+
+
+def _count_if(counter: Counter[str], value: Any) -> None:
+    if value is not None and value != "":
+        counter[str(value)] += 1
+
+
+def _counter_entries(counter: Counter[str]) -> list[dict[str, Any]]:
+    return [{"value": value, "count": count} for value, count in counter.most_common(10)]
+
+
+def _event_has_redaction_marker(event: Mapping[str, Any]) -> bool:
+    try:
+        return SECRET_REPLACEMENT in json.dumps(event, sort_keys=True, default=str)
+    except TypeError:
+        return False
+
+
+def _count_lines(values: Any, *, label: str = "item") -> list[str]:
+    entries = _sequence(values)
+    if not entries:
+        return ["- None"]
+    lines = []
+    for item in entries:
+        if isinstance(item, Mapping):
+            lines.append(f"- `{item.get('value') or label}`: `{item.get('count', 0)}`")
+    return lines or ["- None"]
+
+
+def _risky_tool_name(value: str) -> bool:
+    normalized = value.lower().replace("-", "_")
+    return any(term in normalized for term in ("shell", "exec", "command", "terminal", "subprocess", "spawn"))
+
+
+def _yes_no_unknown(value: Any) -> str:
+    if value is True:
+        return "yes"
+    if value is False:
+        return "no"
+    return "unknown"
 
 
 def close_mcp_share(
@@ -781,6 +1335,7 @@ def _update_share_manifest(
     state: str | None = None,
     runtime: Mapping[str, Any] | None = None,
     closeout: Mapping[str, Any] | None = None,
+    health: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     manifest = load_mcp_share(share_dir)
     if state is not None:
@@ -790,6 +1345,8 @@ def _update_share_manifest(
         manifest["runtime"] = dict(runtime)
     if closeout is not None:
         manifest["closeout"] = dict(closeout)
+    if health is not None:
+        manifest["health"] = dict(health)
     (share_dir / SHARE_MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     update_share_session_model(share_dir, manifest=manifest)
     return manifest
@@ -827,6 +1384,16 @@ def _update_share_client_url(share_dir: Path, url: str) -> None:
 def _resolve_share_path(share_dir: Path, value: Any) -> Path:
     path = Path(str(value))
     return path if path.is_absolute() else share_dir / path
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _sequence(value: Any) -> list[Any]:
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        return list(value)
+    return []
 
 
 def _now_iso() -> str:

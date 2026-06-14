@@ -63,7 +63,27 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
 
     share_status = share_subparsers.add_parser("status", help="summarize a generated share session")
     share_status.add_argument("directory", type=Path, help="share session directory")
+    share_status.add_argument("--timeout", type=float, default=1.0, help="live check timeout in seconds")
+    share_status.add_argument(
+        "--live-checks",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="probe the local gateway and configured upstreams",
+    )
     add_compact_arg(share_status)
+
+    share_report = share_subparsers.add_parser("report", help="write or print a generated share session report")
+    share_report.add_argument("directory", type=Path, help="share session directory")
+    share_report.add_argument("--output", "--out", type=Path, help="write report to this Markdown path")
+    share_report.add_argument("--timeout", type=float, default=1.0, help="live check timeout in seconds")
+    share_report.add_argument(
+        "--live-checks",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="probe the local gateway and configured upstreams",
+    )
+    add_force_arg(share_report, help="overwrite --output when it exists")
+    add_compact_arg(share_report)
 
     share_doctor = share_subparsers.add_parser("doctor", help="verify a generated share session")
     share_doctor.add_argument("directory", type=Path, help="share session directory")
@@ -114,8 +134,10 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
         close_mcp_share,
         create_mcp_share,
         doctor_mcp_share,
+        format_share_status_report,
         run_mcp_share,
         share_client_config,
+        share_report,
         share_status,
     )
     from ..tunnel import format_tunnel_doctor_report
@@ -263,9 +285,21 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
             return status
 
         if command == "status":
-            result = share_status(args.directory)
+            result = share_status(args.directory, timeout=args.timeout, live_checks=args.live_checks)
             status = 0 if result["ok"] else 1
-            write_json_output(result, compact=args.compact)
+            write_result_output(result, compact=args.compact, formatter=format_share_status_report)
+            return status
+
+        if command == "report":
+            result = share_report(
+                args.directory,
+                output=args.output,
+                timeout=args.timeout,
+                live_checks=args.live_checks,
+                force=args.force,
+            )
+            status = 0 if result["ok"] else 1
+            write_result_output(result, compact=args.compact, formatter=lambda value: value["report"])
             return status
 
         if command == "doctor":

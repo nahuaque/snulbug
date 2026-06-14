@@ -13,6 +13,7 @@ from snulbug import (
     load_share_session_model,
     run_mcp_share,
     share_client_config,
+    share_report,
     share_session_model_path,
     share_status,
 )
@@ -242,7 +243,7 @@ def test_mcp_share_lifecycle_helpers_read_manifest(tmp_path):
         validate=False,
     )
 
-    status = share_status(tmp_path)
+    status = share_status(tmp_path, live_checks=False)
     client = share_client_config(tmp_path)
     run_plan = run_mcp_share(tmp_path, dry_run=True)
 
@@ -251,9 +252,46 @@ def test_mcp_share_lifecycle_helpers_read_manifest(tmp_path):
     assert status["session_model"]["status"]["state"] == "created"
     assert status["session_model_path"] == str(share_session_model_path(tmp_path))
     assert status["lease"]["active"] is True
+    assert status["leases"]["active_count"] == 1
+    assert status["gateway"]["checked"] is False
+    assert status["recordings"]["audit_log"]["exists"] is False
     assert client["config"]["mcpServers"]["snulbug-share"]["headers"]["Authorization"] == "Bearer share-secret"
     assert run_plan is not None
     assert run_plan["commands"]["run"] == f"uv run snulbug mcp share run {tmp_path}"
+
+
+def test_mcp_share_status_and_report_summarize_session_evidence(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    write_share_audit_log(tmp_path)
+
+    status = share_status(tmp_path, live_checks=False)
+    report = share_report(tmp_path, output=tmp_path / "share-report.md", live_checks=False)
+
+    assert status["traffic"]["event_count"] == 3
+    assert status["traffic"]["allowed"] == 2
+    assert status["traffic"]["blocked"] == 1
+    assert status["traffic"]["confirmed"] == 1
+    assert status["traffic"]["confirmation_approved"] == 1
+    assert status["traffic"]["redacted_events"] == 1
+    assert status["traffic"]["response_redacted"] == 1
+    assert status["traffic"]["tools"][0]["value"] == "shell_exec"
+    assert status["recordings"]["audit_log"]["exists"] is True
+    assert any(finding["type"] == "risky_tools_observed" for finding in status["findings"])
+    assert report["ok"] is True
+    assert report["path"] == str(tmp_path / "share-report.md")
+    assert "## Traffic" in report["report"]
+    assert "Confirmed approved" in report["report"]
+    assert "Secrets redacted events" in report["report"]
+    assert "shell_exec" in report["report"]
+    assert "Policy Amendments" in report["report"]
+    assert (tmp_path / "share-report.md").is_file()
 
 
 def test_mcp_share_doctor_url_override_updates_manifest_and_client(tmp_path, monkeypatch):
@@ -283,6 +321,7 @@ def test_mcp_share_doctor_url_override_updates_manifest_and_client(tmp_path, mon
     assert manifest["client"]["url"] == "https://actual.example/mcp"
     assert session_model["status"]["state"] == "verified"
     assert session_model["tunnel"]["public_url"] == "https://actual.example/mcp"
+    assert session_model["health"]["tunnel_doctor"]["ok"] is True
     assert manifest["tunnel"]["public_url"] == "https://actual.example/mcp"
     assert client_config["mcpServers"]["snulbug-share"]["url"] == "https://actual.example/mcp"
 
@@ -301,6 +340,12 @@ def test_mcp_share_lifecycle_cli_status_client_run_and_close(tmp_path, capsys):
     status_output = json.loads(capsys.readouterr().out)
     assert status_code == 0
     assert status_output["state"] == "created"
+    assert status_output["gateway"]["reachable"] is False
+
+    report_code = simulator_main(["mcp", "share", "report", str(tmp_path), "--no-live-checks", "--compact"])
+    report_output = json.loads(capsys.readouterr().out)
+    assert report_code == 0
+    assert "snulbug MCP share report" in report_output["report"]
 
     client_code = simulator_main(["mcp", "share", "client", str(tmp_path), "--compact"])
     client_output = json.loads(capsys.readouterr().out)
@@ -383,3 +428,50 @@ def test_checked_in_container_facade_example_matches_proxy_schema():
     assert "python3" not in remote_dockerfile
     assert "mock_mcp_server.js" in remote_dockerfile
     assert client["mcpServers"]["snulbug-container-facade"]["headers"]["Authorization"] == ("Bearer local-dev-secret")
+
+
+def write_share_audit_log(tmp_path):
+    traces = tmp_path / "traces"
+    traces.mkdir(exist_ok=True)
+    events = [
+        {
+            "type": "snulbug.audit",
+            "version": 1,
+            "time": "2026-06-14T00:00:00+00:00",
+            "request": {"method": "POST", "path": "/mcp", "headers": {}},
+            "mcp": {"method": "tools/list"},
+            "decision": {"action": "continue", "allowed": True, "reason_code": "mcp.allowed"},
+            "response": {"status": 200},
+            "tunnel": {"source_ip": "203.0.113.10"},
+        },
+        {
+            "type": "snulbug.audit",
+            "version": 1,
+            "time": "2026-06-14T00:01:00+00:00",
+            "request": {"method": "POST", "path": "/mcp", "headers": {"authorization": "[REDACTED]"}},
+            "mcp": {"method": "tools/call", "tool": "shell_exec"},
+            "decision": {
+                "action": "continue",
+                "allowed": True,
+                "reason_code": "mcp.policy.tool_rejected",
+                "confirmation": {"approved": True, "mode": "once", "reason_code": "confirm.approved_once"},
+            },
+            "response": {"status": 200},
+            "tunnel": {"source_ip": "203.0.113.10"},
+            "metadata": {"response_policy": {"checked": True, "redacted": True}},
+        },
+        {
+            "type": "snulbug.audit",
+            "version": 1,
+            "time": "2026-06-14T00:02:00+00:00",
+            "request": {"method": "POST", "path": "/mcp", "headers": {}},
+            "mcp": {"method": "tools/call", "tool": "shell_exec"},
+            "decision": {"action": "reject", "allowed": False, "reason_code": "mcp.tool_not_allowed"},
+            "response": {"status": 403},
+            "tunnel": {"source_ip": "198.51.100.20"},
+        },
+    ]
+    (traces / "audit.jsonl").write_text(
+        "".join(json.dumps(event, sort_keys=True) + "\n" for event in events),
+        encoding="utf-8",
+    )

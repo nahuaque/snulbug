@@ -86,7 +86,23 @@ Check state later:
 uv run snulbug mcp share status .snulbug/shares/share-...
 ```
 
-The status output includes the loaded session model and its path.
+Status is the live "what is happening?" command. It summarizes whether the
+gateway is reachable, upstream health, the last public tunnel doctor result
+when one has been recorded, the active policy bundle and lifecycle state,
+recent allowed/blocked/confirmed counts from the share evidence, current leases,
+last recording paths, and high-risk findings.
+
+Generate a share-session report at any point:
+
+```bash
+uv run snulbug mcp share report .snulbug/shares/share-... \
+  --output .snulbug/shares/share-.../share-report.md
+```
+
+The report is human-readable Markdown built from the session model plus audit
+and replay logs. It lists what was exposed, observed clients and source IPs,
+tools observed, allowed/blocked/confirmed counts, redaction and risk findings,
+upstream health, policy state, and exact next commands.
 
 ## Client config
 

@@ -36,6 +36,7 @@ def build_share_session_model(
     runtime = _mapping(manifest.get("runtime"))
     closeout = _mapping(manifest.get("closeout"))
     recipes = _mapping(manifest.get("recipes"))
+    health = _mapping(manifest.get("health"))
 
     policy_bundle = files.get("policy")
     policy_file = files.get("policy_file")
@@ -103,8 +104,9 @@ def build_share_session_model(
             "header_names": sorted(str(key) for key in _mapping(client.get("headers")).keys()),
         },
         "health": {
-            "last_summary": _mapping(manifest.get("health")).get("last_summary"),
-            "last_checked_at": _mapping(manifest.get("health")).get("last_checked_at"),
+            "last_summary": health.get("last_summary"),
+            "last_checked_at": health.get("last_checked_at"),
+            "tunnel_doctor": health.get("tunnel_doctor"),
         },
         "amendments": {
             "last": _mapping(manifest.get("amendments")).get("last"),

@@ -152,7 +152,16 @@ Before sharing the client config, run the share doctor:
 ```bash
 uv run snulbug mcp share doctor .snulbug/shares/share-... \
   --url "${NGROK_URL}/mcp"
+uv run snulbug mcp share status .snulbug/shares/share-...
 uv run snulbug mcp share client .snulbug/shares/share-...
+```
+
+During or after a session, generate a Markdown report from the session model
+and audit evidence:
+
+```bash
+uv run snulbug mcp share report .snulbug/shares/share-... \
+  --output .snulbug/shares/share-.../share-report.md
 ```
 
 For multi-upstream facade setups, inspect the declared fabric before handing it
