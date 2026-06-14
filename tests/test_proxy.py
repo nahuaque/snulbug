@@ -11,6 +11,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs
 
 import jwt
 
@@ -35,7 +36,7 @@ from snulbug import (
     load_record_log,
     sign_upstream_manifest,
 )
-from snulbug.mcp_auth import RemoteJwksCache
+from snulbug.mcp_auth import RemoteIssuerMetadataCache, RemoteJwksCache, TokenIntrospectionCache
 
 
 def audit_event_sinks(path: Path) -> list[dict[str, Any]]:
@@ -437,6 +438,51 @@ def test_reverse_proxy_oauth_fetches_and_caches_remote_jwks(tmp_path):
     ]
 
 
+def test_reverse_proxy_oauth_discovers_issuer_jwks_and_caches_metadata(tmp_path):
+    server, seen = start_upstream()
+    jwks_server = ThreadingHTTPServer(("127.0.0.1", 0), JwksHandler)
+    issuer = f"http://127.0.0.1:{jwks_server.server_port}"
+    secret = "discovered-jwks-secret-at-least-32-bytes"
+    jwks_server.jwks = hs256_jwks(secret)  # type: ignore[attr-defined]
+    jwks_server.request_count = 0  # type: ignore[attr-defined]
+    jwks_server.metadata_count = 0  # type: ignore[attr-defined]
+    jwks_thread = threading.Thread(target=jwks_server.serve_forever, daemon=True)
+    jwks_thread.start()
+    policy = write_oauth_context_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    token = make_oauth_token(secret, scopes=["mcp:connect", "mcp:tools"], extra_claims={"iss": issuer})
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        auth_config=discovered_oauth_auth_config(jwks_server),
+    )
+
+    try:
+        for request_id in (1, 2):
+            sent = run_asgi(
+                app,
+                path="/mcp",
+                headers=[
+                    (b"content-type", b"application/json"),
+                    (b"authorization", f"Bearer {token}".encode("ascii")),
+                ],
+                body=f'{{"jsonrpc":"2.0","id":{request_id},"method":"tools/list"}}'.encode("ascii"),
+            )
+            assert sent[0]["status"] == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+        jwks_server.shutdown()
+        jwks_server.server_close()
+        jwks_thread.join(timeout=2)
+
+    assert seen["count"] == 2
+    assert jwks_server.metadata_count == 1  # type: ignore[attr-defined]
+    assert jwks_server.request_count == 1  # type: ignore[attr-defined]
+    assert load_record_log(record_log)[0]["metadata"]["auth"]["issuer"] == issuer
+
+
 def test_reverse_proxy_oauth_refreshes_remote_jwks_on_key_rotation(tmp_path):
     server, seen = start_upstream()
     jwks_server = ThreadingHTTPServer(("127.0.0.1", 0), JwksHandler)
@@ -491,6 +537,99 @@ def test_reverse_proxy_oauth_refreshes_remote_jwks_on_key_rotation(tmp_path):
     assert seen["count"] == 2
     assert jwks_server.request_count == 2  # type: ignore[attr-defined]
     assert len(load_record_log(record_log)) == 2
+
+
+def test_reverse_proxy_oauth_introspects_and_caches_opaque_tokens(tmp_path):
+    server, seen = start_upstream()
+    introspection_server = ThreadingHTTPServer(("127.0.0.1", 0), IntrospectionHandler)
+    issuer = f"http://127.0.0.1:{introspection_server.server_port}"
+    introspection_server.tokens = {  # type: ignore[attr-defined]
+        "opaque-good": {
+            "active": True,
+            "iss": issuer,
+            "sub": "user-1",
+            "aud": "https://mcp.example.test/mcp",
+            "client_id": "agent-client",
+            "scope": "mcp:connect mcp:tools",
+        }
+    }
+    introspection_server.request_count = 0  # type: ignore[attr-defined]
+    introspection_thread = threading.Thread(target=introspection_server.serve_forever, daemon=True)
+    introspection_thread.start()
+    policy = write_oauth_context_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        auth_config=introspection_oauth_auth_config(introspection_server),
+    )
+
+    try:
+        for request_id in (1, 2):
+            sent = run_asgi(
+                app,
+                path="/mcp",
+                headers=[
+                    (b"content-type", b"application/json"),
+                    (b"authorization", b"Bearer opaque-good"),
+                ],
+                body=f'{{"jsonrpc":"2.0","id":{request_id},"method":"tools/list"}}'.encode("ascii"),
+            )
+            assert sent[0]["status"] == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+        introspection_server.shutdown()
+        introspection_server.server_close()
+        introspection_thread.join(timeout=2)
+
+    records = load_record_log(record_log)
+    assert seen["count"] == 2
+    assert introspection_server.request_count == 1  # type: ignore[attr-defined]
+    assert records[0]["metadata"]["auth"]["subject"] == "user-1"
+    assert records[0]["metadata"]["auth"]["validation_method"] == "introspection"
+    assert records[0]["metadata"]["auth"]["scopes"] == ["mcp:connect", "mcp:tools"]
+    assert "opaque-good" not in json.dumps(records)
+
+
+def test_reverse_proxy_oauth_introspection_rejects_inactive_token_before_upstream(tmp_path):
+    server, seen = start_upstream()
+    introspection_server = ThreadingHTTPServer(("127.0.0.1", 0), IntrospectionHandler)
+    introspection_server.tokens = {"opaque-bad": {"active": False}}  # type: ignore[attr-defined]
+    introspection_server.request_count = 0  # type: ignore[attr-defined]
+    introspection_thread = threading.Thread(target=introspection_server.serve_forever, daemon=True)
+    introspection_thread.start()
+    policy = write_oauth_context_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        auth_config=introspection_oauth_auth_config(introspection_server),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", b"Bearer opaque-bad"),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        introspection_server.shutdown()
+        introspection_server.server_close()
+        introspection_thread.join(timeout=2)
+
+    assert sent[0]["status"] == 401
+    assert seen["count"] == 0
+    assert introspection_server.request_count == 1  # type: ignore[attr-defined]
+    assert "opaque-bad" not in json.dumps(load_record_log(record_log))
 
 
 def test_reverse_proxy_oauth_brokers_single_upstream_credential_without_token_passthrough(tmp_path, monkeypatch):
@@ -2978,6 +3117,39 @@ def remote_oauth_auth_config(server: ThreadingHTTPServer) -> OAuthResourceConfig
     )
 
 
+def discovered_oauth_auth_config(server: ThreadingHTTPServer) -> OAuthResourceConfig:
+    issuer = f"http://127.0.0.1:{server.server_port}"
+    return OAuthResourceConfig(
+        mode="oauth-resource",
+        resource="https://mcp.example.test/mcp",
+        issuer=issuer,
+        authorization_servers=(issuer,),
+        audience="https://mcp.example.test/mcp",
+        required_scopes=("mcp:connect",),
+        jwks_cache_seconds=3600.0,
+        jwks_fetch_timeout=2.0,
+        jwks_cache=RemoteJwksCache(),
+        issuer_metadata_cache=RemoteIssuerMetadataCache(),
+    )
+
+
+def introspection_oauth_auth_config(server: ThreadingHTTPServer) -> OAuthResourceConfig:
+    issuer = f"http://127.0.0.1:{server.server_port}"
+    return OAuthResourceConfig(
+        mode="oauth-resource",
+        resource="https://mcp.example.test/mcp",
+        issuer=issuer,
+        authorization_servers=(issuer,),
+        audience="https://mcp.example.test/mcp",
+        required_scopes=("mcp:connect",),
+        token_validation="introspection",
+        introspection_endpoint=f"{issuer}/introspect",
+        introspection_cache_seconds=3600.0,
+        introspection_fetch_timeout=2.0,
+        introspection_cache=TokenIntrospectionCache(),
+    )
+
+
 def oauth_scope_map() -> dict[str, list[str]]:
     return {
         "mcp:tools.read": ["tools/list", "resources/list"],
@@ -2987,12 +3159,44 @@ def oauth_scope_map() -> dict[str, list[str]]:
 
 class JwksHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
+        if self.path == "/.well-known/oauth-authorization-server":
+            self.server.metadata_count += 1  # type: ignore[attr-defined]
+            issuer = f"http://127.0.0.1:{self.server.server_port}"
+            raw = json.dumps({"issuer": issuer, "jwks_uri": f"{issuer}/jwks"}, sort_keys=True).encode("utf-8")
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
         if self.path != "/jwks":
             self.send_response(404)
             self.end_headers()
             return
         self.server.request_count += 1  # type: ignore[attr-defined]
         raw = json.dumps(self.server.jwks, sort_keys=True).encode("utf-8")  # type: ignore[attr-defined]
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+        return
+
+
+class IntrospectionHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:  # noqa: N802
+        if self.path != "/introspect":
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.server.request_count += 1  # type: ignore[attr-defined]
+        length = int(self.headers.get("content-length") or "0")
+        body = self.rfile.read(length).decode("utf-8")
+        token = parse_qs(body).get("token", [""])[0]
+        payload = self.server.tokens.get(token, {"active": False})  # type: ignore[attr-defined]
+        raw = json.dumps(payload, sort_keys=True).encode("utf-8")
         self.send_response(200)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(raw)))

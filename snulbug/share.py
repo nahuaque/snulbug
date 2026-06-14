@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import SplitResult, urlsplit
+from urllib.parse import SplitResult, urlencode, urlsplit
 
 from .bundle import validate_bundle
 from .config import default_event_sink_configs
@@ -891,6 +891,22 @@ def doctor_mcp_share_auth(
         jwks_url=auth.get("jwks_url") if isinstance(auth.get("jwks_url"), str) else None,
         jwks_cache_seconds=float(auth.get("jwks_cache_seconds") or 300.0),
         jwks_fetch_timeout=float(auth.get("jwks_fetch_timeout") or 5.0),
+        issuer_metadata_url=auth.get("issuer_metadata_url")
+        if isinstance(auth.get("issuer_metadata_url"), str)
+        else None,
+        issuer_discovery=bool(auth.get("issuer_discovery", True)),
+        token_validation=str(auth.get("token_validation") or "jwt"),
+        introspection_endpoint=auth.get("introspection_endpoint")
+        if isinstance(auth.get("introspection_endpoint"), str)
+        else None,
+        introspection_client_id=auth.get("introspection_client_id")
+        if isinstance(auth.get("introspection_client_id"), str)
+        else None,
+        introspection_client_secret_env=auth.get("introspection_client_secret_env")
+        if isinstance(auth.get("introspection_client_secret_env"), str)
+        else None,
+        introspection_cache_seconds=float(auth.get("introspection_cache_seconds") or 30.0),
+        introspection_fetch_timeout=float(auth.get("introspection_fetch_timeout") or 5.0),
         resource_metadata_url=auth.get("resource_metadata_url")
         if isinstance(auth.get("resource_metadata_url"), str)
         else None,
@@ -907,7 +923,12 @@ def doctor_mcp_share_auth(
     _add_auth_url_checks(checks, auth, url, recommendations)
     _add_auth_safety_checks(checks, proxy_config, auth, manifest, recommendations)
 
-    jwks = _inspect_local_jwks(auth.get("jwks_path"), remote_url=auth.get("jwks_url"))
+    jwks = _inspect_local_jwks(
+        auth.get("jwks_path"),
+        remote_url=auth.get("jwks_url"),
+        issuer_discovery=bool(auth.get("issuer_discovery", True) and auth.get("issuer")),
+        token_validation=str(auth.get("token_validation") or "jwt"),
+    )
     _add_share_doctor_check(
         checks,
         "auth.jwks.local",
@@ -1023,6 +1044,12 @@ def doctor_mcp_share_auth(
         issuer_metadata,
         local_jwks_ok=bool(jwks["ok"]),
         configured_jwks_url=auth.get("jwks_url") if isinstance(auth.get("jwks_url"), str) else None,
+        configured_introspection_endpoint=auth.get("introspection_endpoint")
+        if isinstance(auth.get("introspection_endpoint"), str)
+        else None,
+        token_validation=str(auth.get("token_validation") or "jwt"),
+        issuer_discovery=bool(auth.get("issuer_discovery", True) and auth.get("issuer")),
+        token=token,
         headers={},
         timeout=timeout,
         live_checks=live_checks,
@@ -1219,6 +1246,14 @@ def _auth_doctor_summary(auth: Mapping[str, Any]) -> dict[str, Any]:
         "jwks_url": auth.get("jwks_url"),
         "jwks_cache_seconds": auth.get("jwks_cache_seconds"),
         "jwks_fetch_timeout": auth.get("jwks_fetch_timeout"),
+        "issuer_metadata_url": auth.get("issuer_metadata_url"),
+        "issuer_discovery": auth.get("issuer_discovery"),
+        "token_validation": auth.get("token_validation"),
+        "introspection_endpoint": auth.get("introspection_endpoint"),
+        "introspection_client_id": auth.get("introspection_client_id"),
+        "introspection_client_secret_env": auth.get("introspection_client_secret_env"),
+        "introspection_cache_seconds": auth.get("introspection_cache_seconds"),
+        "introspection_fetch_timeout": auth.get("introspection_fetch_timeout"),
         "resource_metadata_url": auth.get("resource_metadata_url"),
         "strip_authorization_upstream": auth.get("strip_authorization_upstream"),
         "scope_map": {
@@ -1380,8 +1415,22 @@ def _unsafe_auth_event_sinks(value: Any) -> list[dict[str, Any]]:
     return unsafe
 
 
-def _inspect_local_jwks(path_value: Any, *, remote_url: Any = None) -> dict[str, Any]:
+def _inspect_local_jwks(
+    path_value: Any,
+    *,
+    remote_url: Any = None,
+    issuer_discovery: bool = False,
+    token_validation: str = "jwt",
+) -> dict[str, Any]:
     if not isinstance(path_value, str | Path):
+        if token_validation == "introspection":
+            return {
+                "ok": False,
+                "status": "skip",
+                "message": "local JWKS is not configured; runtime will use token introspection",
+                "path": None,
+                "key_count": 0,
+            }
         if isinstance(remote_url, str) and remote_url:
             return {
                 "ok": False,
@@ -1389,6 +1438,14 @@ def _inspect_local_jwks(path_value: Any, *, remote_url: Any = None) -> dict[str,
                 "message": "local JWKS is not configured; runtime will use remote JWKS URL",
                 "path": None,
                 "jwks_url": remote_url,
+                "key_count": 0,
+            }
+        if issuer_discovery:
+            return {
+                "ok": False,
+                "status": "skip",
+                "message": "local JWKS is not configured; runtime will discover issuer JWKS",
+                "path": None,
                 "key_count": 0,
             }
         return {"ok": False, "message": "mcp.auth.jwks_path is not configured", "path": None, "key_count": 0}
@@ -1507,6 +1564,11 @@ def _auth_issuer_candidates(auth: Mapping[str, Any]) -> list[str]:
 
 
 def _issuer_metadata_urls(auth: Mapping[str, Any]) -> list[str]:
+    configured = auth.get("issuer_metadata_url")
+    if isinstance(configured, str) and configured:
+        return [configured]
+    if auth.get("issuer_discovery") is False:
+        return []
     urls = []
     for issuer in _auth_issuer_candidates(auth):
         base = issuer.rstrip("/")
@@ -1522,21 +1584,44 @@ def _add_jwks_or_introspection_check(
     *,
     local_jwks_ok: bool,
     configured_jwks_url: str | None,
+    configured_introspection_endpoint: str | None,
+    token_validation: str,
+    issuer_discovery: bool,
+    token: str | None,
     headers: Mapping[str, str],
     timeout: float,
     live_checks: bool,
     live: dict[str, Any],
     recommendations: list[str],
 ) -> None:
+    uses_jwt = token_validation in {"jwt", "jwt_or_introspection", "jwt_and_introspection"}
+    uses_introspection = token_validation in {"introspection", "jwt_or_introspection", "jwt_and_introspection"}
     if not live_checks:
-        if configured_jwks_url:
+        if uses_introspection and configured_introspection_endpoint:
+            _add_share_doctor_check(
+                checks,
+                "auth.jwks_or_introspection",
+                None,
+                "token introspection live check skipped",
+                component="auth",
+                details={
+                    "introspection_endpoint": configured_introspection_endpoint,
+                    "token_validation": token_validation,
+                },
+            )
+            return
+        if configured_jwks_url or issuer_discovery:
             _add_share_doctor_check(
                 checks,
                 "auth.jwks_or_introspection",
                 None,
                 "remote JWKS runtime fetch skipped",
                 component="auth",
-                details={"jwks_url": configured_jwks_url},
+                details={
+                    "jwks_url": configured_jwks_url,
+                    "issuer_discovery": issuer_discovery,
+                    "token_validation": token_validation,
+                },
             )
             return
         _add_share_doctor_check(
@@ -1548,75 +1633,178 @@ def _add_jwks_or_introspection_check(
         )
         return
 
-    if configured_jwks_url:
+    metadata = _mapping(issuer_metadata)
+    jwt_ok = True
+    jwt_message = "JWT validation is not enabled"
+    jwt_details: dict[str, Any] = {}
+    if uses_jwt and configured_jwks_url:
         probe = _fetch_auth_json_document(configured_jwks_url, headers=headers, timeout=timeout)
         live["jwks"] = probe
         jwks_keys = _sequence(_mapping(probe.get("json")).get("keys"))
-        ok = probe.get("ok") is True and bool(jwks_keys)
-        _add_share_doctor_check(
-            checks,
-            "auth.jwks_or_introspection",
-            ok,
+        jwt_ok = probe.get("ok") is True and bool(jwks_keys)
+        jwt_message = (
             f"configured remote JWKS contains {len(jwks_keys)} key(s)"
-            if ok
-            else f"configured remote JWKS is not usable at {configured_jwks_url}: {probe.get('error')}",
-            component="auth",
-            details=_http_probe_details(probe),
+            if jwt_ok
+            else f"configured remote JWKS is not usable at {configured_jwks_url}: {probe.get('error')}"
         )
-        if not ok:
+        jwt_details = _http_probe_details(probe)
+        if not jwt_ok:
             recommendations.append("Fix mcp.auth.jwks_url or configure a local mcp.auth.jwks_path fallback.")
-        return
-
-    metadata = _mapping(issuer_metadata)
-    jwks_uri = metadata.get("jwks_uri")
-    if isinstance(jwks_uri, str) and jwks_uri:
+    elif uses_jwt and isinstance(metadata.get("jwks_uri"), str) and metadata.get("jwks_uri"):
+        jwks_uri = str(metadata["jwks_uri"])
         probe = _fetch_auth_json_document(jwks_uri, headers=headers, timeout=timeout)
         live["jwks"] = probe
         jwks_keys = _sequence(_mapping(probe.get("json")).get("keys"))
-        ok = probe.get("ok") is True and bool(jwks_keys)
-        _add_share_doctor_check(
-            checks,
-            "auth.jwks_or_introspection",
-            ok,
+        jwt_ok = probe.get("ok") is True and bool(jwks_keys)
+        jwt_message = (
             f"issuer JWKS contains {len(jwks_keys)} key(s)"
-            if ok
-            else f"issuer JWKS is not usable at {jwks_uri}: {probe.get('error')}",
-            component="auth",
-            details=_http_probe_details(probe),
+            if jwt_ok
+            else f"issuer JWKS is not usable at {jwks_uri}: {probe.get('error')}"
         )
-        if not ok:
+        jwt_details = _http_probe_details(probe)
+        if not jwt_ok:
             recommendations.append("Fix the issuer jwks_uri or configure a reachable JWKS endpoint.")
-        return
-
-    introspection = metadata.get("introspection_endpoint")
-    if isinstance(introspection, str) and introspection:
-        probe = _fetch_auth_json_document(introspection, headers=headers, timeout=timeout)
-        live["introspection"] = probe
-        status = probe.get("status")
-        ok = isinstance(status, int) and 200 <= status < 500
-        _add_share_doctor_check(
-            checks,
-            "auth.jwks_or_introspection",
-            ok,
-            "issuer introspection endpoint responds"
-            if ok
-            else f"issuer introspection endpoint is not reachable: {probe.get('error')}",
-            component="auth",
-            details=_http_probe_details(probe),
+    elif uses_jwt:
+        jwt_ok = local_jwks_ok
+        jwt_message = (
+            "local JWKS is usable and issuer metadata does not advertise JWKS"
+            if local_jwks_ok
+            else "no usable JWKS is available"
         )
-        return
+        if not jwt_ok:
+            recommendations.append("Publish issuer JWKS metadata or configure mcp.auth.jwks_path with local keys.")
+
+    introspection_ok = True
+    introspection_status: bool | None = True
+    introspection_message = "token introspection is not enabled"
+    introspection_details: dict[str, Any] = {}
+    if uses_introspection:
+        introspection = configured_introspection_endpoint or metadata.get("introspection_endpoint")
+        if not isinstance(introspection, str) or not introspection:
+            introspection_ok = False
+            introspection_status = False
+            introspection_message = "no token introspection endpoint is configured or advertised by issuer metadata"
+            recommendations.append(
+                "Configure mcp.auth.introspection_endpoint or advertise introspection_endpoint in issuer metadata."
+            )
+        elif not token:
+            introspection_status = None
+            introspection_message = "token introspection POST skipped because no token was supplied"
+            introspection_details = {"introspection_endpoint": introspection}
+            recommendations.append("Pass --token with an active OAuth token to fully verify token introspection.")
+        else:
+            probe = _post_auth_introspection(introspection, token=token, headers=headers, timeout=timeout)
+            live["introspection"] = probe
+            payload = _mapping(probe.get("json"))
+            introspection_ok = probe.get("ok") is True and payload.get("active") is True
+            introspection_status = introspection_ok
+            introspection_message = (
+                "token introspection endpoint accepts the supplied token"
+                if introspection_ok
+                else f"token introspection is not usable at {introspection}: {probe.get('error') or 'inactive token'}"
+            )
+            introspection_details = _http_probe_details(probe)
+
+    if introspection_status is None and (not uses_jwt or jwt_ok):
+        combined_status: bool | None = None
+    else:
+        combined_status = jwt_ok and introspection_ok
+    if combined_status is True:
+        if uses_jwt and uses_introspection:
+            message = f"{jwt_message}; {introspection_message}"
+        elif uses_introspection:
+            message = introspection_message
+        else:
+            message = jwt_message
+    elif combined_status is None:
+        message = introspection_message
+    else:
+        message = (
+            "; ".join(
+                item
+                for item in (
+                    jwt_message if uses_jwt and not jwt_ok else None,
+                    introspection_message if uses_introspection and not introspection_ok else None,
+                )
+                if item
+            )
+            or "auth token validation is not usable"
+        )
 
     _add_share_doctor_check(
         checks,
         "auth.jwks_or_introspection",
-        local_jwks_ok,
-        "local JWKS is usable and issuer metadata does not advertise JWKS or introspection"
-        if local_jwks_ok
-        else "no usable JWKS or introspection endpoint is available",
+        combined_status,
+        message,
         component="auth",
+        details={
+            "token_validation": token_validation,
+            "jwks": jwt_details,
+            "introspection": introspection_details,
+        },
     )
-    if not local_jwks_ok:
-        recommendations.append("Publish issuer JWKS metadata or configure mcp.auth.jwks_path with local keys.")
+
+
+def _post_auth_introspection(
+    url: str,
+    *,
+    token: str,
+    headers: Mapping[str, str],
+    timeout: float,
+) -> dict[str, Any]:
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return {"ok": False, "url": url, "status": None, "error": f"unsupported URL: {url}"}
+    request_headers = {
+        "accept": "application/json",
+        "content-type": "application/x-www-form-urlencoded",
+        "user-agent": "snulbug-auth-doctor/0.1",
+        **{str(name): str(value) for name, value in headers.items()},
+    }
+    connection_class = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    connection = connection_class(parsed.hostname, parsed.port, timeout=timeout)
+    try:
+        connection.request(
+            "POST",
+            _request_target(parsed),
+            body=urlencode({"token": token}).encode("utf-8"),
+            headers=request_headers,
+        )
+        response = connection.getresponse()
+        body = response.read(1_048_577)
+        status = int(response.status)
+        content_type = response.headers.get("content-type", "")
+        if len(body) > 1_048_576:
+            return {
+                "ok": False,
+                "url": url,
+                "status": status,
+                "content_type": content_type,
+                "error": "response body exceeds 1 MiB",
+            }
+        text = body.decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(text) if text.strip() else None
+        except json.JSONDecodeError as exc:
+            return {
+                "ok": False,
+                "url": url,
+                "status": status,
+                "content_type": content_type,
+                "error": f"response is not JSON: {exc}",
+            }
+        return {
+            "ok": 200 <= status < 300 and isinstance(payload, Mapping),
+            "url": url,
+            "status": status,
+            "content_type": content_type,
+            "json": dict(payload) if isinstance(payload, Mapping) else payload,
+            "error": None if 200 <= status < 300 else f"HTTP {status}",
+        }
+    except Exception as exc:
+        return {"ok": False, "url": url, "status": None, "error": str(exc)}
+    finally:
+        connection.close()
 
 
 def _add_scope_map_tool_checks(

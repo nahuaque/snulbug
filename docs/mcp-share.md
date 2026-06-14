@@ -157,8 +157,13 @@ settings, scope-to-tool mappings, and Cloudflare Access conflicts. Use
 a generated share directory exists.
 
 Runtime JWT validation can use either a pinned local `jwks_path` or a remote
-`jwks_url` with bounded caching and refresh-on-rotation. The auth doctor probes
-the configured remote JWKS endpoint during live checks.
+`jwks_url` with bounded caching and refresh-on-rotation. If `issuer_discovery`
+is enabled, snulbug can also discover the issuer `jwks_uri` from
+`.well-known/oauth-authorization-server` or `.well-known/openid-configuration`.
+For opaque or revocation-sensitive tokens, set
+`token_validation = "introspection"` and configure or discover an
+`introspection_endpoint`. The auth doctor probes remote JWKS and can POST an
+active token to introspection during live checks.
 
 To exercise the full auth model locally without an external identity provider,
 run the auth lab:

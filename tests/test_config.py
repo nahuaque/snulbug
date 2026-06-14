@@ -140,6 +140,14 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         "jwks_url": "https://issuer.example.com/jwks",
         "jwks_cache_seconds": 120.0,
         "jwks_fetch_timeout": 2.5,
+        "issuer_metadata_url": None,
+        "issuer_discovery": True,
+        "token_validation": "jwt",
+        "introspection_endpoint": None,
+        "introspection_client_id": None,
+        "introspection_client_secret_env": None,
+        "introspection_cache_seconds": 30.0,
+        "introspection_fetch_timeout": 5.0,
         "resource_metadata_url": "https://mcp.example.com/.well-known/oauth-protected-resource",
         "realm": "mcp",
         "leeway_seconds": 30.0,
@@ -215,6 +223,83 @@ def test_load_mcp_proxy_config_accepts_remote_jwks_without_local_file(tmp_path):
     assert result["auth"]["jwks_url"] == "https://issuer.example.com/.well-known/jwks.json"
     assert result["auth"]["jwks_cache_seconds"] == 60.0
     assert result["auth"]["jwks_fetch_timeout"] == 1.5
+
+
+def test_load_mcp_proxy_config_accepts_issuer_discovery_without_jwks_config(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.proxy]
+        policy = "policy.snulbug/policy.lua"
+
+        [mcp.auth]
+        mode = "oauth-resource"
+        resource = "https://mcp.example.com/mcp"
+        issuer = "https://issuer.example.com"
+        audience = "https://mcp.example.com/mcp"
+        required_scopes = ["mcp:connect"]
+        """,
+        encoding="utf-8",
+    )
+
+    result = load_mcp_proxy_config(config)
+
+    assert result["auth"]["jwks_path"] is None
+    assert result["auth"]["jwks_url"] is None
+    assert result["auth"]["issuer_discovery"] is True
+    assert result["auth"]["token_validation"] == "jwt"
+
+
+def test_load_mcp_proxy_config_accepts_introspection_without_jwks_config(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.proxy]
+        policy = "policy.snulbug/policy.lua"
+
+        [mcp.auth]
+        mode = "oauth-resource"
+        resource = "https://mcp.example.com/mcp"
+        issuer = "https://issuer.example.com"
+        audience = "https://mcp.example.com/mcp"
+        required_scopes = ["mcp:connect"]
+        token_validation = "introspection"
+        introspection_endpoint = "https://issuer.example.com/oauth/introspect"
+        introspection_cache_seconds = 10
+        introspection_fetch_timeout = 2
+        """,
+        encoding="utf-8",
+    )
+
+    result = load_mcp_proxy_config(config)
+
+    assert result["auth"]["jwks_path"] is None
+    assert result["auth"]["jwks_url"] is None
+    assert result["auth"]["token_validation"] == "introspection"
+    assert result["auth"]["introspection_endpoint"] == "https://issuer.example.com/oauth/introspect"
+    assert result["auth"]["introspection_cache_seconds"] == 10.0
+    assert result["auth"]["introspection_fetch_timeout"] == 2.0
+
+
+def test_load_mcp_proxy_config_rejects_introspection_without_endpoint_or_discovery(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.proxy]
+        policy = "policy.snulbug/policy.lua"
+
+        [mcp.auth]
+        mode = "oauth-resource"
+        resource = "https://mcp.example.com/mcp"
+        audience = "https://mcp.example.com/mcp"
+        token_validation = "introspection"
+        issuer_discovery = false
+        """,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="introspection_endpoint"):
+        load_mcp_proxy_config(config)
 
 
 def test_event_sink_toml_helper_writes_loadable_sink_blocks(tmp_path):

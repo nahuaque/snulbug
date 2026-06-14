@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import threading
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import SplitResult, urlsplit, urlunsplit
+from urllib.parse import SplitResult, urlencode, urlsplit, urlunsplit
 
 import jwt
 
@@ -27,6 +28,16 @@ class OAuthResourceConfig:
     jwks_cache_seconds: float = 300.0
     jwks_fetch_timeout: float = 5.0
     jwks_cache: Any = None
+    issuer_metadata_url: str | None = None
+    issuer_discovery: bool = True
+    issuer_metadata_cache: Any = None
+    token_validation: str = "jwt"
+    introspection_endpoint: str | None = None
+    introspection_client_id: str | None = None
+    introspection_client_secret_env: str | None = None
+    introspection_cache_seconds: float = 30.0
+    introspection_fetch_timeout: float = 5.0
+    introspection_cache: Any = None
     resource_metadata_url: str | None = None
     realm: str = "mcp"
     leeway_seconds: float = 60.0
@@ -78,11 +89,66 @@ class RemoteJwksCache:
         return jwks
 
 
+class RemoteIssuerMetadataCache:
+    """Small in-process OAuth issuer metadata cache keyed by URL."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._entries: dict[str, dict[str, Any]] = {}
+
+    def get(self, url: str, *, ttl_seconds: float, timeout: float, force_refresh: bool = False) -> dict[str, Any]:
+        now = time.monotonic()
+        with self._lock:
+            entry = self._entries.get(url)
+            if (
+                not force_refresh
+                and entry is not None
+                and float(entry.get("expires_at", 0.0)) > now
+                and isinstance(entry.get("metadata"), Mapping)
+            ):
+                return dict(entry["metadata"])
+
+        metadata = _fetch_remote_issuer_metadata(url, timeout=timeout)
+        expires_at = now + max(0.0, float(ttl_seconds))
+        with self._lock:
+            self._entries[url] = {"metadata": dict(metadata), "expires_at": expires_at, "fetched_at": now}
+        return metadata
+
+
+class TokenIntrospectionCache:
+    """Small in-process token introspection cache keyed by a token digest."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._entries: dict[str, dict[str, Any]] = {}
+
+    def get(self, token: str, *, config: OAuthResourceConfig, force_refresh: bool = False) -> dict[str, Any]:
+        key = _token_cache_key(token)
+        now = time.monotonic()
+        with self._lock:
+            entry = self._entries.get(key)
+            if (
+                not force_refresh
+                and entry is not None
+                and float(entry.get("expires_at", 0.0)) > now
+                and isinstance(entry.get("response"), Mapping)
+            ):
+                return dict(entry["response"])
+
+        response = _fetch_token_introspection(token, config=config)
+        expires_at = _introspection_cache_expiry(response, now=now, ttl_seconds=config.introspection_cache_seconds)
+        with self._lock:
+            self._entries[key] = {"response": dict(response), "expires_at": expires_at, "fetched_at": now}
+        return response
+
+
 class _RemoteJwksRetry(ValueError):
     pass
 
 
 _GLOBAL_REMOTE_JWKS_CACHE = RemoteJwksCache()
+_GLOBAL_ISSUER_METADATA_CACHE = RemoteIssuerMetadataCache()
+_GLOBAL_TOKEN_INTROSPECTION_CACHE = TokenIntrospectionCache()
 
 
 def protected_resource_metadata(config: OAuthResourceConfig) -> dict[str, Any]:
@@ -149,7 +215,7 @@ def evaluate_oauth_request(
     if not token:
         return _reject(config, reason_code="oauth.missing_token", error="invalid_token")
     try:
-        claims = verify_jwt(token, config=config)
+        claims, validation_method = _verify_token_with_method(token, config=config)
     except Exception as exc:
         return _reject(
             config,
@@ -179,6 +245,7 @@ def evaluate_oauth_request(
         )
     if scope_map_decision["enabled"]:
         context["scope_decision"] = scope_map_decision
+    context["validation_method"] = validation_method
     return OAuthDecision(
         allowed=True,
         status=200,
@@ -189,12 +256,18 @@ def evaluate_oauth_request(
                 **context,
                 "allowed": True,
                 "reason_code": "oauth.allowed",
+                "validation_method": validation_method,
                 "scope_map": scope_map_decision if scope_map_decision["enabled"] else None,
                 "scope_match": scope_match,
             }
         ),
         context=context,
     )
+
+
+def verify_token(token: str, *, config: OAuthResourceConfig) -> dict[str, Any]:
+    claims, _validation_method = _verify_token_with_method(token, config=config)
+    return claims
 
 
 def verify_jwt(token: str, *, config: OAuthResourceConfig) -> dict[str, Any]:
@@ -206,6 +279,34 @@ def verify_jwt(token: str, *, config: OAuthResourceConfig) -> dict[str, Any]:
         return _decode_jwt(token, header=header, algorithm=algorithm, config=config, force_refresh=False)
     except _RemoteJwksRetry:
         return _decode_jwt(token, header=header, algorithm=algorithm, config=config, force_refresh=True)
+
+
+def _verify_token_with_method(token: str, *, config: OAuthResourceConfig) -> tuple[dict[str, Any], str]:
+    mode = config.token_validation or "jwt"
+    if mode == "jwt":
+        return verify_jwt(token, config=config), "jwt"
+    if mode == "introspection":
+        return verify_introspection(token, config=config), "introspection"
+    if mode == "jwt_or_introspection":
+        try:
+            return verify_jwt(token, config=config), "jwt"
+        except Exception:
+            return verify_introspection(token, config=config), "introspection"
+    if mode == "jwt_and_introspection":
+        jwt_claims = verify_jwt(token, config=config)
+        introspection_claims = verify_introspection(token, config=config)
+        return _merge_token_claims(jwt_claims, introspection_claims), "jwt_and_introspection"
+    raise ValueError(f"unsupported token validation mode: {mode}")
+
+
+def verify_introspection(token: str, *, config: OAuthResourceConfig) -> dict[str, Any]:
+    cache = (
+        config.introspection_cache
+        if isinstance(config.introspection_cache, TokenIntrospectionCache)
+        else _GLOBAL_TOKEN_INTROSPECTION_CACHE
+    )
+    response = cache.get(token, config=config)
+    return _validate_introspection_response(response, config=config)
 
 
 def _decode_jwt(
@@ -221,7 +322,7 @@ def _decode_jwt(
         jwks,
         kid=header.get("kid"),
         algorithm=algorithm,
-        retryable=bool(config.jwks_url) and not force_refresh,
+        retryable=_uses_remote_jwks(config) and not force_refresh,
     )
     try:
         decoded = jwt.decode(
@@ -237,7 +338,7 @@ def _decode_jwt(
             },
         )
     except jwt.InvalidSignatureError as exc:
-        if config.jwks_url and not force_refresh:
+        if _uses_remote_jwks(config) and not force_refresh:
             raise _RemoteJwksRetry(str(exc)) from exc
         raise ValueError(str(exc)) from exc
     except jwt.PyJWTError as exc:
@@ -423,15 +524,16 @@ def _reject(
 def _load_jwks(config: OAuthResourceConfig, *, force_refresh: bool = False) -> dict[str, Any]:
     if config.jwks_path is not None:
         return _load_local_jwks(config.jwks_path)
-    if config.jwks_url:
+    jwks_url = config.jwks_url or _discover_jwks_url(config, force_refresh=force_refresh)
+    if jwks_url:
         cache = config.jwks_cache if isinstance(config.jwks_cache, RemoteJwksCache) else _GLOBAL_REMOTE_JWKS_CACHE
         return cache.get(
-            config.jwks_url,
+            jwks_url,
             ttl_seconds=config.jwks_cache_seconds,
             timeout=config.jwks_fetch_timeout,
             force_refresh=force_refresh,
         )
-    raise ValueError("JWT verification requires auth.jwks_path or auth.jwks_url")
+    raise ValueError("JWT verification requires auth.jwks_path, auth.jwks_url, or issuer discovery")
 
 
 def _load_local_jwks(path: Path) -> dict[str, Any]:
@@ -441,11 +543,23 @@ def _load_local_jwks(path: Path) -> dict[str, Any]:
 
 
 def _fetch_remote_jwks(url: str, *, timeout: float) -> dict[str, Any]:
+    loaded = _fetch_remote_json(url, timeout=timeout, user_agent="snulbug-jwks-cache/0.1")
+    return _normalize_jwks(loaded)
+
+
+def _fetch_remote_issuer_metadata(url: str, *, timeout: float) -> dict[str, Any]:
+    loaded = _fetch_remote_json(url, timeout=timeout, user_agent="snulbug-issuer-cache/0.1")
+    if not isinstance(loaded, Mapping):
+        raise ValueError("issuer metadata must be a JSON object")
+    return dict(loaded)
+
+
+def _fetch_remote_json(url: str, *, timeout: float, user_agent: str) -> Any:
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise ValueError(f"unsupported JWKS URL: {url}")
+        raise ValueError(f"unsupported remote auth URL: {url}")
     if parsed.scheme == "http" and not _is_localhost(parsed.hostname):
-        raise ValueError("remote JWKS URL must use HTTPS except for localhost")
+        raise ValueError("remote auth URL must use HTTPS except for localhost")
     connection_class = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
     connection = connection_class(parsed.hostname, parsed.port, timeout=timeout)
     try:
@@ -454,22 +568,211 @@ def _fetch_remote_jwks(url: str, *, timeout: float) -> dict[str, Any]:
             _request_target(parsed),
             headers={
                 "accept": "application/json",
-                "user-agent": "snulbug-jwks-cache/0.1",
+                "user-agent": user_agent,
             },
         )
         response = connection.getresponse()
         body = response.read(1_048_577)
         if len(body) > 1_048_576:
-            raise ValueError("remote JWKS response exceeds 1 MiB")
+            raise ValueError("remote auth response exceeds 1 MiB")
         if response.status < 200 or response.status >= 300:
-            raise ValueError(f"remote JWKS fetch failed with HTTP {response.status}")
+            raise ValueError(f"remote auth fetch failed with HTTP {response.status}")
         try:
             loaded = json.loads(body.decode("utf-8"))
         except json.JSONDecodeError as exc:
-            raise ValueError(f"remote JWKS response is not JSON: {exc}") from exc
+            raise ValueError(f"remote auth response is not JSON: {exc}") from exc
     finally:
         connection.close()
-    return _normalize_jwks(loaded)
+    return loaded
+
+
+def _discover_jwks_url(config: OAuthResourceConfig, *, force_refresh: bool = False) -> str | None:
+    metadata = _discover_issuer_metadata(config, force_refresh=force_refresh)
+    jwks_uri = metadata.get("jwks_uri")
+    if isinstance(jwks_uri, str) and jwks_uri:
+        return jwks_uri
+    return None
+
+
+def _discover_introspection_endpoint(config: OAuthResourceConfig) -> str | None:
+    metadata = _discover_issuer_metadata(config, force_refresh=False)
+    endpoint = metadata.get("introspection_endpoint")
+    if isinstance(endpoint, str) and endpoint:
+        return endpoint
+    return None
+
+
+def _discover_issuer_metadata(config: OAuthResourceConfig, *, force_refresh: bool = False) -> dict[str, Any]:
+    if not config.issuer_discovery:
+        return {}
+    urls = _issuer_metadata_urls(config)
+    cache = (
+        config.issuer_metadata_cache
+        if isinstance(config.issuer_metadata_cache, RemoteIssuerMetadataCache)
+        else _GLOBAL_ISSUER_METADATA_CACHE
+    )
+    errors: list[str] = []
+    for url in urls:
+        try:
+            metadata = cache.get(
+                url,
+                ttl_seconds=config.jwks_cache_seconds,
+                timeout=config.jwks_fetch_timeout,
+                force_refresh=force_refresh,
+            )
+        except Exception as exc:
+            errors.append(str(exc))
+            continue
+        metadata_issuer = metadata.get("issuer")
+        if (
+            config.issuer
+            and isinstance(metadata_issuer, str)
+            and metadata_issuer.rstrip("/") != config.issuer.rstrip("/")
+        ):
+            errors.append("issuer metadata issuer does not match configured issuer")
+            continue
+        return metadata
+    if errors:
+        raise ValueError(f"issuer metadata discovery failed: {'; '.join(errors)}")
+    return {}
+
+
+def _issuer_metadata_urls(config: OAuthResourceConfig) -> list[str]:
+    if config.issuer_metadata_url:
+        return [config.issuer_metadata_url]
+    if not config.issuer:
+        return []
+    base = config.issuer.rstrip("/")
+    if not base.startswith(("http://", "https://")):
+        return []
+    return [
+        f"{base}/.well-known/oauth-authorization-server",
+        f"{base}/.well-known/openid-configuration",
+    ]
+
+
+def _uses_remote_jwks(config: OAuthResourceConfig) -> bool:
+    return config.jwks_path is None and (bool(config.jwks_url) or bool(config.issuer_discovery and config.issuer))
+
+
+def _fetch_token_introspection(token: str, *, config: OAuthResourceConfig) -> dict[str, Any]:
+    endpoint = config.introspection_endpoint or _discover_introspection_endpoint(config)
+    if not endpoint:
+        raise ValueError("token introspection requires auth.introspection_endpoint or issuer metadata discovery")
+    parsed = urlsplit(endpoint)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError(f"unsupported token introspection URL: {endpoint}")
+    if parsed.scheme == "http" and not _is_localhost(parsed.hostname):
+        raise ValueError("token introspection URL must use HTTPS except for localhost")
+
+    fields = {"token": token}
+    client_id = config.introspection_client_id
+    client_secret = _introspection_client_secret(config)
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/x-www-form-urlencoded",
+        "user-agent": "snulbug-token-introspection/0.1",
+    }
+    if client_id and client_secret:
+        import base64
+
+        credentials = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
+        headers["authorization"] = f"Basic {credentials}"
+    elif client_id:
+        fields["client_id"] = client_id
+
+    body = urlencode(fields).encode("utf-8")
+    connection_class = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    connection = connection_class(parsed.hostname, parsed.port, timeout=config.introspection_fetch_timeout)
+    try:
+        connection.request("POST", _request_target(parsed), body=body, headers=headers)
+        response = connection.getresponse()
+        raw_body = response.read(1_048_577)
+        if len(raw_body) > 1_048_576:
+            raise ValueError("token introspection response exceeds 1 MiB")
+        if response.status < 200 or response.status >= 300:
+            raise ValueError(f"token introspection failed with HTTP {response.status}")
+        try:
+            loaded = json.loads(raw_body.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"token introspection response is not JSON: {exc}") from exc
+    finally:
+        connection.close()
+    if not isinstance(loaded, Mapping):
+        raise ValueError("token introspection response must be a JSON object")
+    return dict(loaded)
+
+
+def _introspection_client_secret(config: OAuthResourceConfig) -> str | None:
+    if not config.introspection_client_secret_env:
+        return None
+    secret = os.environ.get(config.introspection_client_secret_env)
+    return secret if secret else None
+
+
+def _validate_introspection_response(response: Mapping[str, Any], *, config: OAuthResourceConfig) -> dict[str, Any]:
+    if response.get("active") is not True:
+        raise ValueError("token introspection response is inactive")
+    claims = dict(response)
+    if config.issuer:
+        issuer = claims.get("iss")
+        if isinstance(issuer, str) and issuer.rstrip("/") != config.issuer.rstrip("/"):
+            raise ValueError("token introspection issuer mismatch")
+    if config.audience:
+        audiences = _audiences(claims.get("aud"))
+        if config.audience not in audiences:
+            raise ValueError("token introspection audience mismatch")
+    now = time.time()
+    exp = _numeric_claim(claims.get("exp"))
+    if exp is not None and exp < now - config.leeway_seconds:
+        raise ValueError("token introspection response is expired")
+    nbf = _numeric_claim(claims.get("nbf"))
+    if nbf is not None and nbf > now + config.leeway_seconds:
+        raise ValueError("token introspection response is not yet valid")
+    return claims
+
+
+def _merge_token_claims(jwt_claims: Mapping[str, Any], introspection_claims: Mapping[str, Any]) -> dict[str, Any]:
+    merged = dict(introspection_claims)
+    merged.update(jwt_claims)
+    for field in ("scope", "scp", "scopes", "groups"):
+        if field not in merged and field in introspection_claims:
+            merged[field] = introspection_claims[field]
+    return merged
+
+
+def _token_cache_key(token: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _introspection_cache_expiry(response: Mapping[str, Any], *, now: float, ttl_seconds: float) -> float:
+    expires_at = now + max(0.0, float(ttl_seconds))
+    exp = _numeric_claim(response.get("exp"))
+    if exp is not None:
+        exp_monotonic = now + max(0.0, exp - time.time())
+        expires_at = min(expires_at, exp_monotonic)
+    return expires_at
+
+
+def _numeric_claim(value: Any) -> float | None:
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _audiences(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        return [str(item) for item in value]
+    return []
 
 
 def _normalize_jwks(loaded: Any) -> dict[str, Any]:

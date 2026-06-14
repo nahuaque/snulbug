@@ -289,7 +289,7 @@ Workflow:
 - audit JSONL with MCP-aware fields
 - provider-aware tunnel audit fields for ngrok, Cloudflare, Tailscale, LocalXpose, Pinggy, Holepunch, and generic forwarders
 - optional Cloudflare Access origin-side audit/enforcement
-- optional OAuth protected-resource mode with JWT/JWKS validation and MCP bearer challenges
+- optional OAuth protected-resource mode with JWT/JWKS or token-introspection validation and MCP bearer challenges
 - OAuth scope-to-MCP method/tool mapping for least-privilege public shares
 - composable OAuth + task lease + Lua policy access decisions
 - anti-passthrough credential brokering so caller OAuth tokens stop at snulbug

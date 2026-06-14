@@ -29,6 +29,14 @@ DEFAULT_MCP_AUTH_CONFIG = {
     "jwks_url": None,
     "jwks_cache_seconds": 300.0,
     "jwks_fetch_timeout": 5.0,
+    "issuer_metadata_url": None,
+    "issuer_discovery": True,
+    "token_validation": "jwt",
+    "introspection_endpoint": None,
+    "introspection_client_id": None,
+    "introspection_client_secret_env": None,
+    "introspection_cache_seconds": 30.0,
+    "introspection_fetch_timeout": 5.0,
     "resource_metadata_url": None,
     "realm": "mcp",
     "leeway_seconds": 60.0,
@@ -164,6 +172,14 @@ timeout = 30.0
 # jwks_url = "https://issuer.example/.well-known/jwks.json"
 # jwks_cache_seconds = 300
 # jwks_fetch_timeout = 5
+# issuer_discovery = true
+# issuer_metadata_url = "https://issuer.example/.well-known/oauth-authorization-server"
+# token_validation = "jwt" # jwt, introspection, jwt_or_introspection, or jwt_and_introspection
+# introspection_endpoint = "https://issuer.example/oauth/introspect"
+# introspection_client_id = "snulbug-share"
+# introspection_client_secret_env = "SNULBUG_INTROSPECTION_CLIENT_SECRET"
+# introspection_cache_seconds = 30
+# introspection_fetch_timeout = 5
 # resource_metadata_url = "https://YOUR-TUNNEL.example/.well-known/oauth-protected-resource"
 # realm = "mcp"
 # leeway_seconds = 60.0
@@ -483,7 +499,19 @@ def normalize_mcp_auth_config(config: Mapping[str, Any] | None, *, base_dir: str
         raise ValueError("mcp.auth.mode must be a string")
     if mode not in {"off", "oauth-resource"}:
         raise ValueError("mcp.auth.mode must be 'off' or 'oauth-resource'")
-    for field in ("resource", "issuer", "audience", "jwks_url", "resource_metadata_url", "realm"):
+    for field in (
+        "resource",
+        "issuer",
+        "audience",
+        "jwks_url",
+        "issuer_metadata_url",
+        "token_validation",
+        "introspection_endpoint",
+        "introspection_client_id",
+        "introspection_client_secret_env",
+        "resource_metadata_url",
+        "realm",
+    ):
         value = normalized.get(field)
         if value is not None and not isinstance(value, str):
             raise ValueError(f"mcp.auth.{field} must be a string")
@@ -498,12 +526,26 @@ def normalize_mcp_auth_config(config: Mapping[str, Any] | None, *, base_dir: str
         normalized["jwks_path"] = _resolve_path(Path(base_dir), jwks_path)
     else:
         raise ValueError("mcp.auth.jwks_path must be a string path")
-    for field in ("jwks_cache_seconds", "jwks_fetch_timeout"):
+    if normalized["token_validation"] not in {"jwt", "introspection", "jwt_or_introspection", "jwt_and_introspection"}:
+        raise ValueError(
+            "mcp.auth.token_validation must be 'jwt', 'introspection', 'jwt_or_introspection', or "
+            "'jwt_and_introspection'"
+        )
+    if not isinstance(normalized.get("issuer_discovery"), bool):
+        raise ValueError("mcp.auth.issuer_discovery must be a boolean")
+    for field in (
+        "jwks_cache_seconds",
+        "jwks_fetch_timeout",
+        "introspection_cache_seconds",
+        "introspection_fetch_timeout",
+    ):
         if not isinstance(normalized.get(field), int | float) or float(normalized[field]) < 0:
             raise ValueError(f"mcp.auth.{field} must be a non-negative number")
         normalized[field] = float(normalized[field])
     if normalized["jwks_fetch_timeout"] <= 0:
         raise ValueError("mcp.auth.jwks_fetch_timeout must be positive")
+    if normalized["introspection_fetch_timeout"] <= 0:
+        raise ValueError("mcp.auth.introspection_fetch_timeout must be positive")
     if not isinstance(normalized.get("leeway_seconds"), int | float) or float(normalized["leeway_seconds"]) < 0:
         raise ValueError("mcp.auth.leeway_seconds must be a non-negative number")
     normalized["leeway_seconds"] = float(normalized["leeway_seconds"])
@@ -513,8 +555,20 @@ def normalize_mcp_auth_config(config: Mapping[str, Any] | None, *, base_dir: str
     if normalized["mode"] == "oauth-resource":
         if not normalized.get("resource"):
             raise ValueError("mcp.auth.resource is required when mode is 'oauth-resource'")
-        if not normalized.get("jwks_path") and not normalized.get("jwks_url"):
-            raise ValueError("mcp.auth.jwks_path or mcp.auth.jwks_url is required when mode is 'oauth-resource'")
+        token_validation = normalized["token_validation"]
+        uses_jwt = token_validation in {"jwt", "jwt_or_introspection", "jwt_and_introspection"}
+        uses_introspection = token_validation in {"introspection", "jwt_or_introspection", "jwt_and_introspection"}
+        has_issuer_discovery = bool(normalized.get("issuer_discovery") and normalized.get("issuer"))
+        if uses_jwt and not normalized.get("jwks_path") and not normalized.get("jwks_url") and not has_issuer_discovery:
+            raise ValueError(
+                "mcp.auth.jwks_path, mcp.auth.jwks_url, or mcp.auth.issuer discovery is required "
+                "when JWT validation is enabled"
+            )
+        if uses_introspection and not normalized.get("introspection_endpoint") and not has_issuer_discovery:
+            raise ValueError(
+                "mcp.auth.introspection_endpoint or mcp.auth.issuer discovery is required "
+                "when token introspection is enabled"
+            )
         if not normalized["scopes_supported"]:
             normalized["scopes_supported"] = sorted(
                 {

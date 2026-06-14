@@ -283,9 +283,8 @@ For webhook sinks, when `signing_secret_env` resolves to a secret, snulbug adds:
 
 When exposing a public MCP endpoint to clients that understand MCP
 authorization, snulbug can act as an OAuth protected resource server. The
-authorization server remains external; snulbug validates incoming bearer JWTs
-against a local or remote JWKS, issuer, audience, and required scopes before
-Lua policy or upstream forwarding.
+authorization server remains external; snulbug validates incoming bearer
+tokens before Lua policy or upstream forwarding.
 
 ```toml
 [mcp.auth]
@@ -297,10 +296,18 @@ audience = "https://mcp.example.com/mcp"
 required_scopes = ["mcp:connect"]
 scopes_supported = ["mcp:connect", "mcp:tools.read", "mcp:tool.git.status"]
 jwks_path = "auth/jwks.json"
-# Or use issuer-managed rotation:
+# Or use issuer-managed rotation / discovery:
 # jwks_url = "https://issuer.example.com/.well-known/jwks.json"
+# issuer_discovery = true
+# issuer_metadata_url = "https://issuer.example.com/.well-known/oauth-authorization-server"
 # jwks_cache_seconds = 300
 # jwks_fetch_timeout = 5
+# token_validation = "jwt" # jwt, introspection, jwt_or_introspection, jwt_and_introspection
+# introspection_endpoint = "https://issuer.example.com/oauth/introspect"
+# introspection_client_id = "snulbug-share"
+# introspection_client_secret_env = "SNULBUG_INTROSPECTION_CLIENT_SECRET"
+# introspection_cache_seconds = 30
+# introspection_fetch_timeout = 5
 strip_authorization_upstream = true
 
 [mcp.auth.scope_map]
@@ -314,8 +321,10 @@ With this enabled, snulbug:
 - serves `GET /.well-known/oauth-protected-resource`
 - challenges missing or invalid tokens with `WWW-Authenticate: Bearer ...`
 - rejects insufficient scopes before Lua and upstream calls
-- validates JWT signatures from either `jwks_path` or a cached remote
-  `jwks_url`
+- validates JWT signatures from `jwks_path`, a cached remote `jwks_url`, or a
+  discovered issuer `jwks_uri`
+- optionally validates opaque or revocation-sensitive tokens with OAuth token
+  introspection
 - maps OAuth scopes to MCP methods/tools using `[mcp.auth.scope_map]`
 - exposes sanitized claims to Lua as `context.auth`
 - exposes Lua helpers such as `auth.has_scope("mcp:tool.git.status")` and
@@ -349,15 +358,27 @@ if denied then
 end
 ```
 
-The JWT verifier uses `PyJWT[crypto]`. This mode does not perform dynamic
-client registration, token introspection, or authorization-code flows; use your
-identity provider or tunnel/access layer for those pieces.
+The JWT verifier uses `PyJWT[crypto]`. snulbug is not an authorization server:
+it does not mint tokens, host login, run authorization-code flows, or perform
+dynamic client registration. Use your identity provider or tunnel/access layer
+for those pieces.
 
 Use `jwks_path` when you want a pinned local key file. Use `jwks_url` when the
-issuer owns key rotation. Runtime remote JWKS fetches are cached for
-`jwks_cache_seconds`; if a token arrives with a `kid` missing from the cached
-set, snulbug refreshes the JWKS once and retries validation. Remote JWKS URLs
-must use HTTPS except for localhost development.
+issuer owns key rotation. If neither is set, `issuer_discovery = true` lets
+snulbug read `.well-known/oauth-authorization-server` or
+`.well-known/openid-configuration` from `issuer` and use the advertised
+`jwks_uri`. Runtime remote JWKS fetches are cached for `jwks_cache_seconds`; if
+a token arrives with a `kid` missing from the cached set, snulbug refreshes the
+JWKS once and retries validation. Remote auth URLs must use HTTPS except for
+localhost development.
+
+Set `token_validation = "introspection"` for opaque tokens or when you need
+revocation-sensitive checks. snulbug POSTs to `introspection_endpoint`, or to a
+discovered issuer `introspection_endpoint`, caches active responses by token
+digest for `introspection_cache_seconds`, verifies issuer/audience/time claims
+when present, and never forwards or logs raw caller tokens. `jwt_or_introspection`
+tries JWT first and falls back to introspection; `jwt_and_introspection` requires
+both a valid JWT and an active introspection response.
 
 Before sharing an OAuth-protected public MCP URL, run:
 

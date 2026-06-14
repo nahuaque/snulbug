@@ -41,9 +41,11 @@ can require auth, reject unknown tools, enforce expiring task leases, cap
 request and response sizes, rate limit traffic, validate tool arguments against
 observed schemas, and leave replayable audit evidence.
 
-When OAuth protected-resource mode is enabled, snulbug validates bearer JWT
-signature, issuer, audience, and required scopes before Lua policy runs. It is
-not an authorization server and does not mint tokens. When
+When OAuth protected-resource mode is enabled, snulbug validates bearer tokens
+before Lua policy runs. It can verify JWT signature, issuer, audience, and
+required scopes, or call an OAuth token introspection endpoint for opaque or
+revocation-sensitive tokens. It is not an authorization server and does not mint
+tokens. When
 `[mcp.auth.scope_map]` is configured, snulbug also rejects MCP methods/tools
 whose selector is not covered by the token's scopes.
 
@@ -64,16 +66,18 @@ proxy behavior strips the caller `Authorization` header before forwarding.
 Use `mcp.proxy.upstream_credential` or per-facade-upstream `auth` references to
 inject credentials intended for each upstream resource.
 
-JWT signature validation supports both pinned local JWKS files and remote JWKS
-URLs. Remote JWKS responses are cached for a configured TTL and refreshed once
-when a token references a key id not present in cache, so issuer key rotation
-does not require restarting the gateway. Use HTTPS remote JWKS URLs except for
-localhost development.
+JWT signature validation supports pinned local JWKS files, remote JWKS URLs,
+and issuer metadata discovery through `.well-known/oauth-authorization-server`
+or `.well-known/openid-configuration`. Remote JWKS responses are cached for a
+configured TTL and refreshed once when a token references a key id not present
+in cache, so issuer key rotation does not require restarting the gateway. Token
+introspection responses are cached by token digest for a short TTL. Use HTTPS
+remote auth URLs except for localhost development.
 
 Run `snulbug mcp share auth doctor` for OAuth shares. It checks discovery
-metadata, issuer/JWKS reachability, public URL and audience alignment, raw-token
-logging safeguards, Cloudflare Access conflicts, and whether scope maps refer to
-actual discovered MCP tools.
+metadata, issuer/JWKS/introspection reachability, public URL and audience
+alignment, raw-token logging safeguards, Cloudflare Access conflicts, and
+whether scope maps refer to actual discovered MCP tools.
 
 Run `uv run snulbug mcp share auth lab` to inspect the composed auth path in a
 self-contained demo. It proves one allowed call and two denied calls across

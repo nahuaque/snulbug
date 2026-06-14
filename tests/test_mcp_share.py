@@ -4,6 +4,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs
 
 import pytest
 
@@ -727,6 +728,92 @@ jwks_fetch_timeout = 1
     assert result["auth"]["jwks_cache_seconds"] == 30.0
 
 
+def test_mcp_share_auth_doctor_discovers_issuer_jwks_without_jwks_config(tmp_path):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), OAuthMcpHandler)
+    origin = f"http://127.0.0.1:{server.server_port}"
+    server.resource = f"{origin}/mcp"  # type: ignore[attr-defined]
+    server.issuer = origin  # type: ignore[attr-defined]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    config = tmp_path / "snulbug.toml"
+    try:
+        config.write_text(
+            f"""
+[mcp.proxy]
+upstream = "http://127.0.0.1:9000/mcp"
+tunnel_public_url = {json.dumps(server.resource)}
+
+[mcp.auth]
+mode = "oauth-resource"
+resource = {json.dumps(server.resource)}
+issuer = {json.dumps(server.issuer)}
+authorization_servers = [{json.dumps(server.issuer)}]
+audience = {json.dumps(server.resource)}
+required_scopes = ["mcp:connect"]
+
+[mcp.auth.scope_map]
+"mcp:tools.read" = ["tools/list"]
+""".lstrip(),
+            encoding="utf-8",
+        )
+        result = doctor_mcp_share_auth(config=config, public_url=server.resource, token="demo-token")  # type: ignore[attr-defined]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    checks = {check["id"]: check for check in result["checks"]}
+    assert result["ok"] is True
+    assert checks["auth.jwks.local"]["status"] == "skip"
+    assert checks["auth.jwks_or_introspection"]["status"] == "pass"
+    assert result["auth"]["issuer_discovery"] is True
+    assert result["auth"]["jwks_url"] is None
+
+
+def test_mcp_share_auth_doctor_checks_discovered_introspection_endpoint(tmp_path):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), OAuthMcpHandler)
+    origin = f"http://127.0.0.1:{server.server_port}"
+    server.resource = f"{origin}/mcp"  # type: ignore[attr-defined]
+    server.issuer = origin  # type: ignore[attr-defined]
+    server.introspection_tokens = {"demo-token": {"active": True}}  # type: ignore[attr-defined]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    config = tmp_path / "snulbug.toml"
+    try:
+        config.write_text(
+            f"""
+[mcp.proxy]
+upstream = "http://127.0.0.1:9000/mcp"
+tunnel_public_url = {json.dumps(server.resource)}
+
+[mcp.auth]
+mode = "oauth-resource"
+resource = {json.dumps(server.resource)}
+issuer = {json.dumps(server.issuer)}
+authorization_servers = [{json.dumps(server.issuer)}]
+audience = {json.dumps(server.resource)}
+required_scopes = ["mcp:connect"]
+token_validation = "introspection"
+
+[mcp.auth.scope_map]
+"mcp:tools.read" = ["tools/list"]
+""".lstrip(),
+            encoding="utf-8",
+        )
+        result = doctor_mcp_share_auth(config=config, public_url=server.resource, token="demo-token")  # type: ignore[attr-defined]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    checks = {check["id"]: check for check in result["checks"]}
+    assert result["ok"] is True
+    assert checks["auth.jwks.local"]["status"] == "skip"
+    assert checks["auth.jwks_or_introspection"]["status"] == "pass"
+    assert result["auth"]["token_validation"] == "introspection"
+    assert result["live"]["introspection"]["json"]["active"] is True
+
+
 def test_mcp_share_auth_doctor_cli_accepts_config_without_share_directory(tmp_path, capsys):
     resource = "https://mcp.example.test/mcp"
     config = write_oauth_share_config(tmp_path, resource=resource, issuer="https://issuer.example.test")
@@ -924,7 +1011,13 @@ class OAuthMcpHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/.well-known/oauth-authorization-server":
             issuer = self.server.issuer  # type: ignore[attr-defined]
-            self._write_json({"issuer": issuer, "jwks_uri": f"{issuer}/jwks"})
+            self._write_json(
+                {
+                    "issuer": issuer,
+                    "jwks_uri": f"{issuer}/jwks",
+                    "introspection_endpoint": f"{issuer}/introspect",
+                }
+            )
             return
         if self.path == "/jwks":
             self._write_json({"keys": [{"kty": "RSA", "kid": "demo", "n": "AQAB", "e": "AQAB"}]})
@@ -935,6 +1028,11 @@ class OAuthMcpHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("content-length") or "0")
         body = self.rfile.read(length)
+        if self.path == "/introspect":
+            token = parse_qs(body.decode("utf-8")).get("token", [""])[0]
+            payload = getattr(self.server, "introspection_tokens", {}).get(token, {"active": False})
+            self._write_json(payload)
+            return
         request = json.loads(body.decode("utf-8")) if body else {}
         if self.path == "/mcp" and request.get("method") == "tools/list":
             self._write_json(
