@@ -20,7 +20,7 @@ fixtures.
 Capture live replay and audit logs through the proxy:
 
 ```bash
-uv run snulbug mcp proxy --config snulbug.toml --decision-console
+uv run snulbug mcp proxy --config snulbug.toml
 ```
 
 Inspect the session before changing policy:

@@ -115,15 +115,24 @@ snulbug mcp share doctor .snulbug/shares/share-... \
 See [MCP share sessions](mcp-share.md) for Cloudflare Access, Tailscale Funnel,
 LocalXpose, Pinggy, and Holepunch peer bridge variants.
 
-`--record-out` writes replayable request records for traffic that passes through
-the proxy. `--audit-out` writes redacted audit events. Rejected/challenged
-requests are recorded too, not only requests forwarded upstream.
+`record_out` writes replayable request records for traffic that passes through
+the proxy. `[[mcp.events.sinks]]` writes operational outputs such as redacted
+audit events, live console decisions, webhook alerts, and fabric event logs.
+Rejected/challenged requests are recorded too, not only requests forwarded
+upstream.
 
-Print live policy decisions while the proxy is running:
+Add a console sink to print live policy decisions while the proxy is running:
+
+```toml
+[[mcp.events.sinks]]
+type = "console"
+format = "text" # or "json"
+```
+
+Then run:
 
 ```bash
-snulbug mcp proxy --config snulbug.toml --decision-console
-snulbug mcp proxy --config snulbug.toml --decision-console --decision-console-format json
+snulbug mcp proxy --config snulbug.toml
 ```
 
 The text console is optimized for watching local tunnel traffic. The JSON format
@@ -185,10 +194,7 @@ port = 8080
 state = "memory"
 trace = true
 record_out = "traces/session.jsonl"
-audit_out = "traces/audit.jsonl"
 redact_records = true
-decision_console = false
-decision_console_format = "text"
 confirm = false
 max_body_bytes = 65536
 response_max_bytes = 262144
@@ -210,6 +216,14 @@ cloudflare_access_require_cf_ray = true
 cloudflare_access_allowed_emails = []
 cloudflare_access_allowed_domains = []
 timeout = 30.0
+
+[[mcp.events.sinks]]
+type = "audit_jsonl"
+path = "traces/audit.jsonl"
+
+[[mcp.events.sinks]]
+type = "console"
+format = "text"
 ```
 
 `tunnel_provider` can be `auto`, `generic`, `ngrok`, `cloudflare`, `tailscale`,
@@ -219,14 +233,23 @@ when you want audit logs to record the externally shared MCP URL or client-side
 peer bridge URL even if the request reaches snulbug through a local reverse
 proxy.
 
-## Webhook Event Sinks
+## Event Sinks
 
-Use `[[mcp.webhooks]]` to send redacted, structured events to local dashboards,
-chatops, SIEM tools, or CI-style review workflows. Delivery is fail-open and
-asynchronous: webhook errors do not block MCP requests.
+Use `[[mcp.events.sinks]]` for operational event outputs. Replay records still
+use `record_out`; event sinks cover audit JSONL, live console output, webhook
+alerts, and fabric control-plane JSONL.
 
 ```toml
-[[mcp.webhooks]]
+[[mcp.events.sinks]]
+type = "audit_jsonl"
+path = "traces/audit.jsonl"
+
+[[mcp.events.sinks]]
+type = "console"
+format = "text"
+
+[[mcp.events.sinks]]
+type = "webhook"
 name = "security-alerts"
 url_env = "SNULBUG_SECURITY_WEBHOOK_URL"
 events = [
@@ -244,11 +267,12 @@ signing_secret_env = "SNULBUG_WEBHOOK_SECRET"
 
 Event names can match the raw event `type`, derived MCP names such as
 `mcp.decision.blocked` or `mcp.response.redacted`, Lua `reason_code` values, or
-fabric control-plane event types. `body_mode = "metadata_only"` drops request
-headers from audit payloads before delivery. Keep `redaction = "strict"` for
-normal local development.
+fabric control-plane event types. Webhook delivery is fail-open and
+asynchronous, so webhook errors do not block MCP requests. `body_mode =
+"metadata_only"` drops request headers from audit payloads before delivery.
+Keep `redaction = "strict"` for normal local development.
 
-When `signing_secret_env` resolves to a secret, snulbug adds:
+For webhook sinks, when `signing_secret_env` resolves to a secret, snulbug adds:
 
 - `x-snulbug-signature-timestamp`
 - `x-snulbug-signature: sha256=<hmac>`
@@ -457,13 +481,19 @@ policy = "policy.snulbug/policy.lua"
 host = "127.0.0.1"
 port = 8080
 record_out = "traces/session.jsonl"
-audit_out = "traces/audit.jsonl"
-decision_console = true
 
 [[mcp.proxy.upstreams]]
 name = "files"
 url = "http://127.0.0.1:9001/mcp"
 default = true
+
+[[mcp.events.sinks]]
+type = "audit_jsonl"
+path = "traces/audit.jsonl"
+
+[[mcp.events.sinks]]
+type = "console"
+format = "text"
 
 [[mcp.proxy.upstreams]]
 name = "git"

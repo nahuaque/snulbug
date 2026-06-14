@@ -11,6 +11,7 @@ from snulbug import (
     EVENT_POLICY_CHANGED,
     EVENT_ROUTE_CHANGED,
     EVENT_UPSTREAM_UNHEALTHY,
+    EventDispatcher,
     FabricControllerStatusServer,
     MemoryFabricRuntimeStateStore,
     inspect_bundle_lifecycle,
@@ -27,7 +28,7 @@ from snulbug import (
 from snulbug.simulator import main as simulator_main
 
 
-class CaptureWebhookDispatcher:
+class CaptureEventSink:
     def __init__(self):
         self.events = []
 
@@ -55,21 +56,21 @@ def test_fabric_controller_writes_state_and_change_event(tmp_path):
     assert snapshot["control_events"][0]["schema"] == "snulbug.control-plane-event.v1"
 
 
-def test_fabric_controller_emits_webhook_event(tmp_path):
+def test_fabric_controller_emits_event_dispatcher_event(tmp_path):
     config = write_controller_config(tmp_path)
-    dispatcher = CaptureWebhookDispatcher()
+    sink = CaptureEventSink()
 
     result = reconcile_fabric_controller(
         config,
         state_path=tmp_path / ".snulbug/fabric-state.json",
         event_log=None,
-        webhook_dispatcher=dispatcher,
+        event_dispatcher=EventDispatcher([sink]),
     )
 
     assert result["ok"] is True
-    assert len(dispatcher.events) == 1
-    assert dispatcher.events[0]["type"] == "snulbug.fabric.reconcile"
-    assert EVENT_ROUTE_CHANGED in dispatcher.events[0]["event_types"]
+    assert len(sink.events) == 1
+    assert sink.events[0]["type"] == "snulbug.fabric.reconcile"
+    assert EVENT_ROUTE_CHANGED in sink.events[0]["event_types"]
 
 
 def test_fabric_controller_detects_discovered_upstream_changes(tmp_path):
@@ -905,7 +906,10 @@ def write_fabric_run_config(tmp_path: Path) -> Path:
         port = 8181
         policy = "policy.snulbug/policy.lua"
         record_out = "traces/session.jsonl"
-        audit_out = "traces/audit.jsonl"
+
+        [[mcp.events.sinks]]
+        type = "audit_jsonl"
+        path = "traces/audit.jsonl"
 
         [[mcp.proxy.upstreams]]
         name = "files"

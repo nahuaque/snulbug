@@ -440,7 +440,6 @@ def run_mcp_share(
     directory: str | Path,
     *,
     dry_run: bool = False,
-    decision_console: bool | None = None,
 ) -> dict[str, Any] | None:
     """Run the proxy for a generated MCP share session."""
 
@@ -464,10 +463,7 @@ def run_mcp_share(
     from .proxy import run_proxy
 
     config_path = _resolve_share_path(share_dir, config)
-    overrides = {}
-    if decision_console is not None:
-        overrides["decision_console"] = decision_console
-    proxy_config = merge_mcp_proxy_config(load_mcp_proxy_config(config_path), overrides)
+    proxy_config = merge_mcp_proxy_config(load_mcp_proxy_config(config_path), {})
     fabric_config = load_mcp_fabric_config(config_path)
     fabric_config["proxy"] = proxy_config
     _update_share_manifest(
@@ -476,7 +472,6 @@ def run_mcp_share(
         runtime={
             "started_at": _now_iso(),
             "config": str(config_path),
-            "decision_console": proxy_config["decision_console"],
         },
     )
     _run_proxy_config(
@@ -546,7 +541,7 @@ def _command_plan(
     return {
         "export_token": f"export {DEFAULT_SHARE_TOKEN_ENV}={shlex.quote(token)}",
         "run": f"uv run snulbug mcp share run {shlex.quote(str(share_dir))}",
-        "proxy": f"uv run snulbug mcp proxy --config {shlex.quote(str(config))} --decision-console",
+        "proxy": f"uv run snulbug mcp proxy --config {shlex.quote(str(config))}",
         "provider": [
             f"(cd {shlex.quote(str(tunnel_dir))} && {str(command['command'])})" for command in provider_commands
         ],
@@ -808,10 +803,7 @@ def _run_proxy_config(
         max_body_bytes=proxy_config["max_body_bytes"],
         timeout=proxy_config["timeout"],
         record_out=proxy_config["record_out"],
-        audit_out=proxy_config["audit_out"],
         redact_records=proxy_config["redact_records"],
-        decision_console=proxy_config["decision_console"],
-        decision_console_format=proxy_config["decision_console_format"],
         confirm=proxy_config["confirm"],
         response_max_bytes=proxy_config["response_max_bytes"],
         response_redact_secrets=proxy_config["response_redact_secrets"],
@@ -836,7 +828,7 @@ def _run_proxy_config(
         cloudflare_access_allowed_emails=proxy_config["cloudflare_access_allowed_emails"],
         cloudflare_access_allowed_domains=proxy_config["cloudflare_access_allowed_domains"],
         topology_audit=topology_audit,
-        webhooks=proxy_config["webhooks"],
+        event_sinks=proxy_config["event_sinks"],
     )
 
 
@@ -1002,10 +994,7 @@ def _container_facade_config(
         f"state = {_toml_value(state)}",
         "trace = true",
         'record_out = "../traces/container-session.jsonl"',
-        'audit_out = "../traces/container-audit.jsonl"',
         "redact_records = true",
-        "decision_console = true",
-        'decision_console_format = "text"',
         "confirm = false",
         "max_body_bytes = 65536",
         "response_max_bytes = 262144",
@@ -1041,6 +1030,14 @@ def _container_facade_config(
         "bridge_private = true",
         "bridge_ready_timeout = 15.0",
         'tool_prefix = "remote."',
+        "",
+        "[[mcp.events.sinks]]",
+        'type = "audit_jsonl"',
+        'path = "../traces/container-audit.jsonl"',
+        "",
+        "[[mcp.events.sinks]]",
+        'type = "console"',
+        'format = "text"',
     ]
     return "\n".join(lines) + "\n"
 
@@ -1062,10 +1059,7 @@ def _container_local_config(
         f"state = {_toml_value(state)}",
         "trace = true",
         'record_out = "../traces/container-session.jsonl"',
-        'audit_out = "../traces/container-audit.jsonl"',
         "redact_records = true",
-        "decision_console = true",
-        'decision_console_format = "text"',
         "confirm = false",
         "max_body_bytes = 65536",
         "response_max_bytes = 262144",
@@ -1089,6 +1083,14 @@ def _container_local_config(
         'url = "http://local-mcp:9000/mcp"',
         'tool_prefix = "local."',
         "default = true",
+        "",
+        "[[mcp.events.sinks]]",
+        'type = "audit_jsonl"',
+        'path = "../traces/container-audit.jsonl"',
+        "",
+        "[[mcp.events.sinks]]",
+        'type = "console"',
+        'format = "text"',
     ]
     return "\n".join(lines) + "\n"
 
@@ -1114,7 +1116,6 @@ services:
       - proxy
       - --config
       - /share/containers/snulbug.local.toml
-      - --decision-console
 
   local-mcp:
     image: python:3.13-slim

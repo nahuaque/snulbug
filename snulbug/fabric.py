@@ -426,11 +426,13 @@ def doctor_fabric(
     )
     _add_check(
         checks,
-        "logs.audit_out_configured",
-        bool(proxy.get("audit_out")),
-        "audit_out is configured" if proxy.get("audit_out") else "audit_out is not configured",
+        "logs.audit_event_sink_configured",
+        _has_event_sink(proxy, "audit_jsonl"),
+        "audit_jsonl event sink is configured"
+        if _has_event_sink(proxy, "audit_jsonl")
+        else "audit_jsonl event sink is not configured",
         severity="warning",
-        details={"audit_out": str(proxy.get("audit_out")) if proxy.get("audit_out") else None},
+        details={"event_sinks": _event_sink_status(proxy, "audit_jsonl")},
     )
 
     for upstream in upstreams:
@@ -1772,12 +1774,22 @@ def _render_learned_fabric_toml(model: _LearnedFabric) -> str:
         _toml_kv("host", host),
         _toml_kv("port", port),
         _toml_kv("record_out", "traces/session.jsonl"),
-        _toml_kv("audit_out", "traces/audit.jsonl"),
-        _toml_kv("decision_console", True),
     ]
     for upstream in model._sorted_upstreams():
         lines.extend(["", "[[mcp.proxy.upstreams]]"])
         lines.extend(_upstream_toml(upstream))
+    lines.extend(
+        [
+            "",
+            "[[mcp.events.sinks]]",
+            _toml_kv("type", "audit_jsonl"),
+            _toml_kv("path", "traces/audit.jsonl"),
+            "",
+            "[[mcp.events.sinks]]",
+            _toml_kv("type", "console"),
+            _toml_kv("format", "text"),
+        ]
+    )
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -1855,7 +1867,7 @@ def _proxy_status(proxy: Mapping[str, Any]) -> dict[str, Any]:
         "policy": str(proxy.get("policy")) if proxy.get("policy") is not None else None,
         "state": proxy.get("state"),
         "record_out": str(proxy.get("record_out")) if proxy.get("record_out") is not None else None,
-        "audit_out": str(proxy.get("audit_out")) if proxy.get("audit_out") is not None else None,
+        "event_sinks": _event_sink_status(proxy),
         "tunnel_provider": proxy.get("tunnel_provider"),
         "tunnel_public_url": proxy.get("tunnel_public_url"),
         "lease_required": proxy.get("lease_required"),
@@ -1866,6 +1878,25 @@ def _proxy_status(proxy: Mapping[str, Any]) -> dict[str, Any]:
         "facade_health_cooldown_seconds": proxy.get("facade_health_cooldown_seconds"),
         "facade_health_exclude_unhealthy": proxy.get("facade_health_exclude_unhealthy"),
     }
+
+
+def _has_event_sink(proxy: Mapping[str, Any], sink_type: str) -> bool:
+    return any(sink.get("type") == sink_type for sink in _sequence_mappings(proxy.get("event_sinks", [])))
+
+
+def _event_sink_status(proxy: Mapping[str, Any], sink_type: str | None = None) -> list[dict[str, Any]]:
+    sinks = []
+    for sink in _sequence_mappings(proxy.get("event_sinks", [])):
+        if sink_type is not None and sink.get("type") != sink_type:
+            continue
+        status = {
+            "type": sink.get("type"),
+            "path": str(sink.get("path")) if sink.get("path") is not None else None,
+            "events": list(sink.get("events", [])) if isinstance(sink.get("events"), Sequence) else None,
+            "enabled": sink.get("enabled", True),
+        }
+        sinks.append(_drop_empty(status))
+    return sinks
 
 
 def _raw_fabric_config(config: Path) -> Mapping[str, Any]:

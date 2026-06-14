@@ -34,7 +34,9 @@ def test_create_mcp_quickstart_writes_policy_config_and_trace_dir(tmp_path):
     assert proxy_config["policy"] == tmp_path / "policy.snulbug/policy.lua"
     assert proxy_config["port"] == 8181
     assert proxy_config["state"] == "sqlite:policy-state.sqlite3"
-    assert proxy_config["decision_console"] is True
+    assert proxy_config["event_sinks"][0]["type"] == "audit_jsonl"
+    assert proxy_config["event_sinks"][0]["path"] == tmp_path / "traces/audit.jsonl"
+    assert proxy_config["event_sinks"][1]["type"] == "console"
     assert proxy_config["redact_records"] is True
     assert proxy_config["confirm"] is False
     assert proxy_config["response_redact_secrets"] is True

@@ -21,10 +21,7 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         state = "sqlite:policy-state.sqlite3"
         trace = false
         record_out = "traces/session.jsonl"
-        audit_out = "traces/audit.jsonl"
         redact_records = true
-        decision_console = true
-        decision_console_format = "json"
         confirm = true
         max_body_bytes = 32768
         response_max_bytes = 131072
@@ -51,7 +48,13 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         cloudflare_access_allowed_domains = ["example.com"]
         timeout = 5.5
 
-        [[mcp.webhooks]]
+        [[mcp.events.sinks]]
+        type = "audit_jsonl"
+        path = "events/audit.jsonl"
+        events = ["snulbug.audit"]
+
+        [[mcp.events.sinks]]
+        type = "webhook"
         name = "security-alerts"
         url_env = "SNULBUG_SECURITY_WEBHOOK_URL"
         events = ["mcp.decision.blocked", "mcp.response.redacted"]
@@ -69,12 +72,9 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
     assert result["upstream"] == "http://127.0.0.1:9000"
     assert result["policy"] == tmp_path / "policy.snulbug/policy.lua"
     assert result["record_out"] == tmp_path / "traces/session.jsonl"
-    assert result["audit_out"] == tmp_path / "traces/audit.jsonl"
     assert result["port"] == 9090
     assert result["trace"] is False
     assert result["redact_records"] is True
-    assert result["decision_console"] is True
-    assert result["decision_console_format"] == "json"
     assert result["confirm"] is True
     assert result["response_max_bytes"] == 131072
     assert result["response_redact_secrets"] is False
@@ -98,12 +98,25 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
     assert result["cloudflare_access_require_cf_ray"] is True
     assert result["cloudflare_access_allowed_emails"] == ["dev@example.com"]
     assert result["cloudflare_access_allowed_domains"] == ["example.com"]
-    assert result["webhooks"][0].name == "security-alerts"
-    assert result["webhooks"][0].url_env == "SNULBUG_SECURITY_WEBHOOK_URL"
-    assert result["webhooks"][0].events == ("mcp.decision.blocked", "mcp.response.redacted")
-    assert result["webhooks"][0].timeout_ms == 500
-    assert result["webhooks"][0].retry_attempts == 1
-    assert result["webhooks"][0].signing_secret_env == "SNULBUG_WEBHOOK_SECRET"
+    assert result["event_sinks"] == [
+        {
+            "type": "audit_jsonl",
+            "path": tmp_path / "events/audit.jsonl",
+            "events": ("snulbug.audit",),
+            "enabled": True,
+        },
+        {
+            "type": "webhook",
+            "webhook": result["event_sinks"][1]["webhook"],
+        },
+    ]
+    webhook = result["event_sinks"][1]["webhook"]
+    assert webhook.name == "security-alerts"
+    assert webhook.url_env == "SNULBUG_SECURITY_WEBHOOK_URL"
+    assert webhook.events == ("mcp.decision.blocked", "mcp.response.redacted")
+    assert webhook.timeout_ms == 500
+    assert webhook.retry_attempts == 1
+    assert webhook.signing_secret_env == "SNULBUG_WEBHOOK_SECRET"
 
 
 def test_load_mcp_proxy_config_accepts_holepunch_provider(tmp_path):
@@ -541,8 +554,6 @@ def test_mcp_proxy_cli_loads_config_before_running(monkeypatch, tmp_path):
     assert calls[0]["trace"] is False
     assert calls[0]["record_out"] == tmp_path / "traces/session.jsonl"
     assert calls[0]["redact_records"] is True
-    assert calls[0]["decision_console"] is True
-    assert calls[0]["decision_console_format"] == "json"
     assert calls[0]["confirm"] is False
     assert calls[0]["response_max_bytes"] == 262144
     assert calls[0]["response_redact_secrets"] is True
@@ -567,7 +578,20 @@ def test_mcp_proxy_cli_loads_config_before_running(monkeypatch, tmp_path):
     assert calls[0]["cloudflare_access_require_cf_ray"] is True
     assert calls[0]["cloudflare_access_allowed_emails"] == []
     assert calls[0]["cloudflare_access_allowed_domains"] == []
-    assert calls[0]["webhooks"] == []
+    assert calls[0]["event_sinks"] == [
+        {
+            "type": "audit_jsonl",
+            "path": tmp_path / "traces/audit.jsonl",
+            "events": ("snulbug.audit",),
+            "enabled": True,
+        },
+        {
+            "type": "console",
+            "format": "json",
+            "events": ("snulbug.audit",),
+            "enabled": True,
+        },
+    ]
 
 
 def test_mcp_proxy_cli_passes_facade_upstreams_without_config(monkeypatch, tmp_path):
@@ -858,9 +882,14 @@ def write_config(tmp_path):
         upstream = "http://127.0.0.1:9000"
         policy = "policy.snulbug/policy.lua"
         record_out = "traces/session.jsonl"
-        audit_out = "traces/audit.jsonl"
-        decision_console = true
-        decision_console_format = "json"
+
+        [[mcp.events.sinks]]
+        type = "audit_jsonl"
+        path = "traces/audit.jsonl"
+
+        [[mcp.events.sinks]]
+        type = "console"
+        format = "json"
         """,
         encoding="utf-8",
     )

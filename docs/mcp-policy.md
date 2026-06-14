@@ -33,7 +33,7 @@ uv run snulbug mcp policy preset tunnel-safe \
 Run the proxy and capture evidence:
 
 ```bash
-uv run snulbug mcp proxy --config snulbug.toml --decision-console
+uv run snulbug mcp proxy --config snulbug.toml
 ```
 
 Learn a least-privilege bundle from the captured session:
@@ -94,4 +94,3 @@ schema discovery review.
 - [Policy bundles and lifecycle](bundles.md)
 - [MCP schema discovery and schema-derived policies](mcp-schemas.md)
 - [MCP evidence workflow](mcp-evidence.md)
-

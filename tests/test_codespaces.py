@@ -36,7 +36,9 @@ def test_prepare_codespace_attach_writes_loadable_env_discovery_config(tmp_path,
     assert (tmp_path / "policy.lua").read_text(encoding="utf-8").count("codespace.attach.allow") == 1
     assert proxy["policy"] == tmp_path / "policy.lua"
     assert proxy["record_out"] == tmp_path / "traces/session.jsonl"
-    assert proxy["audit_out"] == tmp_path / "traces/audit.jsonl"
+    assert proxy["event_sinks"][0]["type"] == "audit_jsonl"
+    assert proxy["event_sinks"][0]["path"] == tmp_path / "traces/audit.jsonl"
+    assert proxy["event_sinks"][1]["type"] == "console"
     assert proxy["upstreams"][0]["name"] == "codespace-files"
     assert proxy["upstreams"][0]["url"] == "https://example-9001.app.github.dev/mcp"
     assert proxy["upstreams"][0]["tool_prefix"] == "codespace.files."

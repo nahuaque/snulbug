@@ -5,10 +5,7 @@ port = 8080
 state = "memory"
 trace = true
 record_out = "traces/session.jsonl"
-audit_out = "traces/audit.jsonl"
 redact_records = true
-decision_console = true
-decision_console_format = "text"
 confirm = false
 max_body_bytes = 65536
 response_max_bytes = 262144
@@ -44,3 +41,11 @@ bridge_command = "hypertele"
 bridge_private = true
 bridge_ready_timeout = 15.0
 tool_prefix = "remote."
+
+[[mcp.events.sinks]]
+type = "audit_jsonl"
+path = "traces/audit.jsonl"
+
+[[mcp.events.sinks]]
+type = "console"
+format = "text"

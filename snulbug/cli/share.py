@@ -28,12 +28,6 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
 
     share_run = share_subparsers.add_parser("run", help="run the proxy for a generated share session")
     share_run.add_argument("directory", type=Path, help="share session directory")
-    share_run.add_argument(
-        "--decision-console",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="override the generated share proxy decision console setting",
-    )
     share_run.add_argument("--dry-run", action="store_true", help="print the run plan without starting the proxy")
     add_compact_arg(share_run)
 
@@ -128,7 +122,6 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
             result = run_mcp_share(
                 args.directory,
                 dry_run=args.dry_run,
-                decision_console=args.decision_console,
             )
             if result is not None:
                 write_json_output(result, compact=args.compact)

@@ -7,23 +7,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from snulbug import (
     WebhookSink,
     deliver_webhook_event,
-    matching_webhook_sinks,
-    normalize_webhook_sinks,
+    event_names,
+    normalize_event_sink_configs,
     prepare_webhook_payload,
-    webhook_event_names,
 )
 
 
-def test_normalize_webhook_sinks_defaults_to_audit_events():
-    sinks = normalize_webhook_sinks([{"name": "alerts", "url_env": "SNULBUG_WEBHOOK_URL"}])
+def test_normalize_event_sink_configs_defaults_webhook_to_audit_events():
+    sinks = normalize_event_sink_configs([{"type": "webhook", "name": "alerts", "url_env": "SNULBUG_WEBHOOK_URL"}])
 
-    assert sinks == [
-        WebhookSink(
-            name="alerts",
-            url_env="SNULBUG_WEBHOOK_URL",
-            events=("snulbug.audit",),
-        )
-    ]
+    assert sinks == [{"type": "webhook", "webhook": WebhookSink(name="alerts", url_env="SNULBUG_WEBHOOK_URL")}]
 
 
 def test_webhook_event_names_include_mcp_decision_and_response_findings():
@@ -40,7 +33,7 @@ def test_webhook_event_names_include_mcp_decision_and_response_findings():
         },
     }
 
-    assert webhook_event_names(event) >= {
+    assert event_names(event) >= {
         "snulbug.audit",
         "mcp.request",
         "mcp.decision.blocked",
@@ -51,22 +44,6 @@ def test_webhook_event_names_include_mcp_decision_and_response_findings():
         "mcp.response.warning",
         "mcp.tool.changed",
     }
-
-
-def test_matching_webhook_sinks_uses_derived_event_names():
-    sinks = normalize_webhook_sinks(
-        [
-            {"name": "blocked", "url": "http://127.0.0.1:1/hook", "events": ["mcp.decision.blocked"]},
-            {"name": "allowed", "url": "http://127.0.0.1:1/hook", "events": ["mcp.decision.allowed"]},
-        ]
-    )
-
-    matches = matching_webhook_sinks(
-        sinks,
-        {"type": "snulbug.audit", "decision": {"action": "reject", "allowed": False}},
-    )
-
-    assert [sink.name for sink in matches] == ["blocked"]
 
 
 def test_prepare_webhook_payload_redacts_and_minimizes_metadata_only_events():

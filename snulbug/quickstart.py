@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -37,10 +37,7 @@ def create_mcp_quickstart(
     state: str = "memory",
     trace: bool = True,
     record_out: str | Path = "traces/session.jsonl",
-    audit_out: str | Path = "traces/audit.jsonl",
     redact_records: bool = True,
-    decision_console: bool = True,
-    decision_console_format: str = "text",
     confirm: bool = False,
     max_body_bytes: int = 65536,
     response_max_bytes: int = 262144,
@@ -88,6 +85,7 @@ def create_mcp_quickstart(
         force=force,
     )
     traces_path.mkdir(parents=True, exist_ok=True)
+    audit_event_out = traces_path / "audit.jsonl"
 
     effective_token = token or DEFAULT_TOKEN
     effective_tools = list(allowed_tools) if allowed_tools else list(DEFAULT_ALLOWED_TOOLS)
@@ -103,10 +101,7 @@ def create_mcp_quickstart(
         "state": state,
         "trace": trace,
         "record_out": _config_path(_resolve_output(root, record_out), config_path.parent),
-        "audit_out": _config_path(_resolve_output(root, audit_out), config_path.parent),
         "redact_records": redact_records,
-        "decision_console": decision_console,
-        "decision_console_format": decision_console_format,
         "confirm": confirm,
         "max_body_bytes": max_body_bytes,
         "response_max_bytes": response_max_bytes,
@@ -129,7 +124,11 @@ def create_mcp_quickstart(
         "cloudflare_access_allowed_domains": list(cloudflare_access_allowed_domains or []),
         "timeout": timeout,
     }
-    _write_mcp_proxy_config(config_path, config_values, force=force)
+    event_sinks = [
+        {"type": "audit_jsonl", "path": _config_path(audit_event_out, config_path.parent)},
+        {"type": "console", "format": "text"},
+    ]
+    _write_mcp_proxy_config(config_path, config_values, event_sinks=event_sinks, force=force)
 
     validation = validate_bundle(policy_dir) if validate else None
     bundle_tests = test_bundle(policy_dir) if validate else None
@@ -166,11 +165,9 @@ def create_mcp_quickstart(
             "port": port,
             "state": state,
             "record_out": str(_resolve_output(root, record_out)),
-            "audit_out": str(_resolve_output(root, audit_out)),
             "redact_records": redact_records,
-            "decision_console": decision_console,
-            "decision_console_format": decision_console_format,
             "confirm": confirm,
+            "event_sinks": event_sinks,
             "response_max_bytes": response_max_bytes,
             "response_redact_secrets": response_redact_secrets,
             "response_block_instructions": response_block_instructions,
@@ -202,7 +199,7 @@ def create_mcp_quickstart(
             f"configure your MCP client URL as {client_url}",
             f"send Authorization: Bearer {effective_token}",
             f"uv run snulbug mcp evidence inspect {_resolve_output(root, record_out)}",
-            f"uv run snulbug mcp evidence inspect {_resolve_output(root, audit_out)} --kind audit",
+            f"uv run snulbug mcp evidence inspect {audit_event_out} --kind audit",
         ],
     }
     if not validate:
@@ -232,13 +229,23 @@ def _config_path(path: Path, base: Path) -> str:
         return str(path)
 
 
-def _write_mcp_proxy_config(path: Path, values: dict[str, Any], *, force: bool = False) -> None:
+def _write_mcp_proxy_config(
+    path: Path,
+    values: dict[str, Any],
+    *,
+    event_sinks: Sequence[Mapping[str, Any]] = (),
+    force: bool = False,
+) -> None:
     if path.exists() and not force:
         raise FileExistsError(f"config file already exists: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = ["[mcp.proxy]"]
     for key, value in values.items():
         lines.append(f"{key} = {_toml_value(value)}")
+    for sink in event_sinks:
+        lines.extend(["", "[[mcp.events.sinks]]"])
+        for key, value in sink.items():
+            lines.append(f"{key} = {_toml_value(value)}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 

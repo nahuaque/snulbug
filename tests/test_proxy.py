@@ -19,6 +19,9 @@ from snulbug import (
     EVENT_UPSTREAM_UNHEALTHY,
     FABRIC_CONTROL_STATE_SCHEMA,
     ConfirmationBroker,
+    ConsoleEventSink,
+    EventDispatcher,
+    JsonlEventSink,
     McpFacadeProxyApp,
     build_fabric_audit_metadata,
     create_lease,
@@ -27,6 +30,26 @@ from snulbug import (
     load_record_log,
     sign_upstream_manifest,
 )
+
+
+def audit_event_sinks(path: Path) -> list[dict[str, Any]]:
+    return [{"type": "audit_jsonl", "path": path}]
+
+
+def event_dispatcher(
+    *,
+    audit_log: Path | None = None,
+    console: io.StringIO | None = None,
+    console_format: str = "text",
+    extra_sinks: list[Any] | None = None,
+) -> EventDispatcher:
+    sinks = []
+    if audit_log is not None:
+        sinks.append(JsonlEventSink(audit_log, events=("snulbug.audit",)))
+    if console is not None:
+        sinks.append(ConsoleEventSink(console, output_format=console_format))
+    sinks.extend(extra_sinks or [])
+    return EventDispatcher(sinks)
 
 
 def test_reverse_proxy_forwards_allowed_request_to_upstream(tmp_path):
@@ -38,7 +61,7 @@ def test_reverse_proxy_forwards_allowed_request_to_upstream(tmp_path):
         f"http://127.0.0.1:{server.server_port}/api",
         policy,
         record_out=record_log,
-        audit_out=audit_log,
+        event_sinks=audit_event_sinks(audit_log),
     )
 
     try:
@@ -74,15 +97,51 @@ def test_reverse_proxy_forwards_allowed_request_to_upstream(tmp_path):
     assert audit["decision"]["reason_code"] == "test.allowed"
 
 
-def test_reverse_proxy_emits_audit_webhook_without_audit_file(tmp_path):
+def test_reverse_proxy_event_dispatcher_fans_out_same_event(tmp_path):
     server, _seen = start_upstream()
     policy = write_policy(tmp_path, "reject")
-    dispatcher = CaptureWebhookDispatcher()
+    audit_log = tmp_path / "audit.jsonl"
+    console = io.StringIO()
+    capture = CaptureEventSink()
+    dispatcher = EventDispatcher(
+        [
+            JsonlEventSink(audit_log, events=("snulbug.audit",)),
+            ConsoleEventSink(console, output_format="json"),
+            capture,
+        ]
+    )
     app = create_proxy_application(
         f"http://127.0.0.1:{server.server_port}/api",
         policy,
-        audit_out=None,
-        webhook_dispatcher=dispatcher,
+        event_dispatcher=dispatcher,
+    )
+
+    try:
+        run_asgi(
+            app,
+            path="/mcp",
+            headers=[(b"content-type", b"application/json")],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shell"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    audit_event = json.loads(audit_log.read_text(encoding="utf-8"))
+    console_event = json.loads(console.getvalue())
+    assert audit_event == console_event == capture.events[0]
+    assert audit_event["decision"]["reason_code"] == "test.blocked"
+    assert audit_event["trace"]["instruction_count"] == 0
+
+
+def test_reverse_proxy_emits_audit_webhook_without_audit_file(tmp_path):
+    server, _seen = start_upstream()
+    policy = write_policy(tmp_path, "reject")
+    capture = CaptureEventSink()
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/api",
+        policy,
+        event_dispatcher=EventDispatcher([capture]),
     )
 
     try:
@@ -97,10 +156,10 @@ def test_reverse_proxy_emits_audit_webhook_without_audit_file(tmp_path):
         server.server_close()
 
     assert sent[0]["status"] == 403
-    assert len(dispatcher.events) == 1
-    assert dispatcher.events[0]["type"] == "snulbug.audit"
-    assert dispatcher.events[0]["decision"]["allowed"] is False
-    assert dispatcher.events[0]["decision"]["reason_code"] == "test.blocked"
+    assert len(capture.events) == 1
+    assert capture.events[0]["type"] == "snulbug.audit"
+    assert capture.events[0]["decision"]["allowed"] is False
+    assert capture.events[0]["decision"]["reason_code"] == "test.blocked"
 
 
 def test_reverse_proxy_records_provider_aware_tunnel_audit_fields(tmp_path):
@@ -113,9 +172,7 @@ def test_reverse_proxy_records_provider_aware_tunnel_audit_fields(tmp_path):
         f"http://127.0.0.1:{server.server_port}",
         policy,
         record_out=record_log,
-        audit_out=audit_log,
-        decision_console=console,
-        decision_console_format="json",
+        event_dispatcher=event_dispatcher(audit_log=audit_log, console=console, console_format="json"),
         tunnel_provider="cloudflare",
         tunnel_public_url="https://mcp.example.com/mcp",
     )
@@ -170,9 +227,7 @@ def test_reverse_proxy_cloudflare_access_enforce_blocks_before_lua_and_upstream(
         f"http://127.0.0.1:{server.server_port}",
         policy,
         record_out=record_log,
-        audit_out=audit_log,
-        decision_console=console,
-        decision_console_format="json",
+        event_dispatcher=event_dispatcher(audit_log=audit_log, console=console, console_format="json"),
         cloudflare_access="enforce",
     )
 
@@ -302,7 +357,7 @@ def test_reverse_proxy_writes_live_decision_console_text(tmp_path):
     app = create_proxy_application(
         f"http://127.0.0.1:{server.server_port}",
         policy,
-        decision_console=console,
+        event_dispatcher=event_dispatcher(console=console),
     )
 
     try:
@@ -335,8 +390,7 @@ def test_reverse_proxy_writes_live_decision_console_json(tmp_path):
     app = create_proxy_application(
         "http://127.0.0.1:9",
         policy,
-        decision_console=console,
-        decision_console_format="json",
+        event_dispatcher=event_dispatcher(console=console, console_format="json"),
     )
 
     run_asgi(
@@ -402,7 +456,7 @@ def test_confirm_action_can_allow_once_and_record_audit(tmp_path):
         f"http://127.0.0.1:{server.server_port}",
         policy,
         record_out=record_log,
-        audit_out=audit_log,
+        event_sinks=audit_event_sinks(audit_log),
         confirm_handler=allow_once,
     )
 
@@ -464,7 +518,7 @@ def test_confirm_broker_can_deny_prompted_request(tmp_path):
         f"http://127.0.0.1:{server.server_port}",
         policy,
         record_out=record_log,
-        decision_console=console,
+        event_dispatcher=event_dispatcher(console=console),
         confirm_handler=broker,
     )
 
@@ -541,7 +595,7 @@ def test_mcp_facade_injects_upstream_credential_header(tmp_path, monkeypatch):
             }
         ],
         record_out=record_log,
-        audit_out=audit_log,
+        event_sinks=audit_event_sinks(audit_log),
     )
 
     try:
@@ -1041,7 +1095,7 @@ def test_mcp_facade_records_topology_aware_audit_fields(tmp_path):
             {"name": "git", "url": f"http://127.0.0.1:{git_server.server_port}/mcp"},
         ],
         record_out=record_log,
-        audit_out=audit_log,
+        event_sinks=audit_event_sinks(audit_log),
         topology_audit=topology_audit,
     )
 
@@ -1110,7 +1164,7 @@ def test_mcp_facade_records_verified_upstream_manifest_metadata(tmp_path, monkey
             }
         ],
         record_out=record_log,
-        audit_out=audit_log,
+        event_sinks=audit_event_sinks(audit_log),
     )
 
     try:
@@ -1187,7 +1241,7 @@ def test_mcp_facade_can_route_to_managed_holepunch_upstream(tmp_path):
             }
         ],
         record_out=record_log,
-        audit_out=audit_log,
+        event_sinks=audit_event_sinks(audit_log),
     )
 
     listed, called = run_asgi_sequence(
@@ -1742,7 +1796,7 @@ def start_upstream():
     return server, seen
 
 
-class CaptureWebhookDispatcher:
+class CaptureEventSink:
     def __init__(self):
         self.events = []
 

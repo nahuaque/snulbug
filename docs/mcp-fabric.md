@@ -19,13 +19,16 @@ policy = "policy.snulbug/policy.lua"
 host = "127.0.0.1"
 port = 8080
 record_out = "traces/session.jsonl"
-audit_out = "traces/audit.jsonl"
 
 [[mcp.proxy.upstreams]]
 name = "files"
 url = "http://127.0.0.1:9001/mcp"
 tool_prefix = "files."
 manifest = "manifests/files.signed.json"
+
+[[mcp.events.sinks]]
+type = "audit_jsonl"
+path = "traces/audit.jsonl"
 manifest_secret_env = "SNULBUG_MANIFEST_SECRET"
 manifest_identity = "files@local"
 
@@ -213,10 +216,10 @@ Live fabric reloads attach the same `control_events` and `event_types` fields
 to replay/audit metadata under `metadata.fabric_reload`, so session logs show
 route reloads, reload failures, and recovery after a bad config edit.
 
-Configured `[[mcp.webhooks]]` sinks receive the reconcile envelope when their
+Configured `[[mcp.events.sinks]]` receive the reconcile envelope when their
 `events` list matches `snulbug.fabric.reconcile`, an `event_types` entry, or a
-nested `control_events[*].type`. This lets the same alert sink handle request
-policy events and control-plane events such as upstream health changes.
+nested `control_events[*].type`. This lets the same event pipeline handle
+request policy events and control-plane events such as upstream health changes.
 
 Facade health routing uses the same event schema in replay/audit metadata under
 `metadata.upstream_health.control_events`. When enabled, the data plane emits

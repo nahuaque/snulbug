@@ -6,7 +6,7 @@ from typing import Any
 
 from .credentials import attach_upstream_credentials, normalize_fabric_credentials, normalize_upstream_credential
 from .discovery import apply_fabric_discovery
-from .webhooks import normalize_webhook_sinks
+from .events import normalize_event_sink_configs
 
 try:
     import tomllib
@@ -14,6 +14,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10.
     import tomli as tomllib  # type: ignore[import-not-found]
 
 DEFAULT_CONFIG_PATH = "snulbug.toml"
+REMOVED_EVENT_OUTPUT_KEYS = {"audit_out", "decision_console", "decision_console_format", "webhooks"}
 
 DEFAULT_MCP_PROXY_CONFIG = {
     "upstream": "http://127.0.0.1:9000",
@@ -24,10 +25,7 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "state": "memory",
     "trace": True,
     "record_out": "traces/session.jsonl",
-    "audit_out": "traces/audit.jsonl",
     "redact_records": True,
-    "decision_console": False,
-    "decision_console_format": "text",
     "confirm": False,
     "max_body_bytes": 65536,
     "response_max_bytes": 262144,
@@ -53,7 +51,7 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "cloudflare_access_allowed_emails": [],
     "cloudflare_access_allowed_domains": [],
     "timeout": 30.0,
-    "webhooks": [],
+    "event_sinks": [],
 }
 
 DEFAULT_MCP_FABRIC_CONFIG = {
@@ -84,10 +82,7 @@ port = 8080
 state = "memory"
 trace = true
 record_out = "traces/session.jsonl"
-audit_out = "traces/audit.jsonl"
 redact_records = true
-decision_console = false
-decision_console_format = "text"
 confirm = false
 max_body_bytes = 65536
 response_max_bytes = 262144
@@ -174,8 +169,17 @@ timeout = 5.0
 # local_port = 19100
 # auth = "codespace"
 
-# Optional fail-open webhook event sinks for redacted request/control-plane events:
-# [[mcp.webhooks]]
+[[mcp.events.sinks]]
+type = "audit_jsonl"
+path = "traces/audit.jsonl"
+
+[[mcp.events.sinks]]
+type = "console"
+format = "text"
+
+# Optional webhook event sink.
+# [[mcp.events.sinks]]
+# type = "webhook"
 # name = "security-alerts"
 # url_env = "SNULBUG_SECURITY_WEBHOOK_URL"
 # events = ["mcp.decision.blocked", "mcp.response.redacted", "snulbug.fabric.upstream.unhealthy"]
@@ -205,14 +209,20 @@ def load_mcp_proxy_config(path: str | Path) -> dict[str, Any]:
     mcp = raw_config.get("mcp", {})
     if not isinstance(mcp, Mapping):
         raise ValueError("config section [mcp] must be a table")
+    _reject_removed_event_output_config(mcp)
     proxy = mcp.get("proxy", {})
     if not isinstance(proxy, Mapping):
         raise ValueError("config section [mcp.proxy] must be a table")
     fabric = mcp.get("fabric", {})
     if not isinstance(fabric, Mapping):
         raise ValueError("config section [mcp.fabric] must be a table")
-    webhooks = _load_webhooks_table(mcp)
-    return _normalize_proxy_config_with_discovery(proxy, fabric, webhooks=webhooks, base_dir=config_path.parent)
+    event_sinks = _load_event_sinks_table(mcp)
+    return _normalize_proxy_config_with_discovery(
+        proxy,
+        fabric,
+        event_sinks=event_sinks,
+        base_dir=config_path.parent,
+    )
 
 
 def load_mcp_fabric_config(path: str | Path) -> dict[str, Any]:
@@ -224,18 +234,24 @@ def load_mcp_fabric_config(path: str | Path) -> dict[str, Any]:
     mcp = raw_config.get("mcp", {})
     if not isinstance(mcp, Mapping):
         raise ValueError("config section [mcp] must be a table")
+    _reject_removed_event_output_config(mcp)
     fabric = mcp.get("fabric", {})
     if not isinstance(fabric, Mapping):
         raise ValueError("config section [mcp.fabric] must be a table")
     proxy = mcp.get("proxy", {})
     if not isinstance(proxy, Mapping):
         raise ValueError("config section [mcp.proxy] must be a table")
-    webhooks = _load_webhooks_table(mcp)
-    proxy_config = _normalize_proxy_config_with_discovery(proxy, fabric, webhooks=webhooks, base_dir=config_path.parent)
+    event_sinks = _load_event_sinks_table(mcp)
+    proxy_config = _normalize_proxy_config_with_discovery(
+        proxy,
+        fabric,
+        event_sinks=event_sinks,
+        base_dir=config_path.parent,
+    )
     return normalize_mcp_fabric_config(
         fabric,
         proxy_config=proxy_config,
-        webhooks=webhooks,
+        event_sinks=event_sinks,
         base_dir=config_path.parent,
     )
 
@@ -244,7 +260,7 @@ def _normalize_proxy_config_with_discovery(
     proxy: Mapping[str, Any],
     fabric: Mapping[str, Any],
     *,
-    webhooks: Any = None,
+    event_sinks: Any = None,
     base_dir: Path,
 ) -> dict[str, Any]:
     credentials = normalize_fabric_credentials(fabric.get("credentials", {}), base_dir=base_dir)
@@ -252,11 +268,18 @@ def _normalize_proxy_config_with_discovery(
     discovered_proxy = attach_upstream_credentials(discovered_proxy, credentials)
     proxy_config = normalize_mcp_proxy_config(discovered_proxy, base_dir=base_dir)
     proxy_config["discovery"] = discovery
-    proxy_config["webhooks"] = normalize_webhook_sinks(webhooks)
+    proxy_config["event_sinks"] = [
+        *proxy_config.get("event_sinks", []),
+        *normalize_event_sink_configs(event_sinks, base_dir=base_dir),
+    ]
     return proxy_config
 
 
 def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Path = ".") -> dict[str, Any]:
+    removed = REMOVED_EVENT_OUTPUT_KEYS.intersection(config)
+    if removed:
+        keys = ", ".join(f"mcp.proxy.{key}" for key in sorted(removed))
+        raise ValueError(f"{keys} were removed; configure live outputs with [[mcp.events.sinks]]")
     normalized = dict(DEFAULT_MCP_PROXY_CONFIG)
     normalized.update({key: value for key, value in config.items() if value is not None})
     base = Path(base_dir)
@@ -265,7 +288,6 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         "upstream",
         "host",
         "state",
-        "decision_console_format",
         "tool_pinning_action",
         "schema_validation_action",
         "lease_header",
@@ -279,7 +301,7 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         raise ValueError("mcp.proxy.tunnel_public_url must be a string")
     if normalized.get("tunnel_public_url") == "":
         normalized["tunnel_public_url"] = None
-    for field in ("policy", "record_out", "audit_out", "lease_file"):
+    for field in ("policy", "record_out", "lease_file"):
         value = normalized.get(field)
         if value is not None and not isinstance(value, str | Path):
             raise ValueError(f"mcp.proxy.{field} must be a string path")
@@ -302,7 +324,6 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
     for field in (
         "trace",
         "redact_records",
-        "decision_console",
         "confirm",
         "response_redact_secrets",
         "response_block_instructions",
@@ -317,8 +338,6 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
     ):
         if not isinstance(normalized.get(field), bool):
             raise ValueError(f"mcp.proxy.{field} must be a boolean")
-    if normalized["decision_console_format"] not in {"text", "json"}:
-        raise ValueError("mcp.proxy.decision_console_format must be 'text' or 'json'")
     if normalized["tool_pinning_action"] not in {"warn", "block"}:
         raise ValueError("mcp.proxy.tool_pinning_action must be 'warn' or 'block'")
     if normalized["schema_validation_action"] not in {"warn", "block"}:
@@ -350,14 +369,14 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         field="cloudflare_access_allowed_domains",
     )
     normalized["policy"] = _resolve_path(base, normalized["policy"])
-    for field in ("record_out", "audit_out"):
+    for field in ("record_out",):
         if normalized.get(field):
             normalized[field] = _resolve_path(base, normalized[field])
     if normalized.get("lease_file"):
         normalized["lease_file"] = _resolve_path(base, normalized["lease_file"])
     normalized["timeout"] = float(normalized["timeout"])
     normalized["facade_health_cooldown_seconds"] = float(normalized["facade_health_cooldown_seconds"])
-    normalized["webhooks"] = normalize_webhook_sinks(normalized.get("webhooks", []))
+    normalized["event_sinks"] = normalize_event_sink_configs(normalized.get("event_sinks", []), base_dir=base)
     return normalized
 
 
@@ -365,7 +384,7 @@ def normalize_mcp_fabric_config(
     config: Mapping[str, Any],
     *,
     proxy_config: Mapping[str, Any] | None = None,
-    webhooks: Any = None,
+    event_sinks: Any = None,
     base_dir: str | Path = ".",
 ) -> dict[str, Any]:
     normalized = dict(DEFAULT_MCP_FABRIC_CONFIG)
@@ -396,19 +415,30 @@ def normalize_mcp_fabric_config(
         if isinstance(host, str) and isinstance(port, int):
             normalized["gateway_url"] = f"http://{host}:{port}/mcp"
     normalized["proxy"] = dict(proxy_config or {})
-    if webhooks is None and proxy_config is not None:
-        webhooks = proxy_config.get("webhooks", [])
-    normalized["webhooks"] = normalize_webhook_sinks(webhooks)
+    if event_sinks is None and proxy_config is not None:
+        normalized["event_sinks"] = list(proxy_config.get("event_sinks", []))
+    else:
+        normalized["event_sinks"] = normalize_event_sink_configs(event_sinks, base_dir=base_dir)
     return normalized
 
 
-def _load_webhooks_table(mcp: Mapping[str, Any]) -> Any:
-    webhooks = mcp.get("webhooks", [])
-    if webhooks in (None, ""):
+def _load_event_sinks_table(mcp: Mapping[str, Any]) -> Any:
+    events = mcp.get("events", {})
+    if events in (None, ""):
         return []
-    if not isinstance(webhooks, list):
-        raise ValueError("config section [[mcp.webhooks]] must be an array of tables")
-    return webhooks
+    if not isinstance(events, Mapping):
+        raise ValueError("config section [mcp.events] must be a table")
+    sinks = events.get("sinks", [])
+    if sinks in (None, ""):
+        return []
+    if not isinstance(sinks, list):
+        raise ValueError("config section [[mcp.events.sinks]] must be an array of tables")
+    return sinks
+
+
+def _reject_removed_event_output_config(mcp: Mapping[str, Any]) -> None:
+    if "webhooks" in mcp:
+        raise ValueError("[[mcp.webhooks]] was removed; configure webhook outputs with [[mcp.events.sinks]]")
 
 
 def _normalize_policy_activation(value: Any) -> dict[str, Any]:

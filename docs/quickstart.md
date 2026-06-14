@@ -140,14 +140,19 @@ port = 8080
 state = "memory"
 trace = true
 record_out = "traces/session.jsonl"
-audit_out = "traces/audit.jsonl"
 redact_records = true
-decision_console = true
-decision_console_format = "text"
 confirm = false
 max_body_bytes = 65536
 response_max_bytes = 262144
 response_redact_secrets = true
+
+[[mcp.events.sinks]]
+type = "audit_jsonl"
+path = "traces/audit.jsonl"
+
+[[mcp.events.sinks]]
+type = "console"
+format = "text"
 response_block_instructions = false
 tool_pinning = true
 tool_pinning_action = "block"
@@ -239,9 +244,8 @@ header.
 
 ## 7. Watch and inspect
 
-With `decision_console = true`, the proxy prints one redacted policy decision
-per request, including the MCP method, operation target, action, and reason
-code.
+With a `console` event sink, the proxy prints one redacted policy decision per
+request, including the MCP method, operation target, action, and reason code.
 When traffic arrives through ngrok, Cloudflare Tunnel, Tailscale Funnel,
 LocalXpose, Pinggy, Holepunch, or a generic forwarder, audit events also include
 provider-aware `tunnel` fields such as provider, public URL or peer bridge URL,

@@ -24,10 +24,7 @@ port = 8080
 state = "memory"
 trace = true
 record_out = "traces/codespace-session.jsonl"
-audit_out = "traces/codespace-audit.jsonl"
 redact_records = true
-decision_console = true
-decision_console_format = "text"
 max_body_bytes = 65536
 response_max_bytes = 262144
 response_redact_secrets = true
@@ -40,3 +37,11 @@ facade_health_failure_threshold = 2
 facade_health_cooldown_seconds = 10.0
 facade_health_exclude_unhealthy = true
 timeout = 30.0
+
+[[mcp.events.sinks]]
+type = "audit_jsonl"
+path = "traces/codespace-audit.jsonl"
+
+[[mcp.events.sinks]]
+type = "console"
+format = "text"

@@ -9,7 +9,15 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from snulbug import create_mcp_quickstart, create_proxy_application, inspect_mcp_log, load_record_log
+from snulbug import (
+    ConsoleEventSink,
+    EventDispatcher,
+    JsonlEventSink,
+    create_mcp_quickstart,
+    create_proxy_application,
+    inspect_mcp_log,
+    load_record_log,
+)
 
 try:
     from .upstream import create_server
@@ -41,12 +49,19 @@ def run_demo(output_dir: str | Path = DEFAULT_OUTPUT_DIR, *, emit: bool = True) 
             force=True,
         )
         console = io.StringIO()
+        audit_log = Path(starter["proxy"]["event_sinks"][0]["path"])
+        if not audit_log.is_absolute():
+            audit_log = output / audit_log
         app = create_proxy_application(
             upstream,
             starter["policy_file"],
             record_out=starter["proxy"]["record_out"],
-            audit_out=starter["proxy"]["audit_out"],
-            decision_console=console,
+            event_dispatcher=EventDispatcher(
+                [
+                    JsonlEventSink(audit_log, events=("snulbug.audit",)),
+                    ConsoleEventSink(console, output_format="text"),
+                ]
+            ),
             timeout=5.0,
         )
 
@@ -82,7 +97,7 @@ def run_demo(output_dir: str | Path = DEFAULT_OUTPUT_DIR, *, emit: bool = True) 
             for name, payload, authorization in cases
         ]
         records = load_record_log(starter["proxy"]["record_out"])
-        inspection = inspect_mcp_log(starter["proxy"]["audit_out"], kind="audit")
+        inspection = inspect_mcp_log(audit_log, kind="audit")
         result = {
             "ok": _expected_responses(responses) and inspection["event_count"] == 3,
             "upstream": f"{upstream}/mcp",
@@ -91,7 +106,7 @@ def run_demo(output_dir: str | Path = DEFAULT_OUTPUT_DIR, *, emit: bool = True) 
             "config": starter["config"],
             "policy": starter["policy"],
             "record_log": starter["proxy"]["record_out"],
-            "audit_log": starter["proxy"]["audit_out"],
+            "audit_log": str(audit_log),
             "responses": responses,
             "record_count": len(records),
             "inspection": inspection,

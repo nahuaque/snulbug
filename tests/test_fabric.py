@@ -39,11 +39,14 @@ def test_fabric_status_summarizes_declarative_config(tmp_path):
         host = "127.0.0.1"
         port = 8181
         record_out = "traces/session.jsonl"
-        audit_out = "traces/audit.jsonl"
         facade_health_routing = true
         facade_health_failure_threshold = 3
         facade_health_cooldown_seconds = 1.5
         facade_health_exclude_unhealthy = true
+
+        [[mcp.events.sinks]]
+        type = "audit_jsonl"
+        path = "traces/audit.jsonl"
 
         [[mcp.proxy.upstreams]]
         name = "files"
@@ -94,7 +97,10 @@ def test_fabric_doctor_verifies_manifests_and_probes_gateway_and_upstreams(tmp_p
         host = "127.0.0.1"
         port = {gateway.server_port}
         record_out = "traces/session.jsonl"
-        audit_out = "traces/audit.jsonl"
+
+        [[mcp.events.sinks]]
+        type = "audit_jsonl"
+        path = "traces/audit.jsonl"
 
         [[mcp.proxy.upstreams]]
         name = "files"
@@ -138,7 +144,10 @@ def test_fabric_doctor_uses_upstream_credential_for_authenticated_probe(tmp_path
         host = "127.0.0.1"
         port = 8181
         record_out = "traces/session.jsonl"
-        audit_out = "traces/audit.jsonl"
+
+        [[mcp.events.sinks]]
+        type = "audit_jsonl"
+        path = "traces/audit.jsonl"
 
         [[mcp.proxy.upstreams]]
         name = "files"
@@ -635,7 +644,10 @@ def write_fabric_conformance_fixture(tmp_path: Path) -> tuple[Path, Path]:
         host = "127.0.0.1"
         port = 8080
         record_out = "traces/session.jsonl"
-        audit_out = "traces/audit.jsonl"
+
+        [[mcp.events.sinks]]
+        type = "audit_jsonl"
+        path = "traces/audit.jsonl"
 
         [[mcp.proxy.upstreams]]
         name = "files"

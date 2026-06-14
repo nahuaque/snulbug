@@ -178,24 +178,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--state", default="memory", help="'memory', 'none', or 'sqlite:/path/to/state.sqlite3'"
     )
     mcp_quickstart.add_argument("--record-out", type=Path, default=Path("traces/session.jsonl"))
-    mcp_quickstart.add_argument("--audit-out", type=Path, default=Path("traces/audit.jsonl"))
     mcp_quickstart.add_argument(
         "--redact-records",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="redact secrets in live replay records",
-    )
-    mcp_quickstart.add_argument(
-        "--decision-console",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="print live redacted policy decisions while proxying",
-    )
-    mcp_quickstart.add_argument(
-        "--decision-console-format",
-        choices=("text", "json"),
-        default="text",
-        help="live decision console output format",
     )
     mcp_quickstart.add_argument(
         "--confirm",
@@ -331,12 +318,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="'memory', 'none', or sqlite:/path/to/state.sqlite3",
     )
     mcp_codespace_attach.add_argument(
-        "--decision-console",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="print live redacted policy decisions while proxying",
-    )
-    mcp_codespace_attach.add_argument(
         "--smoke-check",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -442,23 +423,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--no-trace", action="store_false", dest="trace", default=None, help="disable Lua trace scope data"
     )
     mcp_proxy.add_argument("--record-out", type=Path, help="optional live replay JSONL path to append to")
-    mcp_proxy.add_argument("--audit-out", type=Path, help="optional redacted live audit JSONL path to append to")
     mcp_proxy.add_argument(
         "--redact-records",
         action=argparse.BooleanOptionalAction,
         default=None,
         help="redact secrets in live replay records; use --no-redact-records for exact replay artifacts",
-    )
-    mcp_proxy.add_argument(
-        "--decision-console",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="print live redacted policy decisions while proxying",
-    )
-    mcp_proxy.add_argument(
-        "--decision-console-format",
-        choices=("text", "json"),
-        help="live decision console output format",
     )
     mcp_proxy.add_argument(
         "--confirm",
@@ -687,10 +656,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     port=args.port,
                     state=args.state,
                     record_out=args.record_out,
-                    audit_out=args.audit_out,
                     redact_records=args.redact_records,
-                    decision_console=args.decision_console,
-                    decision_console_format=args.decision_console_format,
                     confirm=args.confirm,
                     max_body_bytes=args.max_body_bytes,
                     response_max_bytes=args.response_max_bytes,
@@ -739,7 +705,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                         host=args.host,
                         port=args.port,
                         state=args.state,
-                        decision_console=args.decision_console,
                         force=args.force,
                     )
                     if args.smoke_check:
@@ -892,10 +857,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "state": args.state,
                     "trace": args.trace,
                     "record_out": args.record_out,
-                    "audit_out": args.audit_out,
                     "redact_records": args.redact_records,
-                    "decision_console": args.decision_console,
-                    "decision_console_format": args.decision_console_format,
                     "confirm": args.confirm,
                     "max_body_bytes": args.max_body_bytes,
                     "response_max_bytes": args.response_max_bytes,
@@ -1000,10 +962,7 @@ def _run_loaded_mcp_proxy(
         max_body_bytes=proxy_config["max_body_bytes"],
         timeout=proxy_config["timeout"],
         record_out=proxy_config["record_out"],
-        audit_out=proxy_config["audit_out"],
         redact_records=proxy_config["redact_records"],
-        decision_console=proxy_config["decision_console"],
-        decision_console_format=proxy_config["decision_console_format"],
         confirm=proxy_config["confirm"],
         response_max_bytes=proxy_config["response_max_bytes"],
         response_redact_secrets=proxy_config["response_redact_secrets"],
@@ -1028,7 +987,7 @@ def _run_loaded_mcp_proxy(
         cloudflare_access_allowed_emails=proxy_config["cloudflare_access_allowed_emails"],
         cloudflare_access_allowed_domains=proxy_config["cloudflare_access_allowed_domains"],
         topology_audit=topology_audit,
-        webhooks=proxy_config["webhooks"],
+        event_sinks=proxy_config["event_sinks"],
         fabric_reload_config=fabric_reload_config,
         fabric_reload_interval=fabric_reload_interval,
         fabric_reload_overrides=fabric_reload_overrides,

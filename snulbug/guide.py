@@ -306,13 +306,8 @@ def _workflows() -> dict[str, dict[str, Any]]:
                     "title": "Run a two-upstream facade",
                     "command": "\n".join(
                         [
-                            "snulbug mcp proxy \\",
-                            "  --policy policy.snulbug/policy.lua \\",
-                            "  --facade-upstream files=http://127.0.0.1:9001 \\",
-                            "  --facade-upstream git=http://127.0.0.1:9002 \\",
-                            "  --record-out traces/session.jsonl \\",
-                            "  --audit-out traces/audit.jsonl \\",
-                            "  --decision-console",
+                            "snulbug mcp config init --output snulbug.toml",
+                            "snulbug mcp proxy --config snulbug.toml",
                         ]
                     ),
                     "requires": ["files MCP server on port 9001", "git MCP server on port 9002", "policy bundle"],

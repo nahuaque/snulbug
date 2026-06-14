@@ -174,10 +174,11 @@ tunnel notes.
 
 ## Live Use
 
-Watch decisions while proxying:
+Watch decisions while proxying. The generated config includes a console event
+sink by default:
 
 ```bash
-uv run snulbug mcp proxy --config snulbug.toml --decision-console
+uv run snulbug mcp proxy --config snulbug.toml
 ```
 
 Create a task-scoped lease when you want an MCP client or agent to do one

@@ -64,7 +64,6 @@ def prepare_codespace_attach(
     port: int = DEFAULT_CODESPACE_PORT,
     state: str = "memory",
     discovery_env: str = DEFAULT_CODESPACE_DISCOVERY_ENV,
-    decision_console: bool = True,
     force: bool = True,
 ) -> dict[str, Any]:
     """Write a runnable local gateway config for one Codespaces MCP upstream."""
@@ -101,7 +100,6 @@ def prepare_codespace_attach(
             host=host,
             port=port,
             state=state,
-            decision_console=decision_console,
         ),
         encoding="utf-8",
     )
@@ -116,7 +114,7 @@ def prepare_codespace_attach(
         "gateway": {"url": gateway_url, "host": host, "port": port},
         "upstream": upstream,
         "env": {"name": discovery_env, "value": discovery_value},
-        "logs": {"record_out": str(record_out), "audit_out": str(audit_out)},
+        "logs": {"record_out": str(record_out), "audit_events": str(audit_out)},
         "commands": {
             "proxy": f"uv run snulbug mcp proxy --config {config}",
             "inspect_audit": f"uv run snulbug mcp evidence inspect {audit_out} --kind audit",
@@ -360,7 +358,7 @@ def format_codespace_attach_report(result: Mapping[str, Any]) -> str:
         "## Logs",
         "",
         f"- Replay: `{logs.get('record_out')}`",
-        f"- Audit: `{logs.get('audit_out')}`",
+        f"- Audit events: `{logs.get('audit_events')}`",
     ]
     if smoke:
         ok = "ok" if smoke.get("ok") else "failed"
@@ -401,7 +399,6 @@ def _codespace_attach_toml(
     host: str,
     port: int,
     state: str,
-    decision_console: bool,
 ) -> str:
     return (
         "[mcp.fabric]\n"
@@ -429,10 +426,7 @@ def _codespace_attach_toml(
         f"state = {json.dumps(state)}\n"
         "trace = true\n"
         'record_out = "traces/session.jsonl"\n'
-        'audit_out = "traces/audit.jsonl"\n'
         "redact_records = true\n"
-        f"decision_console = {_toml_bool(decision_console)}\n"
-        'decision_console_format = "text"\n'
         "max_body_bytes = 65536\n"
         "response_max_bytes = 262144\n"
         "response_redact_secrets = true\n"
@@ -445,6 +439,14 @@ def _codespace_attach_toml(
         "facade_health_cooldown_seconds = 10.0\n"
         "facade_health_exclude_unhealthy = true\n"
         "timeout = 30.0\n"
+        "\n"
+        "[[mcp.events.sinks]]\n"
+        'type = "audit_jsonl"\n'
+        'path = "traces/audit.jsonl"\n'
+        "\n"
+        "[[mcp.events.sinks]]\n"
+        'type = "console"\n'
+        'format = "text"\n'
     )
 
 
@@ -607,7 +609,3 @@ def _stop_server(server: ThreadingHTTPServer, thread: threading.Thread) -> None:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
-
-
-def _toml_bool(value: bool) -> str:
-    return "true" if value else "false"

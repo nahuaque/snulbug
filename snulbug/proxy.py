@@ -6,12 +6,11 @@ import http.client
 import json
 import os
 import subprocess
-import sys
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any
 from urllib.parse import SplitResult, urlsplit
 
 from .cloudflare_access import CloudflareAccessConfig, evaluate_cloudflare_access
@@ -28,13 +27,13 @@ from .control_events import (
     make_control_event,
 )
 from .credentials import apply_credential_header, credential_metadata, normalize_upstream_credential
+from .events import build_event_dispatcher, decision_console_event
 from .fabric import annotate_topology_audit, build_fabric_audit_metadata
 from .fabric_control import summarize_fabric_control_state
 from .leases import LeasePolicyConfig, enforce_mcp_lease_policy, mcp_lease_error_response
 from .manifests import load_manifest, verify_upstream_manifest
 from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
 from .recorder import append_record, build_request_record, record_audit_event
-from .redaction import append_audit_event
 from .response_policy import ResponsePolicyConfig, enforce_mcp_response_policy
 from .schema_policy import (
     SchemaPolicyConfig,
@@ -44,7 +43,6 @@ from .schema_policy import (
 )
 from .state import MemoryStateStore, PolicyStateStore, SQLiteStateStore, StateLimits
 from .tunnel import TunnelAuditConfig, build_tunnel_audit_metadata
-from .webhooks import WebhookDispatcher, normalize_webhook_sinks
 
 HOP_BY_HOP_HEADERS = {
     b"connection",
@@ -1502,26 +1500,18 @@ class ProxyRecorderMiddleware:
         *,
         policy: str | Path,
         record_out: str | Path | None = None,
-        audit_out: str | Path | None = None,
         redact_records: bool = True,
-        decision_console: bool | TextIO = False,
-        decision_console_format: str = "text",
         tunnel_audit: TunnelAuditConfig | None = None,
         topology_audit: Mapping[str, Any] | None = None,
-        webhook_dispatcher: Any = None,
+        event_dispatcher: Any = None,
     ) -> None:
         self.app = app
         self.policy = policy
         self.record_out = Path(record_out) if record_out is not None else None
-        self.audit_out = Path(audit_out) if audit_out is not None else None
         self.redact_records = redact_records
-        self.decision_console = _console_stream(decision_console)
-        self.decision_console_format = decision_console_format
         self.tunnel_audit = tunnel_audit or TunnelAuditConfig()
         self.topology_audit = dict(topology_audit or {})
-        self.webhook_dispatcher = webhook_dispatcher
-        if self.decision_console_format not in {"text", "json"}:
-            raise ValueError("decision_console_format must be 'text' or 'json'")
+        self.event_dispatcher = event_dispatcher
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http" or not self._enabled():
@@ -1550,28 +1540,12 @@ class ProxyRecorderMiddleware:
         )
         if self.record_out is not None:
             append_record(self.record_out, record)
-        audit_event = None
-        if self.audit_out is not None or self.webhook_dispatcher is not None:
+        if self.event_dispatcher is not None:
             audit_event = record_audit_event(record)
-        if self.audit_out is not None and audit_event is not None:
-            append_audit_event(self.audit_out, audit_event)
-        if self.webhook_dispatcher is not None and audit_event is not None:
-            self.webhook_dispatcher.emit(audit_event)
-        if self.decision_console is not None:
-            _write_decision_console(
-                self.decision_console,
-                record,
-                audit_event=audit_event,
-                output_format=self.decision_console_format,
-            )
+            self.event_dispatcher.emit(decision_console_event(record, audit_event=audit_event))
 
     def _enabled(self) -> bool:
-        return (
-            self.record_out is not None
-            or self.audit_out is not None
-            or self.decision_console is not None
-            or self.webhook_dispatcher is not None
-        )
+        return self.record_out is not None or self.event_dispatcher is not None
 
 
 class CloudflareAccessMiddleware:
@@ -1769,10 +1743,7 @@ def create_proxy_application(
     max_body_bytes: int = 64 * 1024,
     timeout: float = 30.0,
     record_out: str | Path | None = None,
-    audit_out: str | Path | None = None,
     redact_records: bool = True,
-    decision_console: bool | TextIO = False,
-    decision_console_format: str = "text",
     response_max_bytes: int | None = 256 * 1024,
     response_redact_secrets: bool = True,
     response_block_instructions: bool = False,
@@ -1796,8 +1767,8 @@ def create_proxy_application(
     cloudflare_access_allowed_emails: Sequence[str] = (),
     cloudflare_access_allowed_domains: Sequence[str] = (),
     topology_audit: Mapping[str, Any] | None = None,
-    webhooks: Sequence[Any] | None = None,
-    webhook_dispatcher: Any = None,
+    event_sinks: Sequence[Mapping[str, Any]] | None = None,
+    event_dispatcher: Any = None,
     fabric_reload_config: str | Path | None = None,
     fabric_reload_interval: float = 2.0,
     fabric_reload_overrides: Mapping[str, Any] | None = None,
@@ -1807,10 +1778,8 @@ def create_proxy_application(
 ) -> ASGIApp:
     """Create an ASGI app that applies Lua policy before proxying to an upstream."""
 
-    console_enabled = _console_enabled(decision_console)
-    if webhook_dispatcher is None:
-        webhook_sinks = normalize_webhook_sinks(webhooks or [])
-        webhook_dispatcher = WebhookDispatcher(webhook_sinks) if webhook_sinks else None
+    if event_dispatcher is None:
+        event_dispatcher = build_event_dispatcher(event_sinks=event_sinks)
     effective_state_store = state_store if state_store is not None else MemoryStateStore()
     response_policy = ResponsePolicyConfig(
         max_body_bytes=response_max_bytes,
@@ -1853,13 +1822,7 @@ def create_proxy_application(
         config=LuaConfig(
             read_body=True,
             max_body_bytes=max_body_bytes,
-            trace=(
-                trace
-                or record_out is not None
-                or audit_out is not None
-                or console_enabled
-                or webhook_dispatcher is not None
-            ),
+            trace=(trace or record_out is not None or event_dispatcher is not None),
         ),
         state_store=effective_state_store,
         state_limits=state_limits,
@@ -1875,18 +1838,15 @@ def create_proxy_application(
     )
     if cloudflare_access_config.mode != "off":
         app = CloudflareAccessMiddleware(app, config=cloudflare_access_config)
-    if record_out is not None or audit_out is not None or console_enabled or webhook_dispatcher is not None:
+    if record_out is not None or event_dispatcher is not None:
         app = ProxyRecorderMiddleware(
             app,
             policy=policy,
             record_out=record_out,
-            audit_out=audit_out,
             redact_records=redact_records,
-            decision_console=decision_console,
-            decision_console_format=decision_console_format,
             tunnel_audit=TunnelAuditConfig(provider=tunnel_provider, public_url=tunnel_public_url),
             topology_audit=topology_audit,
-            webhook_dispatcher=webhook_dispatcher,
+            event_dispatcher=event_dispatcher,
         )
     if fabric_reload_config is not None:
         if facade_proxy is None:
@@ -1915,10 +1875,7 @@ def run_proxy(
     max_body_bytes: int = 64 * 1024,
     timeout: float = 30.0,
     record_out: str | Path | None = None,
-    audit_out: str | Path | None = None,
     redact_records: bool = True,
-    decision_console: bool = False,
-    decision_console_format: str = "text",
     response_max_bytes: int | None = 256 * 1024,
     response_redact_secrets: bool = True,
     response_block_instructions: bool = False,
@@ -1942,7 +1899,7 @@ def run_proxy(
     cloudflare_access_allowed_emails: Sequence[str] = (),
     cloudflare_access_allowed_domains: Sequence[str] = (),
     topology_audit: Mapping[str, Any] | None = None,
-    webhooks: Sequence[Any] | None = None,
+    event_sinks: Sequence[Mapping[str, Any]] | None = None,
     fabric_reload_config: str | Path | None = None,
     fabric_reload_interval: float = 2.0,
     fabric_reload_overrides: Mapping[str, Any] | None = None,
@@ -1965,10 +1922,7 @@ def run_proxy(
         max_body_bytes=max_body_bytes,
         timeout=timeout,
         record_out=record_out,
-        audit_out=audit_out,
         redact_records=redact_records,
-        decision_console=decision_console,
-        decision_console_format=decision_console_format,
         response_max_bytes=response_max_bytes,
         response_redact_secrets=response_redact_secrets,
         response_block_instructions=response_block_instructions,
@@ -1992,7 +1946,7 @@ def run_proxy(
         cloudflare_access_allowed_emails=cloudflare_access_allowed_emails,
         cloudflare_access_allowed_domains=cloudflare_access_allowed_domains,
         topology_audit=topology_audit,
-        webhooks=webhooks,
+        event_sinks=event_sinks,
         fabric_reload_config=fabric_reload_config,
         fabric_reload_interval=fabric_reload_interval,
         fabric_reload_overrides=fabric_reload_overrides,
@@ -2188,129 +2142,6 @@ def _schema_metadata(request_metadata: Mapping[str, Any], observe_metadata: Mapp
     if observe_metadata.get("observed") or observe_metadata.get("json_error"):
         merged["tools_list"] = dict(observe_metadata)
     return merged
-
-
-def _console_enabled(value: bool | TextIO) -> bool:
-    return value is not False and value is not None
-
-
-def _console_stream(value: bool | TextIO) -> TextIO | None:
-    if value is True:
-        return sys.stderr
-    if value is False or value is None:
-        return None
-    return value
-
-
-def _write_decision_console(
-    output: TextIO,
-    record: Mapping[str, Any],
-    *,
-    audit_event: Mapping[str, Any] | None = None,
-    output_format: str,
-) -> None:
-    event = _decision_console_event(record, audit_event=audit_event)
-    if output_format == "json":
-        line = json.dumps(event, sort_keys=True, separators=(",", ":"))
-    else:
-        line = _format_decision_console_line(event)
-    output.write(line)
-    output.write("\n")
-    output.flush()
-
-
-def _decision_console_event(
-    record: Mapping[str, Any],
-    *,
-    audit_event: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    event = dict(audit_event) if audit_event is not None else record_audit_event(record)
-    result = record.get("result")
-    trace = result.get("trace") if isinstance(result, Mapping) else None
-    if isinstance(trace, Mapping):
-        event["trace"] = {
-            "duration_ms": trace.get("duration_ms"),
-            "instruction_count": trace.get("instruction_count"),
-        }
-    return event
-
-
-def _format_decision_console_line(event: Mapping[str, Any]) -> str:
-    request = event.get("request") if isinstance(event.get("request"), Mapping) else {}
-    decision = event.get("decision") if isinstance(event.get("decision"), Mapping) else {}
-    response = event.get("response") if isinstance(event.get("response"), Mapping) else {}
-    mcp = event.get("mcp") if isinstance(event.get("mcp"), Mapping) else {}
-    trace = event.get("trace") if isinstance(event.get("trace"), Mapping) else {}
-    metadata = event.get("metadata") if isinstance(event.get("metadata"), Mapping) else {}
-    lease = metadata.get("lease") if isinstance(metadata.get("lease"), Mapping) else {}
-    tunnel = event.get("tunnel") if isinstance(event.get("tunnel"), Mapping) else {}
-    cloudflare_access = (
-        event.get("cloudflare_access")
-        if isinstance(event.get("cloudflare_access"), Mapping)
-        else metadata.get("cloudflare_access")
-        if isinstance(metadata.get("cloudflare_access"), Mapping)
-        else {}
-    )
-    confirmation = decision.get("confirmation") if isinstance(decision.get("confirmation"), Mapping) else {}
-
-    parts = [
-        "snulbug",
-        f"decision={decision.get('action', 'unknown')}",
-        f"allowed={str(bool(decision.get('allowed', False))).lower()}",
-        f"status={response.get('status', decision.get('status', '-'))}",
-        f"method={request.get('method', '-')}",
-        f"path={request.get('path', '-')}",
-    ]
-    if decision.get("reason_code"):
-        parts.append(f"reason_code={decision['reason_code']}")
-    if decision.get("reason"):
-        parts.append(f"reason={_console_value(decision['reason'])}")
-    if confirmation:
-        parts.append(f"confirm.approved={str(bool(confirmation.get('approved', False))).lower()}")
-        if confirmation.get("mode"):
-            parts.append(f"confirm.mode={confirmation['mode']}")
-        if confirmation.get("reason_code"):
-            parts.append(f"confirm.reason_code={confirmation['reason_code']}")
-    if lease:
-        if lease.get("id"):
-            parts.append(f"lease.id={lease['id']}")
-        if lease.get("task"):
-            parts.append(f"lease.task={_console_value(lease['task'])}")
-        if lease.get("reason_code"):
-            parts.append(f"lease.reason_code={lease['reason_code']}")
-        if lease.get("allowed") is not None:
-            parts.append(f"lease.allowed={str(bool(lease['allowed'])).lower()}")
-    if tunnel:
-        if tunnel.get("provider"):
-            parts.append(f"tunnel.provider={tunnel['provider']}")
-        if tunnel.get("edge_request_id"):
-            parts.append(f"tunnel.edge_request_id={tunnel['edge_request_id']}")
-    if cloudflare_access:
-        if cloudflare_access.get("mode"):
-            parts.append(f"cf_access.mode={cloudflare_access['mode']}")
-        if cloudflare_access.get("reason_code"):
-            parts.append(f"cf_access.reason_code={cloudflare_access['reason_code']}")
-        if cloudflare_access.get("email"):
-            parts.append(f"cf_access.email={_console_value(cloudflare_access['email'])}")
-    if request.get("query_string"):
-        parts.append(f"query={request['query_string']}")
-    if mcp.get("method"):
-        parts.append(f"mcp.method={mcp['method']}")
-    if mcp.get("tool"):
-        parts.append(f"mcp.tool={mcp['tool']}")
-    elif mcp.get("target"):
-        parts.append(f"mcp.target={mcp['target']}")
-    if mcp.get("request_id") is not None:
-        parts.append(f"mcp.id={mcp['request_id']}")
-    if trace.get("duration_ms") is not None:
-        parts.append(f"lua_ms={float(trace['duration_ms']):.3f}")
-    if trace.get("instruction_count") is not None:
-        parts.append(f"lua_instructions={trace['instruction_count']}")
-    return " ".join(parts)
-
-
-def _console_value(value: Any) -> str:
-    return json.dumps(str(value), separators=(",", ":"))
 
 
 def _coerce_facade_upstream(upstream: FacadeUpstream | Mapping[str, Any]) -> FacadeUpstream:

@@ -71,7 +71,6 @@ policy = "policy.snulbug/policy.lua"
 host = "127.0.0.1"
 port = 8080
 record_out = "traces/session.jsonl"
-audit_out = "traces/audit.jsonl"
 redact_records = true
 confirm = false
 response_max_bytes = 262144
@@ -83,12 +82,20 @@ schema_validation_action = "block"
 lease_file = "leases.json"
 lease_required = false
 lease_header = "x-snulbug-lease"
+
+[[mcp.events.sinks]]
+type = "audit_jsonl"
+path = "traces/audit.jsonl"
+
+[[mcp.events.sinks]]
+type = "console"
+format = "text"
 ```
 
 Run the proxy:
 
 ```bash
-uv run snulbug mcp proxy --config snulbug.toml --decision-console
+uv run snulbug mcp proxy --config snulbug.toml
 ```
 
 Point the client at:
@@ -330,10 +337,11 @@ already authenticates callers and rejects abusive traffic.
 
 ## 4. Observe a client session
 
-Run the proxy with the decision console:
+Run the proxy. If the config includes a `console` event sink, it prints live
+decisions:
 
 ```bash
-uv run snulbug mcp proxy --config snulbug.toml --decision-console
+uv run snulbug mcp proxy --config snulbug.toml
 ```
 
 The console prints one redacted decision per request, including the MCP method,
@@ -410,7 +418,6 @@ policy = "policy.snulbug/policy.lua"
 host = "127.0.0.1"
 port = 8080
 record_out = "traces/session.jsonl"
-audit_out = "traces/audit.jsonl"
 confirm = false
 response_max_bytes = 262144
 response_redact_secrets = true
@@ -421,6 +428,14 @@ schema_validation_action = "block"
 lease_file = "leases.json"
 lease_required = false
 lease_header = "x-snulbug-lease"
+
+[[mcp.events.sinks]]
+type = "audit_jsonl"
+path = "traces/audit.jsonl"
+
+[[mcp.events.sinks]]
+type = "console"
+format = "text"
 
 [[mcp.proxy.upstreams]]
 name = "files"
@@ -445,7 +460,7 @@ tool_prefix = "devbox."
 Run the proxy:
 
 ```bash
-uv run snulbug mcp proxy --config snulbug.toml --decision-console
+uv run snulbug mcp proxy --config snulbug.toml
 ```
 
 Point the client at the single facade endpoint:

@@ -224,7 +224,7 @@ def handle_mcp_fabric_command(args: argparse.Namespace, parser: argparse.Argumen
                     once=args.once,
                     emit=emit_controller_result,
                     status_server=status_server,
-                    webhooks=fabric_config["webhooks"],
+                    event_sinks=fabric_config["event_sinks"],
                 )
             finally:
                 if status_server is not None and args.once:

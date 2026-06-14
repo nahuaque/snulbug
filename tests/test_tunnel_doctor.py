@@ -32,7 +32,7 @@ def test_tunnel_doctor_checks_local_proxy_and_log_growth(tmp_path):
     assert checks["local.unauthenticated_blocked"]["status"] == "pass"
     assert checks["local.authenticated_mcp_round_trip"]["status"] == "pass"
     assert checks["logs.record_out_grew"]["status"] == "pass"
-    assert checks["logs.audit_out_grew"]["status"] == "pass"
+    assert checks["logs.audit_jsonl_grew"]["status"] == "pass"
 
 
 def test_tunnel_doctor_fails_when_public_url_reaches_unprotected_upstream():
@@ -101,12 +101,15 @@ def write_config(tmp_path: Path, port: int) -> Path:
         host = "127.0.0.1"
         port = {port}
         record_out = "records.jsonl"
-        audit_out = "audit.jsonl"
         redact_records = true
         response_redact_secrets = true
         tool_pinning = true
         tool_pinning_action = "block"
         schema_validation = true
+
+        [[mcp.events.sinks]]
+        type = "audit_jsonl"
+        path = "audit.jsonl"
         """,
         encoding="utf-8",
     )

@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from .events import ConsoleEventSink, EventDispatcher, JsonlEventSink
 from .inspection import format_mcp_inspection_report, inspect_mcp_log
 from .learn import amend_mcp_policy, learn_mcp_policy
 from .proxy import create_proxy_application
@@ -61,8 +62,12 @@ def run_mcp_lab(output_dir: str | Path = DEFAULT_LAB_DIR, *, force: bool = True,
                 {"name": "git", "url": git_url},
             ],
             record_out=record_log,
-            audit_out=audit_log,
-            decision_console=console,
+            event_dispatcher=EventDispatcher(
+                [
+                    JsonlEventSink(audit_log, events=("snulbug.audit",)),
+                    ConsoleEventSink(console, output_format="text"),
+                ]
+            ),
             timeout=5.0,
         )
         listed = _send_mcp(app, "list-tools", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})

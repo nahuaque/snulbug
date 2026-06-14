@@ -1581,11 +1581,13 @@ def _log_stats(proxy_config: Mapping[str, Any] | None) -> dict[str, int | None]:
     if not isinstance(proxy_config, Mapping):
         return {}
     stats: dict[str, int | None] = {}
-    for key in ("record_out", "audit_out"):
-        value = proxy_config.get(key)
-        if value:
-            path = Path(value)
-            stats[key] = path.stat().st_size if path.exists() else 0
+    record_out = proxy_config.get("record_out")
+    if record_out:
+        path = Path(record_out)
+        stats["record_out"] = path.stat().st_size if path.exists() else 0
+    audit_path = _audit_event_sink_path(proxy_config)
+    if audit_path is not None:
+        stats["audit_jsonl"] = audit_path.stat().st_size if audit_path.exists() else 0
     return stats
 
 
@@ -1599,9 +1601,12 @@ def _log_checks(
     if not isinstance(proxy_config, Mapping):
         _add_check(checks, "logs.configured", None, "no config was loaded, so log paths could not be checked")
         return
-    for key in ("record_out", "audit_out"):
-        value = proxy_config.get(key)
-        if not value:
+    log_paths = {
+        "record_out": Path(proxy_config["record_out"]) if proxy_config.get("record_out") else None,
+        "audit_jsonl": _audit_event_sink_path(proxy_config),
+    }
+    for key, path in log_paths.items():
+        if path is None:
             _add_check(checks, f"logs.{key}_configured", None, f"{key} is not configured")
             continue
         grew = (after.get(key) or 0) > (before.get(key) or 0)
@@ -1610,8 +1615,18 @@ def _log_checks(
             f"logs.{key}_grew",
             grew,
             f"{key} grew after doctor probes",
-            details={"path": str(value), "before_bytes": before.get(key), "after_bytes": after.get(key)},
+            details={"path": str(path), "before_bytes": before.get(key), "after_bytes": after.get(key)},
         )
+
+
+def _audit_event_sink_path(proxy_config: Mapping[str, Any]) -> Path | None:
+    event_sinks = proxy_config.get("event_sinks", [])
+    if not isinstance(event_sinks, Sequence) or isinstance(event_sinks, str | bytes | bytearray):
+        return None
+    for sink in event_sinks:
+        if isinstance(sink, Mapping) and sink.get("type") == "audit_jsonl" and sink.get("path"):
+            return Path(str(sink["path"]))
+    return None
 
 
 def _summary(checks: Sequence[Mapping[str, Any]]) -> dict[str, int]:
@@ -1638,7 +1653,9 @@ def _recommendations(
     if check_statuses.get("public.unauthenticated_blocked") == "fail":
         recommendations.append("Point the tunnel at snulbug, not the upstream MCP server, and require bearer auth.")
     if any(check.get("status") == "fail" and str(check.get("id", "")).startswith("logs.") for check in checks):
-        recommendations.append("Run the proxy with record_out and audit_out enabled before relying on tunnel traffic.")
+        recommendations.append(
+            "Run the proxy with record_out and an audit_jsonl event sink before relying on tunnel traffic."
+        )
     if any(check.get("status") == "fail" and str(check.get("id", "")).startswith("config.") for check in checks):
         recommendations.append(
             "Regenerate with `snulbug mcp quickstart --preset tunnel-safe` or restore safe defaults."
