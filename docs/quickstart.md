@@ -46,14 +46,26 @@ uv run snulbug mcp share create \
 ```
 
 The command writes a self-contained directory under `.snulbug/shares/`. Run the
-session lifecycle from that directory:
+primary lifecycle from that directory:
 
 ```bash
 uv run snulbug mcp share run .snulbug/shares/share-...
-uv run snulbug mcp share doctor .snulbug/shares/share-...
-uv run snulbug mcp share client .snulbug/shares/share-...
-uv run snulbug mcp share close .snulbug/shares/share-... --report --revoke
+uv run snulbug mcp share status .snulbug/shares/share-...
+uv run snulbug mcp policy amend \
+  .snulbug/shares/share-.../policy.snulbug \
+  .snulbug/shares/share-.../traces/audit.jsonl \
+  --out .snulbug/shares/share-.../policy.snulbug \
+  --force
+export SNULBUG_BUNDLE_SECRET=...
+uv run snulbug mcp share promote .snulbug/shares/share-... --to proposed --key-id local-review
+uv run snulbug mcp share promote .snulbug/shares/share-... --to approved --key-id local-review
+uv run snulbug mcp share activate .snulbug/shares/share-... --key-id local-review
+uv run snulbug mcp share report .snulbug/shares/share-... \
+  --output .snulbug/shares/share-.../share-report.md
 ```
+
+Before handing the generated client config to an MCP client, also run
+`snulbug mcp share doctor` and inspect `snulbug mcp share client`.
 
 ## 2. Run the policy lab
 

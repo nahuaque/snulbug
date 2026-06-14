@@ -7,6 +7,16 @@ proxying, verification, and closeout reporting into one generated directory.
 Use it when you want to give an agent or collaborator temporary access to a
 local MCP server without hand-wiring every control.
 
+## Golden path
+
+The high-level session loop is:
+
+```text
+share create -> share run -> share status -> policy amend -> share activate -> share report
+```
+
+Create the bounded session:
+
 ```bash
 uv run snulbug mcp share create \
   --provider holepunch \
@@ -15,6 +25,48 @@ uv run snulbug mcp share create \
   --allow-tool list_project_files \
   --ttl 30m
 ```
+
+Run it:
+
+```bash
+export SNULBUG_SHARE_TOKEN=...
+uv run snulbug mcp share run .snulbug/shares/share-...
+```
+
+Check live state:
+
+```bash
+uv run snulbug mcp share status .snulbug/shares/share-...
+```
+
+If the audit log shows a legitimate blocked request, amend the reviewed policy
+bundle:
+
+```bash
+uv run snulbug mcp policy amend \
+  .snulbug/shares/share-.../policy.snulbug \
+  .snulbug/shares/share-.../traces/audit.jsonl \
+  --out .snulbug/shares/share-.../policy.snulbug \
+  --force
+```
+
+Then promote and activate the policy bundle:
+
+```bash
+export SNULBUG_BUNDLE_SECRET=...
+uv run snulbug mcp share promote .snulbug/shares/share-... --to proposed --key-id local-review
+uv run snulbug mcp share promote .snulbug/shares/share-... --to approved --key-id local-review
+uv run snulbug mcp share activate .snulbug/shares/share-... --key-id local-review
+```
+
+Generate the closeout report:
+
+```bash
+uv run snulbug mcp share report .snulbug/shares/share-... \
+  --output .snulbug/shares/share-.../share-report.md
+```
+
+## Generated files
 
 By default, the command writes under `.snulbug/shares/share-*` and creates:
 

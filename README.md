@@ -54,48 +54,23 @@ uv add "snulbug[discovery,redis] @ git+https://github.com/lbruhacs/snulbug"
 
 `snulbug` supports Python 3.10 through 3.13.
 
-## One-Command Lab
+## Golden Path
 
-Run the full MCP policy lifecycle without wiring up a real server:
+The primary workflow is:
 
-```bash
-uv run snulbug mcp share lab
+```text
+share create -> share run -> share status -> policy amend -> share activate -> share report
 ```
 
-The lab creates fake MCP upstreams behind one facade, records traffic, learns a
-least-privilege policy, amends a blocked request into a candidate policy, and
-writes replay/audit/report artifacts under `.snulbug-lab/`.
-
-## Codespaces Demo
-
-In the Codespace terminal, start the bundled mock MCP server:
-
-```bash
-uv run snulbug mcp share codespace serve-demo
-```
-
-It prints the forwarded MCP URL and the matching laptop command. On the laptop,
-attach that URL to a local snulbug gateway:
-
-```bash
-uv run snulbug mcp share codespace attach https://YOUR-CODESPACE-9001.app.github.dev/mcp
-```
-
-`attach` generates `.snulbug/codespace-local/`, preflights the upstream with
-`tools/list`, starts the gateway at `http://127.0.0.1:8080/mcp`, and writes
-replay/audit logs for inspection.
-
-## Quickstart
-
-Ask the CLI for a copy-paste workflow before wiring a client or harness:
+Ask the CLI for a copy-paste version before wiring a client or harness:
 
 ```bash
 uv run snulbug mcp guide --workflow share
 uv run snulbug mcp guide --workflow learn-amend-impact --compact
 ```
 
-For a temporary share session with generated bearer auth, a task lease, provider
-setup, client config, and close-out report commands:
+1. Create a temporary share session with generated bearer auth, a task lease,
+   provider setup, client config, and close-out report commands:
 
 ```bash
 uv run snulbug mcp share create \
@@ -106,20 +81,7 @@ uv run snulbug mcp share create \
   --ttl 30m
 ```
 
-For a public tunnel or peer bridge, use `mcp share create`; it generates the
-`tunnel-safe` policy, bearer token, lease, provider setup, client config, and
-doctor command as one bounded session:
-
-```bash
-uv run snulbug mcp share create \
-  --provider ngrok \
-  --upstream http://127.0.0.1:9000 \
-  --allow-tool safe_read_file \
-  --allow-tool list_project_files \
-  --ttl 30m
-```
-
-Start the protected proxy from the generated share directory:
+2. Run the protected gateway from the generated share directory:
 
 ```bash
 export SNULBUG_SHARE_TOKEN=...
@@ -130,52 +92,48 @@ Inside a generated share directory, `uv run snulbug mcp share run` is enough;
 it reads `.snulbug/share/session.json` and reconciles the active config,
 policy, lease, and log paths before starting the gateway.
 
-Run the provider command from `.snulbug/shares/share-.../tunnel/`, then copy the
-exact public HTTPS URL printed by the provider into the generated
-`mcp-client.json` if you used a random forwarding URL.
+3. Check what is happening:
 
 ```bash
-(cd .snulbug/shares/share-.../tunnel && \
-  ngrok http 8080 --traffic-policy-file ngrok-traffic-policy.yml)
-```
-
-Smoke-test the public MCP endpoint:
-
-```bash
-NGROK_URL=https://YOUR-NGROK-FORWARDING-DOMAIN
-curl -sS "${NGROK_URL}/mcp" \
-  -H "Authorization: Bearer ${SNULBUG_SHARE_TOKEN}" \
-  -H "x-snulbug-lease: YOUR_SHARE_LEASE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json, text/event-stream" \
-  -d '{"jsonrpc":"2.0","id":"tools-list","method":"tools/list","params":{}}'
-```
-
-Before sharing the client config, run the share doctor. It is the single
-pre-share gate for generated config, policy bundle validity, fabric checks,
-current status, and public tunnel safety:
-
-```bash
-uv run snulbug mcp share doctor .snulbug/shares/share-... \
-  --url "${NGROK_URL}/mcp"
 uv run snulbug mcp share status .snulbug/shares/share-...
-uv run snulbug mcp share client .snulbug/shares/share-...
 ```
 
-During or after a session, generate a Markdown report from the session model
-and audit evidence:
+4. If a legitimate request was blocked, amend the reviewed policy bundle from
+   the audit log:
+
+```bash
+uv run snulbug mcp policy amend \
+  .snulbug/shares/share-.../policy.snulbug \
+  .snulbug/shares/share-.../traces/audit.jsonl \
+  --out .snulbug/shares/share-.../policy.snulbug \
+  --force
+```
+
+5. Promote and activate the share policy without leaving the share workflow:
+
+```bash
+export SNULBUG_BUNDLE_SECRET=...
+uv run snulbug mcp share promote .snulbug/shares/share-... --to proposed --key-id local-review
+uv run snulbug mcp share promote .snulbug/shares/share-... --to approved --key-id local-review
+uv run snulbug mcp share activate .snulbug/shares/share-... --key-id local-review
+```
+
+6. Generate the closeout report from the session model and audit evidence:
 
 ```bash
 uv run snulbug mcp share report .snulbug/shares/share-... \
   --output .snulbug/shares/share-.../share-report.md
 ```
 
-Promote and activate the share policy without leaving the share workflow:
+Before sharing a public URL or client config, run the share doctor. It is the
+single pre-share gate for generated config, policy bundle validity, fabric
+checks, current status, and public tunnel safety:
 
 ```bash
-uv run snulbug mcp share promote .snulbug/shares/share-... --to proposed --key-id local-review
-uv run snulbug mcp share promote .snulbug/shares/share-... --to approved --key-id local-review
-uv run snulbug mcp share activate .snulbug/shares/share-... --key-id local-review
+PUBLIC_MCP_URL=https://YOUR-FORWARDING-DOMAIN/mcp
+uv run snulbug mcp share doctor .snulbug/shares/share-... \
+  --url "${PUBLIC_MCP_URL}"
+uv run snulbug mcp share client .snulbug/shares/share-...
 ```
 
 For multi-upstream facade setups, inspect the declared fabric before handing it
@@ -194,6 +152,36 @@ uv run snulbug mcp fabric conformance run .snulbug/fabric-conformance
 See the full [local MCP policy gateway quickstart](docs/quickstart.md) for
 client setup, facade mode, fabric checks, recording, replay, inspection, and
 tunnel notes.
+
+## Demos
+
+Run the local policy lab when you want the full lifecycle without wiring a real
+server:
+
+```bash
+uv run snulbug mcp share lab
+```
+
+The lab creates fake MCP upstreams behind one facade, records traffic, learns a
+least-privilege policy, amends a blocked request into a candidate policy, and
+writes replay/audit/report artifacts under `.snulbug-lab/`.
+
+For Codespaces, start the bundled mock MCP server in the Codespace terminal:
+
+```bash
+uv run snulbug mcp share codespace serve-demo
+```
+
+It prints the forwarded MCP URL and the matching laptop command. On the laptop,
+attach that URL to a local snulbug gateway:
+
+```bash
+uv run snulbug mcp share codespace attach https://YOUR-CODESPACE-9001.app.github.dev/mcp
+```
+
+`attach` generates `.snulbug/codespace-local/`, preflights the upstream with
+`tools/list`, starts the gateway at `http://127.0.0.1:8080/mcp`, and writes
+replay/audit logs for inspection.
 
 ## Live Use
 
@@ -290,17 +278,18 @@ Workflow:
 Start with:
 
 - [Quickstart: local MCP policy gateway](docs/quickstart.md)
+- [MCP share sessions](docs/mcp-share.md)
 - [MCP CLI guide for agents and harnesses](docs/mcp-guide.md)
 - [MCP policy workflow: preset, learn, amend, lifecycle](docs/mcp-policy.md)
 - [MCP schema workflow: discover, diff, generate policy](docs/mcp-schemas.md)
 - [MCP evidence workflow: record, replay, inspect, impact, diff](docs/mcp-evidence.md)
 - [MCP reverse proxy](docs/mcp-proxy.md)
 - [MCP fabric config, discovery, and conformance](docs/mcp-fabric.md)
-- [MCP share sessions](docs/mcp-share.md)
 - [Codespaces and devcontainers](docs/devcontainers.md)
 - [MCP client setup recipes](docs/mcp-client-recipes.md)
 - [Security model](docs/security-model.md)
 - [Positioning and comparisons](docs/comparison.md)
+- [Roadmap](docs/roadmap.md)
 
 Reference docs:
 

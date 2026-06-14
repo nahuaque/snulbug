@@ -1,25 +1,35 @@
 # snulbug docs
 
-## Start Here
+## Start Here: Golden Path
+
+Start with the share session lifecycle:
+
+```text
+share create -> share run -> share status -> policy amend -> share activate -> share report
+```
 
 - [Quickstart: local MCP policy gateway](quickstart.md)
+- [MCP share sessions](mcp-share.md)
 - [MCP CLI guide for agents and harnesses](mcp-guide.md)
-- [One-command MCP policy lab](quickstart.md#2-run-the-policy-lab)
-- [End-to-end MCP policy proxy demo](../examples/mcp_proxy_demo/README.md)
 
-## Core MCP Workflow
+## Deeper MCP Workflows
 
 - [Policy workflow: preset, learn, amend, lifecycle](mcp-policy.md)
+- [Policy bundles](bundles.md)
 - [Schema workflow: discover, diff, generate policy](mcp-schemas.md)
 - [Evidence workflow: record, replay, inspect, impact, diff](mcp-evidence.md)
 - [Reverse proxy and live recording](mcp-proxy.md)
 - [Fabric control plane and facade routing](mcp-fabric.md)
 
-## Sharing And Setup
+## Sharing, Tunnels, And Remote Dev
 
-- [MCP share sessions](mcp-share.md)
 - [MCP client setup recipes](mcp-client-recipes.md)
 - [Codespaces and devcontainers](devcontainers.md)
+
+## Demos
+
+- [One-command MCP policy lab](quickstart.md#2-run-the-policy-lab)
+- [End-to-end MCP policy proxy demo](../examples/mcp_proxy_demo/README.md)
 
 ## Detailed References
 
@@ -27,10 +37,10 @@
 - [MCP learn and amend mode](mcp-learn.md)
 - [MCP evidence record, replay, and inspect](mcp-recorder.md)
 - [MCP evidence impact preview](mcp-impact.md)
-- [Policy bundles](bundles.md)
 - [State adapters](state.md)
 - [Security model](security-model.md)
 - [Positioning and comparisons](comparison.md)
+- [Roadmap](roadmap.md)
 
 ## Generic ASGI Middleware
 
