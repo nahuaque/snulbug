@@ -357,8 +357,9 @@ uv run snulbug mcp evidence inspect traces/audit.jsonl --kind audit
 Replay records are redacted by default. If you need exact replay for a local
 debug session, opt in explicitly:
 
-```bash
-uv run snulbug mcp proxy --config snulbug.toml --no-redact-records
+```toml
+[mcp.proxy]
+redact_records = false
 ```
 
 Exact replay records can contain bearer tokens, cookies, API keys, and tool

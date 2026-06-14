@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import SplitResult, urlsplit
 
+from .config import default_event_sink_configs, format_event_sinks_toml
+
 DEFAULT_CODESPACE_ATTACH_DIR = Path(".snulbug/codespace-local")
 DEFAULT_CODESPACE_DISCOVERY_ENV = "SNULBUG_DISCOVERY_UPSTREAMS"
 DEFAULT_CODESPACE_DEMO_HOST = "0.0.0.0"
@@ -439,14 +441,7 @@ def _codespace_attach_toml(
         "facade_health_cooldown_seconds = 10.0\n"
         "facade_health_exclude_unhealthy = true\n"
         "timeout = 30.0\n"
-        "\n"
-        "[[mcp.events.sinks]]\n"
-        'type = "audit_jsonl"\n'
-        'path = "traces/audit.jsonl"\n'
-        "\n"
-        "[[mcp.events.sinks]]\n"
-        'type = "console"\n'
-        'format = "text"\n'
+        f"{format_event_sinks_toml(default_event_sink_configs(audit_path='traces/audit.jsonl'))}\n"
     )
 
 

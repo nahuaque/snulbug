@@ -157,13 +157,14 @@ snulbug mcp evidence inspect traces/audit.jsonl --kind audit
 snulbug mcp evidence inspect traces/audit.jsonl --kind audit --report-out traces/session-report.md
 ```
 
-Live replay records are redacted by default. Use `--no-redact-records` only when
-you need exact auth-sensitive replay artifacts.
+Live replay records are redacted by default. Set `redact_records = false` in
+`snulbug.toml` only when you need exact auth-sensitive replay artifacts.
 
-CLI flags override config values:
+The proxy CLI accepts a small bootstrap override surface for host, port,
+upstream, facade upstreams, policy, and replay record output:
 
 ```bash
-snulbug mcp proxy --config snulbug.toml --port 8181 --no-trace
+snulbug mcp proxy --config snulbug.toml --port 8181
 ```
 
 For facade mode, the proxy can hot-reload upstream routes from the declarative
@@ -378,11 +379,8 @@ schema_validation = true
 schema_validation_action = "block"
 ```
 
-Use warn mode while introducing the proxy to an existing workflow:
-
-```bash
-snulbug mcp proxy --config snulbug.toml --schema-validation-action warn
-```
+Use warn mode while introducing the proxy to an existing workflow by setting
+`schema_validation_action = "warn"` in `snulbug.toml`.
 
 Schema snapshots live in the configured state adapter. Use SQLite if you want
 learned schemas to survive proxy restarts.
@@ -415,13 +413,8 @@ tool_pinning = true
 tool_pinning_action = "block"
 ```
 
-CLI overrides:
-
-```bash
-snulbug mcp proxy --config snulbug.toml --response-max-bytes 131072
-snulbug mcp proxy --config snulbug.toml --response-block-instructions
-snulbug mcp proxy --config snulbug.toml --tool-pinning-action warn
-```
+Configure response controls in `snulbug.toml`; the proxy CLI intentionally keeps
+advanced runtime policy out of flags.
 
 For reviewable snapshots and CI checks outside the live proxy, use
 `snulbug mcp schemas discover --method tools` and `snulbug mcp schemas diff`.
@@ -434,7 +427,14 @@ always allowed or always blocked. The proxy fails closed unless confirmation is
 explicitly enabled:
 
 ```bash
-snulbug mcp proxy --config snulbug.toml --confirm
+snulbug mcp proxy --config snulbug.toml
+```
+
+with:
+
+```toml
+[mcp.proxy]
+confirm = true
 ```
 
 Example policy fragment:
@@ -715,16 +715,27 @@ use `rate_limit`.
 Use SQLite-backed local state:
 
 ```bash
-snulbug mcp proxy --config snulbug.toml --state sqlite:policy-state.sqlite3
+snulbug mcp proxy --config snulbug.toml
+```
+
+with:
+
+```toml
+[mcp.proxy]
+state = "sqlite:policy-state.sqlite3"
 ```
 
 Disable state:
 
 ```bash
-snulbug mcp proxy \
-  --upstream http://127.0.0.1:9000 \
-  --policy policy.snulbug/policy.lua \
-  --state none
+snulbug mcp proxy --config snulbug.toml
+```
+
+with:
+
+```toml
+[mcp.proxy]
+state = "none"
 ```
 
 Policies using `rate_limit` require state.

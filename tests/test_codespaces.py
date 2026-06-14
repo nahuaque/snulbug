@@ -189,13 +189,13 @@ def test_mcp_codespace_serve_demo_cli_dry_run_outputs_laptop_command(capsys, mon
 def test_mcp_codespace_attach_cli_sets_env_and_starts_proxy(tmp_path, capsys, monkeypatch):
     started = {}
 
-    def fake_run_loaded_mcp_proxy(proxy_config, fabric_config, **kwargs):
+    def fake_run_mcp_proxy_config(proxy_config, fabric_config, **kwargs):
         started["proxy_config"] = proxy_config
         started["fabric_config"] = fabric_config
         started["kwargs"] = kwargs
 
     monkeypatch.delenv("SNULBUG_DISCOVERY_UPSTREAMS", raising=False)
-    monkeypatch.setattr(simulator, "_run_loaded_mcp_proxy", fake_run_loaded_mcp_proxy)
+    monkeypatch.setattr("snulbug.proxy.run_mcp_proxy_config", fake_run_mcp_proxy_config)
 
     status = simulator.main(
         [

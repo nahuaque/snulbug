@@ -294,15 +294,16 @@ Send the returned `x-snulbug-lease` header with MCP requests. Set
 `lease_required = true` in `snulbug.toml` when every `tools/call` should require
 an active task lease.
 
-If your policy uses `action = "confirm"` for risky calls, run the proxy with
-confirmation enabled:
+If your policy uses `action = "confirm"` for risky calls, enable confirmation in
+`snulbug.toml`:
 
-```bash
-uv run snulbug mcp proxy --config snulbug.toml --confirm
+```toml
+[mcp.proxy]
+confirm = true
 ```
 
 Confirmation prompts support allow once, allow for this proxy session, or deny.
-Without `--confirm`, confirmation decisions reject by default.
+Without `confirm = true`, confirmation decisions reject by default.
 
 After a session, inspect the captured replay and audit logs:
 
@@ -313,7 +314,7 @@ uv run snulbug mcp evidence inspect traces/audit.jsonl --kind audit --report-out
 ```
 
 Replay records and audit logs are redacted by default. Keep that default for
-normal local development. Use `--no-redact-records` only when you need exact
+normal local development. Set `redact_records = false` only when you need exact
 auth-sensitive replay artifacts for a short-lived local debugging session.
 
 ## Next steps

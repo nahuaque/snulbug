@@ -24,7 +24,7 @@ For hostile third-party scripts, add an external isolation boundary. A separate 
 
 CLI-created request replay logs and proxy replay logs are redacted by default.
 Use `snulbug mcp evidence record --no-redact ...` or
-`snulbug mcp proxy --no-redact-records ...` only when exact auth-sensitive
+set `redact_records = false` in `snulbug.toml` only when exact auth-sensitive
 replay artifacts are required.
 
 ## Attacker boundaries

@@ -34,7 +34,13 @@ from .codespaces import (
     serve_codespace_demo,
     smoke_check_codespace_upstream,
 )
-from .config import load_mcp_fabric_config, load_mcp_proxy_config, write_sample_config
+from .config import (
+    default_event_sink_configs,
+    format_event_sinks_toml,
+    load_mcp_fabric_config,
+    load_mcp_proxy_config,
+    write_sample_config,
+)
 from .confirm import ConfirmationBroker
 from .control_events import (
     CONTROL_EVENT_SCHEMA,
@@ -183,6 +189,8 @@ from .proxy import (
     McpFacadeProxyApp,
     ReverseProxyApp,
     create_proxy_application,
+    proxy_config_run_kwargs,
+    run_mcp_proxy_config,
     run_proxy,
 )
 from .quickstart import create_mcp_quickstart
@@ -330,11 +338,13 @@ __all__ = [
     "create_mcp_quickstart",
     "create_mcp_share",
     "create_proxy_application",
+    "proxy_config_run_kwargs",
     "diff_mcp_schema_catalogs",
     "diff_mcp_tool_snapshots",
     "diff_policies",
     "build_mcp_guide",
     "deliver_webhook_event",
+    "default_event_sink_configs",
     "discovery_provider_types",
     "discover_fabric_upstreams",
     "discover_mcp_schemas",
@@ -369,6 +379,7 @@ __all__ = [
     "format_mcp_schema_policy_report",
     "format_mcp_tool_diff_report",
     "format_mcp_tool_snapshot_report",
+    "format_event_sinks_toml",
     "format_tunnel_doctor_report",
     "format_tunnel_init_report",
     "generate_fabric_conformance_pack",
@@ -416,6 +427,7 @@ __all__ = [
     "run_fabric_controller",
     "run_fabric_conformance_pack",
     "run_fabric_data_plane",
+    "run_mcp_proxy_config",
     "run_mcp_share",
     "run_proxy",
     "score_mcp_schema_catalog",

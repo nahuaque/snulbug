@@ -99,9 +99,9 @@ return {
 
 ## confirm
 
-Ask an approval broker before continuing. In proxy mode, enable prompting with
-`snulbug mcp proxy --config snulbug.toml --confirm`. Without an enabled broker,
-confirmation fails closed and the request is rejected.
+Ask an approval broker before continuing. In proxy mode, set `confirm = true`
+under `[mcp.proxy]` in `snulbug.toml`. Without an enabled broker, confirmation
+fails closed and the request is rejected.
 
 ```lua
 return {

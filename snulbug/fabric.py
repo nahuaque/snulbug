@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
-from .config import DEFAULT_CONFIG_PATH, load_mcp_fabric_config
+from .config import DEFAULT_CONFIG_PATH, default_event_sink_configs, format_event_sinks_toml, load_mcp_fabric_config
 from .credentials import (
     CredentialResolutionError,
     apply_credential_header,
@@ -1778,18 +1778,7 @@ def _render_learned_fabric_toml(model: _LearnedFabric) -> str:
     for upstream in model._sorted_upstreams():
         lines.extend(["", "[[mcp.proxy.upstreams]]"])
         lines.extend(_upstream_toml(upstream))
-    lines.extend(
-        [
-            "",
-            "[[mcp.events.sinks]]",
-            _toml_kv("type", "audit_jsonl"),
-            _toml_kv("path", "traces/audit.jsonl"),
-            "",
-            "[[mcp.events.sinks]]",
-            _toml_kv("type", "console"),
-            _toml_kv("format", "text"),
-        ]
-    )
+    lines.extend(format_event_sinks_toml(default_event_sink_configs()).splitlines())
     return "\n".join(lines).rstrip() + "\n"
 
 

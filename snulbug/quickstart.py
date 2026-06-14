@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .bundle import test_bundle, validate_bundle
+from .config import default_event_sink_configs, format_event_sinks_toml
 from .presets import (
     DEFAULT_ALLOWED_PATHS,
     DEFAULT_ALLOWED_TOOLS,
@@ -124,10 +125,7 @@ def create_mcp_quickstart(
         "cloudflare_access_allowed_domains": list(cloudflare_access_allowed_domains or []),
         "timeout": timeout,
     }
-    event_sinks = [
-        {"type": "audit_jsonl", "path": _config_path(audit_event_out, config_path.parent)},
-        {"type": "console", "format": "text"},
-    ]
+    event_sinks = default_event_sink_configs(audit_path=_config_path(audit_event_out, config_path.parent))
     _write_mcp_proxy_config(config_path, config_values, event_sinks=event_sinks, force=force)
 
     validation = validate_bundle(policy_dir) if validate else None
@@ -242,10 +240,7 @@ def _write_mcp_proxy_config(
     lines = ["[mcp.proxy]"]
     for key, value in values.items():
         lines.append(f"{key} = {_toml_value(value)}")
-    for sink in event_sinks:
-        lines.extend(["", "[[mcp.events.sinks]]"])
-        for key, value in sink.items():
-            lines.append(f"{key} = {_toml_value(value)}")
+    lines.extend(format_event_sinks_toml(event_sinks).splitlines())
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 

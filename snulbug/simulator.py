@@ -418,129 +418,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_proxy.add_argument("--policy", type=Path, help="path to a Lua policy file")
     mcp_proxy.add_argument("--host", help="bind host")
     mcp_proxy.add_argument("--port", type=int, help="bind port")
-    mcp_proxy.add_argument("--state", help="'memory', 'none', or 'sqlite:/path/to/state.sqlite3'")
-    mcp_proxy.add_argument(
-        "--no-trace", action="store_false", dest="trace", default=None, help="disable Lua trace scope data"
-    )
     mcp_proxy.add_argument("--record-out", type=Path, help="optional live replay JSONL path to append to")
-    mcp_proxy.add_argument(
-        "--redact-records",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="redact secrets in live replay records; use --no-redact-records for exact replay artifacts",
-    )
-    mcp_proxy.add_argument(
-        "--confirm",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="prompt before executing Lua confirm decisions",
-    )
-    mcp_proxy.add_argument("--max-body-bytes", type=int)
-    mcp_proxy.add_argument("--response-max-bytes", type=int)
-    mcp_proxy.add_argument(
-        "--response-redact-secrets",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="redact likely secrets from MCP tool/resource/prompt responses",
-    )
-    mcp_proxy.add_argument(
-        "--response-block-instructions",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="block MCP responses containing instruction-like text",
-    )
-    mcp_proxy.add_argument(
-        "--tool-pinning",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="pin tools/list descriptions and schemas on first sight",
-    )
-    mcp_proxy.add_argument(
-        "--tool-pinning-action",
-        choices=("warn", "block"),
-        help="what to do when a pinned tool description or schema changes",
-    )
-    mcp_proxy.add_argument(
-        "--schema-validation",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="validate tools/call arguments against cached MCP inputSchema definitions",
-    )
-    mcp_proxy.add_argument(
-        "--schema-validation-action",
-        choices=("warn", "block"),
-        help="what to do when tools/call arguments violate the cached inputSchema",
-    )
-    mcp_proxy.add_argument(
-        "--facade-health-routing",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="track facade upstream health and skip unhealthy upstreams during routing",
-    )
-    mcp_proxy.add_argument(
-        "--facade-health-failure-threshold",
-        type=int,
-        help="consecutive facade upstream failures before marking unhealthy",
-    )
-    mcp_proxy.add_argument(
-        "--facade-health-cooldown-seconds",
-        type=float,
-        help="seconds before an unhealthy facade upstream is probed again",
-    )
-    mcp_proxy.add_argument(
-        "--facade-health-exclude-unhealthy",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="remove unhealthy facade upstreams from tools/list and tools/call routing",
-    )
-    mcp_proxy.add_argument("--lease-file", type=Path, help="task lease JSON file")
-    mcp_proxy.add_argument(
-        "--lease-required",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="require a valid task lease for MCP tools/call requests",
-    )
-    mcp_proxy.add_argument("--lease-header", help="HTTP header carrying the task lease token")
-    mcp_proxy.add_argument(
-        "--tunnel-provider",
-        choices=("auto", "generic", "ngrok", "cloudflare", "tailscale", "localxpose", "pinggy", "holepunch"),
-        help="provider label for tunnel-aware audit fields",
-    )
-    mcp_proxy.add_argument("--tunnel-public-url", help="public tunnel URL to include in audit fields")
-    mcp_proxy.add_argument(
-        "--cloudflare-access",
-        choices=("off", "audit", "enforce"),
-        help="origin-side Cloudflare Access header mode",
-    )
-    mcp_proxy.add_argument(
-        "--cloudflare-access-require-jwt",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="require CF-Access-Jwt-Assertion when Cloudflare Access enforcement is enabled",
-    )
-    mcp_proxy.add_argument(
-        "--cloudflare-access-require-email",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="require CF-Access-Authenticated-User-Email when Cloudflare Access enforcement is enabled",
-    )
-    mcp_proxy.add_argument(
-        "--cloudflare-access-require-cf-ray",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="require a CF-Ray header when Cloudflare Access enforcement is enabled",
-    )
-    mcp_proxy.add_argument(
-        "--cloudflare-access-allow-email",
-        action="append",
-        help="allowed Cloudflare Access authenticated user email; repeat for multiple emails",
-    )
-    mcp_proxy.add_argument(
-        "--cloudflare-access-allow-domain",
-        action="append",
-        help="allowed Cloudflare Access authenticated email domain; repeat for multiple domains",
-    )
-    mcp_proxy.add_argument("--timeout", type=float, help="upstream timeout in seconds")
     mcp_proxy.add_argument(
         "--reload-fabric",
         action=argparse.BooleanOptionalAction,
@@ -733,14 +611,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     write_result_output(result, compact=args.compact, formatter=format_codespace_attach_report)
                     sys.stdout.flush()
 
-                    from .fabric import build_fabric_audit_metadata
-                    from .proxy import run_proxy
+                    from .proxy import run_mcp_proxy_config
 
-                    _run_loaded_mcp_proxy(
+                    run_mcp_proxy_config(
                         proxy_config,
                         fabric_config,
-                        build_fabric_audit_metadata=build_fabric_audit_metadata,
-                        run_proxy=run_proxy,
                     )
                     return 0
                 except Exception as exc:
@@ -844,8 +719,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not args.compact:
                 return status
         elif args.mcp_command == "proxy":
-            from .fabric import build_fabric_audit_metadata
-            from .proxy import run_proxy
+            from .proxy import run_mcp_proxy_config, run_proxy
 
             try:
                 overrides = {
@@ -854,36 +728,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "policy": args.policy,
                     "host": args.host,
                     "port": args.port,
-                    "state": args.state,
-                    "trace": args.trace,
                     "record_out": args.record_out,
-                    "redact_records": args.redact_records,
-                    "confirm": args.confirm,
-                    "max_body_bytes": args.max_body_bytes,
-                    "response_max_bytes": args.response_max_bytes,
-                    "response_redact_secrets": args.response_redact_secrets,
-                    "response_block_instructions": args.response_block_instructions,
-                    "tool_pinning": args.tool_pinning,
-                    "tool_pinning_action": args.tool_pinning_action,
-                    "schema_validation": args.schema_validation,
-                    "schema_validation_action": args.schema_validation_action,
-                    "facade_health_routing": args.facade_health_routing,
-                    "facade_health_failure_threshold": args.facade_health_failure_threshold,
-                    "facade_health_cooldown_seconds": args.facade_health_cooldown_seconds,
-                    "facade_health_exclude_unhealthy": args.facade_health_exclude_unhealthy,
-                    "lease_file": args.lease_file,
-                    "lease_required": args.lease_required,
-                    "lease_header": args.lease_header,
-                    "tunnel_provider": args.tunnel_provider,
-                    "tunnel_public_url": args.tunnel_public_url,
-                    "cloudflare_access": args.cloudflare_access,
-                    "cloudflare_access_require_jwt": args.cloudflare_access_require_jwt,
-                    "cloudflare_access_require_email": args.cloudflare_access_require_email,
-                    "cloudflare_access_require_cf_ray": args.cloudflare_access_require_cf_ray,
-                    "cloudflare_access_allowed_emails": args.cloudflare_access_allow_email,
-                    "cloudflare_access_allowed_domains": args.cloudflare_access_allow_domain,
-                    "timeout": args.timeout,
                 }
+                overrides = {key: value for key, value in overrides.items() if value is not None}
                 if args.reload_fabric and args.config is None:
                     sys.stderr.write("snulbug proxy failed: --reload-fabric requires --config\n")
                     return 1
@@ -900,11 +747,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                         return 1
                     proxy_config = normalize_mcp_proxy_config(overrides)
                     fabric_config = normalize_mcp_fabric_config({}, proxy_config=proxy_config)
-                _run_loaded_mcp_proxy(
+                run_mcp_proxy_config(
                     proxy_config,
                     fabric_config,
-                    build_fabric_audit_metadata=build_fabric_audit_metadata,
-                    run_proxy=run_proxy,
+                    runner=run_proxy,
                     fabric_reload_config=args.config if args.reload_fabric else None,
                     fabric_reload_interval=args.fabric_reload_interval or 2.0,
                     fabric_reload_overrides=overrides if args.reload_fabric else None,
@@ -938,60 +784,6 @@ def _parse_facade_upstreams(values: Sequence[str] | None) -> list[dict[str, Any]
             raise ValueError("--facade-upstream must use NAME=URL")
         upstreams.append({"name": name, "url": url, "tool_prefix": f"{name}."})
     return upstreams
-
-
-def _run_loaded_mcp_proxy(
-    proxy_config: Mapping[str, Any],
-    fabric_config: Mapping[str, Any],
-    *,
-    build_fabric_audit_metadata: Any,
-    run_proxy: Any,
-    fabric_reload_config: str | Path | None = None,
-    fabric_reload_interval: float = 2.0,
-    fabric_reload_overrides: Mapping[str, Any] | None = None,
-) -> None:
-    topology_audit = build_fabric_audit_metadata(fabric_config)
-    run_proxy(
-        upstream=proxy_config["upstream"],
-        upstreams=proxy_config["upstreams"],
-        policy=proxy_config["policy"],
-        host=proxy_config["host"],
-        port=proxy_config["port"],
-        state=proxy_config["state"],
-        trace=proxy_config["trace"],
-        max_body_bytes=proxy_config["max_body_bytes"],
-        timeout=proxy_config["timeout"],
-        record_out=proxy_config["record_out"],
-        redact_records=proxy_config["redact_records"],
-        confirm=proxy_config["confirm"],
-        response_max_bytes=proxy_config["response_max_bytes"],
-        response_redact_secrets=proxy_config["response_redact_secrets"],
-        response_block_instructions=proxy_config["response_block_instructions"],
-        tool_pinning=proxy_config["tool_pinning"],
-        tool_pinning_action=proxy_config["tool_pinning_action"],
-        schema_validation=proxy_config["schema_validation"],
-        schema_validation_action=proxy_config["schema_validation_action"],
-        facade_health_routing=proxy_config["facade_health_routing"],
-        facade_health_failure_threshold=proxy_config["facade_health_failure_threshold"],
-        facade_health_cooldown_seconds=proxy_config["facade_health_cooldown_seconds"],
-        facade_health_exclude_unhealthy=proxy_config["facade_health_exclude_unhealthy"],
-        lease_file=proxy_config["lease_file"],
-        lease_required=proxy_config["lease_required"],
-        lease_header=proxy_config["lease_header"],
-        tunnel_provider=proxy_config["tunnel_provider"],
-        tunnel_public_url=proxy_config["tunnel_public_url"],
-        cloudflare_access=proxy_config["cloudflare_access"],
-        cloudflare_access_require_jwt=proxy_config["cloudflare_access_require_jwt"],
-        cloudflare_access_require_email=proxy_config["cloudflare_access_require_email"],
-        cloudflare_access_require_cf_ray=proxy_config["cloudflare_access_require_cf_ray"],
-        cloudflare_access_allowed_emails=proxy_config["cloudflare_access_allowed_emails"],
-        cloudflare_access_allowed_domains=proxy_config["cloudflare_access_allowed_domains"],
-        topology_audit=topology_audit,
-        event_sinks=proxy_config["event_sinks"],
-        fabric_reload_config=fabric_reload_config,
-        fabric_reload_interval=fabric_reload_interval,
-        fabric_reload_overrides=fabric_reload_overrides,
-    )
 
 
 def _normalize_headers(headers: Any) -> dict[str, str | list[str]]:

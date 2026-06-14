@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+import json
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +74,27 @@ DEFAULT_MCP_FABRIC_CONFIG = {
         "memory_limit_bytes": 8 * 1024 * 1024,
     },
 }
+
+
+def default_event_sink_configs(
+    *,
+    audit_path: str | Path = "traces/audit.jsonl",
+    console_format: str = "text",
+) -> list[dict[str, Any]]:
+    return [
+        {"type": "audit_jsonl", "path": str(audit_path)},
+        {"type": "console", "format": console_format},
+    ]
+
+
+def format_event_sinks_toml(event_sinks: Sequence[Mapping[str, Any]]) -> str:
+    lines: list[str] = []
+    for sink in event_sinks:
+        lines.extend(["", "[[mcp.events.sinks]]"])
+        for key, value in sink.items():
+            lines.append(f"{key} = {_toml_literal(value)}")
+    return "\n".join(lines)
+
 
 SAMPLE_CONFIG = """[mcp.proxy]
 upstream = "http://127.0.0.1:9000"
@@ -469,6 +491,16 @@ def merge_mcp_proxy_config(config: Mapping[str, Any], overrides: Mapping[str, An
         if value is not None:
             merged[key] = value
     return normalize_mcp_proxy_config(merged)
+
+
+def _toml_literal(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return str(value)
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        return json.dumps([str(item) for item in value])
+    return json.dumps(str(value))
 
 
 def _resolve_path(base_dir: Path, value: str | Path) -> Path:

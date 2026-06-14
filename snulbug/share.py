@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .config import default_event_sink_configs, format_event_sinks_toml
 from .inspection import format_mcp_inspection_report, inspect_mcp_log
 from .leases import create_lease
 from .presets import DEFAULT_ALLOWED_PATHS, DEFAULT_ALLOWED_TOOLS, McpPolicyOptions, generate_mcp_preset
@@ -458,12 +459,11 @@ def run_mcp_share(
             "commands": commands,
         }
 
-    from .config import load_mcp_fabric_config, load_mcp_proxy_config, merge_mcp_proxy_config
-    from .fabric import build_fabric_audit_metadata
-    from .proxy import run_proxy
+    from .config import load_mcp_fabric_config, load_mcp_proxy_config
+    from .proxy import run_mcp_proxy_config
 
     config_path = _resolve_share_path(share_dir, config)
-    proxy_config = merge_mcp_proxy_config(load_mcp_proxy_config(config_path), {})
+    proxy_config = load_mcp_proxy_config(config_path)
     fabric_config = load_mcp_fabric_config(config_path)
     fabric_config["proxy"] = proxy_config
     _update_share_manifest(
@@ -474,12 +474,7 @@ def run_mcp_share(
             "config": str(config_path),
         },
     )
-    _run_proxy_config(
-        proxy_config,
-        fabric_config,
-        build_fabric_audit_metadata=build_fabric_audit_metadata,
-        run_proxy=run_proxy,
-    )
+    run_mcp_proxy_config(proxy_config, fabric_config)
     return None
 
 
@@ -784,54 +779,6 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _run_proxy_config(
-    proxy_config: Mapping[str, Any],
-    fabric_config: Mapping[str, Any],
-    *,
-    build_fabric_audit_metadata: Any,
-    run_proxy: Any,
-) -> None:
-    topology_audit = build_fabric_audit_metadata(fabric_config)
-    run_proxy(
-        upstream=proxy_config["upstream"],
-        upstreams=proxy_config["upstreams"],
-        policy=proxy_config["policy"],
-        host=proxy_config["host"],
-        port=proxy_config["port"],
-        state=proxy_config["state"],
-        trace=proxy_config["trace"],
-        max_body_bytes=proxy_config["max_body_bytes"],
-        timeout=proxy_config["timeout"],
-        record_out=proxy_config["record_out"],
-        redact_records=proxy_config["redact_records"],
-        confirm=proxy_config["confirm"],
-        response_max_bytes=proxy_config["response_max_bytes"],
-        response_redact_secrets=proxy_config["response_redact_secrets"],
-        response_block_instructions=proxy_config["response_block_instructions"],
-        tool_pinning=proxy_config["tool_pinning"],
-        tool_pinning_action=proxy_config["tool_pinning_action"],
-        schema_validation=proxy_config["schema_validation"],
-        schema_validation_action=proxy_config["schema_validation_action"],
-        facade_health_routing=proxy_config["facade_health_routing"],
-        facade_health_failure_threshold=proxy_config["facade_health_failure_threshold"],
-        facade_health_cooldown_seconds=proxy_config["facade_health_cooldown_seconds"],
-        facade_health_exclude_unhealthy=proxy_config["facade_health_exclude_unhealthy"],
-        lease_file=proxy_config["lease_file"],
-        lease_required=proxy_config["lease_required"],
-        lease_header=proxy_config["lease_header"],
-        tunnel_provider=proxy_config["tunnel_provider"],
-        tunnel_public_url=proxy_config["tunnel_public_url"],
-        cloudflare_access=proxy_config["cloudflare_access"],
-        cloudflare_access_require_jwt=proxy_config["cloudflare_access_require_jwt"],
-        cloudflare_access_require_email=proxy_config["cloudflare_access_require_email"],
-        cloudflare_access_require_cf_ray=proxy_config["cloudflare_access_require_cf_ray"],
-        cloudflare_access_allowed_emails=proxy_config["cloudflare_access_allowed_emails"],
-        cloudflare_access_allowed_domains=proxy_config["cloudflare_access_allowed_domains"],
-        topology_audit=topology_audit,
-        event_sinks=proxy_config["event_sinks"],
-    )
-
-
 def _write_container_upstream_recipe(
     *,
     share_dir: Path,
@@ -1030,14 +977,7 @@ def _container_facade_config(
         "bridge_private = true",
         "bridge_ready_timeout = 15.0",
         'tool_prefix = "remote."',
-        "",
-        "[[mcp.events.sinks]]",
-        'type = "audit_jsonl"',
-        'path = "../traces/container-audit.jsonl"',
-        "",
-        "[[mcp.events.sinks]]",
-        'type = "console"',
-        'format = "text"',
+        *format_event_sinks_toml(default_event_sink_configs(audit_path="../traces/container-audit.jsonl")).splitlines(),
     ]
     return "\n".join(lines) + "\n"
 
@@ -1083,14 +1023,7 @@ def _container_local_config(
         'url = "http://local-mcp:9000/mcp"',
         'tool_prefix = "local."',
         "default = true",
-        "",
-        "[[mcp.events.sinks]]",
-        'type = "audit_jsonl"',
-        'path = "../traces/container-audit.jsonl"',
-        "",
-        "[[mcp.events.sinks]]",
-        'type = "console"',
-        'format = "text"',
+        *format_event_sinks_toml(default_event_sink_configs(audit_path="../traces/container-audit.jsonl")).splitlines(),
     ]
     return "\n".join(lines) + "\n"
 

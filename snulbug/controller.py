@@ -28,7 +28,7 @@ from .control_events import (
     make_control_event,
 )
 from .events import build_event_dispatcher
-from .fabric import build_fabric_audit_metadata, fabric_status, run_fabric_conformance_pack
+from .fabric import fabric_status, run_fabric_conformance_pack
 from .fabric_control import (
     annotate_fabric_status_with_controls,
     control_share_gate_signals,
@@ -335,7 +335,6 @@ def run_fabric_data_plane(
         operational_controls = summarize_fabric_control_state(load_control_state())
         fabric_config = load_mcp_fabric_config(config_path)
         fabric_config["proxy"] = proxy_config
-        topology_audit = build_fabric_audit_metadata(fabric_config)
         if not proxy_config["upstreams"]:
             raise ValueError("fabric run requires facade upstreams in [mcp.proxy.upstreams] or discovery")
 
@@ -360,43 +359,12 @@ def run_fabric_data_plane(
 
         runner = proxy_runner or _default_proxy_runner()
         try:
-            runner(
-                upstream=proxy_config["upstream"],
-                upstreams=proxy_config["upstreams"],
-                policy=proxy_config["policy"],
-                host=proxy_config["host"],
-                port=proxy_config["port"],
-                state=proxy_config["state"],
-                trace=proxy_config["trace"],
-                max_body_bytes=proxy_config["max_body_bytes"],
-                timeout=proxy_config["timeout"],
-                record_out=proxy_config["record_out"],
-                redact_records=proxy_config["redact_records"],
-                confirm=proxy_config["confirm"],
-                response_max_bytes=proxy_config["response_max_bytes"],
-                response_redact_secrets=proxy_config["response_redact_secrets"],
-                response_block_instructions=proxy_config["response_block_instructions"],
-                tool_pinning=proxy_config["tool_pinning"],
-                tool_pinning_action=proxy_config["tool_pinning_action"],
-                schema_validation=proxy_config["schema_validation"],
-                schema_validation_action=proxy_config["schema_validation_action"],
-                facade_health_routing=proxy_config["facade_health_routing"],
-                facade_health_failure_threshold=proxy_config["facade_health_failure_threshold"],
-                facade_health_cooldown_seconds=proxy_config["facade_health_cooldown_seconds"],
-                facade_health_exclude_unhealthy=proxy_config["facade_health_exclude_unhealthy"],
-                lease_file=proxy_config["lease_file"],
-                lease_required=proxy_config["lease_required"],
-                lease_header=proxy_config["lease_header"],
-                tunnel_provider=proxy_config["tunnel_provider"],
-                tunnel_public_url=proxy_config["tunnel_public_url"],
-                cloudflare_access=proxy_config["cloudflare_access"],
-                cloudflare_access_require_jwt=proxy_config["cloudflare_access_require_jwt"],
-                cloudflare_access_require_email=proxy_config["cloudflare_access_require_email"],
-                cloudflare_access_require_cf_ray=proxy_config["cloudflare_access_require_cf_ray"],
-                cloudflare_access_allowed_emails=proxy_config["cloudflare_access_allowed_emails"],
-                cloudflare_access_allowed_domains=proxy_config["cloudflare_access_allowed_domains"],
-                topology_audit=topology_audit,
-                event_sinks=proxy_config["event_sinks"],
+            from .proxy import run_mcp_proxy_config
+
+            run_mcp_proxy_config(
+                proxy_config,
+                fabric_config,
+                runner=runner,
                 fabric_reload_config=config_path,
                 fabric_reload_interval=reload_interval,
                 fabric_reload_overrides={},

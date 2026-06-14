@@ -1956,6 +1956,92 @@ def run_proxy(
     uvicorn.run(app, host=host, port=port)
 
 
+def proxy_config_run_kwargs(
+    proxy_config: Mapping[str, Any],
+    fabric_config: Mapping[str, Any] | None = None,
+    *,
+    topology_audit: Mapping[str, Any] | None = None,
+    fabric_reload_config: str | Path | None = None,
+    fabric_reload_interval: float = 2.0,
+    fabric_reload_overrides: Mapping[str, Any] | None = None,
+    fabric_control_state_provider: Any = None,
+) -> dict[str, Any]:
+    """Expand a normalized MCP proxy config into run_proxy keyword arguments."""
+
+    effective_fabric_config = dict(fabric_config or {})
+    effective_fabric_config["proxy"] = proxy_config
+    effective_topology_audit = topology_audit or build_fabric_audit_metadata(effective_fabric_config)
+    return {
+        "upstream": proxy_config["upstream"],
+        "upstreams": proxy_config["upstreams"],
+        "policy": proxy_config["policy"],
+        "host": proxy_config["host"],
+        "port": proxy_config["port"],
+        "state": proxy_config["state"],
+        "trace": proxy_config["trace"],
+        "max_body_bytes": proxy_config["max_body_bytes"],
+        "timeout": proxy_config["timeout"],
+        "record_out": proxy_config["record_out"],
+        "redact_records": proxy_config["redact_records"],
+        "confirm": proxy_config["confirm"],
+        "response_max_bytes": proxy_config["response_max_bytes"],
+        "response_redact_secrets": proxy_config["response_redact_secrets"],
+        "response_block_instructions": proxy_config["response_block_instructions"],
+        "tool_pinning": proxy_config["tool_pinning"],
+        "tool_pinning_action": proxy_config["tool_pinning_action"],
+        "schema_validation": proxy_config["schema_validation"],
+        "schema_validation_action": proxy_config["schema_validation_action"],
+        "facade_health_routing": proxy_config["facade_health_routing"],
+        "facade_health_failure_threshold": proxy_config["facade_health_failure_threshold"],
+        "facade_health_cooldown_seconds": proxy_config["facade_health_cooldown_seconds"],
+        "facade_health_exclude_unhealthy": proxy_config["facade_health_exclude_unhealthy"],
+        "lease_file": proxy_config["lease_file"],
+        "lease_required": proxy_config["lease_required"],
+        "lease_header": proxy_config["lease_header"],
+        "tunnel_provider": proxy_config["tunnel_provider"],
+        "tunnel_public_url": proxy_config["tunnel_public_url"],
+        "cloudflare_access": proxy_config["cloudflare_access"],
+        "cloudflare_access_require_jwt": proxy_config["cloudflare_access_require_jwt"],
+        "cloudflare_access_require_email": proxy_config["cloudflare_access_require_email"],
+        "cloudflare_access_require_cf_ray": proxy_config["cloudflare_access_require_cf_ray"],
+        "cloudflare_access_allowed_emails": proxy_config["cloudflare_access_allowed_emails"],
+        "cloudflare_access_allowed_domains": proxy_config["cloudflare_access_allowed_domains"],
+        "topology_audit": effective_topology_audit,
+        "event_sinks": proxy_config["event_sinks"],
+        "fabric_reload_config": fabric_reload_config,
+        "fabric_reload_interval": fabric_reload_interval,
+        "fabric_reload_overrides": fabric_reload_overrides,
+        "fabric_control_state_provider": fabric_control_state_provider,
+    }
+
+
+def run_mcp_proxy_config(
+    proxy_config: Mapping[str, Any],
+    fabric_config: Mapping[str, Any] | None = None,
+    *,
+    runner: Any = None,
+    topology_audit: Mapping[str, Any] | None = None,
+    fabric_reload_config: str | Path | None = None,
+    fabric_reload_interval: float = 2.0,
+    fabric_reload_overrides: Mapping[str, Any] | None = None,
+    fabric_control_state_provider: Any = None,
+) -> None:
+    """Run an MCP proxy from normalized config."""
+
+    proxy_runner = runner or run_proxy
+    proxy_runner(
+        **proxy_config_run_kwargs(
+            proxy_config,
+            fabric_config,
+            topology_audit=topology_audit,
+            fabric_reload_config=fabric_reload_config,
+            fabric_reload_interval=fabric_reload_interval,
+            fabric_reload_overrides=fabric_reload_overrides,
+            fabric_control_state_provider=fabric_control_state_provider,
+        )
+    )
+
+
 def _proxy_app(
     upstream: str | None,
     *,

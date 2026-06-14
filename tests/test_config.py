@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from snulbug import load_mcp_proxy_config, write_sample_config
+from snulbug import default_event_sink_configs, format_event_sinks_toml, load_mcp_proxy_config, write_sample_config
 from snulbug.config import merge_mcp_proxy_config
 from snulbug.simulator import main as simulator_main
 
@@ -135,6 +135,27 @@ def test_load_mcp_proxy_config_accepts_holepunch_provider(tmp_path):
 
     assert result["tunnel_provider"] == "holepunch"
     assert result["tunnel_public_url"] == "http://127.0.0.1:18080/mcp"
+
+
+def test_event_sink_toml_helper_writes_loadable_sink_blocks(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        "\n".join(
+            [
+                "[mcp.proxy]",
+                'policy = "policy.snulbug/policy.lua"',
+                'record_out = "traces/session.jsonl"',
+                format_event_sinks_toml(default_event_sink_configs(audit_path="logs/audit.jsonl")),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = load_mcp_proxy_config(config)
+
+    assert result["event_sinks"][0]["type"] == "audit_jsonl"
+    assert result["event_sinks"][0]["path"] == tmp_path / "logs/audit.jsonl"
+    assert result["event_sinks"][1]["type"] == "console"
 
 
 def test_load_mcp_proxy_config_accepts_localxpose_provider(tmp_path):
@@ -545,13 +566,13 @@ def test_mcp_proxy_cli_loads_config_before_running(monkeypatch, tmp_path):
 
     monkeypatch.setattr("snulbug.proxy.run_proxy", fake_run_proxy)
 
-    status = simulator_main(["mcp", "proxy", "--config", str(config), "--port", "8181", "--no-trace"])
+    status = simulator_main(["mcp", "proxy", "--config", str(config), "--port", "8181"])
 
     assert status == 0
     assert calls[0]["upstream"] == "http://127.0.0.1:9000"
     assert calls[0]["policy"] == tmp_path / "policy.snulbug/policy.lua"
     assert calls[0]["port"] == 8181
-    assert calls[0]["trace"] is False
+    assert calls[0]["trace"] is True
     assert calls[0]["record_out"] == tmp_path / "traces/session.jsonl"
     assert calls[0]["redact_records"] is True
     assert calls[0]["confirm"] is False
@@ -614,12 +635,6 @@ def test_mcp_proxy_cli_passes_facade_upstreams_without_config(monkeypatch, tmp_p
             "files=http://127.0.0.1:9001/mcp",
             "--facade-upstream",
             "git=http://127.0.0.1:9002/mcp",
-            "--facade-health-routing",
-            "--facade-health-failure-threshold",
-            "1",
-            "--facade-health-cooldown-seconds",
-            "0.25",
-            "--no-facade-health-exclude-unhealthy",
         ]
     )
 
@@ -640,10 +655,10 @@ def test_mcp_proxy_cli_passes_facade_upstreams_without_config(monkeypatch, tmp_p
             "default": False,
         },
     ]
-    assert calls[0]["facade_health_routing"] is True
-    assert calls[0]["facade_health_failure_threshold"] == 1
-    assert calls[0]["facade_health_cooldown_seconds"] == 0.25
-    assert calls[0]["facade_health_exclude_unhealthy"] is False
+    assert calls[0]["facade_health_routing"] is False
+    assert calls[0]["facade_health_failure_threshold"] == 2
+    assert calls[0]["facade_health_cooldown_seconds"] == 30.0
+    assert calls[0]["facade_health_exclude_unhealthy"] is True
 
 
 def test_mcp_proxy_cli_can_enable_fabric_reload(monkeypatch, tmp_path):
@@ -670,7 +685,7 @@ def test_mcp_proxy_cli_can_enable_fabric_reload(monkeypatch, tmp_path):
     assert status == 0
     assert calls[0]["fabric_reload_config"] == config
     assert calls[0]["fabric_reload_interval"] == 0.5
-    assert calls[0]["fabric_reload_overrides"]["upstream"] is None
+    assert calls[0]["fabric_reload_overrides"] == {}
 
 
 def test_mcp_proxy_cli_rejects_fabric_reload_without_config(tmp_path, capsys):
@@ -692,186 +707,6 @@ def test_mcp_proxy_cli_rejects_fabric_reload_without_config(tmp_path, capsys):
     captured = capsys.readouterr()
     assert status == 1
     assert "--reload-fabric requires --config" in captured.err
-
-
-def test_mcp_proxy_cli_can_disable_record_redaction(monkeypatch, tmp_path):
-    config = write_config(tmp_path)
-    calls = []
-
-    def fake_run_proxy(**kwargs):
-        calls.append(kwargs)
-
-    monkeypatch.setattr("snulbug.proxy.run_proxy", fake_run_proxy)
-
-    status = simulator_main(["mcp", "proxy", "--config", str(config), "--no-redact-records"])
-
-    assert status == 0
-    assert calls[0]["redact_records"] is False
-
-
-def test_mcp_proxy_cli_can_enable_confirmation(monkeypatch, tmp_path):
-    config = write_config(tmp_path)
-    calls = []
-
-    def fake_run_proxy(**kwargs):
-        calls.append(kwargs)
-
-    monkeypatch.setattr("snulbug.proxy.run_proxy", fake_run_proxy)
-
-    status = simulator_main(["mcp", "proxy", "--config", str(config), "--confirm"])
-
-    assert status == 0
-    assert calls[0]["confirm"] is True
-
-
-def test_mcp_proxy_cli_applies_response_policy_overrides(monkeypatch, tmp_path):
-    config = write_config(tmp_path)
-    calls = []
-
-    def fake_run_proxy(**kwargs):
-        calls.append(kwargs)
-
-    monkeypatch.setattr("snulbug.proxy.run_proxy", fake_run_proxy)
-
-    status = simulator_main(
-        [
-            "mcp",
-            "proxy",
-            "--config",
-            str(config),
-            "--response-max-bytes",
-            "4096",
-            "--no-response-redact-secrets",
-            "--response-block-instructions",
-            "--no-tool-pinning",
-            "--tool-pinning-action",
-            "warn",
-        ]
-    )
-
-    assert status == 0
-    assert calls[0]["response_max_bytes"] == 4096
-    assert calls[0]["response_redact_secrets"] is False
-    assert calls[0]["response_block_instructions"] is True
-    assert calls[0]["tool_pinning"] is False
-    assert calls[0]["tool_pinning_action"] == "warn"
-
-
-def test_mcp_proxy_cli_applies_schema_validation_overrides(monkeypatch, tmp_path):
-    config = write_config(tmp_path)
-    calls = []
-
-    def fake_run_proxy(**kwargs):
-        calls.append(kwargs)
-
-    monkeypatch.setattr("snulbug.proxy.run_proxy", fake_run_proxy)
-
-    status = simulator_main(
-        [
-            "mcp",
-            "proxy",
-            "--config",
-            str(config),
-            "--no-schema-validation",
-            "--schema-validation-action",
-            "warn",
-        ]
-    )
-
-    assert status == 0
-    assert calls[0]["schema_validation"] is False
-    assert calls[0]["schema_validation_action"] == "warn"
-
-
-def test_mcp_proxy_cli_applies_lease_overrides(monkeypatch, tmp_path):
-    config = write_config(tmp_path)
-    calls = []
-
-    def fake_run_proxy(**kwargs):
-        calls.append(kwargs)
-
-    monkeypatch.setattr("snulbug.proxy.run_proxy", fake_run_proxy)
-
-    status = simulator_main(
-        [
-            "mcp",
-            "proxy",
-            "--config",
-            str(config),
-            "--lease-file",
-            str(tmp_path / "task-leases.json"),
-            "--lease-required",
-            "--lease-header",
-            "x-task-lease",
-        ]
-    )
-
-    assert status == 0
-    assert calls[0]["lease_file"] == tmp_path / "task-leases.json"
-    assert calls[0]["lease_required"] is True
-    assert calls[0]["lease_header"] == "x-task-lease"
-
-
-def test_mcp_proxy_cli_applies_tunnel_audit_overrides(monkeypatch, tmp_path):
-    config = write_config(tmp_path)
-    calls = []
-
-    def fake_run_proxy(**kwargs):
-        calls.append(kwargs)
-
-    monkeypatch.setattr("snulbug.proxy.run_proxy", fake_run_proxy)
-
-    status = simulator_main(
-        [
-            "mcp",
-            "proxy",
-            "--config",
-            str(config),
-            "--tunnel-provider",
-            "ngrok",
-            "--tunnel-public-url",
-            "https://mcp-dev.ngrok.app/mcp",
-        ]
-    )
-
-    assert status == 0
-    assert calls[0]["tunnel_provider"] == "ngrok"
-    assert calls[0]["tunnel_public_url"] == "https://mcp-dev.ngrok.app/mcp"
-
-
-def test_mcp_proxy_cli_applies_cloudflare_access_overrides(monkeypatch, tmp_path):
-    config = write_config(tmp_path)
-    calls = []
-
-    def fake_run_proxy(**kwargs):
-        calls.append(kwargs)
-
-    monkeypatch.setattr("snulbug.proxy.run_proxy", fake_run_proxy)
-
-    status = simulator_main(
-        [
-            "mcp",
-            "proxy",
-            "--config",
-            str(config),
-            "--cloudflare-access",
-            "enforce",
-            "--cloudflare-access-require-email",
-            "--no-cloudflare-access-require-cf-ray",
-            "--cloudflare-access-allow-email",
-            "dev@example.com",
-            "--cloudflare-access-allow-domain",
-            "example.com",
-        ]
-    )
-
-    assert status == 0
-    assert calls[0]["cloudflare_access"] == "enforce"
-    assert calls[0]["cloudflare_access_require_jwt"] is True
-    assert calls[0]["cloudflare_access_require_email"] is True
-    assert calls[0]["cloudflare_access_require_cf_ray"] is False
-    assert calls[0]["cloudflare_access_allowed_emails"] == ["dev@example.com"]
-    assert calls[0]["cloudflare_access_allowed_domains"] == ["example.com"]
 
 
 def write_config(tmp_path):
