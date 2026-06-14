@@ -128,7 +128,7 @@ def prepare_codespace_attach(
         GeneratedSession(
             name="codespace attach",
             root=root,
-            generated_by="snulbug mcp codespace attach",
+            generated_by="snulbug mcp share codespace attach",
             artifacts=[
                 GeneratedArtifact("policy", policy, "policy"),
                 GeneratedArtifact("config", config, "config"),
@@ -158,7 +158,7 @@ def prepare_codespace_attach(
     )
     return {
         "ok": True,
-        "generated_by": "snulbug mcp codespace attach",
+        "generated_by": "snulbug mcp share codespace attach",
         "directory": str(root),
         "config": generated_session["file_map"]["config"],
         "policy": generated_session["file_map"]["policy"],
@@ -199,7 +199,7 @@ def prepare_codespace_demo(
     attach_url = public_url or local_url
     return {
         "ok": True,
-        "generated_by": "snulbug mcp codespace serve-demo",
+        "generated_by": "snulbug mcp share codespace serve-demo",
         "server": {
             "name": name,
             "host": host,
@@ -210,7 +210,7 @@ def prepare_codespace_demo(
             "public_url": public_url,
         },
         "tools": [tool["name"] for tool in _DEMO_TOOLS],
-        "commands": {"attach": f"uv run snulbug mcp codespace attach {attach_url}"},
+        "commands": {"attach": f"uv run snulbug mcp share codespace attach {attach_url}"},
         "codespaces": {
             "detected": public_url is not None,
             "url": public_url,

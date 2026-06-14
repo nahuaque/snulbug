@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -141,7 +140,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_subparsers = mcp.add_subparsers(
         dest="mcp_command",
         required=True,
-        metavar=("{guide,policy,codespace,share,schemas,fabric,evidence,lab}"),
+        metavar=("{guide,policy,share,schemas,fabric,evidence}"),
     )
 
     mcp_guide = mcp_subparsers.add_parser("guide", help="print agent-oriented MCP workflow guidance")
@@ -155,92 +154,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     add_mcp_policy_command(mcp_subparsers, bundle_states=bundle_states)
 
-    mcp_codespace = mcp_subparsers.add_parser("codespace", help="attach GitHub Codespace MCP upstreams")
-    mcp_codespace_subparsers = mcp_codespace.add_subparsers(dest="codespace_command", required=True)
-    mcp_codespace_attach = mcp_codespace_subparsers.add_parser(
-        "attach",
-        help="start a local gateway for one Codespaces forwarded MCP URL",
-    )
-    mcp_codespace_attach.add_argument(
-        "url",
-        help="Codespaces forwarded MCP URL, such as https://NAME-9001.app.github.dev/mcp",
-    )
-    mcp_codespace_attach.add_argument("--name", default="codespace-files", help="facade upstream name")
-    mcp_codespace_attach.add_argument(
-        "--tool-prefix",
-        default="codespace.files.",
-        help="tool prefix exposed by the local facade",
-    )
-    mcp_codespace_attach.add_argument(
-        "--directory",
-        type=Path,
-        default=Path(".snulbug/codespace-local"),
-        help="generated local gateway artifact directory",
-    )
-    mcp_codespace_attach.add_argument("--host", default="127.0.0.1", help="local gateway bind host")
-    mcp_codespace_attach.add_argument("--port", type=int, default=8080, help="local gateway bind port")
-    mcp_codespace_attach.add_argument(
-        "--state",
-        default="memory",
-        help="'memory', 'none', or sqlite:/path/to/state.sqlite3",
-    )
-    mcp_codespace_attach.add_argument(
-        "--smoke-check",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="preflight the remote upstream with tools/list before starting the gateway",
-    )
-    mcp_codespace_attach.add_argument("--smoke-timeout", type=float, default=5.0, help="smoke-check timeout in seconds")
-    mcp_codespace_attach.add_argument(
-        "--force",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="overwrite generated local gateway files",
-    )
-    mcp_codespace_attach.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="write artifacts and print the plan without starting the gateway",
-    )
-    add_compact_arg(mcp_codespace_attach)
-    mcp_codespace_serve_demo = mcp_codespace_subparsers.add_parser(
-        "serve-demo",
-        help="run the bundled mock MCP server inside a Codespace",
-    )
-    mcp_codespace_serve_demo.add_argument("--host", default="0.0.0.0", help="demo MCP server bind host")
-    mcp_codespace_serve_demo.add_argument("--port", type=int, default=9001, help="demo MCP server bind port")
-    mcp_codespace_serve_demo.add_argument("--name", default="codespace", help="demo MCP server name")
-    mcp_codespace_serve_demo.add_argument("--path", default="/mcp", help="MCP HTTP path")
-    mcp_codespace_serve_demo.add_argument(
-        "--ready-check",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="verify local tools/list before printing the laptop attach command",
-    )
-    mcp_codespace_serve_demo.add_argument("--ready-timeout", type=float, default=5.0, help="ready-check timeout")
-    mcp_codespace_serve_demo.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="print the inferred URLs and commands without starting the server",
-    )
-    add_compact_arg(mcp_codespace_serve_demo)
-
     add_mcp_share_command(mcp_subparsers)
 
     add_mcp_schemas_command(mcp_subparsers)
     add_mcp_fabric_command(mcp_subparsers)
 
     add_mcp_evidence_command(mcp_subparsers)
-
-    mcp_lab = mcp_subparsers.add_parser("lab", help="run the one-command local MCP policy lab")
-    mcp_lab.add_argument("--output-dir", type=Path, default=Path(".snulbug-lab"), help="lab artifact directory")
-    mcp_lab.add_argument(
-        "--force",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="overwrite the lab artifact directory",
-    )
-    add_compact_arg(mcp_lab)
 
     args = parser.parse_args(argv)
     if args.command == "simulate":
@@ -296,11 +215,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return status
 
     if args.command == "mcp":
-        from .config import (
-            load_mcp_fabric_config,
-            load_mcp_proxy_config,
-        )
-
         if args.mcp_command == "guide":
             from .guide import build_mcp_guide, format_mcp_guide
 
@@ -318,130 +232,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             result, status = handle_mcp_policy_command(args, parser)
         elif args.mcp_command == "share":
             return handle_mcp_share_command(args, parser)
-        elif args.mcp_command == "codespace":
-            from .codespaces import (
-                format_codespace_attach_report,
-                format_codespace_demo_report,
-                prepare_codespace_attach,
-                prepare_codespace_demo,
-                serve_codespace_demo,
-                smoke_check_codespace_upstream,
-            )
-
-            if args.codespace_command == "attach":
-                try:
-                    result = prepare_codespace_attach(
-                        args.url,
-                        directory=args.directory,
-                        name=args.name,
-                        tool_prefix=args.tool_prefix,
-                        host=args.host,
-                        port=args.port,
-                        state=args.state,
-                        force=args.force,
-                    )
-                    if args.smoke_check:
-                        result["smoke_check"] = smoke_check_codespace_upstream(args.url, timeout=args.smoke_timeout)
-                        if not result["smoke_check"]["ok"]:
-                            status = 1
-                            write_generated_session_output(
-                                result,
-                                compact=args.compact,
-                                formatter=format_codespace_attach_report,
-                            )
-                            return status
-                    result["dry_run"] = bool(args.dry_run)
-                    status = 0
-                    if args.dry_run:
-                        write_generated_session_output(
-                            result,
-                            compact=args.compact,
-                            formatter=format_codespace_attach_report,
-                        )
-                        return status
-
-                    import os
-
-                    os.environ[result["env"]["name"]] = result["env"]["value"]
-                    proxy_config = load_mcp_proxy_config(result["config"])
-                    fabric_config = load_mcp_fabric_config(result["config"])
-                    fabric_config["proxy"] = proxy_config
-                    result["starting_proxy"] = True
-                    write_generated_session_output(
-                        result,
-                        compact=args.compact,
-                        formatter=format_codespace_attach_report,
-                    )
-                    sys.stdout.flush()
-
-                    from .proxy import run_mcp_proxy_config
-
-                    run_mcp_proxy_config(
-                        proxy_config,
-                        fabric_config,
-                    )
-                    return 0
-                except Exception as exc:
-                    result = {"ok": False, "url": args.url, "directory": str(args.directory), "error": str(exc)}
-                    status = 1
-                    write_json_output(result, compact=args.compact)
-                    return status
-            if args.codespace_command == "serve-demo":
-                try:
-                    if args.dry_run:
-                        result = prepare_codespace_demo(
-                            host=args.host,
-                            port=args.port,
-                            name=args.name,
-                            path=args.path,
-                        )
-                        result["dry_run"] = True
-                        write_result_output(result, compact=args.compact, formatter=format_codespace_demo_report)
-                        return 0
-
-                    def emit_codespace_demo(payload: Mapping[str, Any]) -> None:
-                        write_result_output(payload, compact=args.compact, formatter=format_codespace_demo_report)
-                        sys.stdout.flush()
-
-                    result = serve_codespace_demo(
-                        host=args.host,
-                        port=args.port,
-                        name=args.name,
-                        path=args.path,
-                        ready_check=args.ready_check,
-                        ready_timeout=args.ready_timeout,
-                        emit=emit_codespace_demo,
-                    )
-                    return 0 if result["ok"] else 1
-                except Exception as exc:
-                    result = {
-                        "ok": False,
-                        "host": args.host,
-                        "port": args.port,
-                        "path": args.path,
-                        "error": str(exc),
-                    }
-                    write_json_output(result, compact=args.compact)
-                    return 1
-            parser.error(f"unknown mcp codespace command: {args.codespace_command}")
-            return 2
         elif args.mcp_command == "schemas":
             return handle_mcp_schemas_command(args, parser)
         elif args.mcp_command == "fabric":
             return handle_mcp_fabric_command(args, parser)
         elif args.mcp_command == "evidence":
             return handle_mcp_evidence_command(args, parser)
-        elif args.mcp_command == "lab":
-            from .lab import run_mcp_lab
-
-            try:
-                result = run_mcp_lab(args.output_dir, force=args.force, emit=not args.compact)
-                status = 0 if result["ok"] else 1
-            except Exception as exc:
-                result = {"ok": False, "output_dir": str(args.output_dir), "error": str(exc)}
-                status = 1
-            if not args.compact:
-                return status
         else:
             parser.error(f"unknown mcp command: {args.mcp_command}")
             return 2

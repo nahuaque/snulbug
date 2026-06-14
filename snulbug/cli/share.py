@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +47,19 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
 
     share_lease = share_subparsers.add_parser("lease", help="create and manage task-scoped MCP capability leases")
     _add_share_lease_args(share_lease)
+
+    share_codespace = share_subparsers.add_parser("codespace", help="attach GitHub Codespace MCP upstreams")
+    _add_share_codespace_args(share_codespace)
+
+    share_lab = share_subparsers.add_parser("lab", help="run the one-command local MCP policy lab")
+    share_lab.add_argument("--output-dir", type=Path, default=Path(".snulbug-lab"), help="lab artifact directory")
+    share_lab.add_argument(
+        "--force",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="overwrite the lab artifact directory",
+    )
+    add_compact_arg(share_lab)
 
     share_status = share_subparsers.add_parser("status", help="summarize a generated share session")
     share_status.add_argument("directory", type=Path, help="share session directory")
@@ -237,6 +250,18 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
             write_generated_session_output(result, compact=args.compact)
             return status
 
+        if command == "codespace":
+            return _handle_share_codespace_command(args, parser)
+
+        if command == "lab":
+            from ..lab import run_mcp_lab
+
+            result = run_mcp_lab(args.output_dir, force=args.force, emit=not args.compact)
+            status = 0 if result["ok"] else 1
+            if args.compact:
+                write_generated_session_output(result, compact=True)
+            return status
+
         if command == "status":
             result = share_status(args.directory)
             status = 0 if result["ok"] else 1
@@ -278,6 +303,10 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
             result["file"] = str(args.file)
         if hasattr(args, "output") and args.output is not None:
             result["config"] = str(args.output)
+        if hasattr(args, "url") and args.url is not None:
+            result["url"] = str(args.url)
+        if hasattr(args, "output_dir") and args.output_dir is not None:
+            result["output_dir"] = str(args.output_dir)
         write_json_output(result, compact=getattr(args, "compact", False))
         return 1
 
@@ -503,6 +532,167 @@ def _add_share_lease_args(parser: argparse.ArgumentParser) -> None:
     lease_revoke.add_argument("lease_id", help="lease id to revoke")
     lease_revoke.add_argument("--file", type=Path, default=Path("leases.json"), help="lease JSON file")
     add_compact_arg(lease_revoke)
+
+
+def _add_share_codespace_args(parser: argparse.ArgumentParser) -> None:
+    codespace_subparsers = parser.add_subparsers(dest="share_codespace_command", required=True)
+    codespace_attach = codespace_subparsers.add_parser(
+        "attach",
+        help="start a local gateway for one Codespaces forwarded MCP URL",
+    )
+    codespace_attach.add_argument(
+        "url",
+        help="Codespaces forwarded MCP URL, such as https://NAME-9001.app.github.dev/mcp",
+    )
+    codespace_attach.add_argument("--name", default="codespace-files", help="facade upstream name")
+    codespace_attach.add_argument(
+        "--tool-prefix",
+        default="codespace.files.",
+        help="tool prefix exposed by the local facade",
+    )
+    codespace_attach.add_argument(
+        "--directory",
+        type=Path,
+        default=Path(".snulbug/codespace-local"),
+        help="generated local gateway artifact directory",
+    )
+    codespace_attach.add_argument("--host", default="127.0.0.1", help="local gateway bind host")
+    codespace_attach.add_argument("--port", type=int, default=8080, help="local gateway bind port")
+    codespace_attach.add_argument(
+        "--state",
+        default="memory",
+        help="'memory', 'none', or sqlite:/path/to/state.sqlite3",
+    )
+    codespace_attach.add_argument(
+        "--smoke-check",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="preflight the remote upstream with tools/list before starting the gateway",
+    )
+    codespace_attach.add_argument("--smoke-timeout", type=float, default=5.0, help="smoke-check timeout in seconds")
+    codespace_attach.add_argument(
+        "--force",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="overwrite generated local gateway files",
+    )
+    codespace_attach.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="write artifacts and print the plan without starting the gateway",
+    )
+    add_compact_arg(codespace_attach)
+
+    codespace_serve_demo = codespace_subparsers.add_parser(
+        "serve-demo",
+        help="run the bundled mock MCP server inside a Codespace",
+    )
+    codespace_serve_demo.add_argument("--host", default="0.0.0.0", help="demo MCP server bind host")
+    codespace_serve_demo.add_argument("--port", type=int, default=9001, help="demo MCP server bind port")
+    codespace_serve_demo.add_argument("--name", default="codespace", help="demo MCP server name")
+    codespace_serve_demo.add_argument("--path", default="/mcp", help="MCP HTTP path")
+    codespace_serve_demo.add_argument(
+        "--ready-check",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="verify local tools/list before printing the laptop attach command",
+    )
+    codespace_serve_demo.add_argument("--ready-timeout", type=float, default=5.0, help="ready-check timeout")
+    codespace_serve_demo.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the inferred URLs and commands without starting the server",
+    )
+    add_compact_arg(codespace_serve_demo)
+
+
+def _handle_share_codespace_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    from ..codespaces import (
+        format_codespace_attach_report,
+        format_codespace_demo_report,
+        prepare_codespace_attach,
+        prepare_codespace_demo,
+        serve_codespace_demo,
+        smoke_check_codespace_upstream,
+    )
+
+    if args.share_codespace_command == "attach":
+        result = prepare_codespace_attach(
+            args.url,
+            directory=args.directory,
+            name=args.name,
+            tool_prefix=args.tool_prefix,
+            host=args.host,
+            port=args.port,
+            state=args.state,
+            force=args.force,
+        )
+        if args.smoke_check:
+            result["smoke_check"] = smoke_check_codespace_upstream(args.url, timeout=args.smoke_timeout)
+            if not result["smoke_check"]["ok"]:
+                write_generated_session_output(
+                    result,
+                    compact=args.compact,
+                    formatter=format_codespace_attach_report,
+                )
+                return 1
+        result["dry_run"] = bool(args.dry_run)
+        if args.dry_run:
+            write_generated_session_output(
+                result,
+                compact=args.compact,
+                formatter=format_codespace_attach_report,
+            )
+            return 0
+
+        import os
+
+        from ..config import load_mcp_fabric_config, load_mcp_proxy_config
+        from ..proxy import run_mcp_proxy_config
+
+        os.environ[result["env"]["name"]] = result["env"]["value"]
+        proxy_config = load_mcp_proxy_config(result["config"])
+        fabric_config = load_mcp_fabric_config(result["config"])
+        fabric_config["proxy"] = proxy_config
+        result["starting_proxy"] = True
+        write_generated_session_output(
+            result,
+            compact=args.compact,
+            formatter=format_codespace_attach_report,
+        )
+        sys.stdout.flush()
+        run_mcp_proxy_config(proxy_config, fabric_config)
+        return 0
+
+    if args.share_codespace_command == "serve-demo":
+        if args.dry_run:
+            result = prepare_codespace_demo(
+                host=args.host,
+                port=args.port,
+                name=args.name,
+                path=args.path,
+            )
+            result["dry_run"] = True
+            write_result_output(result, compact=args.compact, formatter=format_codespace_demo_report)
+            return 0
+
+        def emit_codespace_demo(payload: Mapping[str, Any]) -> None:
+            write_result_output(payload, compact=args.compact, formatter=format_codespace_demo_report)
+            sys.stdout.flush()
+
+        result = serve_codespace_demo(
+            host=args.host,
+            port=args.port,
+            name=args.name,
+            path=args.path,
+            ready_check=args.ready_check,
+            ready_timeout=args.ready_timeout,
+            emit=emit_codespace_demo,
+        )
+        return 0 if result["ok"] else 1
+
+    parser.error(f"unknown mcp share codespace command: {args.share_codespace_command}")
+    return 2
 
 
 def _has_proxy_run_args(args: argparse.Namespace) -> bool:

@@ -60,7 +60,7 @@ uv run snulbug mcp share close .snulbug/shares/share-... --report --revoke
 Before wiring in a real MCP server, run the one-command lab:
 
 ```bash
-uv run snulbug mcp lab
+uv run snulbug mcp share lab
 ```
 
 It starts two fake MCP upstreams behind a single facade, records policy

@@ -103,8 +103,8 @@ def test_codespace_local_gateway_example_documents_member_agent_flow(monkeypatch
     assert provider["state_key"] == "snulbug:fabric:codespaces:members"
     assert config["mcp"]["proxy"]["policy"] == "policy.lua"
     assert "Demo A: One Codespace URL" in readme
-    assert "snulbug mcp codespace serve-demo" in readme
-    assert "snulbug mcp codespace attach" in readme
+    assert "snulbug mcp share codespace serve-demo" in readme
+    assert "snulbug mcp share codespace attach" in readme
     assert ".snulbug/codespace-local/traces/audit.jsonl" in readme
     assert "SNULBUG_DISCOVERY_UPSTREAMS" in readme
     assert "codespace.files.list_project_files" in readme

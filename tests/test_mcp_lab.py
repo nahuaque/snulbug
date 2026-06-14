@@ -28,7 +28,7 @@ def test_run_mcp_lab_exercises_policy_lifecycle(tmp_path):
 def test_mcp_lab_cli_compact_outputs_json(tmp_path, capsys):
     output = tmp_path / "lab"
 
-    status = simulator_main(["mcp", "lab", "--output-dir", str(output), "--compact"])
+    status = simulator_main(["mcp", "share", "lab", "--output-dir", str(output), "--compact"])
 
     payload = json.loads(capsys.readouterr().out)
     assert status == 0

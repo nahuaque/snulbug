@@ -78,7 +78,7 @@ def test_prepare_codespace_demo_infers_forwarded_url():
     )
     assert result["server"]["public_url"] == "https://ideal-space-9001.app.github.dev/mcp"
     assert result["commands"]["attach"] == (
-        "uv run snulbug mcp codespace attach https://ideal-space-9001.app.github.dev/mcp"
+        "uv run snulbug mcp share codespace attach https://ideal-space-9001.app.github.dev/mcp"
     )
     assert result["tools"] == ["safe_read_file", "list_project_files"]
 
@@ -137,7 +137,7 @@ def test_serve_codespace_demo_emits_ready_plan_and_stops_on_interrupt(monkeypatc
     assert emitted
     assert emitted[0]["serving"] is True
     assert emitted[0]["ready_check"]["ok"] is True
-    assert emitted[0]["commands"]["attach"].startswith("uv run snulbug mcp codespace attach https://ideal-space-")
+    assert emitted[0]["commands"]["attach"].startswith("uv run snulbug mcp share codespace attach https://ideal-space-")
     assert result["interrupted"] is True
     assert result["serving"] is False
 
@@ -148,6 +148,7 @@ def test_mcp_codespace_attach_cli_dry_run_outputs_plan(tmp_path, capsys, monkeyp
     status = simulator.main(
         [
             "mcp",
+            "share",
             "codespace",
             "attach",
             "https://example-9001.app.github.dev/mcp",
@@ -180,6 +181,7 @@ def test_mcp_codespace_serve_demo_cli_dry_run_outputs_laptop_command(capsys, mon
     status = simulator.main(
         [
             "mcp",
+            "share",
             "codespace",
             "serve-demo",
             "--port",
@@ -195,7 +197,7 @@ def test_mcp_codespace_serve_demo_cli_dry_run_outputs_laptop_command(capsys, mon
     assert output["dry_run"] is True
     assert output["server"]["public_url"] == "https://ideal-space-9001.app.github.dev/mcp"
     assert output["commands"]["attach"] == (
-        "uv run snulbug mcp codespace attach https://ideal-space-9001.app.github.dev/mcp"
+        "uv run snulbug mcp share codespace attach https://ideal-space-9001.app.github.dev/mcp"
     )
 
 
@@ -213,6 +215,7 @@ def test_mcp_codespace_attach_cli_sets_env_and_starts_proxy(tmp_path, capsys, mo
     status = simulator.main(
         [
             "mcp",
+            "share",
             "codespace",
             "attach",
             "https://example-9001.app.github.dev/mcp",

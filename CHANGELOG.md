@@ -30,7 +30,7 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 - Added managed stdio MCP upstreams for facade mode, so local stdio servers can be exposed through the same policy-controlled HTTP endpoint.
 - Added MCP learn mode with `snulbug mcp policy learn` to compile captured replay/audit logs into least-privilege policy bundles.
 - Added MCP amend mode with `snulbug mcp policy amend` to produce candidate patches from blocked learned-policy decisions.
-- Added `snulbug mcp lab`, a one-command local MCP policy lab covering facade, recording, inspection, learn, and amend.
+- Added `snulbug mcp share lab`, a one-command local MCP policy lab covering facade, recording, inspection, learn, and amend.
 
 ## [0.1.0] - 2026-06-12
 

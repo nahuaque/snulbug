@@ -59,7 +59,7 @@ uv add "snulbug[discovery,redis] @ git+https://github.com/lbruhacs/snulbug"
 Run the full MCP policy lifecycle without wiring up a real server:
 
 ```bash
-uv run snulbug mcp lab
+uv run snulbug mcp share lab
 ```
 
 The lab creates fake MCP upstreams behind one facade, records traffic, learns a
@@ -71,14 +71,14 @@ writes replay/audit/report artifacts under `.snulbug-lab/`.
 In the Codespace terminal, start the bundled mock MCP server:
 
 ```bash
-uv run snulbug mcp codespace serve-demo
+uv run snulbug mcp share codespace serve-demo
 ```
 
 It prints the forwarded MCP URL and the matching laptop command. On the laptop,
 attach that URL to a local snulbug gateway:
 
 ```bash
-uv run snulbug mcp codespace attach https://YOUR-CODESPACE-9001.app.github.dev/mcp
+uv run snulbug mcp share codespace attach https://YOUR-CODESPACE-9001.app.github.dev/mcp
 ```
 
 `attach` generates `.snulbug/codespace-local/`, preflights the upstream with
