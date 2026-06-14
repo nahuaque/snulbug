@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -8,6 +7,7 @@ from typing import Any
 from .credentials import attach_upstream_credentials, normalize_fabric_credentials, normalize_upstream_credential
 from .discovery import apply_fabric_discovery
 from .events import normalize_event_sink_configs
+from .gateway_templates import render_toml_array_table
 
 try:
     import tomllib
@@ -90,9 +90,7 @@ def default_event_sink_configs(
 def format_event_sinks_toml(event_sinks: Sequence[Mapping[str, Any]]) -> str:
     lines: list[str] = []
     for sink in event_sinks:
-        lines.extend(["", "[[mcp.events.sinks]]"])
-        for key, value in sink.items():
-            lines.append(f"{key} = {_toml_literal(value)}")
+        lines.extend(["", *render_toml_array_table("mcp.events.sinks", sink)])
     return "\n".join(lines)
 
 
@@ -491,16 +489,6 @@ def merge_mcp_proxy_config(config: Mapping[str, Any], overrides: Mapping[str, An
         if value is not None:
             merged[key] = value
     return normalize_mcp_proxy_config(merged)
-
-
-def _toml_literal(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int | float):
-        return str(value)
-    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
-        return json.dumps([str(item) for item in value])
-    return json.dumps(str(value))
 
 
 def _resolve_path(base_dir: Path, value: str | Path) -> Path:

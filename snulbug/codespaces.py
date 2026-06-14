@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import SplitResult, urlsplit
 
-from .config import default_event_sink_configs, format_event_sinks_toml
+from .config import default_event_sink_configs
+from .gateway_templates import GatewayTemplate, render_gateway_toml
 
 DEFAULT_CODESPACE_ATTACH_DIR = Path(".snulbug/codespace-local")
 DEFAULT_CODESPACE_DISCOVERY_ENV = "SNULBUG_DISCOVERY_UPSTREAMS"
@@ -402,46 +403,49 @@ def _codespace_attach_toml(
     port: int,
     state: str,
 ) -> str:
-    return (
-        "[mcp.fabric]\n"
-        'name = "codespace-local"\n'
-        'description = "Laptop snulbug gateway routing one Codespace MCP URL"\n'
-        f'gateway_url = "http://{host}:{port}/mcp"\n'
-        "require_manifests = false\n"
-        "probe_gateway = false\n"
-        "probe_upstreams = false\n"
-        "timeout = 5.0\n"
-        "\n"
-        "[mcp.fabric.discovery]\n"
-        "enabled = true\n"
-        "\n"
-        "[[mcp.fabric.discovery.providers]]\n"
-        'name = "codespace-env"\n'
-        'type = "env"\n'
-        f"env = {json.dumps(discovery_env)}\n"
-        "required = true\n"
-        "\n"
-        "[mcp.proxy]\n"
-        'policy = "policy.lua"\n'
-        f"host = {json.dumps(host)}\n"
-        f"port = {port}\n"
-        f"state = {json.dumps(state)}\n"
-        "trace = true\n"
-        'record_out = "traces/session.jsonl"\n'
-        "redact_records = true\n"
-        "max_body_bytes = 65536\n"
-        "response_max_bytes = 262144\n"
-        "response_redact_secrets = true\n"
-        "tool_pinning = true\n"
-        'tool_pinning_action = "warn"\n'
-        "schema_validation = true\n"
-        'schema_validation_action = "warn"\n'
-        "facade_health_routing = true\n"
-        "facade_health_failure_threshold = 2\n"
-        "facade_health_cooldown_seconds = 10.0\n"
-        "facade_health_exclude_unhealthy = true\n"
-        "timeout = 30.0\n"
-        f"{format_event_sinks_toml(default_event_sink_configs(audit_path='traces/audit.jsonl'))}\n"
+    return render_gateway_toml(
+        GatewayTemplate(
+            fabric={
+                "name": "codespace-local",
+                "description": "Laptop snulbug gateway routing one Codespace MCP URL",
+                "gateway_url": f"http://{host}:{port}/mcp",
+                "require_manifests": False,
+                "probe_gateway": False,
+                "probe_upstreams": False,
+                "timeout": 5.0,
+            },
+            fabric_discovery={"enabled": True},
+            fabric_discovery_providers=[
+                {
+                    "name": "codespace-env",
+                    "type": "env",
+                    "env": discovery_env,
+                    "required": True,
+                }
+            ],
+            proxy={
+                "policy": "policy.lua",
+                "host": host,
+                "port": port,
+                "state": state,
+                "trace": True,
+                "record_out": "traces/session.jsonl",
+                "redact_records": True,
+                "max_body_bytes": 65536,
+                "response_max_bytes": 262144,
+                "response_redact_secrets": True,
+                "tool_pinning": True,
+                "tool_pinning_action": "warn",
+                "schema_validation": True,
+                "schema_validation_action": "warn",
+                "facade_health_routing": True,
+                "facade_health_failure_threshold": 2,
+                "facade_health_cooldown_seconds": 10.0,
+                "facade_health_exclude_unhealthy": True,
+                "timeout": 30.0,
+            },
+            event_sinks=default_event_sink_configs(audit_path="traces/audit.jsonl"),
+        )
     )
 
 

@@ -133,6 +133,7 @@ from .fabric_runtime import (
     load_fabric_runtime_status,
     open_fabric_runtime_state_store,
 )
+from .gateway_templates import GatewayTemplate, render_gateway_toml
 from .guide import MCP_GUIDE_WORKFLOWS, build_mcp_guide, format_mcp_guide
 from .impact import analyze_mcp_impact, format_mcp_impact_report
 from .inspection import format_mcp_inspection_report, inspect_mcp_log
@@ -286,6 +287,7 @@ __all__ = [
     "FabricConfigReloadMiddleware",
     "FabricControllerStatusServer",
     "FabricRuntimeStateStore",
+    "GatewayTemplate",
     "JsonlEventSink",
     "ManagedHolepunchBridge",
     "ManagedStdioMcpClient",
@@ -420,6 +422,7 @@ __all__ = [
     "register_fabric_member",
     "register_discovery_provider",
     "redact_secrets",
+    "render_gateway_toml",
     "replay_record_log",
     "revoke_lease",
     "run_mcp_lab",

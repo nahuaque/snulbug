@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from .bundle import test_bundle, validate_bundle
-from .config import default_event_sink_configs, format_event_sinks_toml
+from .config import default_event_sink_configs
+from .gateway_templates import GatewayTemplate, render_gateway_toml
 from .presets import (
     DEFAULT_ALLOWED_PATHS,
     DEFAULT_ALLOWED_TOOLS,
@@ -237,18 +237,5 @@ def _write_mcp_proxy_config(
     if path.exists() and not force:
         raise FileExistsError(f"config file already exists: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = ["[mcp.proxy]"]
-    for key, value in values.items():
-        lines.append(f"{key} = {_toml_value(value)}")
-    lines.extend(format_event_sinks_toml(event_sinks).splitlines())
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def _toml_value(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int | float):
-        return str(value)
-    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
-        return json.dumps([str(item) for item in value])
-    return json.dumps(str(value))
+    template = GatewayTemplate(proxy=values, event_sinks=event_sinks)
+    path.write_text(render_gateway_toml(template), encoding="utf-8")

@@ -9,7 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .config import default_event_sink_configs, format_event_sinks_toml
+from .config import default_event_sink_configs
+from .gateway_templates import GatewayTemplate, render_gateway_toml
 from .inspection import format_mcp_inspection_report, inspect_mcp_log
 from .leases import create_lease
 from .presets import DEFAULT_ALLOWED_PATHS, DEFAULT_ALLOWED_TOOLS, McpPolicyOptions, generate_mcp_preset
@@ -933,53 +934,34 @@ def _container_facade_config(
     lease_required: bool,
     lease_header: str,
 ) -> str:
-    lines = [
-        "[mcp.proxy]",
-        'policy = "policy.snulbug/policy.lua"',
-        f"host = {_toml_value(CONTAINER_BIND_HOST)}",
-        f"port = {port}",
-        f"state = {_toml_value(state)}",
-        "trace = true",
-        'record_out = "../traces/container-session.jsonl"',
-        "redact_records = true",
-        "confirm = false",
-        "max_body_bytes = 65536",
-        "response_max_bytes = 262144",
-        "response_redact_secrets = true",
-        "response_block_instructions = false",
-        "tool_pinning = true",
-        'tool_pinning_action = "block"',
-        "schema_validation = true",
-        'schema_validation_action = "block"',
-        'lease_file = "leases.json"',
-        f"lease_required = {_toml_value(lease_required)}",
-        f"lease_header = {_toml_value(lease_header)}",
-        f"tunnel_provider = {_toml_value(provider)}",
-        f"tunnel_public_url = {_toml_value(client_url)}",
-        'cloudflare_access = "off"',
-        "timeout = 30.0",
-        "",
-        "[[mcp.proxy.upstreams]]",
-        'name = "local"',
-        'transport = "http"',
-        'url = "http://local-mcp:9000/mcp"',
-        'tool_prefix = "local."',
-        "default = true",
-        "",
-        "[[mcp.proxy.upstreams]]",
-        'name = "remote"',
-        'transport = "holepunch"',
-        f'url = "http://127.0.0.1:{CONTAINER_REMOTE_BRIDGE_PORT}/mcp"',
-        f"local_port = {CONTAINER_REMOTE_BRIDGE_PORT}",
-        'bridge_config = "hypertele-client.json"',
-        'bridge_cwd = "/share/containers"',
-        'bridge_command = "hypertele"',
-        "bridge_private = true",
-        "bridge_ready_timeout = 15.0",
-        'tool_prefix = "remote."',
-        *format_event_sinks_toml(default_event_sink_configs(audit_path="../traces/container-audit.jsonl")).splitlines(),
-    ]
-    return "\n".join(lines) + "\n"
+    return render_gateway_toml(
+        GatewayTemplate(
+            proxy=_container_proxy_values(
+                provider=provider,
+                client_url=client_url,
+                port=port,
+                state=state,
+                lease_required=lease_required,
+                lease_header=lease_header,
+            ),
+            upstreams=[
+                _container_local_upstream(),
+                {
+                    "name": "remote",
+                    "transport": "holepunch",
+                    "url": f"http://127.0.0.1:{CONTAINER_REMOTE_BRIDGE_PORT}/mcp",
+                    "local_port": CONTAINER_REMOTE_BRIDGE_PORT,
+                    "bridge_config": "hypertele-client.json",
+                    "bridge_cwd": "/share/containers",
+                    "bridge_command": "hypertele",
+                    "bridge_private": True,
+                    "bridge_ready_timeout": 15.0,
+                    "tool_prefix": "remote.",
+                },
+            ],
+            event_sinks=default_event_sink_configs(audit_path="../traces/container-audit.jsonl"),
+        )
+    )
 
 
 def _container_local_config(
@@ -991,41 +973,66 @@ def _container_local_config(
     lease_required: bool,
     lease_header: str,
 ) -> str:
-    lines = [
-        "[mcp.proxy]",
-        'policy = "policy.snulbug/policy.lua"',
-        f"host = {_toml_value(CONTAINER_BIND_HOST)}",
-        f"port = {port}",
-        f"state = {_toml_value(state)}",
-        "trace = true",
-        'record_out = "../traces/container-session.jsonl"',
-        "redact_records = true",
-        "confirm = false",
-        "max_body_bytes = 65536",
-        "response_max_bytes = 262144",
-        "response_redact_secrets = true",
-        "response_block_instructions = false",
-        "tool_pinning = true",
-        'tool_pinning_action = "block"',
-        "schema_validation = true",
-        'schema_validation_action = "block"',
-        'lease_file = "leases.json"',
-        f"lease_required = {_toml_value(lease_required)}",
-        f"lease_header = {_toml_value(lease_header)}",
-        f"tunnel_provider = {_toml_value(provider)}",
-        f"tunnel_public_url = {_toml_value(client_url)}",
-        'cloudflare_access = "off"',
-        "timeout = 30.0",
-        "",
-        "[[mcp.proxy.upstreams]]",
-        'name = "local"',
-        'transport = "http"',
-        'url = "http://local-mcp:9000/mcp"',
-        'tool_prefix = "local."',
-        "default = true",
-        *format_event_sinks_toml(default_event_sink_configs(audit_path="../traces/container-audit.jsonl")).splitlines(),
-    ]
-    return "\n".join(lines) + "\n"
+    return render_gateway_toml(
+        GatewayTemplate(
+            proxy=_container_proxy_values(
+                provider=provider,
+                client_url=client_url,
+                port=port,
+                state=state,
+                lease_required=lease_required,
+                lease_header=lease_header,
+            ),
+            upstreams=[_container_local_upstream()],
+            event_sinks=default_event_sink_configs(audit_path="../traces/container-audit.jsonl"),
+        )
+    )
+
+
+def _container_proxy_values(
+    *,
+    provider: str,
+    client_url: str,
+    port: int,
+    state: str,
+    lease_required: bool,
+    lease_header: str,
+) -> dict[str, Any]:
+    return {
+        "policy": "policy.snulbug/policy.lua",
+        "host": CONTAINER_BIND_HOST,
+        "port": port,
+        "state": state,
+        "trace": True,
+        "record_out": "../traces/container-session.jsonl",
+        "redact_records": True,
+        "confirm": False,
+        "max_body_bytes": 65536,
+        "response_max_bytes": 262144,
+        "response_redact_secrets": True,
+        "response_block_instructions": False,
+        "tool_pinning": True,
+        "tool_pinning_action": "block",
+        "schema_validation": True,
+        "schema_validation_action": "block",
+        "lease_file": "leases.json",
+        "lease_required": lease_required,
+        "lease_header": lease_header,
+        "tunnel_provider": provider,
+        "tunnel_public_url": client_url,
+        "cloudflare_access": "off",
+        "timeout": 30.0,
+    }
+
+
+def _container_local_upstream() -> dict[str, Any]:
+    return {
+        "name": "local",
+        "transport": "http",
+        "url": "http://local-mcp:9000/mcp",
+        "tool_prefix": "local.",
+        "default": True,
+    }
 
 
 def _container_compose() -> str:
@@ -1435,16 +1442,6 @@ def _ok_summary(value: Any) -> Any:
     if not isinstance(value, dict):
         return value
     return {key: value[key] for key in ("ok", "name", "version", "fixture_count", "passed", "failed") if key in value}
-
-
-def _toml_value(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int | float):
-        return str(value)
-    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
-        return json.dumps([str(item) for item in value])
-    return json.dumps(str(value))
 
 
 def _write_json(path: Path, value: Any, *, force: bool) -> None:

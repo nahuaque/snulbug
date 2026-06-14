@@ -4,7 +4,15 @@ import json
 
 import pytest
 
-from snulbug import default_event_sink_configs, format_event_sinks_toml, load_mcp_proxy_config, write_sample_config
+from snulbug import (
+    GatewayTemplate,
+    default_event_sink_configs,
+    format_event_sinks_toml,
+    load_mcp_fabric_config,
+    load_mcp_proxy_config,
+    render_gateway_toml,
+    write_sample_config,
+)
 from snulbug.config import merge_mcp_proxy_config
 from snulbug.simulator import main as simulator_main
 
@@ -156,6 +164,59 @@ def test_event_sink_toml_helper_writes_loadable_sink_blocks(tmp_path):
     assert result["event_sinks"][0]["type"] == "audit_jsonl"
     assert result["event_sinks"][0]["path"] == tmp_path / "logs/audit.jsonl"
     assert result["event_sinks"][1]["type"] == "console"
+
+
+def test_gateway_template_renders_loadable_proxy_and_fabric_config(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        render_gateway_toml(
+            GatewayTemplate(
+                fabric={
+                    "name": "dev-fabric",
+                    "description": "Generated fabric config",
+                    "gateway_url": "http://127.0.0.1:8080/mcp",
+                    "require_manifests": False,
+                    "probe_gateway": False,
+                    "probe_upstreams": False,
+                    "timeout": 5.0,
+                },
+                fabric_credentials={
+                    "codespace": {
+                        "type": "env",
+                        "env": "CODESPACE_MCP_TOKEN",
+                        "scheme": "bearer",
+                        "header": "Authorization",
+                    }
+                },
+                proxy={
+                    "policy": "policy.snulbug/policy.lua",
+                    "host": "127.0.0.1",
+                    "port": 8080,
+                    "record_out": "traces/session.jsonl",
+                },
+                upstreams=[
+                    {
+                        "name": "files",
+                        "transport": "http",
+                        "url": "http://127.0.0.1:9001/mcp",
+                        "tool_prefix": "files.",
+                        "auth": "codespace",
+                    }
+                ],
+                event_sinks=default_event_sink_configs(audit_path="traces/audit.jsonl"),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    proxy = load_mcp_proxy_config(config)
+    fabric = load_mcp_fabric_config(config)
+
+    assert proxy["upstreams"][0]["name"] == "files"
+    assert proxy["upstreams"][0]["credential"]["id"] == "codespace"
+    assert proxy["event_sinks"][0]["path"] == tmp_path / "traces/audit.jsonl"
+    assert fabric["name"] == "dev-fabric"
+    assert fabric["proxy"]["upstreams"][0]["tool_prefix"] == "files."
 
 
 def test_load_mcp_proxy_config_accepts_localxpose_provider(tmp_path):
