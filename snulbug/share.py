@@ -28,6 +28,14 @@ from .scaffolds import (
     session_result,
     write_scaffold,
 )
+from .share_session import (
+    SHARE_SESSION_MODEL_PATH,
+    build_share_session_model,
+    load_share_session_model,
+    share_session_model_path,
+    update_share_session_model,
+    write_share_session_model,
+)
 from .tunnel import TUNNEL_PROVIDERS, init_tunnel_provider
 
 DEFAULT_SHARE_PROVIDER = "holepunch"
@@ -183,6 +191,7 @@ def create_mcp_share(
             generated_by="snulbug mcp share create",
             artifacts=[
                 GeneratedArtifact("manifest", share_dir / SHARE_MANIFEST, "manifest"),
+                GeneratedArtifact("session_model", share_session_model_path(share_dir), "session_model"),
                 GeneratedArtifact("config", quickstart["config"], "config"),
                 GeneratedArtifact("policy", quickstart["policy"], "policy_bundle"),
                 GeneratedArtifact("policy_file", quickstart["policy_file"], "policy"),
@@ -252,6 +261,8 @@ def create_mcp_share(
         command_plan=command_plan,
     )
     _write_share_manifest(share_dir, manifest, force=force)
+    session_model = build_share_session_model(manifest, directory=share_dir)
+    write_share_session_model(share_dir, session_model, force=force)
     primary_client = generated_session["primary_client"] or {}
     file_map = generated_session["file_map"]
 
@@ -260,6 +271,7 @@ def create_mcp_share(
         "session": {
             "id": session_id,
             "directory": str(share_dir),
+            "model": str(share_session_model_path(share_dir)),
             "provider": provider,
             "preset": preset,
             "ttl": ttl,
@@ -286,6 +298,7 @@ def create_mcp_share(
         "commands": generated_session["command_map"],
         "files": {
             "manifest": file_map["manifest"],
+            "session_model": file_map["session_model"],
             "config": file_map["config"],
             "policy": file_map["policy"],
             "lease_file": file_map["lease_file"],
@@ -316,6 +329,10 @@ def share_status(directory: str | Path) -> dict[str, Any]:
 
     share_dir = Path(directory)
     manifest = load_mcp_share(share_dir)
+    session_model: dict[str, Any] | None = None
+    model_path = share_session_model_path(share_dir)
+    if model_path.exists():
+        session_model = load_share_session_model(share_dir)
     files = manifest.get("files") if isinstance(manifest.get("files"), Mapping) else {}
     lease = manifest.get("lease") if isinstance(manifest.get("lease"), Mapping) else {}
     lease_file = files.get("lease_file") or lease.get("file")
@@ -352,6 +369,8 @@ def share_status(directory: str | Path) -> dict[str, Any]:
         "lease": lease_status,
         "files": file_status,
         "commands": manifest.get("commands", {}),
+        "session_model": session_model,
+        "session_model_path": str(model_path),
     }
 
 
@@ -547,6 +566,7 @@ def _preflight_share(directory: Path, *, force: bool) -> None:
         "leases.json",
         "mcp-client.json",
         SHARE_MANIFEST,
+        SHARE_SESSION_MODEL_PATH,
         "SHARE.md",
         "tunnel",
         DEFAULT_CONTAINER_RECIPE_DIR,
@@ -722,6 +742,7 @@ def _share_manifest(
         },
         "files": {
             "manifest": str(share_dir / SHARE_MANIFEST),
+            "session_model": str(share_session_model_path(share_dir)),
             "config": quickstart["config"],
             "policy": quickstart["policy"],
             "policy_file": quickstart["policy_file"],
@@ -770,6 +791,7 @@ def _update_share_manifest(
     if closeout is not None:
         manifest["closeout"] = dict(closeout)
     (share_dir / SHARE_MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    update_share_session_model(share_dir, manifest=manifest)
     return manifest
 
 
@@ -786,6 +808,7 @@ def _update_share_client_url(share_dir: Path, url: str) -> None:
             tunnel_client["url"] = url
     manifest["updated_at"] = _now_iso()
     (share_dir / SHARE_MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    update_share_session_model(share_dir, manifest=manifest)
 
     config_path = client.get("config") if isinstance(client, Mapping) else None
     if isinstance(config_path, str) and config_path:

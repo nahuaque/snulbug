@@ -10,8 +10,10 @@ from snulbug import (
     create_mcp_share,
     doctor_mcp_share,
     load_mcp_proxy_config,
+    load_share_session_model,
     run_mcp_share,
     share_client_config,
+    share_session_model_path,
     share_status,
 )
 from snulbug.simulator import main as simulator_main
@@ -36,14 +38,17 @@ def test_create_mcp_share_writes_ephemeral_holepunch_session(tmp_path):
     local_config = load_mcp_proxy_config(tmp_path / "containers" / "snulbug.local.toml")
     facade_config = load_mcp_proxy_config(tmp_path / "containers" / "snulbug.facade.toml")
     report = (tmp_path / "SHARE.md").read_text(encoding="utf-8")
+    session_model = load_share_session_model(tmp_path)
 
     assert result["ok"] is True
     assert result["session"]["provider"] == "holepunch"
+    assert result["session"]["model"] == str(share_session_model_path(tmp_path))
     assert result["session"]["ttl"] == "15m"
     assert result["client"]["url"] == "http://127.0.0.1:18080/mcp"
     assert result["client"]["headers"]["Authorization"] == "Bearer share-secret"
     assert result["client"]["headers"]["x-snulbug-lease"].startswith("sbl_")
     assert result["generated_session"]["file_map"]["config"] == result["files"]["config"]
+    assert result["generated_session"]["file_map"]["session_model"] == result["files"]["session_model"]
     assert result["generated_session"]["primary_client"]["url"] == result["client"]["url"]
     assert result["generated_session"]["command_map"]["run"] == result["commands"]["run"]
     assert result["generated_session"]["log_map"]["audit_log"] == str(tmp_path / "traces" / "audit.jsonl")
@@ -115,9 +120,11 @@ def test_create_mcp_share_writes_ephemeral_holepunch_session(tmp_path):
     assert (tmp_path / "tunnel" / "hypertele-server.json").is_file()
     assert (tmp_path / "tunnel" / "hypertele-client.json").is_file()
     assert (tmp_path / "share.json").is_file()
+    assert share_session_model_path(tmp_path).is_file()
     manifest = json.loads((tmp_path / "share.json").read_text(encoding="utf-8"))
     assert manifest["type"] == "snulbug.share"
     assert manifest["state"] == "created"
+    assert manifest["files"]["session_model"] == str(share_session_model_path(tmp_path))
     assert manifest["commands"]["run"] == f"uv run snulbug mcp share run {tmp_path}"
     assert manifest["commands"]["share_doctor"] == f"uv run snulbug mcp share doctor {tmp_path}"
     assert manifest["client"]["headers"]["Authorization"] == "Bearer share-secret"
@@ -130,6 +137,20 @@ def test_create_mcp_share_writes_ephemeral_holepunch_session(tmp_path):
     assert "uv run snulbug mcp share doctor" in report
     assert "uv run snulbug mcp share close" in report
     assert "Remote container as upstream" in report
+    assert session_model["type"] == "snulbug.share.session"
+    assert session_model["id"] == tmp_path.name
+    assert session_model["status"]["state"] == "created"
+    assert session_model["share"]["preset"] == "tunnel-safe"
+    assert session_model["gateway"]["config"] == str(tmp_path / "snulbug.toml")
+    assert session_model["tunnel"]["provider"] == "holepunch"
+    assert session_model["tunnel"]["public_url"] == "http://127.0.0.1:18080/mcp"
+    assert session_model["upstreams"] == [{"name": "default", "transport": "http", "url": "http://127.0.0.1:9100"}]
+    assert session_model["policy"]["bundle"] == str(tmp_path / "policy.snulbug")
+    assert session_model["policy"]["active_policy"] == str(tmp_path / "policy.snulbug" / "policy.lua")
+    assert session_model["lease"]["file"] == str(tmp_path / "leases.json")
+    assert session_model["evidence"]["record_log"] == str(tmp_path / "traces" / "session.jsonl")
+    assert session_model["client"]["header_names"] == ["Authorization", "x-snulbug-lease"]
+    assert "Bearer share-secret" not in json.dumps(session_model)
 
 
 def test_mcp_share_cli_emits_compact_session_plan(tmp_path, capsys):
@@ -170,6 +191,7 @@ def test_mcp_share_cli_emits_compact_session_plan(tmp_path, capsys):
     assert "fixture_count" not in json.dumps(output["legacy"]["tunnel"])
     assert (tmp_path / "mcp-client.json").is_file()
     assert (tmp_path / "share.json").is_file()
+    assert share_session_model_path(tmp_path).is_file()
     assert (tmp_path / "SHARE.md").is_file()
 
 
@@ -226,6 +248,8 @@ def test_mcp_share_lifecycle_helpers_read_manifest(tmp_path):
 
     assert status["ok"] is True
     assert status["state"] == "created"
+    assert status["session_model"]["status"]["state"] == "created"
+    assert status["session_model_path"] == str(share_session_model_path(tmp_path))
     assert status["lease"]["active"] is True
     assert client["config"]["mcpServers"]["snulbug-share"]["headers"]["Authorization"] == "Bearer share-secret"
     assert run_plan is not None
@@ -251,11 +275,14 @@ def test_mcp_share_doctor_url_override_updates_manifest_and_client(tmp_path, mon
 
     result = doctor_mcp_share(tmp_path, public_url="https://actual.example/mcp")
     manifest = json.loads((tmp_path / "share.json").read_text(encoding="utf-8"))
+    session_model = load_share_session_model(tmp_path)
     client_config = json.loads((tmp_path / "mcp-client.json").read_text(encoding="utf-8"))
 
     assert result["ok"] is True
     assert calls[0]["url"] == "https://actual.example/mcp"
     assert manifest["client"]["url"] == "https://actual.example/mcp"
+    assert session_model["status"]["state"] == "verified"
+    assert session_model["tunnel"]["public_url"] == "https://actual.example/mcp"
     assert manifest["tunnel"]["public_url"] == "https://actual.example/mcp"
     assert client_config["mcpServers"]["snulbug-share"]["url"] == "https://actual.example/mcp"
 
@@ -288,11 +315,14 @@ def test_mcp_share_lifecycle_cli_status_client_run_and_close(tmp_path, capsys):
     close_code = simulator_main(["mcp", "share", "close", str(tmp_path), "--compact"])
     close_output = json.loads(capsys.readouterr().out)
     manifest = json.loads((tmp_path / "share.json").read_text(encoding="utf-8"))
+    session_model = load_share_session_model(tmp_path)
     assert close_code == 0
     assert close_output["state"] == "closed"
     assert close_output["revoked"]["ok"] is True
     assert (tmp_path / "session-report.md").is_file()
     assert manifest["state"] == "closed"
+    assert session_model["status"]["state"] == "closed"
+    assert session_model["evidence"]["closeout_report"] == str(tmp_path / "session-report.md")
 
 
 def test_close_mcp_share_revokes_lease_and_writes_report(tmp_path):

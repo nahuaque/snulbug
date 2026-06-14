@@ -225,6 +225,15 @@ from .share import (
     share_client_config,
     share_status,
 )
+from .share_session import (
+    SHARE_SESSION_MODEL_PATH,
+    SHARE_SESSION_MODEL_TYPE,
+    build_share_session_model,
+    load_share_session_model,
+    share_session_model_path,
+    update_share_session_model,
+    write_share_session_model,
+)
 from .simulator import simulate_policy
 from .state import (
     BoundedPolicyState,
@@ -351,6 +360,7 @@ __all__ = [
     "build_fabric_audit_metadata",
     "build_mcp_schema_catalog",
     "build_mcp_tool_snapshot",
+    "build_share_session_model",
     "build_tunnel_audit_metadata",
     "bundle_lifecycle_digest",
     "clear_fabric_control_actions",
@@ -427,6 +437,7 @@ __all__ = [
     "load_mcp_proxy_config",
     "load_mcp_fabric_config",
     "load_mcp_share",
+    "load_share_session_model",
     "load_manifest",
     "load_record_log",
     "manifest_digest",
@@ -462,7 +473,10 @@ __all__ = [
     "run_proxy",
     "score_mcp_schema_catalog",
     "share_client_config",
+    "SHARE_SESSION_MODEL_PATH",
+    "SHARE_SESSION_MODEL_TYPE",
     "share_status",
+    "share_session_model_path",
     "session_result",
     "session_summary",
     "simulate_policy",
@@ -479,10 +493,12 @@ __all__ = [
     "stable_schema_digest",
     "test_bundle",
     "unregister_fabric_member",
+    "update_share_session_model",
     "validate_bundle",
     "verify_bundle_lifecycle",
     "verify_upstream_manifest",
     "write_scaffold",
     "write_manifest",
     "write_sample_config",
+    "write_share_session_model",
 ]

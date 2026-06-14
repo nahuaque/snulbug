@@ -20,6 +20,7 @@ By default, the command writes under `.snulbug/shares/share-*` and creates:
 
 ```text
 share.json
+.snulbug/share/session.json
 policy.snulbug/
 snulbug.toml
 leases.json
@@ -34,6 +35,13 @@ The generated policy uses a random bearer token unless `--token` is supplied.
 The generated config sets `lease_required = true`, so every MCP `tools/call`
 must carry the generated `x-snulbug-lease` token. The lease expires after the
 configured `--ttl`.
+
+`share.json` is the generated compatibility manifest used by existing share
+commands. `.snulbug/share/session.json` is the canonical control-plane session
+model. It records the current share state, provider/public URL, local gateway
+config, upstreams, policy bundle and active policy path, lease store, replay and
+audit logs, reports, last health summary, and policy amendment/lifecycle
+pointers without duplicating bearer or lease tokens.
 
 ## Session lifecycle
 
@@ -58,6 +66,8 @@ uv run snulbug mcp share doctor .snulbug/shares/share-...
 
 If the provider prints a random public URL after startup, pass the exact MCP URL
 to doctor. This updates `share.json` and `mcp-client.json` before probing:
+It also updates `.snulbug/share/session.json`, so later `status` and report
+commands see the resolved public endpoint.
 
 ```bash
 uv run snulbug mcp share doctor .snulbug/shares/share-... \
@@ -75,6 +85,8 @@ Check state later:
 ```bash
 uv run snulbug mcp share status .snulbug/shares/share-...
 ```
+
+The status output includes the loaded session model and its path.
 
 ## Client config
 
