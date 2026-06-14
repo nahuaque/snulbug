@@ -296,6 +296,184 @@ def test_decision_reject_carries_confirmation_options():
     }
 
 
+def test_access_missing_scope_builder_returns_standard_challenge():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return access.missing_scope("mcp:tool.git.status")
+        end
+        """
+    )
+
+    decision = script.decide({"body": "{}"})
+
+    assert decision == {
+        "action": "challenge",
+        "status": 401,
+        "body": "insufficient scope",
+        "error": "insufficient_scope",
+        "reason": "insufficient scope",
+        "reason_code": "oauth.missing_scope",
+        "context": {
+            "missing_scope": "mcp:tool.git.status",
+            "required_scope": "mcp:tool.git.status",
+        },
+    }
+
+
+def test_access_wrong_tenant_and_group_builders_include_current_auth_context():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return access.wrong_tenant("tenant-a", {
+            context = { policy = "tenant-fence" }
+          })
+        end
+        """
+    )
+
+    decision = script.decide(
+        {"body": "{}"},
+        {"auth": {"enabled": True, "tenant": "tenant-b", "groups": ["contractor"]}},
+    )
+
+    assert decision == {
+        "action": "reject",
+        "status": 403,
+        "body": "tenant not allowed",
+        "reason": "tenant not allowed",
+        "reason_code": "oauth.tenant_denied",
+        "context": {
+            "tenant": "tenant-b",
+            "required_tenant": "tenant-a",
+            "policy": "tenant-fence",
+        },
+    }
+
+
+def test_access_wrong_group_builder_uses_standard_reason_code():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return access.wrong_group({ "platform-dev", "mcp-admins" })
+        end
+        """
+    )
+
+    decision = script.decide({"body": "{}"}, {"auth": {"enabled": True, "groups": ["contractor"]}})
+
+    assert decision == {
+        "action": "reject",
+        "status": 403,
+        "body": "group not allowed",
+        "reason": "group not allowed",
+        "reason_code": "oauth.group_denied",
+        "context": {
+            "groups": ["contractor"],
+            "required_group": ["platform-dev", "mcp-admins"],
+        },
+    }
+
+
+def test_access_expired_lease_builder_returns_standard_lease_context():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return access.expired_lease()
+        end
+        """
+    )
+
+    decision = script.decide(
+        {"body": "{}"},
+        {
+            "lease": {
+                "id": "lease_123",
+                "task": "Inspect git status",
+                "required": True,
+                "reason_code": "lease.expired",
+                "expires_at": "2026-06-14T12:00:00+00:00",
+            }
+        },
+    )
+
+    assert decision == {
+        "action": "reject",
+        "status": 403,
+        "body": "task lease expired",
+        "reason": "task lease expired",
+        "reason_code": "lease.expired",
+        "context": {
+            "lease_id": "lease_123",
+            "lease_task": "Inspect git status",
+            "lease_required": True,
+            "lease_reason_code": "lease.expired",
+            "lease_expires_at": "2026-06-14T12:00:00+00:00",
+        },
+    }
+
+
+def test_access_route_mismatch_builder_returns_standard_access_reason():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return access.route_mismatch({
+            expected_route = "tenant-a",
+            actual_route = "tenant-b",
+            upstream = "files"
+          })
+        end
+        """
+    )
+
+    decision = script.decide({"body": "{}"})
+
+    assert decision == {
+        "action": "reject",
+        "status": 403,
+        "body": "route not allowed for caller",
+        "reason": "route not allowed for caller",
+        "reason_code": "access.route_mismatch",
+        "context": {
+            "expected_route": "tenant-a",
+            "actual_route": "tenant-b",
+            "upstream": "files",
+        },
+    }
+
+
+def test_auth_and_lease_guards_delegate_to_standard_access_builders():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return auth.require_tenant("tenant-a")
+            or lease.require()
+            or decision.allow("test.allowed")
+        end
+        """
+    )
+
+    tenant_decision = script.decide(
+        {"body": "{}"},
+        {
+            "auth": {"enabled": True, "tenant": "tenant-b"},
+            "lease": {"enabled": True, "method": "tools/call", "allowed": False, "reason_code": "lease.expired"},
+        },
+    )
+    lease_decision = script.decide(
+        {"body": "{}"},
+        {
+            "auth": {"enabled": True, "tenant": "tenant-a"},
+            "lease": {"enabled": True, "method": "tools/call", "allowed": False, "reason_code": "lease.expired"},
+        },
+    )
+
+    assert tenant_decision["reason_code"] == "oauth.tenant_denied"
+    assert tenant_decision["context"]["tenant"] == "tenant-b"
+    assert lease_decision["reason_code"] == "lease.expired"
+    assert lease_decision["body"] == "task lease expired"
+
+
 def test_mcp_allow_tools_carries_confirmation_options():
     script = compile_lua_script(
         """

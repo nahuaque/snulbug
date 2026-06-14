@@ -624,6 +624,144 @@ return function(source, source_name, instruction_limit)
   safe_env.decision = decision
 
   local current_auth = {}
+  local current_lease = {}
+
+  local function merge_context(defaults, context)
+    local merged = {}
+    if type(defaults) == "table" then
+      for key, value in pairs(defaults) do
+        merged[key] = value
+      end
+    end
+    if type(context) == "table" then
+      for key, value in pairs(context) do
+        merged[key] = value
+      end
+    end
+    return merged
+  end
+
+  local function access_challenge(defaults, options)
+    options = copy_options(options)
+    options.status = options.status or defaults.status or 401
+    options.body = options.body or defaults.body or "authentication required"
+    options.reason = options.reason or defaults.reason or options.body
+    options.reason_code = options.reason_code or defaults.reason_code
+    options.context = merge_context(defaults.context, options.context)
+    options.error = options.error or defaults.error
+    options.error_description = options.error_description or defaults.error_description
+    return decision.challenge(options)
+  end
+
+  local function access_reject(defaults, options)
+    options = copy_options(options)
+    local body = options.body or defaults.body or "forbidden"
+    options.reason = options.reason or defaults.reason or body
+    options.reason_code = options.reason_code or defaults.reason_code
+    options.context = merge_context(defaults.context, options.context)
+    return decision.reject(options.status or defaults.status or 403, body, options)
+  end
+
+  local function lease_context()
+    return {
+      lease_id = current_lease.id,
+      lease_task = current_lease.task,
+      lease_reason_code = current_lease.reason_code,
+      lease_required = current_lease.required,
+      lease_expires_at = current_lease.expires_at,
+    }
+  end
+
+  local access = {}
+
+  function access.missing_scope(scope, options)
+    return access_challenge({
+      body = "insufficient scope",
+      reason_code = "oauth.missing_scope",
+      error = "insufficient_scope",
+      context = {
+        missing_scope = scope,
+        required_scope = scope,
+      },
+    }, options)
+  end
+
+  function access.scope_denied(selector, options)
+    return access_challenge({
+      body = "insufficient scope",
+      reason_code = "oauth.scope_map_denied",
+      error = "insufficient_scope",
+      context = {
+        selector = selector,
+      },
+    }, options)
+  end
+
+  function access.wrong_subject(subjects, options)
+    return access_reject({
+      body = "subject not allowed",
+      reason_code = "oauth.subject_denied",
+      context = {
+        subject = current_auth.subject,
+        required_subject = subjects,
+      },
+    }, options)
+  end
+
+  function access.wrong_tenant(tenants, options)
+    return access_reject({
+      body = "tenant not allowed",
+      reason_code = "oauth.tenant_denied",
+      context = {
+        tenant = current_auth.tenant,
+        required_tenant = tenants,
+      },
+    }, options)
+  end
+
+  function access.wrong_group(groups, options)
+    local current_groups = {}
+    if type(current_auth.groups) == "table" then
+      current_groups = current_auth.groups
+    end
+    return access_reject({
+      body = "group not allowed",
+      reason_code = "oauth.group_denied",
+      context = {
+        groups = current_groups,
+        required_group = groups,
+      },
+    }, options)
+  end
+
+  function access.lease_required(options)
+    return access_reject({
+      body = "active task lease required",
+      reason_code = current_lease.reason_code or "lease.required",
+      context = lease_context(),
+    }, options)
+  end
+
+  function access.expired_lease(options)
+    return access_reject({
+      body = "task lease expired",
+      reason_code = "lease.expired",
+      context = lease_context(),
+    }, options)
+  end
+
+  function access.route_mismatch(details, options)
+    if type(details) ~= "table" then
+      details = { route = details }
+    end
+    return access_reject({
+      body = "route not allowed for caller",
+      reason_code = "access.route_mismatch",
+      context = details,
+    }, options)
+  end
+
+  safe_env.access = access
 
   local function set_auth_context(context)
     if type(context) == "table" and type(context.auth) == "table" then
@@ -714,101 +852,38 @@ return function(source, source_name, instruction_limit)
     if auth.has_scope(scope) then
       return nil
     end
-    options = options_table(options)
-    local reason_code = options.reason_code or "oauth.missing_scope"
-    local body = options.body or "insufficient scope"
-    return decision.challenge({
-      error = "insufficient_scope",
-      body = body,
-      reason = options.reason or body,
-      reason_code = reason_code,
-      context = {
-        missing_scope = scope,
-      },
-    })
-  end
-
-  local function identity_reject(options, defaults)
-    options = copy_options(options)
-    local context = options.context
-    if type(context) ~= "table" then
-      context = {}
-    end
-    for key, value in pairs(defaults.context or {}) do
-      if context[key] == nil then
-        context[key] = value
-      end
-    end
-    local body = options.body or defaults.body
-    options.reason = options.reason or body
-    options.reason_code = options.reason_code or defaults.reason_code
-    options.context = context
-    return decision.reject(options.status or 403, body, options)
+    return access.missing_scope(scope, options)
   end
 
   function auth.require_subject(subjects, options)
     if auth.is_subject(subjects) then
       return nil
     end
-    return identity_reject(options, {
-      body = "subject not allowed",
-      reason_code = "oauth.subject_denied",
-      context = {
-        subject = auth.subject(),
-        required_subject = subjects,
-      },
-    })
+    return access.wrong_subject(subjects, options)
   end
 
   function auth.require_tenant(tenants, options)
     if auth.in_tenant(tenants) then
       return nil
     end
-    return identity_reject(options, {
-      body = "tenant not allowed",
-      reason_code = "oauth.tenant_denied",
-      context = {
-        tenant = auth.tenant(),
-        required_tenant = tenants,
-      },
-    })
+    return access.wrong_tenant(tenants, options)
   end
 
   function auth.require_group(groups, options)
     if auth.has_group(groups) then
       return nil
     end
-    return identity_reject(options, {
-      body = "group not allowed",
-      reason_code = "oauth.group_denied",
-      context = {
-        groups = auth.groups(),
-        required_group = groups,
-      },
-    })
+    return access.wrong_group(groups, options)
   end
 
   function auth.require(selector, options)
     if auth.can(selector) then
       return nil
     end
-    options = options_table(options)
-    local reason_code = options.reason_code or "oauth.scope_map_denied"
-    local body = options.body or "insufficient scope"
-    return decision.challenge({
-      error = "insufficient_scope",
-      body = body,
-      reason = options.reason or body,
-      reason_code = reason_code,
-      context = {
-        selector = selector,
-      },
-    })
+    return access.scope_denied(selector, options)
   end
 
   safe_env.auth = auth
-
-  local current_lease = {}
 
   local function set_lease_context(context)
     if type(context) == "table" and type(context.lease) == "table" then
@@ -866,17 +941,10 @@ return function(source, source_name, instruction_limit)
     if lease.allowed() then
       return nil
     end
-    options = options_table(options)
-    local reason_code = options.reason_code or current_lease.reason_code or "lease.required"
-    local body = options.body or "active task lease required"
-    return decision.reject(options.status or 403, body, {
-      reason = options.reason or body,
-      reason_code = reason_code,
-      context = {
-        lease_reason_code = current_lease.reason_code,
-        lease_required = current_lease.required,
-      },
-    })
+    if current_lease.reason_code == "lease.expired" then
+      return access.expired_lease(options)
+    end
+    return access.lease_required(options)
   end
 
   safe_env.lease = lease

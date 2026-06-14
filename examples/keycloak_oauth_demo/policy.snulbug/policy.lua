@@ -8,10 +8,7 @@ return function(request, context, state)
 
   local method = mcp.method(request)
   if method == "tools/list" then
-    local missing_scope = auth.require("tools/list", {
-      reason_code = "keycloak_demo.tools_list_scope_required",
-      body = "tools/list scope required"
-    })
+    local missing_scope = auth.require("tools/list")
     if missing_scope then
       return missing_scope
     end
@@ -29,17 +26,11 @@ return function(request, context, state)
   if method == "tools/call" and (
     tool == "keycloak_demo.safe_read_file" or tool == "keycloak_demo.list_project_files"
   ) then
-    local missing_scope = auth.require("tools/call:" .. tool, {
-      reason_code = "keycloak_demo.file_scope_required",
-      body = "file read scope required"
-    })
+    local missing_scope = auth.require("tools/call:" .. tool)
     if missing_scope then
       return missing_scope
     end
-    local wrong_tenant = auth.require_tenant("demo", {
-      reason_code = "keycloak_demo.tenant_required",
-      body = "demo tenant required"
-    })
+    local wrong_tenant = auth.require_tenant("demo")
     if wrong_tenant then
       return wrong_tenant
     end
@@ -59,4 +50,3 @@ return function(request, context, state)
     reason_code = "keycloak_demo.tool_not_allowed"
   })
 end
-

@@ -96,6 +96,48 @@ the underlying action supports them. Confirmation options such as `prompt`,
 `remember_key`, and `timeout_seconds` are also available for `decision.confirm`
 and confirmable `decision.reject` results.
 
+## Access Reason Builders
+
+The `access` table builds standardized auth and lease denials for Lua policies.
+Use these when a policy is enforcing identity, scope, lease, or route checks and
+you want audit logs, replay diffs, and reports to use consistent reason codes:
+
+```lua
+local denied = auth.require("tools/call:git.status")
+  or auth.require_tenant("tenant-a")
+  or auth.require_group("platform-dev")
+  or lease.require()
+if denied then
+  return denied
+end
+```
+
+Available builders:
+
+- `access.missing_scope(scope, options)`: `decision.challenge` with
+  `reason_code = "oauth.missing_scope"` and `error = "insufficient_scope"`.
+- `access.scope_denied(selector, options)`: `decision.challenge` with
+  `reason_code = "oauth.scope_map_denied"`.
+- `access.wrong_subject(subject_or_subjects, options)`: `decision.reject` with
+  `reason_code = "oauth.subject_denied"`.
+- `access.wrong_tenant(tenant_or_tenants, options)`: `decision.reject` with
+  `reason_code = "oauth.tenant_denied"`.
+- `access.wrong_group(group_or_groups, options)`: `decision.reject` with
+  `reason_code = "oauth.group_denied"`.
+- `access.lease_required(options)`: `decision.reject` with the current lease
+  reason code, or `lease.required` when no more specific lease reason exists.
+- `access.expired_lease(options)`: `decision.reject` with
+  `reason_code = "lease.expired"`.
+- `access.route_mismatch(details, options)`: `decision.reject` with
+  `reason_code = "access.route_mismatch"` for tenant/upstream/facade route
+  fences.
+
+`auth.require_scope`, `auth.require`, `auth.require_subject`,
+`auth.require_tenant`, `auth.require_group`, and `lease.require` use these
+builders by default. `options.context` is merged into the standard context, and
+`options.body`, `options.reason`, and `options.reason_code` can still override
+the emitted decision when a policy needs a local code.
+
 ## Capability guards
 
 The `cap` table provides small guard helpers that return `nil` when allowed or
@@ -198,10 +240,10 @@ Available helpers:
   tenant matches, otherwise a 403 reject.
 - `auth.require_group(group_or_groups, options)`: return `nil` when any group
   matches, otherwise a 403 reject.
-- `auth.require_scope(scope, options)`: return `nil` when present, otherwise a
-  `decision.challenge` with `error = "insufficient_scope"`.
+- `auth.require_scope(scope, options)`: return `nil` when present, otherwise
+  `access.missing_scope(scope, options)`.
 - `auth.require(selector, options)`: return `nil` when `auth.can(selector)` is
-  true, otherwise a `decision.challenge`.
+  true, otherwise `access.scope_denied(selector, options)`.
 
 `auth.can` uses the same `[mcp.auth.scope_map]` selectors enforced by the
 proxy, so Lua policy and pre-Lua OAuth enforcement stay aligned.
@@ -252,7 +294,8 @@ Available helpers:
   `lease.missing`, `lease.path_not_allowed`, or
   `lease.subject_not_allowed`.
 - `lease.require(options)`: return `nil` when no lease is needed or the active
-  lease covers the request, otherwise a `decision.reject`.
+  lease covers the request, otherwise a standardized `access.lease_required`
+  or `access.expired_lease` rejection.
 
 For auth-bound leases, `lease.info()` / `context.lease` also includes:
 

@@ -752,42 +752,27 @@ return function(request, context, state)
 
   local tool = mcp.tool_name(request)
   if method == "tools/call" and tool == "git.status" then
-    local missing_scope = auth.require("tools/call:git.status", {
-      reason_code = "auth_lab.git_status_scope_required",
-      body = "git.status scope required"
-    })
+    local missing_scope = auth.require("tools/call:git.status")
     if missing_scope then
       return missing_scope
     end
 
-    local wrong_tenant = auth.require_tenant("tenant-a", {
-      reason_code = "auth_lab.tenant_required",
-      body = "tenant-a required"
-    })
+    local wrong_tenant = auth.require_tenant("tenant-a")
     if wrong_tenant then
       return wrong_tenant
     end
 
-    local missing_group = auth.require_group("platform-dev", {
-      reason_code = "auth_lab.platform_group_required",
-      body = "platform-dev group required"
-    })
+    local missing_group = auth.require_group("platform-dev")
     if missing_group then
       return missing_group
     end
 
-    local wrong_subject = auth.require_subject({"user-1", "breakglass-user"}, {
-      reason_code = "auth_lab.subject_required",
-      body = "approved OAuth subject required"
-    })
+    local wrong_subject = auth.require_subject({"user-1", "breakglass-user"})
     if wrong_subject then
       return wrong_subject
     end
 
-    local missing_lease = lease.require({
-      reason_code = "auth_lab.active_lease_required",
-      body = "active task lease required"
-    })
+    local missing_lease = lease.require()
     if missing_lease then
       return missing_lease
     end
