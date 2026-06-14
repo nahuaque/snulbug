@@ -206,6 +206,16 @@ from .tunnel import (
     init_tunnel_provider,
     parse_tunnel_headers,
 )
+from .webhooks import (
+    WebhookDeliveryResult,
+    WebhookDispatcher,
+    WebhookSink,
+    deliver_webhook_event,
+    matching_webhook_sinks,
+    normalize_webhook_sinks,
+    prepare_webhook_payload,
+    webhook_event_names,
+)
 
 __all__ = [
     "BoundedPolicyState",
@@ -286,6 +296,9 @@ __all__ = [
     "TUNNEL_PROVIDERS",
     "TunnelAuditConfig",
     "__version__",
+    "WebhookDeliveryResult",
+    "WebhookDispatcher",
+    "WebhookSink",
     "active_fabric_members",
     "append_audit_event",
     "append_record",
@@ -313,6 +326,7 @@ __all__ = [
     "diff_mcp_tool_snapshots",
     "diff_policies",
     "build_mcp_guide",
+    "deliver_webhook_event",
     "discovery_provider_types",
     "discover_fabric_upstreams",
     "discover_mcp_schemas",
@@ -369,6 +383,7 @@ __all__ = [
     "make_control_event",
     "mcp_tool_digest",
     "member_upstreams",
+    "matching_webhook_sinks",
     "list_builtin_presets",
     "list_leases",
     "open_fabric_runtime_state_store",
@@ -401,7 +416,9 @@ __all__ = [
     "smoke_check_codespace_upstream",
     "snapshot_mcp_tools",
     "normalize_mcp_schema_methods",
+    "normalize_webhook_sinks",
     "promote_bundle_lifecycle",
+    "prepare_webhook_payload",
     "sign_bundle_lifecycle",
     "sign_upstream_manifest",
     "summarize_fabric_control_state",
@@ -412,6 +429,7 @@ __all__ = [
     "validate_bundle",
     "verify_bundle_lifecycle",
     "verify_upstream_manifest",
+    "webhook_event_names",
     "write_manifest",
     "write_sample_config",
 ]

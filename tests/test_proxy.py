@@ -74,6 +74,35 @@ def test_reverse_proxy_forwards_allowed_request_to_upstream(tmp_path):
     assert audit["decision"]["reason_code"] == "test.allowed"
 
 
+def test_reverse_proxy_emits_audit_webhook_without_audit_file(tmp_path):
+    server, _seen = start_upstream()
+    policy = write_policy(tmp_path, "reject")
+    dispatcher = CaptureWebhookDispatcher()
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/api",
+        policy,
+        audit_out=None,
+        webhook_dispatcher=dispatcher,
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[(b"content-type", b"application/json")],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shell"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert sent[0]["status"] == 403
+    assert len(dispatcher.events) == 1
+    assert dispatcher.events[0]["type"] == "snulbug.audit"
+    assert dispatcher.events[0]["decision"]["allowed"] is False
+    assert dispatcher.events[0]["decision"]["reason_code"] == "test.blocked"
+
+
 def test_reverse_proxy_records_provider_aware_tunnel_audit_fields(tmp_path):
     server, _seen = start_upstream()
     policy = write_policy(tmp_path, "continue")
@@ -1711,6 +1740,14 @@ def start_upstream():
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, seen
+
+
+class CaptureWebhookDispatcher:
+    def __init__(self):
+        self.events = []
+
+    def emit(self, event):
+        self.events.append(dict(event))
 
 
 def write_stdio_mcp_server(tmp_path):

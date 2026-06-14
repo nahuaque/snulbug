@@ -50,6 +50,16 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         cloudflare_access_allowed_emails = ["dev@example.com"]
         cloudflare_access_allowed_domains = ["example.com"]
         timeout = 5.5
+
+        [[mcp.webhooks]]
+        name = "security-alerts"
+        url_env = "SNULBUG_SECURITY_WEBHOOK_URL"
+        events = ["mcp.decision.blocked", "mcp.response.redacted"]
+        body_mode = "metadata_only"
+        redaction = "strict"
+        timeout_ms = 500
+        retry_attempts = 1
+        signing_secret_env = "SNULBUG_WEBHOOK_SECRET"
         """,
         encoding="utf-8",
     )
@@ -88,6 +98,12 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
     assert result["cloudflare_access_require_cf_ray"] is True
     assert result["cloudflare_access_allowed_emails"] == ["dev@example.com"]
     assert result["cloudflare_access_allowed_domains"] == ["example.com"]
+    assert result["webhooks"][0].name == "security-alerts"
+    assert result["webhooks"][0].url_env == "SNULBUG_SECURITY_WEBHOOK_URL"
+    assert result["webhooks"][0].events == ("mcp.decision.blocked", "mcp.response.redacted")
+    assert result["webhooks"][0].timeout_ms == 500
+    assert result["webhooks"][0].retry_attempts == 1
+    assert result["webhooks"][0].signing_secret_env == "SNULBUG_WEBHOOK_SECRET"
 
 
 def test_load_mcp_proxy_config_accepts_holepunch_provider(tmp_path):
@@ -551,6 +567,7 @@ def test_mcp_proxy_cli_loads_config_before_running(monkeypatch, tmp_path):
     assert calls[0]["cloudflare_access_require_cf_ray"] is True
     assert calls[0]["cloudflare_access_allowed_emails"] == []
     assert calls[0]["cloudflare_access_allowed_domains"] == []
+    assert calls[0]["webhooks"] == []
 
 
 def test_mcp_proxy_cli_passes_facade_upstreams_without_config(monkeypatch, tmp_path):

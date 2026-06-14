@@ -44,6 +44,7 @@ from .schema_policy import (
 )
 from .state import MemoryStateStore, PolicyStateStore, SQLiteStateStore, StateLimits
 from .tunnel import TunnelAuditConfig, build_tunnel_audit_metadata
+from .webhooks import WebhookDispatcher, normalize_webhook_sinks
 
 HOP_BY_HOP_HEADERS = {
     b"connection",
@@ -1507,6 +1508,7 @@ class ProxyRecorderMiddleware:
         decision_console_format: str = "text",
         tunnel_audit: TunnelAuditConfig | None = None,
         topology_audit: Mapping[str, Any] | None = None,
+        webhook_dispatcher: Any = None,
     ) -> None:
         self.app = app
         self.policy = policy
@@ -1517,6 +1519,7 @@ class ProxyRecorderMiddleware:
         self.decision_console_format = decision_console_format
         self.tunnel_audit = tunnel_audit or TunnelAuditConfig()
         self.topology_audit = dict(topology_audit or {})
+        self.webhook_dispatcher = webhook_dispatcher
         if self.decision_console_format not in {"text", "json"}:
             raise ValueError("decision_console_format must be 'text' or 'json'")
 
@@ -1548,9 +1551,12 @@ class ProxyRecorderMiddleware:
         if self.record_out is not None:
             append_record(self.record_out, record)
         audit_event = None
-        if self.audit_out is not None:
+        if self.audit_out is not None or self.webhook_dispatcher is not None:
             audit_event = record_audit_event(record)
+        if self.audit_out is not None and audit_event is not None:
             append_audit_event(self.audit_out, audit_event)
+        if self.webhook_dispatcher is not None and audit_event is not None:
+            self.webhook_dispatcher.emit(audit_event)
         if self.decision_console is not None:
             _write_decision_console(
                 self.decision_console,
@@ -1560,7 +1566,12 @@ class ProxyRecorderMiddleware:
             )
 
     def _enabled(self) -> bool:
-        return self.record_out is not None or self.audit_out is not None or self.decision_console is not None
+        return (
+            self.record_out is not None
+            or self.audit_out is not None
+            or self.decision_console is not None
+            or self.webhook_dispatcher is not None
+        )
 
 
 class CloudflareAccessMiddleware:
@@ -1785,6 +1796,8 @@ def create_proxy_application(
     cloudflare_access_allowed_emails: Sequence[str] = (),
     cloudflare_access_allowed_domains: Sequence[str] = (),
     topology_audit: Mapping[str, Any] | None = None,
+    webhooks: Sequence[Any] | None = None,
+    webhook_dispatcher: Any = None,
     fabric_reload_config: str | Path | None = None,
     fabric_reload_interval: float = 2.0,
     fabric_reload_overrides: Mapping[str, Any] | None = None,
@@ -1795,6 +1808,9 @@ def create_proxy_application(
     """Create an ASGI app that applies Lua policy before proxying to an upstream."""
 
     console_enabled = _console_enabled(decision_console)
+    if webhook_dispatcher is None:
+        webhook_sinks = normalize_webhook_sinks(webhooks or [])
+        webhook_dispatcher = WebhookDispatcher(webhook_sinks) if webhook_sinks else None
     effective_state_store = state_store if state_store is not None else MemoryStateStore()
     response_policy = ResponsePolicyConfig(
         max_body_bytes=response_max_bytes,
@@ -1837,7 +1853,13 @@ def create_proxy_application(
         config=LuaConfig(
             read_body=True,
             max_body_bytes=max_body_bytes,
-            trace=trace or record_out is not None or audit_out is not None or console_enabled,
+            trace=(
+                trace
+                or record_out is not None
+                or audit_out is not None
+                or console_enabled
+                or webhook_dispatcher is not None
+            ),
         ),
         state_store=effective_state_store,
         state_limits=state_limits,
@@ -1853,7 +1875,7 @@ def create_proxy_application(
     )
     if cloudflare_access_config.mode != "off":
         app = CloudflareAccessMiddleware(app, config=cloudflare_access_config)
-    if record_out is not None or audit_out is not None or console_enabled:
+    if record_out is not None or audit_out is not None or console_enabled or webhook_dispatcher is not None:
         app = ProxyRecorderMiddleware(
             app,
             policy=policy,
@@ -1864,6 +1886,7 @@ def create_proxy_application(
             decision_console_format=decision_console_format,
             tunnel_audit=TunnelAuditConfig(provider=tunnel_provider, public_url=tunnel_public_url),
             topology_audit=topology_audit,
+            webhook_dispatcher=webhook_dispatcher,
         )
     if fabric_reload_config is not None:
         if facade_proxy is None:
@@ -1919,6 +1942,7 @@ def run_proxy(
     cloudflare_access_allowed_emails: Sequence[str] = (),
     cloudflare_access_allowed_domains: Sequence[str] = (),
     topology_audit: Mapping[str, Any] | None = None,
+    webhooks: Sequence[Any] | None = None,
     fabric_reload_config: str | Path | None = None,
     fabric_reload_interval: float = 2.0,
     fabric_reload_overrides: Mapping[str, Any] | None = None,
@@ -1968,6 +1992,7 @@ def run_proxy(
         cloudflare_access_allowed_emails=cloudflare_access_allowed_emails,
         cloudflare_access_allowed_domains=cloudflare_access_allowed_domains,
         topology_audit=topology_audit,
+        webhooks=webhooks,
         fabric_reload_config=fabric_reload_config,
         fabric_reload_interval=fabric_reload_interval,
         fabric_reload_overrides=fabric_reload_overrides,

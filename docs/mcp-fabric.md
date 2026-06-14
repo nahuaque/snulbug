@@ -213,6 +213,11 @@ Live fabric reloads attach the same `control_events` and `event_types` fields
 to replay/audit metadata under `metadata.fabric_reload`, so session logs show
 route reloads, reload failures, and recovery after a bad config edit.
 
+Configured `[[mcp.webhooks]]` sinks receive the reconcile envelope when their
+`events` list matches `snulbug.fabric.reconcile`, an `event_types` entry, or a
+nested `control_events[*].type`. This lets the same alert sink handle request
+policy events and control-plane events such as upstream health changes.
+
 Facade health routing uses the same event schema in replay/audit metadata under
 `metadata.upstream_health.control_events`. When enabled, the data plane emits
 `upstream.degraded`, `upstream.unhealthy`, and `upstream.recovered` events as it

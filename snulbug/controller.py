@@ -41,6 +41,7 @@ from .fabric_runtime import (
     open_fabric_runtime_state_store,
 )
 from .policy_activation import reconcile_policy_activation
+from .webhooks import WebhookDispatcher, normalize_webhook_sinks
 
 DEFAULT_CONTROLLER_STATE_PATH = Path(".snulbug/fabric-state.json")
 DEFAULT_CONTROLLER_EVENT_LOG_PATH = Path(".snulbug/fabric-events.jsonl")
@@ -57,6 +58,7 @@ def reconcile_fabric_controller(
     state_path: str | Path = DEFAULT_CONTROLLER_STATE_PATH,
     event_log: str | Path | None = DEFAULT_CONTROLLER_EVENT_LOG_PATH,
     control_state: Mapping[str, Any] | None = None,
+    webhook_dispatcher: Any = None,
 ) -> dict[str, Any]:
     """Reconcile declared fabric config into a durable controller state snapshot."""
 
@@ -124,9 +126,12 @@ def reconcile_fabric_controller(
     _write_json(state, snapshot)
 
     event_written = False
-    if event_log is not None and (changes or control_events):
-        _append_jsonl(Path(event_log), _controller_event(snapshot))
+    controller_event = _controller_event(snapshot) if changes or control_events else None
+    if event_log is not None and controller_event is not None:
+        _append_jsonl(Path(event_log), controller_event)
         event_written = True
+    if webhook_dispatcher is not None and controller_event is not None:
+        webhook_dispatcher.emit(controller_event)
 
     return {
         **snapshot,
@@ -147,6 +152,8 @@ def run_fabric_controller(
     status_server: FabricControllerStatusServer | None = None,
     stop_event: threading.Event | None = None,
     control_state_provider: FabricControlStateProvider | None = None,
+    webhooks: Sequence[Any] | None = None,
+    webhook_dispatcher: Any = None,
 ) -> dict[str, Any]:
     """Run the fabric controller reconcile loop."""
 
@@ -154,6 +161,9 @@ def run_fabric_controller(
         raise ValueError("interval must be positive")
     if max_iterations is not None and max_iterations <= 0:
         raise ValueError("max_iterations must be positive")
+    if webhook_dispatcher is None:
+        webhook_sinks = normalize_webhook_sinks(webhooks or [])
+        webhook_dispatcher = WebhookDispatcher(webhook_sinks) if webhook_sinks else None
 
     iterations = 0
     while True:
@@ -163,6 +173,7 @@ def run_fabric_controller(
             state_path=state_path,
             event_log=event_log,
             control_state=control_state,
+            webhook_dispatcher=webhook_dispatcher,
         )
         iterations += 1
         result["iteration"] = iterations
@@ -196,6 +207,7 @@ def run_fabric_data_plane(
     runtime_lease_ttl: float = DEFAULT_FABRIC_RUNTIME_LEASE_TTL_SECONDS,
     emit: Callable[[Mapping[str, Any]], None] | None = None,
     proxy_runner: FabricProxyRunner | None = None,
+    webhooks: Sequence[Any] | None = None,
 ) -> dict[str, Any]:
     """Run the controller and live-reloading proxy as one managed MCP fabric."""
 
@@ -211,6 +223,8 @@ def run_fabric_data_plane(
         raise ValueError("runtime_lease_ttl must be positive")
 
     config_path = Path(config)
+    webhook_sinks = normalize_webhook_sinks(webhooks or _configured_webhooks(config_path))
+    webhook_dispatcher = WebhookDispatcher(webhook_sinks) if webhook_sinks else None
     runtime_store = open_fabric_runtime_state_store(runtime_state, key=runtime_state_key)
     close_runtime_store = runtime_store if isinstance(runtime_state, str | Path) else None
     owner_id = runtime_instance_id or _new_runtime_owner_id()
@@ -260,6 +274,7 @@ def run_fabric_data_plane(
             once=True,
             status_server=status_server,
             control_state_provider=load_control_state,
+            webhook_dispatcher=webhook_dispatcher,
         )
         if not initial.get("ok"):
             raise ValueError(f"fabric controller reconcile failed: {initial.get('error') or 'fabric is not healthy'}")
@@ -294,6 +309,7 @@ def run_fabric_data_plane(
                     status_server=status_server,
                     stop_event=stop_event,
                     control_state_provider=load_control_state,
+                    webhook_dispatcher=webhook_dispatcher,
                 )
             except Exception as exc:  # pragma: no cover - defensive; loop body is covered through reconcile tests.
                 controller_errors.append(str(exc))
@@ -1547,6 +1563,13 @@ def _append_jsonl(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as file:
         file.write(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
+
+
+def _configured_webhooks(config: Path) -> list[Any]:
+    try:
+        return list(load_mcp_fabric_config(config).get("webhooks", []))
+    except Exception:
+        return []
 
 
 def _fingerprint(value: Mapping[str, Any]) -> str:

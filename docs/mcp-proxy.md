@@ -219,6 +219,41 @@ when you want audit logs to record the externally shared MCP URL or client-side
 peer bridge URL even if the request reaches snulbug through a local reverse
 proxy.
 
+## Webhook Event Sinks
+
+Use `[[mcp.webhooks]]` to send redacted, structured events to local dashboards,
+chatops, SIEM tools, or CI-style review workflows. Delivery is fail-open and
+asynchronous: webhook errors do not block MCP requests.
+
+```toml
+[[mcp.webhooks]]
+name = "security-alerts"
+url_env = "SNULBUG_SECURITY_WEBHOOK_URL"
+events = [
+  "mcp.decision.blocked",
+  "mcp.response.redacted",
+  "mcp.tool.changed",
+  "snulbug.fabric.upstream.unhealthy",
+]
+body_mode = "metadata_only"
+redaction = "strict"
+timeout_ms = 750
+retry_attempts = 3
+signing_secret_env = "SNULBUG_WEBHOOK_SECRET"
+```
+
+Event names can match the raw event `type`, derived MCP names such as
+`mcp.decision.blocked` or `mcp.response.redacted`, Lua `reason_code` values, or
+fabric control-plane event types. `body_mode = "metadata_only"` drops request
+headers from audit payloads before delivery. Keep `redaction = "strict"` for
+normal local development.
+
+When `signing_secret_env` resolves to a secret, snulbug adds:
+
+- `x-snulbug-signature-timestamp`
+- `x-snulbug-signature: sha256=<hmac>`
+- `x-snulbug-webhook-sink`
+
 ## Cloudflare Access Adapter
 
 When snulbug is the origin behind Cloudflare Access, it can audit or enforce the

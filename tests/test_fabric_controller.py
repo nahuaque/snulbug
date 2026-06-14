@@ -27,6 +27,14 @@ from snulbug import (
 from snulbug.simulator import main as simulator_main
 
 
+class CaptureWebhookDispatcher:
+    def __init__(self):
+        self.events = []
+
+    def emit(self, event):
+        self.events.append(dict(event))
+
+
 def test_fabric_controller_writes_state_and_change_event(tmp_path):
     config = write_controller_config(tmp_path)
     state = tmp_path / ".snulbug/fabric-state.json"
@@ -45,6 +53,23 @@ def test_fabric_controller_writes_state_and_change_event(tmp_path):
     assert events[0]["changes"][0]["type"] == "controller_initialized"
     assert EVENT_ROUTE_CHANGED in events[0]["event_types"]
     assert snapshot["control_events"][0]["schema"] == "snulbug.control-plane-event.v1"
+
+
+def test_fabric_controller_emits_webhook_event(tmp_path):
+    config = write_controller_config(tmp_path)
+    dispatcher = CaptureWebhookDispatcher()
+
+    result = reconcile_fabric_controller(
+        config,
+        state_path=tmp_path / ".snulbug/fabric-state.json",
+        event_log=None,
+        webhook_dispatcher=dispatcher,
+    )
+
+    assert result["ok"] is True
+    assert len(dispatcher.events) == 1
+    assert dispatcher.events[0]["type"] == "snulbug.fabric.reconcile"
+    assert EVENT_ROUTE_CHANGED in dispatcher.events[0]["event_types"]
 
 
 def test_fabric_controller_detects_discovered_upstream_changes(tmp_path):

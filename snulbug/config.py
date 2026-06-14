@@ -6,6 +6,7 @@ from typing import Any
 
 from .credentials import attach_upstream_credentials, normalize_fabric_credentials, normalize_upstream_credential
 from .discovery import apply_fabric_discovery
+from .webhooks import normalize_webhook_sinks
 
 try:
     import tomllib
@@ -52,6 +53,7 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "cloudflare_access_allowed_emails": [],
     "cloudflare_access_allowed_domains": [],
     "timeout": 30.0,
+    "webhooks": [],
 }
 
 DEFAULT_MCP_FABRIC_CONFIG = {
@@ -171,6 +173,17 @@ timeout = 5.0
 # peer = "SERVER_PEER_KEY"
 # local_port = 19100
 # auth = "codespace"
+
+# Optional fail-open webhook event sinks for redacted request/control-plane events:
+# [[mcp.webhooks]]
+# name = "security-alerts"
+# url_env = "SNULBUG_SECURITY_WEBHOOK_URL"
+# events = ["mcp.decision.blocked", "mcp.response.redacted", "snulbug.fabric.upstream.unhealthy"]
+# body_mode = "metadata_only" # metadata_only or full_event
+# redaction = "strict" # strict or none
+# timeout_ms = 750
+# retry_attempts = 3
+# signing_secret_env = "SNULBUG_WEBHOOK_SECRET"
 """
 
 
@@ -198,7 +211,8 @@ def load_mcp_proxy_config(path: str | Path) -> dict[str, Any]:
     fabric = mcp.get("fabric", {})
     if not isinstance(fabric, Mapping):
         raise ValueError("config section [mcp.fabric] must be a table")
-    return _normalize_proxy_config_with_discovery(proxy, fabric, base_dir=config_path.parent)
+    webhooks = _load_webhooks_table(mcp)
+    return _normalize_proxy_config_with_discovery(proxy, fabric, webhooks=webhooks, base_dir=config_path.parent)
 
 
 def load_mcp_fabric_config(path: str | Path) -> dict[str, Any]:
@@ -216,14 +230,21 @@ def load_mcp_fabric_config(path: str | Path) -> dict[str, Any]:
     proxy = mcp.get("proxy", {})
     if not isinstance(proxy, Mapping):
         raise ValueError("config section [mcp.proxy] must be a table")
-    proxy_config = _normalize_proxy_config_with_discovery(proxy, fabric, base_dir=config_path.parent)
-    return normalize_mcp_fabric_config(fabric, proxy_config=proxy_config, base_dir=config_path.parent)
+    webhooks = _load_webhooks_table(mcp)
+    proxy_config = _normalize_proxy_config_with_discovery(proxy, fabric, webhooks=webhooks, base_dir=config_path.parent)
+    return normalize_mcp_fabric_config(
+        fabric,
+        proxy_config=proxy_config,
+        webhooks=webhooks,
+        base_dir=config_path.parent,
+    )
 
 
 def _normalize_proxy_config_with_discovery(
     proxy: Mapping[str, Any],
     fabric: Mapping[str, Any],
     *,
+    webhooks: Any = None,
     base_dir: Path,
 ) -> dict[str, Any]:
     credentials = normalize_fabric_credentials(fabric.get("credentials", {}), base_dir=base_dir)
@@ -231,6 +252,7 @@ def _normalize_proxy_config_with_discovery(
     discovered_proxy = attach_upstream_credentials(discovered_proxy, credentials)
     proxy_config = normalize_mcp_proxy_config(discovered_proxy, base_dir=base_dir)
     proxy_config["discovery"] = discovery
+    proxy_config["webhooks"] = normalize_webhook_sinks(webhooks)
     return proxy_config
 
 
@@ -335,6 +357,7 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         normalized["lease_file"] = _resolve_path(base, normalized["lease_file"])
     normalized["timeout"] = float(normalized["timeout"])
     normalized["facade_health_cooldown_seconds"] = float(normalized["facade_health_cooldown_seconds"])
+    normalized["webhooks"] = normalize_webhook_sinks(normalized.get("webhooks", []))
     return normalized
 
 
@@ -342,6 +365,7 @@ def normalize_mcp_fabric_config(
     config: Mapping[str, Any],
     *,
     proxy_config: Mapping[str, Any] | None = None,
+    webhooks: Any = None,
     base_dir: str | Path = ".",
 ) -> dict[str, Any]:
     normalized = dict(DEFAULT_MCP_FABRIC_CONFIG)
@@ -372,7 +396,19 @@ def normalize_mcp_fabric_config(
         if isinstance(host, str) and isinstance(port, int):
             normalized["gateway_url"] = f"http://{host}:{port}/mcp"
     normalized["proxy"] = dict(proxy_config or {})
+    if webhooks is None and proxy_config is not None:
+        webhooks = proxy_config.get("webhooks", [])
+    normalized["webhooks"] = normalize_webhook_sinks(webhooks)
     return normalized
+
+
+def _load_webhooks_table(mcp: Mapping[str, Any]) -> Any:
+    webhooks = mcp.get("webhooks", [])
+    if webhooks in (None, ""):
+        return []
+    if not isinstance(webhooks, list):
+        raise ValueError("config section [[mcp.webhooks]] must be an array of tables")
+    return webhooks
 
 
 def _normalize_policy_activation(value: Any) -> dict[str, Any]:

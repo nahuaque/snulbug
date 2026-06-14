@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ..cli_helpers import add_compact_arg, add_force_arg, add_token_arg, write_json_output
+from ..config import load_mcp_fabric_config
 from ..fabric_runtime import (
     DEFAULT_FABRIC_RUNTIME_LEASE_TTL_SECONDS,
     DEFAULT_FABRIC_RUNTIME_STATE,
@@ -214,6 +215,7 @@ def handle_mcp_fabric_command(args: argparse.Namespace, parser: argparse.Argumen
                 sys.stdout.flush()
 
             try:
+                fabric_config = load_mcp_fabric_config(args.config)
                 result = run_fabric_controller(
                     args.config,
                     state_path=args.state,
@@ -222,6 +224,7 @@ def handle_mcp_fabric_command(args: argparse.Namespace, parser: argparse.Argumen
                     once=args.once,
                     emit=emit_controller_result,
                     status_server=status_server,
+                    webhooks=fabric_config["webhooks"],
                 )
             finally:
                 if status_server is not None and args.once:

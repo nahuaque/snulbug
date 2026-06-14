@@ -1028,6 +1028,7 @@ def _run_loaded_mcp_proxy(
         cloudflare_access_allowed_emails=proxy_config["cloudflare_access_allowed_emails"],
         cloudflare_access_allowed_domains=proxy_config["cloudflare_access_allowed_domains"],
         topology_audit=topology_audit,
+        webhooks=proxy_config["webhooks"],
         fabric_reload_config=fabric_reload_config,
         fabric_reload_interval=fabric_reload_interval,
         fabric_reload_overrides=fabric_reload_overrides,
