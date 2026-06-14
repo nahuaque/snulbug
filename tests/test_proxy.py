@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import json
 import socket
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+
+import jwt
 
 from snulbug import (
     EVENT_RELOAD_FAILED,
@@ -296,6 +300,134 @@ def test_reverse_proxy_cloudflare_access_allows_and_strips_credentials_from_upst
     assert record["metadata"]["cloudflare_access"]["reason_code"] == "cloudflare_access.allowed"
     assert record["metadata"]["cloudflare_access"]["email"] == "dev@example.com"
     assert "raw.jwt.value" not in str(record["metadata"]["cloudflare_access"])
+
+
+def test_reverse_proxy_oauth_serves_protected_resource_metadata_and_challenges(tmp_path):
+    server, seen = start_upstream()
+    policy = write_policy(tmp_path, "continue")
+    jwks_path, _secret = write_hs256_jwks(tmp_path)
+    auth_config = oauth_auth_config(jwks_path)
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        auth_config=auth_config,
+    )
+
+    try:
+        metadata = run_asgi(app, method="GET", path="/.well-known/oauth-protected-resource")
+        challenge = run_asgi(
+            app,
+            path="/mcp",
+            headers=[(b"content-type", b"application/json")],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    metadata_body = json.loads(metadata[1]["body"])
+    challenge_headers = sent_headers(challenge)
+    assert metadata[0]["status"] == 200
+    assert metadata_body == {
+        "authorization_servers": ["https://issuer.example.test"],
+        "resource": "https://mcp.example.test/mcp",
+        "scopes_supported": ["mcp:connect"],
+    }
+    assert challenge[0]["status"] == 401
+    assert 'Bearer realm="mcp"' in challenge_headers["www-authenticate"]
+    assert (
+        'resource_metadata="https://mcp.example.test/.well-known/oauth-protected-resource"'
+        in challenge_headers["www-authenticate"]
+    )
+    assert 'error="invalid_token"' in challenge_headers["www-authenticate"]
+    assert seen["count"] == 0
+
+
+def test_reverse_proxy_oauth_allows_token_adds_lua_context_and_strips_authorization(tmp_path):
+    server, seen = start_upstream()
+    policy = write_oauth_context_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    token = make_oauth_token(secret, scopes=["mcp:connect", "mcp:tools"])
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        event_sinks=audit_event_sinks(audit_log),
+        auth_config=oauth_auth_config(jwks_path),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {token}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    record = load_record_log(record_log)[0]
+    audit = json.loads(audit_log.read_text(encoding="utf-8"))
+    assert sent[0]["status"] == 200
+    assert seen["count"] == 1
+    assert "authorization" not in payload["headers"]
+    assert record["metadata"]["auth"]["allowed"] is True
+    assert record["metadata"]["auth"]["reason_code"] == "oauth.allowed"
+    assert record["metadata"]["auth"]["subject"] == "user-1"
+    assert record["metadata"]["auth"]["client_id"] == "agent-client"
+    assert record["result"]["decision"]["context"]["auth_subject"] == "user-1"
+    assert audit["auth"]["subject"] == "user-1"
+    assert audit["auth"]["scopes"] == ["mcp:connect", "mcp:tools"]
+    assert token not in json.dumps(record)
+    assert token not in json.dumps(audit)
+
+
+def test_reverse_proxy_oauth_blocks_insufficient_scope_before_lua_and_upstream(tmp_path):
+    server, seen = start_upstream()
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    token = make_oauth_token(secret, scopes=["mcp:read"])
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        event_sinks=audit_event_sinks(audit_log),
+        auth_config=oauth_auth_config(jwks_path),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {token}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    record = load_record_log(record_log)[0]
+    audit = json.loads(audit_log.read_text(encoding="utf-8"))
+    assert sent[0]["status"] == 401
+    assert seen["count"] == 0
+    assert record["result"]["action"] == "challenge"
+    assert record["metadata"]["auth"]["allowed"] is False
+    assert record["metadata"]["auth"]["reason_code"] == "oauth.insufficient_scope"
+    assert record["metadata"]["auth"]["missing_scopes"] == ["mcp:connect"]
+    assert audit["auth"]["reason_code"] == "oauth.insufficient_scope"
+    assert token not in json.dumps(record)
 
 
 def test_reverse_proxy_does_not_call_upstream_when_policy_rejects(tmp_path):
@@ -2095,12 +2227,12 @@ def start_mutating_tools_upstream():
     return server, state
 
 
-def run_asgi(app, *, path="/mcp", headers=None, body=b"", query_string=b"") -> list[dict[str, Any]]:
+def run_asgi(app, *, method="POST", path="/mcp", headers=None, body=b"", query_string=b"") -> list[dict[str, Any]]:
     scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
         "http_version": "1.1",
-        "method": "POST",
+        "method": method,
         "scheme": "http",
         "path": path,
         "raw_path": path.encode("ascii"),
@@ -2166,12 +2298,14 @@ async def wait_for_message(messages: list[dict[str, Any]], message_type: str) ->
     raise AssertionError(f"timed out waiting for {message_type}")
 
 
-async def run_asgi_once(app, *, path="/mcp", headers=None, body=b"", query_string=b"") -> list[dict[str, Any]]:
+async def run_asgi_once(
+    app, *, method="POST", path="/mcp", headers=None, body=b"", query_string=b""
+) -> list[dict[str, Any]]:
     scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
         "http_version": "1.1",
-        "method": "POST",
+        "method": method,
         "scheme": "http",
         "path": path,
         "raw_path": path.encode("ascii"),
@@ -2214,6 +2348,52 @@ def unwrap_facade(app) -> McpFacadeProxyApp:
     raise AssertionError("app does not contain McpFacadeProxyApp")
 
 
+def sent_headers(sent: list[dict[str, Any]]) -> dict[str, str]:
+    headers = sent[0].get("headers", [])
+    return {name.decode("latin-1").lower(): value.decode("latin-1") for name, value in headers}
+
+
+def write_hs256_jwks(tmp_path) -> tuple[Path, str]:
+    secret = "local-oauth-signing-secret-32-bytes"
+    key = base64.urlsafe_b64encode(secret.encode("utf-8")).rstrip(b"=").decode("ascii")
+    path = tmp_path / "jwks.json"
+    path.write_text(
+        json.dumps({"keys": [{"kty": "oct", "kid": "test-key", "alg": "HS256", "k": key}]}),
+        encoding="utf-8",
+    )
+    return path, secret
+
+
+def make_oauth_token(secret: str, *, scopes: list[str]) -> str:
+    now = int(time.time())
+    return jwt.encode(
+        {
+            "iss": "https://issuer.example.test",
+            "sub": "user-1",
+            "aud": "https://mcp.example.test/mcp",
+            "client_id": "agent-client",
+            "scope": " ".join(scopes),
+            "iat": now,
+            "exp": now + 300,
+        },
+        secret,
+        algorithm="HS256",
+        headers={"kid": "test-key"},
+    )
+
+
+def oauth_auth_config(jwks_path: Path) -> dict[str, Any]:
+    return {
+        "mode": "oauth-resource",
+        "resource": "https://mcp.example.test/mcp",
+        "issuer": "https://issuer.example.test",
+        "authorization_servers": ["https://issuer.example.test"],
+        "audience": "https://mcp.example.test/mcp",
+        "required_scopes": ["mcp:connect"],
+        "jwks_path": jwks_path,
+    }
+
+
 def write_hot_reload_config(config: Path, *, upstream_name: str, port: int) -> None:
     config.write_text(
         f"""
@@ -2247,6 +2427,36 @@ def write_policy(tmp_path, action: str):
         f"""
         return function(request, context, state)
           return {decision}
+        end
+        """,
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_oauth_context_policy(tmp_path):
+    path = tmp_path / "oauth-policy.lua"
+    path.write_text(
+        """
+        return function(request, context, state)
+          if not context.auth or context.auth.subject ~= "user-1" then
+            return {
+              action = "reject",
+              status = 403,
+              body = "missing auth context",
+              reason = "OAuth context was not available to policy",
+              reason_code = "test.missing_auth_context"
+            }
+          end
+          return {
+            action = "continue",
+            reason = "request allowed",
+            reason_code = "test.oauth_context",
+            context = {
+              auth_subject = context.auth.subject,
+              auth_client_id = context.auth.client_id
+            }
+          }
         end
         """,
         encoding="utf-8",

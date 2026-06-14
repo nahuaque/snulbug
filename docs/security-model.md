@@ -19,6 +19,9 @@ Use these controls:
 - response caps and response secret redaction for MCP tool/resource/prompt
   results
 - `tools/list` description/schema pinning for silent upstream tool changes
+- optional OAuth protected-resource mode with JWT/JWKS validation, bearer
+  challenges, sanitized `context.auth`, and upstream authorization-header
+  stripping
 
 For hostile third-party scripts, add an external isolation boundary. A separate process, container, VM, or WebAssembly runtime is a stronger boundary than the in-process Lua runtime.
 
@@ -33,6 +36,10 @@ replay artifacts are required.
 can require auth, reject unknown tools, enforce expiring task leases, cap
 request and response sizes, rate limit traffic, validate tool arguments against
 observed schemas, and leave replayable audit evidence.
+
+When OAuth protected-resource mode is enabled, snulbug validates bearer JWT
+signature, issuer, audience, and required scopes before Lua policy runs. It is
+not an authorization server and does not mint tokens.
 
 It can also reduce risk from a compromised or surprising upstream MCP server by
 redacting likely secrets from results, detecting suspicious instruction-like

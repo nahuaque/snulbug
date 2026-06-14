@@ -14,7 +14,7 @@ from typing import Any
 from urllib.parse import SplitResult, urlsplit
 
 from .cloudflare_access import CloudflareAccessConfig, evaluate_cloudflare_access
-from .config import load_mcp_fabric_config, load_mcp_proxy_config, merge_mcp_proxy_config
+from .config import load_mcp_fabric_config, load_mcp_proxy_config, merge_mcp_proxy_config, normalize_mcp_auth_config
 from .confirm import ConfirmationBroker
 from .control_events import (
     EVENT_RELOAD_FAILED,
@@ -32,6 +32,12 @@ from .fabric import annotate_topology_audit, build_fabric_audit_metadata
 from .fabric_control import summarize_fabric_control_state
 from .leases import LeasePolicyConfig, enforce_mcp_lease_policy, mcp_lease_error_response
 from .manifests import load_manifest, verify_upstream_manifest
+from .mcp_auth import (
+    OAuthResourceConfig,
+    evaluate_oauth_request,
+    oauth_resource_metadata_url,
+    protected_resource_metadata,
+)
 from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
 from .recorder import append_record, build_request_record, record_audit_event
 from .response_policy import ResponsePolicyConfig, enforce_mcp_response_policy
@@ -1594,6 +1600,75 @@ class CloudflareAccessMiddleware:
         )
 
 
+class OAuthResourceMiddleware:
+    """Require OAuth bearer tokens before Lua policy and upstream calls."""
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        config: OAuthResourceConfig | None = None,
+    ) -> None:
+        self.app = app
+        self.config = config or OAuthResourceConfig()
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http" or not self.config.enabled:
+            await self.app(scope, receive, send)
+            return
+
+        if _is_oauth_resource_metadata_request(scope, self.config):
+            await self._send_protected_resource_metadata(scope, send)
+            return
+
+        _ensure_scope_state(scope)
+        decision = evaluate_oauth_request(scope, config=self.config)
+        _set_proxy_metadata(scope, {"auth": decision.metadata})
+        if decision.allowed:
+            child_scope = dict(scope)
+            context = child_scope.get("lua")
+            lua_context = dict(context) if isinstance(context, Mapping) else {}
+            lua_context["auth"] = decision.context
+            child_scope["lua"] = lua_context
+            if self.config.strip_authorization_upstream:
+                child_scope["headers"] = _strip_authorization_header(scope.get("headers", []))
+            await self.app(child_scope, receive, send)
+            return
+
+        body = decision.body.decode("utf-8", errors="replace")
+        _attach_proxy_reject_trace(
+            scope,
+            action="challenge",
+            status=decision.status,
+            body=body,
+            reason="request failed OAuth bearer-token checks",
+            reason_code=str(decision.metadata.get("reason_code", "oauth.rejected")),
+            context={"auth": decision.metadata},
+        )
+        await _send_response(
+            send,
+            status=decision.status,
+            headers=decision.headers,
+            body=decision.body,
+        )
+
+    async def _send_protected_resource_metadata(self, scope: Scope, send: Send) -> None:
+        payload = protected_resource_metadata(self.config)
+        response = _json_response(payload)
+        if str(scope.get("method", "GET")).upper() == "HEAD":
+            response["body"] = b""
+            response["headers"] = _merge_headers(
+                response["headers"],
+                [(b"content-length", b"0")],
+            )
+        await _send_response(
+            send,
+            status=response["status"],
+            headers=response["headers"],
+            body=response["body"],
+        )
+
+
 class FabricConfigReloadMiddleware:
     """Refresh facade upstream routes from declarative fabric config while serving traffic."""
 
@@ -1766,6 +1841,7 @@ def create_proxy_application(
     cloudflare_access_require_cf_ray: bool = True,
     cloudflare_access_allowed_emails: Sequence[str] = (),
     cloudflare_access_allowed_domains: Sequence[str] = (),
+    auth_config: Mapping[str, Any] | OAuthResourceConfig | None = None,
     topology_audit: Mapping[str, Any] | None = None,
     event_sinks: Sequence[Mapping[str, Any]] | None = None,
     event_dispatcher: Any = None,
@@ -1828,6 +1904,9 @@ def create_proxy_application(
         state_limits=state_limits,
         confirm_handler=confirm_handler or (ConfirmationBroker(enabled=True) if confirm else None),
     )
+    oauth_config = _oauth_resource_config(auth_config)
+    if oauth_config.enabled:
+        app = OAuthResourceMiddleware(app, config=oauth_config)
     cloudflare_access_config = CloudflareAccessConfig(
         mode=cloudflare_access,
         require_jwt=cloudflare_access_require_jwt,
@@ -1898,6 +1977,7 @@ def run_proxy(
     cloudflare_access_require_cf_ray: bool = True,
     cloudflare_access_allowed_emails: Sequence[str] = (),
     cloudflare_access_allowed_domains: Sequence[str] = (),
+    auth_config: Mapping[str, Any] | OAuthResourceConfig | None = None,
     topology_audit: Mapping[str, Any] | None = None,
     event_sinks: Sequence[Mapping[str, Any]] | None = None,
     fabric_reload_config: str | Path | None = None,
@@ -1945,6 +2025,7 @@ def run_proxy(
         cloudflare_access_require_cf_ray=cloudflare_access_require_cf_ray,
         cloudflare_access_allowed_emails=cloudflare_access_allowed_emails,
         cloudflare_access_allowed_domains=cloudflare_access_allowed_domains,
+        auth_config=auth_config,
         topology_audit=topology_audit,
         event_sinks=event_sinks,
         fabric_reload_config=fabric_reload_config,
@@ -2006,6 +2087,7 @@ def proxy_config_run_kwargs(
         "cloudflare_access_require_cf_ray": proxy_config["cloudflare_access_require_cf_ray"],
         "cloudflare_access_allowed_emails": proxy_config["cloudflare_access_allowed_emails"],
         "cloudflare_access_allowed_domains": proxy_config["cloudflare_access_allowed_domains"],
+        "auth_config": proxy_config.get("auth", {}),
         "topology_audit": effective_topology_audit,
         "event_sinks": proxy_config["event_sinks"],
         "fabric_reload_config": fabric_reload_config,
@@ -2077,6 +2159,26 @@ def _proxy_app(
         schema_policy=schema_policy,
         tool_schema_store=tool_schema_store,
         lease_policy=lease_policy,
+    )
+
+
+def _oauth_resource_config(value: Mapping[str, Any] | OAuthResourceConfig | None) -> OAuthResourceConfig:
+    if isinstance(value, OAuthResourceConfig):
+        return value
+    normalized = normalize_mcp_auth_config(value or {})
+    return OAuthResourceConfig(
+        mode=normalized["mode"],
+        resource=normalized["resource"],
+        issuer=normalized["issuer"],
+        authorization_servers=tuple(normalized["authorization_servers"]),
+        audience=normalized["audience"],
+        required_scopes=tuple(normalized["required_scopes"]),
+        scopes_supported=tuple(normalized["scopes_supported"]),
+        jwks_path=normalized["jwks_path"],
+        resource_metadata_url=normalized["resource_metadata_url"],
+        realm=normalized["realm"],
+        leeway_seconds=normalized["leeway_seconds"],
+        strip_authorization_upstream=normalized["strip_authorization_upstream"],
     )
 
 
@@ -2544,6 +2646,34 @@ def _strip_cloudflare_access_credentials(raw_headers: Any) -> list[tuple[bytes, 
             continue
         stripped.append((raw_name, raw_value))
     return stripped
+
+
+def _strip_authorization_header(raw_headers: Any) -> list[tuple[bytes, bytes]]:
+    stripped = []
+    for name, value in raw_headers or []:
+        raw_name = name if isinstance(name, bytes) else str(name).encode("latin-1")
+        raw_value = value if isinstance(value, bytes) else str(value).encode("latin-1")
+        if raw_name.lower() == b"authorization":
+            continue
+        stripped.append((raw_name, raw_value))
+    return stripped
+
+
+def _is_oauth_resource_metadata_request(scope: Scope, config: OAuthResourceConfig) -> bool:
+    method = str(scope.get("method", "GET")).upper()
+    if method not in {"GET", "HEAD"}:
+        return False
+    metadata_path = urlsplit(oauth_resource_metadata_url(config)).path or "/.well-known/oauth-protected-resource"
+    return str(scope.get("path", "/")).rstrip("/") == metadata_path.rstrip("/")
+
+
+def _merge_headers(
+    headers: list[tuple[bytes, bytes]], updates: Sequence[tuple[bytes, bytes]]
+) -> list[tuple[bytes, bytes]]:
+    update_names = {name.lower() for name, _value in updates}
+    merged = [(name, value) for name, value in headers if name.lower() not in update_names]
+    merged.extend(updates)
+    return merged
 
 
 def _headers_to_mapping(headers: list[tuple[bytes, bytes]]) -> dict[str, str | list[str]]:

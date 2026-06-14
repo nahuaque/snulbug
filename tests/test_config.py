@@ -56,6 +56,20 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         cloudflare_access_allowed_domains = ["example.com"]
         timeout = 5.5
 
+        [mcp.auth]
+        mode = "oauth-resource"
+        resource = "https://mcp.example.com/mcp"
+        issuer = "https://issuer.example.com"
+        authorization_servers = ["https://issuer.example.com"]
+        audience = "https://mcp.example.com/mcp"
+        required_scopes = ["mcp:connect"]
+        scopes_supported = ["mcp:connect", "mcp:tools"]
+        jwks_path = "auth/jwks.json"
+        resource_metadata_url = "https://mcp.example.com/.well-known/oauth-protected-resource"
+        realm = "mcp"
+        leeway_seconds = 30
+        strip_authorization_upstream = true
+
         [[mcp.events.sinks]]
         type = "audit_jsonl"
         path = "events/audit.jsonl"
@@ -106,6 +120,20 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
     assert result["cloudflare_access_require_cf_ray"] is True
     assert result["cloudflare_access_allowed_emails"] == ["dev@example.com"]
     assert result["cloudflare_access_allowed_domains"] == ["example.com"]
+    assert result["auth"] == {
+        "mode": "oauth-resource",
+        "resource": "https://mcp.example.com/mcp",
+        "issuer": "https://issuer.example.com",
+        "authorization_servers": ["https://issuer.example.com"],
+        "audience": "https://mcp.example.com/mcp",
+        "required_scopes": ["mcp:connect"],
+        "scopes_supported": ["mcp:connect", "mcp:tools"],
+        "jwks_path": tmp_path / "auth/jwks.json",
+        "resource_metadata_url": "https://mcp.example.com/.well-known/oauth-protected-resource",
+        "realm": "mcp",
+        "leeway_seconds": 30.0,
+        "strip_authorization_upstream": True,
+    }
     assert result["event_sinks"] == [
         {
             "type": "audit_jsonl",

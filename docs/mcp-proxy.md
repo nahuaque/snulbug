@@ -279,6 +279,41 @@ For webhook sinks, when `signing_secret_env` resolves to a secret, snulbug adds:
 - `x-snulbug-signature: sha256=<hmac>`
 - `x-snulbug-webhook-sink`
 
+## OAuth Protected Resource Mode
+
+When exposing a public MCP endpoint to clients that understand MCP
+authorization, snulbug can act as an OAuth protected resource server. The
+authorization server remains external; snulbug validates incoming bearer JWTs
+against a local JWKS, issuer, audience, and required scopes before Lua policy
+or upstream forwarding.
+
+```toml
+[mcp.auth]
+mode = "oauth-resource"
+resource = "https://mcp.example.com/mcp"
+issuer = "https://issuer.example.com"
+authorization_servers = ["https://issuer.example.com"]
+audience = "https://mcp.example.com/mcp"
+required_scopes = ["mcp:connect"]
+scopes_supported = ["mcp:connect"]
+jwks_path = "auth/jwks.json"
+strip_authorization_upstream = true
+```
+
+With this enabled, snulbug:
+
+- serves `GET /.well-known/oauth-protected-resource`
+- challenges missing or invalid tokens with `WWW-Authenticate: Bearer ...`
+- rejects insufficient scopes before Lua and upstream calls
+- exposes sanitized claims to Lua as `context.auth`
+- records redacted `auth` audit metadata
+- strips the caller `Authorization` header before forwarding upstream by
+  default
+
+The JWT verifier uses `PyJWT[crypto]`. This mode does not perform dynamic
+client registration, token introspection, or authorization-code flows; use your
+identity provider or tunnel/access layer for those pieces.
+
 ## Cloudflare Access Adapter
 
 When snulbug is the origin behind Cloudflare Access, it can audit or enforce the

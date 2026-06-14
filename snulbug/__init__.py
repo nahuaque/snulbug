@@ -39,6 +39,7 @@ from .config import (
     format_event_sinks_toml,
     load_mcp_fabric_config,
     load_mcp_proxy_config,
+    normalize_mcp_auth_config,
     write_sample_config,
 )
 from .confirm import ConfirmationBroker
@@ -141,6 +142,15 @@ from .lab import run_mcp_lab
 from .learn import amend_mcp_policy, learn_mcp_policy
 from .leases import LeasePolicyConfig, create_lease, list_leases, revoke_lease
 from .manifests import load_manifest, manifest_digest, sign_upstream_manifest, verify_upstream_manifest, write_manifest
+from .mcp_auth import (
+    OAuthDecision,
+    OAuthResourceConfig,
+    evaluate_oauth_request,
+    oauth_bearer_challenge,
+    oauth_resource_metadata_url,
+    protected_resource_metadata,
+    verify_jwt,
+)
 from .mcp_schema_policy import (
     DEFAULT_SCHEMA_POLICY_ALLOWED_PATHS,
     MCP_SCHEMA_POLICY_SCHEMA,
@@ -336,6 +346,8 @@ __all__ = [
     "MCP_TOOL_DIFF_SCHEMA",
     "MCP_TOOL_SNAPSHOT_SCHEMA",
     "McpFacadeProxyApp",
+    "OAuthDecision",
+    "OAuthResourceConfig",
     "PolicyFabricRuntimeStateStore",
     "POLICY_ACTIVATION_MODES",
     "RedisStateStore",
@@ -398,6 +410,7 @@ __all__ = [
     "doctor_fabric",
     "doctor_mcp_share",
     "evaluate_cloudflare_access",
+    "evaluate_oauth_request",
     "event_names",
     "fabric_status",
     "fetch_mcp_jsonrpc",
@@ -495,11 +508,15 @@ __all__ = [
     "simulate_policy",
     "smoke_check_codespace_upstream",
     "snapshot_mcp_tools",
+    "normalize_mcp_auth_config",
     "normalize_mcp_schema_methods",
     "normalize_event_sink_configs",
+    "oauth_bearer_challenge",
+    "oauth_resource_metadata_url",
     "promote_bundle_lifecycle",
     "promote_mcp_share_policy",
     "prepare_webhook_payload",
+    "protected_resource_metadata",
     "sign_bundle_lifecycle",
     "sign_upstream_manifest",
     "summarize_fabric_control_state",
@@ -510,6 +527,7 @@ __all__ = [
     "update_share_session_model",
     "validate_bundle",
     "verify_bundle_lifecycle",
+    "verify_jwt",
     "verify_upstream_manifest",
     "write_scaffold",
     "write_manifest",

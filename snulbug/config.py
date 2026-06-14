@@ -17,6 +17,21 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10.
 DEFAULT_CONFIG_PATH = "snulbug.toml"
 REMOVED_EVENT_OUTPUT_KEYS = {"audit_out", "decision_console", "decision_console_format", "webhooks"}
 
+DEFAULT_MCP_AUTH_CONFIG = {
+    "mode": "off",
+    "resource": None,
+    "issuer": None,
+    "authorization_servers": [],
+    "audience": None,
+    "required_scopes": [],
+    "scopes_supported": [],
+    "jwks_path": None,
+    "resource_metadata_url": None,
+    "realm": "mcp",
+    "leeway_seconds": 60.0,
+    "strip_authorization_upstream": True,
+}
+
 DEFAULT_MCP_PROXY_CONFIG = {
     "upstream": "http://127.0.0.1:9000",
     "upstreams": [],
@@ -129,6 +144,21 @@ cloudflare_access_allowed_emails = []
 cloudflare_access_allowed_domains = []
 timeout = 30.0
 
+[mcp.auth]
+# Optional OAuth 2.1 protected-resource mode for public MCP endpoints.
+# mode = "oauth-resource"
+# resource = "https://YOUR-TUNNEL.example/mcp"
+# issuer = "https://issuer.example"
+# authorization_servers = ["https://issuer.example"]
+# audience = "https://YOUR-TUNNEL.example/mcp"
+# required_scopes = ["mcp:connect"]
+# scopes_supported = ["mcp:connect"]
+# jwks_path = "auth/jwks.json"
+# resource_metadata_url = "https://YOUR-TUNNEL.example/.well-known/oauth-protected-resource"
+# realm = "mcp"
+# leeway_seconds = 60.0
+# strip_authorization_upstream = true
+
 [mcp.fabric]
 name = "local-dev"
 description = ""
@@ -233,6 +263,9 @@ def load_mcp_proxy_config(path: str | Path) -> dict[str, Any]:
     proxy = mcp.get("proxy", {})
     if not isinstance(proxy, Mapping):
         raise ValueError("config section [mcp.proxy] must be a table")
+    auth = mcp.get("auth", {})
+    if not isinstance(auth, Mapping):
+        raise ValueError("config section [mcp.auth] must be a table")
     fabric = mcp.get("fabric", {})
     if not isinstance(fabric, Mapping):
         raise ValueError("config section [mcp.fabric] must be a table")
@@ -240,6 +273,7 @@ def load_mcp_proxy_config(path: str | Path) -> dict[str, Any]:
     return _normalize_proxy_config_with_discovery(
         proxy,
         fabric,
+        auth=auth,
         event_sinks=event_sinks,
         base_dir=config_path.parent,
     )
@@ -261,10 +295,14 @@ def load_mcp_fabric_config(path: str | Path) -> dict[str, Any]:
     proxy = mcp.get("proxy", {})
     if not isinstance(proxy, Mapping):
         raise ValueError("config section [mcp.proxy] must be a table")
+    auth = mcp.get("auth", {})
+    if not isinstance(auth, Mapping):
+        raise ValueError("config section [mcp.auth] must be a table")
     event_sinks = _load_event_sinks_table(mcp)
     proxy_config = _normalize_proxy_config_with_discovery(
         proxy,
         fabric,
+        auth=auth,
         event_sinks=event_sinks,
         base_dir=config_path.parent,
     )
@@ -280,6 +318,7 @@ def _normalize_proxy_config_with_discovery(
     proxy: Mapping[str, Any],
     fabric: Mapping[str, Any],
     *,
+    auth: Mapping[str, Any] | None = None,
     event_sinks: Any = None,
     base_dir: Path,
 ) -> dict[str, Any]:
@@ -287,6 +326,7 @@ def _normalize_proxy_config_with_discovery(
     discovered_proxy, discovery = apply_fabric_discovery(proxy, fabric, base_dir=base_dir)
     discovered_proxy = attach_upstream_credentials(discovered_proxy, credentials)
     proxy_config = normalize_mcp_proxy_config(discovered_proxy, base_dir=base_dir)
+    proxy_config["auth"] = normalize_mcp_auth_config(auth, base_dir=base_dir)
     proxy_config["discovery"] = discovery
     proxy_config["event_sinks"] = [
         *proxy_config.get("event_sinks", []),
@@ -397,6 +437,49 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
     normalized["timeout"] = float(normalized["timeout"])
     normalized["facade_health_cooldown_seconds"] = float(normalized["facade_health_cooldown_seconds"])
     normalized["event_sinks"] = normalize_event_sink_configs(normalized.get("event_sinks", []), base_dir=base)
+    normalized["auth"] = normalize_mcp_auth_config(normalized.get("auth", {}), base_dir=base)
+    return normalized
+
+
+def normalize_mcp_auth_config(config: Mapping[str, Any] | None, *, base_dir: str | Path = ".") -> dict[str, Any]:
+    if config in (None, ""):
+        config = {}
+    if not isinstance(config, Mapping):
+        raise ValueError("mcp.auth must be a table")
+    normalized = dict(DEFAULT_MCP_AUTH_CONFIG)
+    normalized.update({key: value for key, value in config.items() if value is not None})
+    mode = normalized.get("mode")
+    if not isinstance(mode, str):
+        raise ValueError("mcp.auth.mode must be a string")
+    if mode not in {"off", "oauth-resource"}:
+        raise ValueError("mcp.auth.mode must be 'off' or 'oauth-resource'")
+    for field in ("resource", "issuer", "audience", "resource_metadata_url", "realm"):
+        value = normalized.get(field)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"mcp.auth.{field} must be a string")
+        if value == "":
+            normalized[field] = None if field != "realm" else "mcp"
+    for field in ("authorization_servers", "required_scopes", "scopes_supported"):
+        normalized[field] = _normalize_auth_string_list(normalized.get(field), field=field)
+    jwks_path = normalized.get("jwks_path")
+    if jwks_path in (None, ""):
+        normalized["jwks_path"] = None
+    elif isinstance(jwks_path, str | Path):
+        normalized["jwks_path"] = _resolve_path(Path(base_dir), jwks_path)
+    else:
+        raise ValueError("mcp.auth.jwks_path must be a string path")
+    if not isinstance(normalized.get("leeway_seconds"), int | float) or float(normalized["leeway_seconds"]) < 0:
+        raise ValueError("mcp.auth.leeway_seconds must be a non-negative number")
+    normalized["leeway_seconds"] = float(normalized["leeway_seconds"])
+    if not isinstance(normalized.get("strip_authorization_upstream"), bool):
+        raise ValueError("mcp.auth.strip_authorization_upstream must be a boolean")
+    if normalized["mode"] == "oauth-resource":
+        if not normalized.get("resource"):
+            raise ValueError("mcp.auth.resource is required when mode is 'oauth-resource'")
+        if not normalized.get("jwks_path"):
+            raise ValueError("mcp.auth.jwks_path is required when mode is 'oauth-resource'")
+        if not normalized["scopes_supported"] and normalized["required_scopes"]:
+            normalized["scopes_supported"] = list(normalized["required_scopes"])
     return normalized
 
 
@@ -501,6 +584,14 @@ def _normalize_string_list(value: Any, *, field: str) -> list[str]:
         return []
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ValueError(f"mcp.proxy.{field} must be a list of strings")
+    return list(value)
+
+
+def _normalize_auth_string_list(value: Any, *, field: str) -> list[str]:
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"mcp.auth.{field} must be a list of strings")
     return list(value)
 
 
