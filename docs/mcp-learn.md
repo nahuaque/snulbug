@@ -1,5 +1,9 @@
 # MCP learn mode
 
+This is the detailed reference for `snulbug mcp policy learn` and
+`snulbug mcp policy amend`. Start with the
+[MCP policy workflow](mcp-policy.md) for the group-level overview.
+
 `snulbug mcp policy learn` compiles captured MCP replay or audit logs into a
 least-privilege policy bundle. It is designed for the local-dev loop:
 

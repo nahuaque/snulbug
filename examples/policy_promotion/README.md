@@ -5,7 +5,7 @@ This demo shows a promotion gate for customer-owned request policies.
 Compare the active policy with a draft policy:
 
 ```bash
-uv run snulbug diff \
+uv run snulbug mcp evidence diff \
   examples/policy_promotion/active.lua \
   examples/policy_promotion/draft.lua \
   examples/policy_promotion/fixtures

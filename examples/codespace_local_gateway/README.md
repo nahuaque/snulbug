@@ -90,7 +90,7 @@ curl -s http://127.0.0.1:8080/mcp \
 Inspect the audit log after traffic flows:
 
 ```bash
-uv run snulbug mcp inspect \
+uv run snulbug mcp evidence inspect \
   .snulbug/codespace-local/traces/audit.jsonl \
   --kind audit
 ```

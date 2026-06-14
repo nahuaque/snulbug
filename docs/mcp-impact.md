@@ -1,5 +1,8 @@
 # MCP evidence impact preview
 
+This is the detailed reference for `snulbug mcp evidence impact`. Start with
+the [MCP evidence workflow](mcp-evidence.md) for the group-level overview.
+
 `snulbug mcp evidence impact` previews how a candidate policy or task lease would behave
 against a captured replay log before you enable it live.
 

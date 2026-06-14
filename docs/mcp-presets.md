@@ -1,5 +1,8 @@
 # MCP presets
 
+This is the detailed reference for `snulbug mcp policy preset`. Start with the
+[MCP policy workflow](mcp-policy.md) for the group-level overview.
+
 `snulbug` ships MCP policy bundles that can be copied into a project and edited.
 
 List presets:

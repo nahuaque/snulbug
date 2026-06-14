@@ -1,5 +1,9 @@
 # MCP evidence record, replay, and inspect
 
+This is the detailed reference for `snulbug mcp evidence record`, `replay`,
+`inspect`, and `diff`. Start with the
+[MCP evidence workflow](mcp-evidence.md) for the group-level overview.
+
 `snulbug mcp evidence` stores replayable MCP request decisions as JSONL. This is
 useful when developing a local MCP gateway policy because each observed request
 becomes a deterministic regression fixture.

@@ -317,8 +317,11 @@ auth-sensitive replay artifacts for a short-lived local debugging session.
 - [MCP client setup recipes](mcp-client-recipes.md) shows local, tunneled,
   header-authenticated, recording, and managed stdio upstream patterns.
 - [MCP reverse proxy](mcp-proxy.md) documents every proxy flag and config key.
-- [MCP evidence record, replay, and inspect](mcp-recorder.md) covers captured sessions,
-  redaction, replay, and offline inspection.
-- [MCP presets](mcp-presets.md) documents the built-in policy generators.
+- [MCP policy workflow](mcp-policy.md) covers presets, learning, amendments,
+  and lifecycle promotion.
+- [MCP evidence workflow](mcp-evidence.md) covers captured sessions, offline
+  replay, impact checks, policy diffs, and session reports.
+- [MCP schema discovery](mcp-schemas.md) covers upstream contract review and
+  schema-derived policies.
 - [Getting started](getting-started.md) shows the generic ASGI middleware path
   for FastAPI, Starlette, Uvicorn, Hypercorn, Daphne, or any ASGI app.

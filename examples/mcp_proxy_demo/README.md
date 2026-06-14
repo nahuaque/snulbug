@@ -41,9 +41,9 @@ examples/mcp_proxy_demo/.run/traces/audit.jsonl
 Inspect the captured logs:
 
 ```bash
-uv run snulbug mcp inspect examples/mcp_proxy_demo/.run/traces/session.jsonl
-uv run snulbug mcp inspect examples/mcp_proxy_demo/.run/traces/audit.jsonl --kind audit
-uv run snulbug mcp inspect examples/mcp_proxy_demo/.run/traces/audit.jsonl \
+uv run snulbug mcp evidence inspect examples/mcp_proxy_demo/.run/traces/session.jsonl
+uv run snulbug mcp evidence inspect examples/mcp_proxy_demo/.run/traces/audit.jsonl --kind audit
+uv run snulbug mcp evidence inspect examples/mcp_proxy_demo/.run/traces/audit.jsonl \
   --kind audit \
   --report-out examples/mcp_proxy_demo/.run/traces/session-report.md
 ```

@@ -1,37 +1,47 @@
 # snulbug docs
 
-## MCP Local-Dev Policy Proxy
+## Start Here
 
 - [Quickstart: local MCP policy gateway](quickstart.md)
 - [MCP CLI guide for agents and harnesses](mcp-guide.md)
-- [Tunnel init](tunnel-init.md)
-- [Tunnel doctor](tunnel-doctor.md)
 - [One-command MCP policy lab](quickstart.md#2-run-the-policy-lab)
-- [MCP reverse proxy](mcp-proxy.md)
-- [MCP fabric config](mcp-fabric.md)
-- [Codespaces and devcontainers](devcontainers.md)
-- [MCP client setup recipes](mcp-client-recipes.md)
-- [MCP presets](mcp-presets.md)
-- [MCP schema discovery](mcp-schemas.md)
-- [MCP evidence record, replay, and inspect](mcp-recorder.md)
-- [MCP learn and amend mode](mcp-learn.md)
-- [MCP evidence impact preview](mcp-impact.md)
-- [MCP offline inspection](mcp-recorder.md#inspect-a-captured-replay-or-audit-log-without-a-running-proxy)
-- [MCP gateway example](mcp-gateway.md)
 - [End-to-end MCP policy proxy demo](../examples/mcp_proxy_demo/README.md)
 
-## Policy Authoring
+## Core MCP Workflow
 
-- [Lua request API](lua-request-api.md)
-- [Action reference](actions.md)
-- [State adapters](state.md)
+- [Policy workflow: preset, learn, amend, lifecycle](mcp-policy.md)
+- [Schema workflow: discover, diff, generate policy](mcp-schemas.md)
+- [Evidence workflow: record, replay, inspect, impact, diff](mcp-evidence.md)
+- [Reverse proxy and live recording](mcp-proxy.md)
+- [Fabric control plane and facade routing](mcp-fabric.md)
+
+## Sharing And Setup
+
+- [MCP share sessions](mcp-share.md)
+- [Expose session planner](expose.md)
+- [Tunnel init](tunnel-init.md)
+- [Tunnel doctor](tunnel-doctor.md)
+- [MCP client setup recipes](mcp-client-recipes.md)
+- [Codespaces and devcontainers](devcontainers.md)
+
+## Detailed References
+
+- [MCP presets](mcp-presets.md)
+- [MCP learn and amend mode](mcp-learn.md)
+- [MCP evidence record, replay, and inspect](mcp-recorder.md)
+- [MCP evidence impact preview](mcp-impact.md)
+- [Legacy tools/list shortcut](mcp-tools.md)
 - [Policy bundles](bundles.md)
+- [State adapters](state.md)
 - [Security model](security-model.md)
 - [Positioning and comparisons](comparison.md)
 
 ## Generic ASGI Middleware
 
 - [ASGI middleware getting started](getting-started.md)
+- [Lua request API](lua-request-api.md)
+- [Action reference](actions.md)
+- [Lower-level MCP gateway example](mcp-gateway.md)
 
 ## Project
 
