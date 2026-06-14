@@ -1673,7 +1673,7 @@ class OAuthResourceMiddleware:
 
         body = None
         replay_receive = receive
-        if self.config.mapped_scopes:
+        if self.config.mapped_scopes or self.config.has_claim_policy:
             body, replay_receive = await _capture_body(receive)
 
         _ensure_scope_state(scope)
@@ -2268,6 +2268,7 @@ def _oauth_resource_config(value: Mapping[str, Any] | OAuthResourceConfig | None
         leeway_seconds=normalized["leeway_seconds"],
         strip_authorization_upstream=normalized["strip_authorization_upstream"],
         scope_map={scope: tuple(selectors) for scope, selectors in normalized["scope_map"].items()},
+        claim_policy=normalized["claim_policy"],
     )
 
 
@@ -2462,6 +2463,9 @@ def _composed_access_metadata(scope: Scope, *, lease: Mapping[str, Any] | None =
     scope_map = _mapping(auth.get("scope_map"))
     scope_map_enabled = scope_map.get("enabled") is True
     scope_allowed = None if not scope_map_enabled else scope_map.get("allowed") is True
+    claim_policy = _mapping(auth.get("claim_policy"))
+    claim_policy_enabled = claim_policy.get("enabled") is True
+    claim_policy_allowed = None if not claim_policy_enabled else claim_policy.get("allowed") is True
     lease_enabled = lease_metadata.get("enabled") is True
     lease_required = lease_metadata.get("required") is True
     lease_required_for_request = lease_required and lease_metadata.get("method") == "tools/call"
@@ -2475,6 +2479,7 @@ def _composed_access_metadata(scope: Scope, *, lease: Mapping[str, Any] | None =
     allowed = (
         (not oauth_enabled or oauth_allowed is True)
         and (not scope_map_enabled or scope_allowed is True)
+        and (not claim_policy_enabled or claim_policy_allowed is True)
         and (not lease_required_for_request or lease_allowed is True)
         and lua_allowed
     )
@@ -2483,6 +2488,8 @@ def _composed_access_metadata(scope: Scope, *, lease: Mapping[str, Any] | None =
         reason_code = str(auth.get("reason_code") or "oauth.rejected")
     elif scope_map_enabled and scope_allowed is not True:
         reason_code = str(scope_map.get("reason_code") or "oauth.scope_map_denied")
+    elif claim_policy_enabled and claim_policy_allowed is not True:
+        reason_code = str(claim_policy.get("reason_code") or "oauth.claim_policy_denied")
     elif lease_required_for_request and lease_allowed is not True:
         reason_code = str(lease_metadata.get("reason_code") or "lease.required")
     elif not lua_allowed:
@@ -2517,6 +2524,15 @@ def _composed_access_metadata(scope: Scope, *, lease: Mapping[str, Any] | None =
                     "matched_selector": scope_map.get("matched_selector"),
                     "matched_request_selector": scope_map.get("matched_request_selector"),
                     "reason_code": scope_map.get("reason_code"),
+                }
+            ),
+            "claim_policy": _drop_empty(
+                {
+                    "enabled": claim_policy_enabled,
+                    "allowed": claim_policy_allowed,
+                    "matched_rule": claim_policy.get("matched_rule"),
+                    "matched_tool": claim_policy.get("matched_tool"),
+                    "reason_code": claim_policy.get("reason_code"),
                 }
             ),
             "lease": _drop_empty(

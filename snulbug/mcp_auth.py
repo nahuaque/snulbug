@@ -45,6 +45,7 @@ class OAuthResourceConfig:
     leeway_seconds: float = 60.0
     strip_authorization_upstream: bool = True
     scope_map: Mapping[str, tuple[str, ...]] | None = None
+    claim_policy: Mapping[str, Any] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -53,6 +54,11 @@ class OAuthResourceConfig:
     @property
     def mapped_scopes(self) -> dict[str, tuple[str, ...]]:
         return {str(scope): tuple(selectors) for scope, selectors in (self.scope_map or {}).items()}
+
+    @property
+    def has_claim_policy(self) -> bool:
+        policy = self.claim_policy if isinstance(self.claim_policy, Mapping) else {}
+        return policy.get("enabled") is True and bool(policy.get("rules"))
 
 
 @dataclass(frozen=True)
@@ -247,6 +253,17 @@ def evaluate_oauth_request(
         )
     if scope_map_decision["enabled"]:
         context["scope_decision"] = scope_map_decision
+    claim_policy_decision = evaluate_claim_policy(body=body, claims=claims, config=config)
+    if not claim_policy_decision["allowed"]:
+        return _reject(
+            config,
+            status=403,
+            reason_code=str(claim_policy_decision["reason_code"]),
+            error="insufficient_scope",
+            details={"claim_policy": claim_policy_decision},
+        )
+    if claim_policy_decision["enabled"]:
+        context["claim_policy"] = claim_policy_decision
     context["validation_method"] = validation_method
     return OAuthDecision(
         allowed=True,
@@ -261,6 +278,7 @@ def evaluate_oauth_request(
                 "validation_method": validation_method,
                 "scope_map": scope_map_decision if scope_map_decision["enabled"] else None,
                 "scope_match": scope_match,
+                "claim_policy": claim_policy_decision if claim_policy_decision["enabled"] else None,
             }
         ),
         context=context,
@@ -447,6 +465,78 @@ def scope_match_metadata(scope_map_decision: Mapping[str, Any]) -> dict[str, Any
             "target": scope_map_decision.get("target"),
         }
     )
+
+
+def evaluate_claim_policy(
+    *,
+    body: bytes | None,
+    claims: Mapping[str, Any],
+    config: OAuthResourceConfig,
+) -> dict[str, Any]:
+    policy = config.claim_policy if isinstance(config.claim_policy, Mapping) else {}
+    if policy.get("enabled") is not True:
+        return {"enabled": False, "allowed": True}
+    target = mcp_scope_target(body)
+    if target.get("allow_without_scope_map"):
+        return {
+            "enabled": True,
+            "allowed": True,
+            "reason_code": "oauth.claim_policy_protocol_allowed",
+            "target": target,
+        }
+    if target.get("method") != "tools/call":
+        return {
+            "enabled": True,
+            "allowed": True,
+            "reason_code": "oauth.claim_policy_non_tool_allowed",
+            "target": target,
+        }
+    tool_name = target.get("tool")
+    if not isinstance(tool_name, str) or not tool_name:
+        return {
+            "enabled": True,
+            "allowed": False,
+            "reason_code": "oauth.claim_policy_missing_tool",
+            "target": target,
+        }
+
+    matching_claim_rules = []
+    for rule in _claim_policy_rules(policy):
+        claim_values = _claim_values(claims, str(rule.get("claim")))
+        matched_values = _matching_claim_values(claim_values, _sequence_strings(rule.get("values")))
+        if not matched_values:
+            continue
+        matching_claim_rules.append(_claim_rule_metadata(rule, matched_values=matched_values))
+        tool_match = _claim_rule_tool_match(
+            rule, tool_name=tool_name, selectors=_sequence_strings(target.get("selectors"))
+        )
+        if tool_match:
+            return {
+                "enabled": True,
+                "allowed": True,
+                "reason_code": "oauth.claim_policy_allowed",
+                "target": target,
+                "matched_rule": _claim_rule_metadata(rule, matched_values=matched_values),
+                "matched_tool": tool_match,
+            }
+
+    default_action = str(policy.get("default_action") or "deny")
+    if default_action == "allow":
+        return {
+            "enabled": True,
+            "allowed": True,
+            "reason_code": "oauth.claim_policy_default_allowed",
+            "target": target,
+            "matching_claim_rules": matching_claim_rules,
+        }
+    return {
+        "enabled": True,
+        "allowed": False,
+        "reason_code": "oauth.claim_policy_denied",
+        "target": target,
+        "matching_claim_rules": matching_claim_rules,
+        "accepted": _claim_policy_accepted_tools(policy),
+    }
 
 
 def mcp_scope_target(body: bytes | None) -> dict[str, Any]:
@@ -876,6 +966,107 @@ def _accepted_scopes_for_selectors(
         ):
             accepted.append(scope)
     return sorted(set(accepted))
+
+
+def _claim_policy_rules(policy: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    rules = policy.get("rules")
+    if isinstance(rules, Sequence) and not isinstance(rules, str | bytes | bytearray):
+        return [rule for rule in rules if isinstance(rule, Mapping)]
+    return []
+
+
+def _claim_values(claims: Mapping[str, Any], claim: str) -> list[str]:
+    if claim == "tenant":
+        return _claim_value_list(claims.get("tenant", claims.get("tid")))
+    if claim == "subject":
+        return _claim_value_list(claims.get("sub"))
+    if claim == "client_id":
+        return _claim_value_list(claims.get("client_id", claims.get("azp")))
+    if claim == "scope":
+        return _claim_scopes(claims)
+    if claim in claims:
+        return _claim_value_list(claims.get(claim))
+    value: Any = claims
+    for part in claim.split("."):
+        if not isinstance(value, Mapping):
+            return []
+        value = value.get(part)
+    return _claim_value_list(value)
+
+
+def _claim_value_list(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        return [str(item) for item in value if item not in (None, "")]
+    return [str(value)]
+
+
+def _matching_claim_values(actual: Sequence[str], expected: Sequence[str]) -> list[str]:
+    if "*" in expected:
+        return sorted(set(actual))
+    expected_set = set(expected)
+    return sorted({value for value in actual if value in expected_set})
+
+
+def _claim_rule_tool_match(
+    rule: Mapping[str, Any],
+    *,
+    tool_name: str,
+    selectors: Sequence[str],
+) -> dict[str, Any] | None:
+    for allowed_tool in _sequence_strings(rule.get("allow_tools")):
+        if allowed_tool == tool_name or allowed_tool == "*":
+            return {"kind": "tool", "value": allowed_tool}
+    for prefix in _sequence_strings(rule.get("allow_tool_prefixes")):
+        if tool_name.startswith(prefix):
+            return {"kind": "tool_prefix", "value": prefix}
+    for allowed_selector in _sequence_strings(rule.get("allow_selectors")):
+        for selector in selectors:
+            if _selector_matches(allowed_selector, selector):
+                return {"kind": "selector", "value": allowed_selector, "selector": selector}
+    return None
+
+
+def _claim_rule_metadata(rule: Mapping[str, Any], *, matched_values: Sequence[str]) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "id": rule.get("id"),
+            "claim": rule.get("claim"),
+            "matched_values": list(matched_values),
+            "allow_tools": _sequence_strings(rule.get("allow_tools")),
+            "allow_tool_prefixes": _sequence_strings(rule.get("allow_tool_prefixes")),
+            "allow_selectors": _sequence_strings(rule.get("allow_selectors")),
+        }
+    )
+
+
+def _claim_policy_accepted_tools(policy: Mapping[str, Any]) -> list[dict[str, Any]]:
+    accepted = []
+    for rule in _claim_policy_rules(policy):
+        accepted.append(
+            _drop_empty(
+                {
+                    "id": rule.get("id"),
+                    "claim": rule.get("claim"),
+                    "values": _sequence_strings(rule.get("values")),
+                    "allow_tools": _sequence_strings(rule.get("allow_tools")),
+                    "allow_tool_prefixes": _sequence_strings(rule.get("allow_tool_prefixes")),
+                    "allow_selectors": _sequence_strings(rule.get("allow_selectors")),
+                }
+            )
+        )
+    return accepted
+
+
+def _sequence_strings(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        return [str(item) for item in value if item not in (None, "")]
+    return [str(value)] if value != "" else []
 
 
 def _selector_matches(configured: str, requested: str) -> bool:

@@ -742,6 +742,45 @@ def test_mcp_share_auth_doctor_checks_live_metadata_jwks_and_scope_tools(tmp_pat
     assert result["live"]["tools_list"]["tools"] == ["safe_read_file"]
 
 
+def test_mcp_share_auth_doctor_checks_claim_policy_tools(tmp_path):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), OAuthMcpHandler)
+    origin = f"http://127.0.0.1:{server.server_port}"
+    server.resource = f"{origin}/mcp"  # type: ignore[attr-defined]
+    server.issuer = origin  # type: ignore[attr-defined]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        config = write_oauth_share_config(
+            tmp_path,
+            resource=server.resource,  # type: ignore[attr-defined]
+            issuer=server.issuer,  # type: ignore[attr-defined]
+            claim_policy="""
+[mcp.auth.claim_policy]
+enabled = true
+default_action = "deny"
+
+[[mcp.auth.claim_policy.rules]]
+id = "tenant-a-files"
+claim = "tenant"
+values = ["tenant-a"]
+allow_tools = ["safe_read_file"]
+""",
+        )
+
+        result = doctor_mcp_share_auth(config=config, public_url=server.resource, token="demo-token")  # type: ignore[attr-defined]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    checks = {check["id"]: check for check in result["checks"]}
+
+    assert result["ok"] is True
+    assert checks["auth.claim_policy.configured"]["status"] == "pass"
+    assert checks["auth.claim_policy.tools_discovered"]["status"] == "pass"
+    assert result["auth"]["claim_policy"]["rules"][0]["id"] == "tenant-a-files"
+
+
 def test_mcp_share_auth_doctor_accepts_configured_remote_jwks_without_local_file(tmp_path):
     server = ThreadingHTTPServer(("127.0.0.1", 0), OAuthMcpHandler)
     origin = f"http://127.0.0.1:{server.server_port}"
@@ -1022,6 +1061,7 @@ def write_oauth_share_config(
     redact_records: bool = True,
     strip_authorization_upstream: bool = True,
     cloudflare_access: str = "off",
+    claim_policy: str = "",
 ) -> Path:
     (tmp_path / "jwks.json").write_text(
         json.dumps({"keys": [{"kty": "RSA", "kid": "demo", "n": "AQAB", "e": "AQAB"}]}),
@@ -1049,6 +1089,7 @@ strip_authorization_upstream = {str(strip_authorization_upstream).lower()}
 [mcp.auth.scope_map]
 "mcp:tools.read" = ["tools/list"]
 "mcp:tool.files.read" = ["tools/call:safe_read_file"]
+{claim_policy}
 """.lstrip(),
         encoding="utf-8",
     )

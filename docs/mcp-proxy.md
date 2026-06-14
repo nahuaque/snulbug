@@ -316,6 +316,17 @@ strip_authorization_upstream = true
 "mcp:tools.read" = ["tools/list", "resources/list"]
 "mcp:tool.files.read" = ["tools/call:filesystem.read_file"]
 "mcp:tool.git.status" = ["tools/call:git.status"]
+
+[mcp.auth.claim_policy]
+enabled = true
+default_action = "deny"
+
+[[mcp.auth.claim_policy.rules]]
+id = "tenant-a-tools"
+claim = "tenant"
+values = ["tenant-a"]
+allow_tool_prefixes = ["tenant_a.", "shared."]
+allow_tools = ["filesystem.read_file"]
 ```
 
 With this enabled, snulbug:
@@ -328,6 +339,8 @@ With this enabled, snulbug:
 - optionally validates opaque or revocation-sensitive tokens with OAuth token
   introspection
 - maps OAuth scopes to MCP methods/tools using `[mcp.auth.scope_map]`
+- maps OAuth claims such as tenant, subject, client ID, group, or nested custom
+  claims to allowed MCP tools using `[mcp.auth.claim_policy]`
 - can explicitly allow multi-URL shares with `resource_aliases` and
   `audiences` instead of silently accepting tunnel URL drift
 - exposes sanitized claims to Lua as `context.auth`
@@ -347,6 +360,35 @@ tool-specific selectors such as `tools/call:git.status`. A selector ending in
 `*` matches by prefix, for example `tools/call:filesystem.*`. MCP handshake
 messages such as `initialize`, `ping`, and `notifications/*` are allowed once
 `required_scopes` has passed, so you do not need to map protocol setup traffic.
+
+Claim policies are a declarative pre-Lua guard for common identity-to-tool
+rules. Each rule matches a claim value and allows exact tool names, tool-name
+prefixes, or selector patterns:
+
+```toml
+[mcp.auth.claim_policy]
+enabled = true
+default_action = "deny"
+
+[[mcp.auth.claim_policy.rules]]
+id = "platform-git"
+claim = "groups"
+values = ["platform-dev"]
+allow_selectors = ["tools/call:git.*"]
+
+[[mcp.auth.claim_policy.rules]]
+id = "tenant-a"
+claim = "tenant"
+values = ["tenant-a"]
+allow_tool_prefixes = ["tenant_a.", "shared."]
+```
+
+Supported claim aliases include `tenant` (`tenant` or `tid`), `subject` (`sub`),
+`client_id` (`client_id` or `azp`), and `scope`. Other claim names can be
+literal custom claim keys such as `https://example.com/tenant.slug`, or nested
+paths such as `tenant.slug`. Requests still pass through Lua after the
+declarative check, so use this for broad identity fences and Lua for
+task-specific or stateful decisions.
 
 Use Lua identity helpers when authorization depends on who is using a share,
 not just what scope the token carries:
@@ -404,7 +446,8 @@ snulbug mcp share auth doctor \
 The auth doctor verifies protected-resource metadata, issuer metadata, JWKS or
 introspection reachability, resource/audience alignment, HTTPS requirements,
 raw-token logging safeguards, scope-map selectors against live `tools/list`, and
-Cloudflare Access conflicts.
+claim-policy tool entries against live `tools/list`, and Cloudflare Access
+conflicts.
 
 For task-oriented shares, OAuth and leases answer different questions:
 

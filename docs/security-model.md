@@ -48,6 +48,9 @@ revocation-sensitive tokens. It is not an authorization server and does not mint
 tokens. When
 `[mcp.auth.scope_map]` is configured, snulbug also rejects MCP methods/tools
 whose selector is not covered by the token's scopes.
+When `[mcp.auth.claim_policy]` is configured, snulbug can also map sanitized
+JWT/introspection claims such as tenant, subject, group, or client ID to exact
+tool names, prefixes, or selectors before Lua or the upstream runs.
 
 OAuth can be composed with snulbug task leases. OAuth answers who the caller is
 and which MCP scopes they hold; leases answer which temporary task capability is

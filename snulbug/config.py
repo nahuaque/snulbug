@@ -44,6 +44,11 @@ DEFAULT_MCP_AUTH_CONFIG = {
     "leeway_seconds": 60.0,
     "strip_authorization_upstream": True,
     "scope_map": {},
+    "claim_policy": {
+        "enabled": False,
+        "default_action": "deny",
+        "rules": [],
+    },
 }
 
 DEFAULT_MCP_PROXY_CONFIG = {
@@ -194,6 +199,19 @@ timeout = 30.0
 # "mcp:tools.read" = ["tools/list", "resources/list"]
 # "mcp:tool.files.read" = ["tools/call:filesystem.read_file"]
 # "mcp:tool.git.status" = ["tools/call:git.status"]
+#
+# Optional declarative claim-to-tool mapping before Lua:
+# [mcp.auth.claim_policy]
+# enabled = true
+# default_action = "deny"
+#
+# [[mcp.auth.claim_policy.rules]]
+# id = "tenant-a-tools"
+# claim = "tenant" # aliases include tenant/tid, subject/sub, client_id/azp, scope
+# values = ["tenant-a"]
+# allow_tool_prefixes = ["tenant_a.", "shared."]
+# allow_tools = ["filesystem.read_file"]
+# allow_selectors = ["tools/call:git.status"]
 
 [mcp.fabric]
 name = "local-dev"
@@ -556,6 +574,7 @@ def normalize_mcp_auth_config(config: Mapping[str, Any] | None, *, base_dir: str
     if not isinstance(normalized.get("strip_authorization_upstream"), bool):
         raise ValueError("mcp.auth.strip_authorization_upstream must be a boolean")
     normalized["scope_map"] = _normalize_auth_scope_map(normalized.get("scope_map", {}))
+    normalized["claim_policy"] = _normalize_auth_claim_policy(normalized.get("claim_policy", {}))
     if normalized["mode"] == "oauth-resource":
         if not normalized.get("resource"):
             raise ValueError("mcp.auth.resource is required when mode is 'oauth-resource'")
@@ -715,6 +734,77 @@ def _normalize_auth_scope_map(value: Any) -> dict[str, list[str]]:
             raise ValueError(f"mcp.auth.scope_map.{scope} selectors must be non-empty strings")
         result[scope] = list(selectors)
     return result
+
+
+def _normalize_auth_claim_policy(value: Any) -> dict[str, Any]:
+    if value in (None, ""):
+        value = {}
+    if not isinstance(value, Mapping):
+        raise ValueError("mcp.auth.claim_policy must be a table")
+    normalized = {
+        "enabled": False,
+        "default_action": "deny",
+        "rules": [],
+    }
+    normalized.update({key: item for key, item in value.items() if item is not None})
+    if not isinstance(normalized.get("enabled"), bool):
+        raise ValueError("mcp.auth.claim_policy.enabled must be a boolean")
+    if normalized.get("default_action") not in {"deny", "allow"}:
+        raise ValueError("mcp.auth.claim_policy.default_action must be 'deny' or 'allow'")
+    rules = normalized.get("rules", [])
+    if rules in (None, ""):
+        rules = []
+    if not isinstance(rules, list):
+        raise ValueError("mcp.auth.claim_policy.rules must be a list of tables")
+    normalized_rules = [_normalize_auth_claim_policy_rule(rule, index=index) for index, rule in enumerate(rules)]
+    if normalized["enabled"] and not normalized_rules:
+        raise ValueError("mcp.auth.claim_policy.rules must contain at least one rule when enabled")
+    normalized["rules"] = normalized_rules
+    return normalized
+
+
+def _normalize_auth_claim_policy_rule(value: Any, *, index: int) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"mcp.auth.claim_policy.rules[{index}] must be a table")
+    rule = dict(value)
+    rule_id = rule.get("id", f"rule-{index + 1}")
+    if not isinstance(rule_id, str) or not rule_id:
+        raise ValueError(f"mcp.auth.claim_policy.rules[{index}].id must be a non-empty string")
+    claim = rule.get("claim")
+    if not isinstance(claim, str) or not claim:
+        raise ValueError(f"mcp.auth.claim_policy.rules[{index}].claim must be a non-empty string")
+    values = _normalize_auth_string_list(
+        rule.get("values"),
+        field=f"claim_policy.rules[{index}].values",
+    )
+    if not values or any(not value for value in values):
+        raise ValueError(f"mcp.auth.claim_policy.rules[{index}].values must contain non-empty strings")
+    allow_tools = _normalize_auth_string_list(
+        rule.get("allow_tools"),
+        field=f"claim_policy.rules[{index}].allow_tools",
+    )
+    allow_tool_prefixes = _normalize_auth_string_list(
+        rule.get("allow_tool_prefixes"),
+        field=f"claim_policy.rules[{index}].allow_tool_prefixes",
+    )
+    allow_selectors = _normalize_auth_string_list(
+        rule.get("allow_selectors"),
+        field=f"claim_policy.rules[{index}].allow_selectors",
+    )
+    if any(not item for item in [*allow_tools, *allow_tool_prefixes, *allow_selectors]):
+        raise ValueError(f"mcp.auth.claim_policy.rules[{index}] allow entries must be non-empty strings")
+    if not allow_tools and not allow_tool_prefixes and not allow_selectors:
+        raise ValueError(
+            f"mcp.auth.claim_policy.rules[{index}] must configure allow_tools, allow_tool_prefixes, or allow_selectors"
+        )
+    return {
+        "id": rule_id,
+        "claim": claim,
+        "values": values,
+        "allow_tools": allow_tools,
+        "allow_tool_prefixes": allow_tool_prefixes,
+        "allow_selectors": allow_selectors,
+    }
 
 
 def _normalize_upstreams(value: Any, *, base_dir: Path = Path(".")) -> list[dict[str, Any]]:

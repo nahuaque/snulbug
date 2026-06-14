@@ -771,6 +771,93 @@ def test_reverse_proxy_oauth_blocks_insufficient_scope_before_lua_and_upstream(t
     assert token not in json.dumps(record)
 
 
+def test_reverse_proxy_oauth_claim_policy_allows_tenant_tool_prefix_before_lua(tmp_path):
+    server, seen = start_upstream()
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    token = make_oauth_token(secret, scopes=["mcp:connect"], extra_claims={"tenant": "tenant-a"})
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        event_sinks=audit_event_sinks(audit_log),
+        auth_config=oauth_auth_config(jwks_path, claim_policy=oauth_claim_policy()),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {token}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tenant_a.read_file"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    record = load_record_log(record_log)[0]
+    audit = json.loads(audit_log.read_text(encoding="utf-8"))
+    claim_policy = record["metadata"]["auth"]["claim_policy"]
+    assert sent[0]["status"] == 200
+    assert seen["count"] == 1
+    assert claim_policy["reason_code"] == "oauth.claim_policy_allowed"
+    assert claim_policy["matched_rule"]["id"] == "tenant-a-tools"
+    assert claim_policy["matched_rule"]["matched_values"] == ["tenant-a"]
+    assert claim_policy["matched_tool"] == {"kind": "tool_prefix", "value": "tenant_a."}
+    assert record["metadata"]["access"]["claim_policy"]["matched_rule"]["id"] == "tenant-a-tools"
+    assert audit["auth"]["claim_policy"]["reason_code"] == "oauth.claim_policy_allowed"
+    assert token not in json.dumps(record)
+
+
+def test_reverse_proxy_oauth_claim_policy_blocks_unmatched_tool_before_lua_and_upstream(tmp_path):
+    server, seen = start_upstream()
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    token = make_oauth_token(secret, scopes=["mcp:connect"], extra_claims={"tenant": "tenant-a"})
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        event_sinks=audit_event_sinks(audit_log),
+        auth_config=oauth_auth_config(jwks_path, claim_policy=oauth_claim_policy()),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {token}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tenant_b.read_file"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    record = load_record_log(record_log)[0]
+    audit = json.loads(audit_log.read_text(encoding="utf-8"))
+    claim_policy = record["metadata"]["auth"]["claim_policy"]
+    assert sent[0]["status"] == 403
+    assert seen["count"] == 0
+    assert record["result"]["action"] == "challenge"
+    assert record["metadata"]["auth"]["reason_code"] == "oauth.claim_policy_denied"
+    assert claim_policy["target"]["tool"] == "tenant_b.read_file"
+    assert claim_policy["matching_claim_rules"][0]["id"] == "tenant-a-tools"
+    assert claim_policy["accepted"][0]["allow_tool_prefixes"] == ["tenant_a."]
+    assert record["metadata"]["access"]["reason_code"] == "oauth.claim_policy_denied"
+    assert audit["auth"]["claim_policy"]["reason_code"] == "oauth.claim_policy_denied"
+    assert token not in json.dumps(record)
+
+
 def test_reverse_proxy_oauth_scope_map_blocks_unmapped_tool_before_lua_and_upstream(tmp_path):
     server, seen = start_upstream()
     policy = write_policy(tmp_path, "continue")
@@ -3124,7 +3211,12 @@ def make_oauth_token(
     )
 
 
-def oauth_auth_config(jwks_path: Path, *, scope_map: dict[str, list[str]] | None = None) -> dict[str, Any]:
+def oauth_auth_config(
+    jwks_path: Path,
+    *,
+    scope_map: dict[str, list[str]] | None = None,
+    claim_policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "mode": "oauth-resource",
         "resource": "https://mcp.example.test/mcp",
@@ -3134,6 +3226,12 @@ def oauth_auth_config(jwks_path: Path, *, scope_map: dict[str, list[str]] | None
         "required_scopes": ["mcp:connect"],
         "jwks_path": jwks_path,
         "scope_map": scope_map or {},
+        "claim_policy": claim_policy
+        or {
+            "enabled": False,
+            "default_action": "deny",
+            "rules": [],
+        },
     }
 
 
@@ -3189,6 +3287,23 @@ def oauth_scope_map() -> dict[str, list[str]]:
     return {
         "mcp:tools.read": ["tools/list", "resources/list"],
         "mcp:tool.git.status": ["tools/call:git.status"],
+    }
+
+
+def oauth_claim_policy() -> dict[str, Any]:
+    return {
+        "enabled": True,
+        "default_action": "deny",
+        "rules": [
+            {
+                "id": "tenant-a-tools",
+                "claim": "tenant",
+                "values": ["tenant-a"],
+                "allow_tools": [],
+                "allow_tool_prefixes": ["tenant_a."],
+                "allow_selectors": [],
+            }
+        ],
     }
 
 

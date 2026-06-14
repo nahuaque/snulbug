@@ -205,6 +205,9 @@ Available helpers:
 
 `auth.can` uses the same `[mcp.auth.scope_map]` selectors enforced by the
 proxy, so Lua policy and pre-Lua OAuth enforcement stay aligned.
+Use `[mcp.auth.claim_policy]` when tenant, subject, group, client ID, or custom
+JWT claims can be mapped to allowed tool names declaratively; Lua still receives
+`context.auth.claim_policy` for audit/context-aware follow-up decisions.
 Use the subject, tenant, and group helpers for identity fences inside a share:
 for example, "only members of `platform-dev` in `tenant-a` may call this
 write-capable tool." These helpers read sanitized claims only; raw bearer

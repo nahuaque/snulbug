@@ -78,6 +78,18 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         "mcp:tool.files.read" = ["tools/call:filesystem.read_file"]
         "mcp:tool.git.status" = ["tools/call:git.status"]
 
+        [mcp.auth.claim_policy]
+        enabled = true
+        default_action = "deny"
+
+        [[mcp.auth.claim_policy.rules]]
+        id = "tenant-a-tools"
+        claim = "tenant"
+        values = ["tenant-a"]
+        allow_tools = ["filesystem.read_file"]
+        allow_tool_prefixes = ["tenant_a.", "shared."]
+        allow_selectors = ["tools/call:git.status"]
+
         [[mcp.events.sinks]]
         type = "audit_jsonl"
         path = "events/audit.jsonl"
@@ -158,6 +170,20 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
             "mcp:tools.read": ["tools/list", "resources/list"],
             "mcp:tool.files.read": ["tools/call:filesystem.read_file"],
             "mcp:tool.git.status": ["tools/call:git.status"],
+        },
+        "claim_policy": {
+            "enabled": True,
+            "default_action": "deny",
+            "rules": [
+                {
+                    "id": "tenant-a-tools",
+                    "claim": "tenant",
+                    "values": ["tenant-a"],
+                    "allow_tools": ["filesystem.read_file"],
+                    "allow_tool_prefixes": ["tenant_a.", "shared."],
+                    "allow_selectors": ["tools/call:git.status"],
+                }
+            ],
         },
     }
     assert result["event_sinks"] == [

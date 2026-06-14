@@ -919,6 +919,7 @@ def doctor_mcp_share_auth(
             str(scope): tuple(str(selector) for selector in _sequence(selectors))
             for scope, selectors in _mapping(auth.get("scope_map")).items()
         },
+        claim_policy=_mapping(auth.get("claim_policy")),
     )
     metadata_url = oauth_resource_metadata_url(oauth_config)
 
@@ -1059,6 +1060,18 @@ def doctor_mcp_share_auth(
         recommendations=recommendations,
     )
     _add_scope_map_tool_checks(
+        checks,
+        auth,
+        url,
+        probe_headers=probe_headers,
+        token=token,
+        timeout=timeout,
+        live_checks=live_checks,
+        live=live,
+        recommendations=recommendations,
+        fetch_tools=fetch_mcp_tools_list,
+    )
+    _add_claim_policy_tool_checks(
         checks,
         auth,
         url,
@@ -1249,6 +1262,7 @@ def _resolve_auth_doctor_public_url(
 def _auth_doctor_summary(auth: Mapping[str, Any]) -> dict[str, Any]:
     jwks_path = auth.get("jwks_path")
     scope_map = _mapping(auth.get("scope_map"))
+    claim_policy = _mapping(auth.get("claim_policy"))
     return {
         "mode": auth.get("mode"),
         "resource": auth.get("resource"),
@@ -1275,6 +1289,11 @@ def _auth_doctor_summary(auth: Mapping[str, Any]) -> dict[str, Any]:
         "strip_authorization_upstream": auth.get("strip_authorization_upstream"),
         "scope_map": {
             str(scope): [str(selector) for selector in _sequence(selectors)] for scope, selectors in scope_map.items()
+        },
+        "claim_policy": {
+            "enabled": claim_policy.get("enabled") is True,
+            "default_action": claim_policy.get("default_action"),
+            "rules": [_auth_claim_policy_rule_summary(rule) for rule in _sequence(claim_policy.get("rules"))],
         },
     }
 
@@ -2091,6 +2110,124 @@ def _add_scope_map_tool_checks(
         recommendations.append("Verify the public MCP URL and token before relying on scope-to-tool checks.")
 
 
+def _add_claim_policy_tool_checks(
+    checks: list[dict[str, Any]],
+    auth: Mapping[str, Any],
+    url: str | None,
+    *,
+    probe_headers: Mapping[str, str],
+    token: str | None,
+    timeout: float,
+    live_checks: bool,
+    live: dict[str, Any],
+    recommendations: list[str],
+    fetch_tools: Any,
+) -> None:
+    policy = _mapping(auth.get("claim_policy"))
+    if policy.get("enabled") is not True:
+        return
+
+    rules = [rule for rule in _sequence(policy.get("rules")) if isinstance(rule, Mapping)]
+    _add_share_doctor_check(
+        checks,
+        "auth.claim_policy.configured",
+        bool(rules),
+        "OAuth claims are mapped to MCP tools" if rules else "OAuth claim-to-tool policy has no rules",
+        component="auth",
+        details={
+            "default_action": policy.get("default_action"),
+            "rule_count": len(rules),
+            "rules": [_auth_claim_policy_rule_summary(rule) for rule in rules],
+        },
+    )
+    if not rules:
+        recommendations.append("Add [[mcp.auth.claim_policy.rules]] entries or disable mcp.auth.claim_policy.enabled.")
+        return
+
+    tool_patterns = _claim_policy_tool_patterns(policy)
+    if not tool_patterns:
+        _add_share_doctor_check(
+            checks,
+            "auth.claim_policy.tools_discovered",
+            None,
+            "claim policy does not contain tool-specific allow entries",
+            component="auth",
+            details={"rule_count": len(rules)},
+        )
+        return
+    if not live_checks:
+        _add_share_doctor_check(
+            checks,
+            "auth.claim_policy.tools_discovered",
+            None,
+            "live tool discovery skipped",
+            component="auth",
+            details={"tool_patterns": tool_patterns},
+        )
+        return
+    if not url:
+        _add_share_doctor_check(
+            checks,
+            "auth.claim_policy.tools_discovered",
+            False,
+            "live tool discovery requires a public/client URL",
+            component="auth",
+        )
+        return
+    if not token and not _has_authorization_header(probe_headers):
+        _add_share_doctor_check(
+            checks,
+            "auth.claim_policy.tools_discovered",
+            None,
+            "live tool discovery requires --token or an Authorization header",
+            component="auth",
+            details={"tool_patterns": tool_patterns},
+        )
+        recommendations.append(
+            "Pass --token or --header 'Authorization: Bearer ...' to validate claim-policy tool entries."
+        )
+        return
+
+    try:
+        live_tools = _live_tool_names(live)
+        if not live_tools:
+            payload, fetch_metadata = fetch_tools(url, headers=probe_headers, token=None, timeout=timeout)
+            live_tools = _tool_names_from_tools_payload(payload)
+            live["tools_list"] = {
+                "url": fetch_metadata.get("url"),
+                "status": fetch_metadata.get("status"),
+                "content_type": fetch_metadata.get("content_type"),
+                "tool_count": len(live_tools),
+                "tools": sorted(live_tools),
+            }
+        missing = _missing_scope_map_tool_patterns(tool_patterns, live_tools)
+        _add_share_doctor_check(
+            checks,
+            "auth.claim_policy.tools_discovered",
+            not missing,
+            "claim-policy tool entries match discovered MCP tools"
+            if not missing
+            else "claim-policy tool entries do not match discovered MCP tools",
+            component="auth",
+            details={"missing_patterns": missing, "tool_count": len(live_tools)},
+        )
+        if missing:
+            recommendations.append(
+                "Update [[mcp.auth.claim_policy.rules]] allow entries or refresh schema discovery "
+                "from the live MCP server."
+            )
+    except Exception as exc:
+        _add_share_doctor_check(
+            checks,
+            "auth.claim_policy.tools_discovered",
+            False,
+            f"live tools/list discovery failed: {exc}",
+            component="auth",
+            details={"url": url},
+        )
+        recommendations.append("Verify the public MCP URL and token before relying on claim-to-tool checks.")
+
+
 def _scope_map_tool_patterns(scope_map: Mapping[str, Any]) -> list[str]:
     patterns: list[str] = []
     for selectors in scope_map.values():
@@ -2100,6 +2237,43 @@ def _scope_map_tool_patterns(scope_map: Mapping[str, Any]) -> list[str]:
             if text.startswith(prefix) and len(text) > len(prefix):
                 patterns.append(text[len(prefix) :])
     return sorted(set(patterns))
+
+
+def _claim_policy_tool_patterns(policy: Mapping[str, Any]) -> list[str]:
+    patterns: list[str] = []
+    for rule in _sequence(policy.get("rules")):
+        if not isinstance(rule, Mapping):
+            continue
+        for tool in _sequence(rule.get("allow_tools")):
+            text = str(tool)
+            if text:
+                patterns.append(text)
+        for prefix in _sequence(rule.get("allow_tool_prefixes")):
+            text = str(prefix)
+            if text:
+                patterns.append(f"{text}*")
+        for selector in _sequence(rule.get("allow_selectors")):
+            text = str(selector)
+            prefix = "tools/call:"
+            if text.startswith(prefix) and len(text) > len(prefix):
+                patterns.append(text[len(prefix) :])
+    return sorted(set(patterns))
+
+
+def _auth_claim_policy_rule_summary(rule: Any) -> dict[str, Any]:
+    item = _mapping(rule)
+    return {
+        "id": item.get("id"),
+        "claim": item.get("claim"),
+        "values": [str(value) for value in _sequence(item.get("values"))],
+        "allow_tools": [str(value) for value in _sequence(item.get("allow_tools"))],
+        "allow_tool_prefixes": [str(value) for value in _sequence(item.get("allow_tool_prefixes"))],
+        "allow_selectors": [str(value) for value in _sequence(item.get("allow_selectors"))],
+    }
+
+
+def _live_tool_names(live: Mapping[str, Any]) -> set[str]:
+    return {str(item) for item in _sequence(_mapping(live.get("tools_list")).get("tools")) if item}
 
 
 def _tool_names_from_tools_payload(payload: Any) -> set[str]:
