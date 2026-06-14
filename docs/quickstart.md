@@ -293,9 +293,9 @@ Without `--confirm`, confirmation decisions reject by default.
 After a session, inspect the captured replay and audit logs:
 
 ```bash
-uv run snulbug mcp inspect traces/session.jsonl
-uv run snulbug mcp inspect traces/audit.jsonl --kind audit
-uv run snulbug mcp inspect traces/audit.jsonl --kind audit --report-out traces/session-report.md
+uv run snulbug mcp evidence inspect traces/session.jsonl
+uv run snulbug mcp evidence inspect traces/audit.jsonl --kind audit
+uv run snulbug mcp evidence inspect traces/audit.jsonl --kind audit --report-out traces/session-report.md
 ```
 
 Replay records and audit logs are redacted by default. Keep that default for
@@ -317,7 +317,7 @@ auth-sensitive replay artifacts for a short-lived local debugging session.
 - [MCP client setup recipes](mcp-client-recipes.md) shows local, tunneled,
   header-authenticated, recording, and managed stdio upstream patterns.
 - [MCP reverse proxy](mcp-proxy.md) documents every proxy flag and config key.
-- [MCP recorder and replay](mcp-recorder.md) covers captured sessions,
+- [MCP evidence record, replay, and inspect](mcp-recorder.md) covers captured sessions,
   redaction, replay, and offline inspection.
 - [MCP presets](mcp-presets.md) documents the built-in policy generators.
 - [Getting started](getting-started.md) shows the generic ASGI middleware path

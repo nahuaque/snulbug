@@ -35,7 +35,7 @@ def test_mcp_guide_cli_emits_human_workflow(capsys):
     assert status == 0
     assert "## Task-Scoped Capability Lease" in output
     assert "snulbug mcp lease create \\" in output
-    assert "snulbug mcp impact traces/session.jsonl --lease leases.json" in output
+    assert "snulbug mcp evidence impact traces/session.jsonl --lease leases.json" in output
 
 
 def test_mcp_guide_cli_emits_share_workflow(capsys):
@@ -59,7 +59,7 @@ def test_mcp_guide_cli_emits_compact_json_for_harness(capsys):
     assert output["recommended_entrypoint"] == "snulbug mcp guide --compact"
     assert workflow["id"] == "learn-amend-impact"
     assert workflow["steps"][0]["command"] == (
-        "snulbug mcp inspect traces/session.jsonl --report-out traces/session-report.md"
+        "snulbug mcp evidence inspect traces/session.jsonl --report-out traces/session-report.md"
     )
     assert workflow["steps"][0]["produces"] == ["traces/session-report.md"]
     assert workflow["steps"][1]["success_signals"] == ["learned bundle validates", "learned bundle tests pass"]

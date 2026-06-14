@@ -136,16 +136,16 @@ client metadata, tunnel provider metadata, and policy decision `reason` /
 Replay captured traffic against the same policy or a candidate policy:
 
 ```bash
-snulbug mcp replay traces/session.jsonl
-snulbug mcp replay traces/session.jsonl --script candidate.lua
+snulbug mcp evidence replay traces/session.jsonl
+snulbug mcp evidence replay traces/session.jsonl --script candidate.lua
 ```
 
 Inspect a session after the proxy stops:
 
 ```bash
-snulbug mcp inspect traces/session.jsonl
-snulbug mcp inspect traces/audit.jsonl --kind audit
-snulbug mcp inspect traces/audit.jsonl --kind audit --report-out traces/session-report.md
+snulbug mcp evidence inspect traces/session.jsonl
+snulbug mcp evidence inspect traces/audit.jsonl --kind audit
+snulbug mcp evidence inspect traces/audit.jsonl --kind audit --report-out traces/session-report.md
 ```
 
 Live replay records are redacted by default. Use `--no-redact-records` only when
@@ -293,7 +293,7 @@ snulbug mcp lease revoke lease_abc123 --file leases.json
 Preview whether a lease covers captured traffic before requiring it:
 
 ```bash
-snulbug mcp impact traces/session.jsonl --lease leases.json --report-out traces/impact-report.md
+snulbug mcp evidence impact traces/session.jsonl --lease leases.json --report-out traces/impact-report.md
 ```
 
 In facade mode, leases use the client-facing tool name, such as

@@ -72,6 +72,7 @@ def test_mcp_impact_cli_writes_markdown_report_and_can_no_fail(tmp_path, capsys)
     status = simulator_main(
         [
             "mcp",
+            "evidence",
             "impact",
             str(log),
             "--policy",

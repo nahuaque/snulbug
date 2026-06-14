@@ -96,7 +96,7 @@ def test_diff_cli_returns_nonzero_for_regression(tmp_path, capsys):
     )
     fixture.write_text(json.dumps({"path": "/in", "headers": {}}), encoding="utf-8")
 
-    status = simulator_main(["diff", str(old_policy), str(new_policy), str(fixture), "--compact"])
+    status = simulator_main(["mcp", "evidence", "diff", str(old_policy), str(new_policy), str(fixture), "--compact"])
     output = json.loads(capsys.readouterr().out)
 
     assert status == 1

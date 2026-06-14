@@ -208,8 +208,8 @@ active lease.
 After a session, inspect the logs:
 
 ```bash
-uv run snulbug mcp inspect traces/session.jsonl
-uv run snulbug mcp inspect traces/audit.jsonl --kind audit
+uv run snulbug mcp evidence inspect traces/session.jsonl
+uv run snulbug mcp evidence inspect traces/audit.jsonl --kind audit
 ```
 
 Learn a least-privilege bundle from observed traffic:
@@ -223,7 +223,7 @@ uv run snulbug bundle test learned-policy.snulbug
 Preview the blast radius before enabling a candidate policy or lease:
 
 ```bash
-uv run snulbug mcp impact traces/session.jsonl \
+uv run snulbug mcp evidence impact traces/session.jsonl \
   --policy learned-policy.snulbug/policy.lua \
   --lease leases.json \
   --report-out traces/impact-report.md
@@ -285,8 +285,8 @@ Start with:
 - [Codespaces and devcontainers](docs/devcontainers.md)
 - [MCP client setup recipes](docs/mcp-client-recipes.md)
 - [MCP learn and amend mode](docs/mcp-learn.md)
-- [MCP impact preview](docs/mcp-impact.md)
-- [MCP recorder and replay](docs/mcp-recorder.md)
+- [MCP evidence impact preview](docs/mcp-impact.md)
+- [MCP evidence record, replay, and inspect](docs/mcp-recorder.md)
 - [MCP schema discovery](docs/mcp-schemas.md)
 - [MCP presets](docs/mcp-presets.md)
 - [Security model](docs/security-model.md)

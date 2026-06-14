@@ -148,7 +148,7 @@ def _workflows() -> dict[str, dict[str, Any]]:
                     "title": "Inspect and revoke when done",
                     "command": "\n".join(
                         [
-                            "uv run snulbug mcp inspect .snulbug/shares/share-*/traces/audit.jsonl \\",
+                            "uv run snulbug mcp evidence inspect .snulbug/shares/share-*/traces/audit.jsonl \\",
                             "  --kind audit \\",
                             "  --report-out .snulbug/shares/share-*/session-report.md",
                             "uv run snulbug mcp lease revoke LEASE_ID --file .snulbug/shares/share-*/leases.json",
@@ -278,7 +278,9 @@ def _workflows() -> dict[str, dict[str, Any]]:
                 {
                     "id": "inspect-session",
                     "title": "Inspect captured traffic",
-                    "command": "snulbug mcp inspect traces/session.jsonl --report-out traces/session-report.md",
+                    "command": (
+                        "snulbug mcp evidence inspect traces/session.jsonl --report-out traces/session-report.md"
+                    ),
                     "requires": ["traces/session.jsonl from a proxy or lab run"],
                     "produces": ["traces/session-report.md"],
                     "success_signals": ["report summarizes methods, tools, targets, actions, and reason codes"],
@@ -298,7 +300,7 @@ def _workflows() -> dict[str, dict[str, Any]]:
                     "title": "Preview policy impact before promotion",
                     "command": "\n".join(
                         [
-                            "snulbug mcp impact traces/session.jsonl \\",
+                            "snulbug mcp evidence impact traces/session.jsonl \\",
                             "  --policy learned-policy.snulbug/policy.lua \\",
                             "  --report-out traces/impact-report.md",
                         ]
@@ -320,7 +322,7 @@ def _workflows() -> dict[str, dict[str, Any]]:
                     "requires": ["audit log containing blocked `mcp.learn.*` decisions"],
                     "produces": ["candidate-policy.snulbug/"],
                     "success_signals": ["candidate contains the smallest observed additions"],
-                    "next": "Run `snulbug mcp impact` against the candidate before promoting it.",
+                    "next": "Run `snulbug mcp evidence impact` against the candidate before promoting it.",
                 },
             ],
             "stop_conditions": [
@@ -360,7 +362,7 @@ def _workflows() -> dict[str, dict[str, Any]]:
                 {
                     "id": "preview-lease-impact",
                     "title": "Preview lease coverage against a session",
-                    "command": "snulbug mcp impact traces/session.jsonl --lease leases.json",
+                    "command": "snulbug mcp evidence impact traces/session.jsonl --lease leases.json",
                     "requires": ["traces/session.jsonl", "leases.json"],
                     "produces": ["lease coverage summary"],
                     "success_signals": ["expected calls are covered; unexpected calls remain uncovered"],

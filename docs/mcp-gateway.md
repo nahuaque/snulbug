@@ -55,8 +55,8 @@ uv run snulbug mcp policy preset tunnel-safe --output policy.snulbug
 Record request decisions and replay them later:
 
 ```bash
-uv run snulbug mcp record policy.snulbug/policy.lua request.json --out traces/session.jsonl
-uv run snulbug mcp replay traces/session.jsonl
+uv run snulbug mcp evidence record policy.snulbug/policy.lua request.json --out traces/session.jsonl
+uv run snulbug mcp evidence replay traces/session.jsonl
 ```
 
 Run the policy as a reverse proxy for a non-ASGI MCP server:

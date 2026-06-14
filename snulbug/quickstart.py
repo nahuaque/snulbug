@@ -201,8 +201,8 @@ def create_mcp_quickstart(
             ),
             f"configure your MCP client URL as {client_url}",
             f"send Authorization: Bearer {effective_token}",
-            f"uv run snulbug mcp inspect {_resolve_output(root, record_out)}",
-            f"uv run snulbug mcp inspect {_resolve_output(root, audit_out)} --kind audit",
+            f"uv run snulbug mcp evidence inspect {_resolve_output(root, record_out)}",
+            f"uv run snulbug mcp evidence inspect {_resolve_output(root, audit_out)} --kind audit",
         ],
     }
     if not validate:

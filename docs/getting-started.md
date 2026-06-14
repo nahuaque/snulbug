@@ -172,7 +172,7 @@ final state.
 Compare an active policy and a draft policy against replay fixtures:
 
 ```bash
-uv run snulbug diff active.lua draft.lua fixtures/
+uv run snulbug mcp evidence diff active.lua draft.lua fixtures/
 ```
 
 The command emits changed decisions and regressions. It exits non-zero when a
@@ -195,7 +195,7 @@ comparison are attached to `scope["lua_shadow_trace"]`.
 For stateful promotion gates, pass a snapshot file or a directory of snapshots:
 
 ```bash
-uv run snulbug diff active.lua draft.lua fixtures/ --state-snapshots snapshots/
+uv run snulbug mcp evidence diff active.lua draft.lua fixtures/ --state-snapshots snapshots/
 ```
 
 When `--state-snapshots` points to a directory, the diff command looks for a

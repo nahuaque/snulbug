@@ -121,17 +121,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     simulate.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
     add_compact_arg(simulate)
 
-    diff = subparsers.add_parser("diff", help="compare two policies against JSON request fixtures")
-    diff.add_argument("old_script", type=Path, help="path to the active Lua policy")
-    diff.add_argument("new_script", type=Path, help="path to the candidate Lua policy")
-    diff.add_argument("fixtures", type=Path, help="JSON fixture file or directory")
-    diff.add_argument("--context", type=Path, help="optional JSON context fixture")
-    diff.add_argument("--state-snapshots", type=Path, help="optional state snapshot file or directory")
-    diff.add_argument("--instruction-limit", type=int, default=100_000)
-    diff.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
-    add_compact_arg(diff)
-    diff.add_argument("--no-fail", action="store_true", help="return exit code 0 even when regressions are found")
-
     bundle = subparsers.add_parser("bundle", help="validate, test, and pack policy bundles")
     bundle_subparsers = bundle.add_subparsers(dest="bundle_command", required=True)
 
@@ -223,10 +212,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_subparsers = mcp.add_subparsers(
         dest="mcp_command",
         required=True,
-        metavar=(
-            "{guide,policy,quickstart,codespace,share,config,schemas,fabric,manifest,lease,"
-            "record,replay,inspect,impact,lab,proxy}"
-        ),
+        metavar=("{guide,policy,quickstart,codespace,share,config,schemas,fabric,manifest,lease,evidence,lab,proxy}"),
     )
 
     mcp_guide = mcp_subparsers.add_parser("guide", help="print agent-oriented MCP workflow guidance")
@@ -1242,60 +1228,116 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_lease_revoke.add_argument("--file", type=Path, default=Path("leases.json"), help="lease JSON file")
     add_compact_arg(mcp_lease_revoke)
 
-    mcp_record = mcp_subparsers.add_parser("record", help="record one replayable MCP request decision")
-    mcp_record.add_argument("script", type=Path, help="path to a Lua policy file")
-    mcp_record.add_argument("request", type=Path, help="path to a JSON request fixture")
-    mcp_record.add_argument("--out", type=Path, required=True, help="JSONL log path to append to")
-    mcp_record.add_argument("--context", type=Path, help="optional JSON context fixture")
-    mcp_record.add_argument("--state", type=Path, help="optional JSON state snapshot")
-    mcp_record.add_argument("--response", type=Path, help="optional JSON response metadata to store with the record")
-    mcp_record.add_argument("--metadata", type=Path, help="optional JSON metadata to store with the record")
-    mcp_record.add_argument("--audit-out", type=Path, help="optional redacted audit JSONL path to append to")
-    mcp_record.add_argument(
+    mcp_evidence = mcp_subparsers.add_parser(
+        "evidence",
+        help="record, replay, inspect, impact-check, and diff MCP evidence",
+    )
+    mcp_evidence_subparsers = mcp_evidence.add_subparsers(dest="evidence_command", required=True)
+    mcp_evidence_record = mcp_evidence_subparsers.add_parser(
+        "record",
+        help="record one replayable MCP request decision",
+    )
+    mcp_evidence_record.add_argument("script", type=Path, help="path to a Lua policy file")
+    mcp_evidence_record.add_argument("request", type=Path, help="path to a JSON request fixture")
+    mcp_evidence_record.add_argument("--out", type=Path, required=True, help="JSONL log path to append to")
+    mcp_evidence_record.add_argument("--context", type=Path, help="optional JSON context fixture")
+    mcp_evidence_record.add_argument("--state", type=Path, help="optional JSON state snapshot")
+    mcp_evidence_record.add_argument(
+        "--response",
+        type=Path,
+        help="optional JSON response metadata to store with the record",
+    )
+    mcp_evidence_record.add_argument("--metadata", type=Path, help="optional JSON metadata to store with the record")
+    mcp_evidence_record.add_argument("--audit-out", type=Path, help="optional redacted audit JSONL path to append to")
+    mcp_evidence_record.add_argument(
         "--redact",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="redact secrets in the replay record itself; use --no-redact for exact replay artifacts",
     )
-    mcp_record.add_argument("--instruction-limit", type=int, default=100_000)
-    mcp_record.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
-    add_compact_arg(mcp_record)
+    mcp_evidence_record.add_argument("--instruction-limit", type=int, default=100_000)
+    mcp_evidence_record.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
+    add_compact_arg(mcp_evidence_record)
 
-    mcp_replay = mcp_subparsers.add_parser("replay", help="replay an MCP request JSONL log")
-    mcp_replay.add_argument("log", type=Path, help="JSONL request log")
-    mcp_replay.add_argument("--script", type=Path, help="override policy script for all records")
-    mcp_replay.add_argument("--instruction-limit", type=int, default=100_000)
-    mcp_replay.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
-    add_compact_arg(mcp_replay)
+    mcp_evidence_replay = mcp_evidence_subparsers.add_parser("replay", help="replay an MCP request JSONL log")
+    mcp_evidence_replay.add_argument("log", type=Path, help="JSONL request log")
+    mcp_evidence_replay.add_argument("--script", type=Path, help="override policy script for all records")
+    mcp_evidence_replay.add_argument("--instruction-limit", type=int, default=100_000)
+    mcp_evidence_replay.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
+    add_compact_arg(mcp_evidence_replay)
 
-    mcp_inspect = mcp_subparsers.add_parser("inspect", help="summarize MCP replay or audit JSONL logs offline")
-    mcp_inspect.add_argument("log", type=Path, help="JSONL replay or audit log")
-    mcp_inspect.add_argument("--kind", choices=("auto", "record", "audit"), default="auto", help="input log type")
-    mcp_inspect.add_argument("--top", type=int, default=10, help="number of top values to include per category")
-    add_report_out_arg(mcp_inspect, help="optional Markdown session report path")
-    mcp_inspect.add_argument(
+    mcp_evidence_inspect = mcp_evidence_subparsers.add_parser(
+        "inspect",
+        help="summarize MCP replay or audit JSONL logs offline",
+    )
+    mcp_evidence_inspect.add_argument("log", type=Path, help="JSONL replay or audit log")
+    mcp_evidence_inspect.add_argument(
+        "--kind",
+        choices=("auto", "record", "audit"),
+        default="auto",
+        help="input log type",
+    )
+    mcp_evidence_inspect.add_argument(
+        "--top",
+        type=int,
+        default=10,
+        help="number of top values to include per category",
+    )
+    add_report_out_arg(mcp_evidence_inspect, help="optional Markdown session report path")
+    mcp_evidence_inspect.add_argument(
         "--report-format",
         choices=("markdown",),
         default="markdown",
         help="session report output format",
     )
-    add_compact_arg(mcp_inspect)
+    add_compact_arg(mcp_evidence_inspect)
 
-    mcp_impact = mcp_subparsers.add_parser("impact", help="preview policy or lease impact against MCP replay logs")
-    mcp_impact.add_argument("log", type=Path, help="JSONL replay log")
-    mcp_impact.add_argument("--policy", type=Path, help="candidate policy to replay against the log")
-    mcp_impact.add_argument("--lease", "--lease-file", dest="lease_file", type=Path, help="task lease JSON file")
-    mcp_impact.add_argument("--instruction-limit", type=int, default=100_000)
-    mcp_impact.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
-    add_report_out_arg(mcp_impact, help="optional Markdown impact report path")
-    mcp_impact.add_argument(
+    mcp_evidence_impact = mcp_evidence_subparsers.add_parser(
+        "impact",
+        help="preview policy or lease impact against MCP replay logs",
+    )
+    mcp_evidence_impact.add_argument("log", type=Path, help="JSONL replay log")
+    mcp_evidence_impact.add_argument("--policy", type=Path, help="candidate policy to replay against the log")
+    mcp_evidence_impact.add_argument(
+        "--lease",
+        "--lease-file",
+        dest="lease_file",
+        type=Path,
+        help="task lease JSON file",
+    )
+    mcp_evidence_impact.add_argument("--instruction-limit", type=int, default=100_000)
+    mcp_evidence_impact.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
+    add_report_out_arg(mcp_evidence_impact, help="optional Markdown impact report path")
+    mcp_evidence_impact.add_argument(
         "--report-format",
         choices=("markdown",),
         default="markdown",
         help="impact report output format",
     )
-    mcp_impact.add_argument("--no-fail", action="store_true", help="return exit code 0 even when impact has errors")
-    add_compact_arg(mcp_impact)
+    mcp_evidence_impact.add_argument(
+        "--no-fail",
+        action="store_true",
+        help="return exit code 0 even when impact has errors",
+    )
+    add_compact_arg(mcp_evidence_impact)
+
+    mcp_evidence_diff = mcp_evidence_subparsers.add_parser(
+        "diff",
+        help="compare two policies against JSON request fixtures",
+    )
+    mcp_evidence_diff.add_argument("old_script", type=Path, help="path to the active Lua policy")
+    mcp_evidence_diff.add_argument("new_script", type=Path, help="path to the candidate Lua policy")
+    mcp_evidence_diff.add_argument("fixtures", type=Path, help="JSON fixture file or directory")
+    mcp_evidence_diff.add_argument("--context", type=Path, help="optional JSON context fixture")
+    mcp_evidence_diff.add_argument("--state-snapshots", type=Path, help="optional state snapshot file or directory")
+    mcp_evidence_diff.add_argument("--instruction-limit", type=int, default=100_000)
+    mcp_evidence_diff.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
+    mcp_evidence_diff.add_argument(
+        "--no-fail",
+        action="store_true",
+        help="return exit code 0 even when regressions are found",
+    )
+    add_compact_arg(mcp_evidence_diff)
 
     mcp_lab = mcp_subparsers.add_parser("lab", help="run the one-command local MCP policy lab")
     mcp_lab.add_argument("--output-dir", type=Path, default=Path(".snulbug-lab"), help="lab artifact directory")
@@ -1483,23 +1525,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         write_json_output(result, compact=args.compact)
         return 0
-
-    if args.command == "diff":
-        from .promotion import diff_policies
-
-        context = _read_json(args.context) if args.context else None
-        memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
-        result = diff_policies(
-            args.old_script,
-            args.new_script,
-            args.fixtures,
-            context=context,
-            state_snapshots_path=args.state_snapshots,
-            instruction_limit=args.instruction_limit,
-            memory_limit_bytes=memory_limit,
-        )
-        write_json_output(result, compact=args.compact)
-        return 0 if args.no_fail or result["safe_to_promote"] else 1
 
     if args.command == "bundle":
         from .bundle import (
@@ -2518,82 +2543,103 @@ def main(argv: Sequence[str] | None = None) -> int:
             except Exception as exc:
                 result = {"ok": False, "file": str(args.file), "error": str(exc)}
                 status = 1
-        elif args.mcp_command == "record":
-            memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
-            request = _read_json(args.request)
-            result = record_policy_request(
-                args.script,
-                request,
-                context=_read_json(args.context) if args.context else None,
-                state_snapshot=_read_json(args.state) if args.state else None,
-                response=_read_json(args.response) if args.response else None,
-                metadata=_read_json(args.metadata) if args.metadata else None,
-                redact=args.redact,
-                instruction_limit=args.instruction_limit,
-                memory_limit_bytes=memory_limit,
-            )
-            append_record(args.out, result)
-            audit_event = None
-            if args.audit_out is not None:
-                audit_event = record_audit_event(result)
-                append_audit_event(args.audit_out, audit_event)
-            result = {
-                "ok": True,
-                "out": str(args.out),
-                "audit_out": str(args.audit_out) if args.audit_out is not None else None,
-                "redacted": bool(args.redact),
-                "action": result["action"] if "action" in result else result["result"]["action"],
-                "audit": audit_event,
-                "record": result,
-            }
-            status = 0
-        elif args.mcp_command == "replay":
-            memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
-            result = replay_record_log(
-                args.log,
-                script_path=args.script,
-                instruction_limit=args.instruction_limit,
-                memory_limit_bytes=memory_limit,
-            )
-            status = 0 if result["ok"] else 1
-        elif args.mcp_command == "inspect":
+        elif args.mcp_command == "evidence":
             try:
-                result = inspect_mcp_log(args.log, kind=args.kind, top=args.top)
-                if args.report_out is not None:
-                    report_text = format_mcp_inspection_report(result, output_format=args.report_format)
-                    write_report_output(
-                        args.report_out,
-                        report_text,
-                        result,
-                        report_format=args.report_format,
+                if args.evidence_command == "record":
+                    memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
+                    request = _read_json(args.request)
+                    recorded = record_policy_request(
+                        args.script,
+                        request,
+                        context=_read_json(args.context) if args.context else None,
+                        state_snapshot=_read_json(args.state) if args.state else None,
+                        response=_read_json(args.response) if args.response else None,
+                        metadata=_read_json(args.metadata) if args.metadata else None,
+                        redact=args.redact,
+                        instruction_limit=args.instruction_limit,
+                        memory_limit_bytes=memory_limit,
                     )
-                status = 0
-            except Exception as exc:
-                result = {"ok": False, "log": str(args.log), "error": str(exc)}
-                status = 1
-        elif args.mcp_command == "impact":
-            from .impact import analyze_mcp_impact, format_mcp_impact_report
+                    append_record(args.out, recorded)
+                    audit_event = None
+                    if args.audit_out is not None:
+                        audit_event = record_audit_event(recorded)
+                        append_audit_event(args.audit_out, audit_event)
+                    result = {
+                        "ok": True,
+                        "out": str(args.out),
+                        "audit_out": str(args.audit_out) if args.audit_out is not None else None,
+                        "redacted": bool(args.redact),
+                        "action": recorded["action"] if "action" in recorded else recorded["result"]["action"],
+                        "audit": audit_event,
+                        "record": recorded,
+                    }
+                    status = 0
+                elif args.evidence_command == "replay":
+                    memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
+                    result = replay_record_log(
+                        args.log,
+                        script_path=args.script,
+                        instruction_limit=args.instruction_limit,
+                        memory_limit_bytes=memory_limit,
+                    )
+                    status = 0 if result["ok"] else 1
+                elif args.evidence_command == "inspect":
+                    result = inspect_mcp_log(args.log, kind=args.kind, top=args.top)
+                    if args.report_out is not None:
+                        report_text = format_mcp_inspection_report(result, output_format=args.report_format)
+                        write_report_output(
+                            args.report_out,
+                            report_text,
+                            result,
+                            report_format=args.report_format,
+                        )
+                    status = 0
+                elif args.evidence_command == "impact":
+                    from .impact import analyze_mcp_impact, format_mcp_impact_report
 
-            memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
-            try:
-                result = analyze_mcp_impact(
-                    args.log,
-                    policy=args.policy,
-                    lease_file=args.lease_file,
-                    instruction_limit=args.instruction_limit,
-                    memory_limit_bytes=memory_limit,
-                )
-                if args.report_out is not None:
-                    report_text = format_mcp_impact_report(result, output_format=args.report_format)
-                    write_report_output(
-                        args.report_out,
-                        report_text,
-                        result,
-                        report_format=args.report_format,
+                    memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
+                    result = analyze_mcp_impact(
+                        args.log,
+                        policy=args.policy,
+                        lease_file=args.lease_file,
+                        instruction_limit=args.instruction_limit,
+                        memory_limit_bytes=memory_limit,
                     )
-                status = 0 if args.no_fail or result["ok"] else 1
+                    if args.report_out is not None:
+                        report_text = format_mcp_impact_report(result, output_format=args.report_format)
+                        write_report_output(
+                            args.report_out,
+                            report_text,
+                            result,
+                            report_format=args.report_format,
+                        )
+                    status = 0 if args.no_fail or result["ok"] else 1
+                elif args.evidence_command == "diff":
+                    from .promotion import diff_policies
+
+                    context = _read_json(args.context) if args.context else None
+                    memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
+                    result = diff_policies(
+                        args.old_script,
+                        args.new_script,
+                        args.fixtures,
+                        context=context,
+                        state_snapshots_path=args.state_snapshots,
+                        instruction_limit=args.instruction_limit,
+                        memory_limit_bytes=memory_limit,
+                    )
+                    status = 0 if args.no_fail or result["safe_to_promote"] else 1
+                else:
+                    parser.error(f"unknown mcp evidence command: {args.evidence_command}")
+                    return 2
             except Exception as exc:
-                result = {"ok": False, "log": str(args.log), "error": str(exc)}
+                result = {"ok": False, "error": str(exc)}
+                if hasattr(args, "log") and args.log is not None:
+                    result["log"] = str(args.log)
+                if hasattr(args, "request") and args.request is not None:
+                    result["request"] = str(args.request)
+                if hasattr(args, "fixtures") and args.fixtures is not None:
+                    result["fixtures"] = str(args.fixtures)
                 status = 1
         elif args.mcp_command == "lab":
             from .lab import run_mcp_lab

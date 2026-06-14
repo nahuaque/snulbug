@@ -23,7 +23,7 @@ Use these controls:
 For hostile third-party scripts, add an external isolation boundary. A separate process, container, VM, or WebAssembly runtime is a stronger boundary than the in-process Lua runtime.
 
 CLI-created request replay logs and proxy replay logs are redacted by default.
-Use `snulbug mcp record --no-redact ...` or
+Use `snulbug mcp evidence record --no-redact ...` or
 `snulbug mcp proxy --no-redact-records ...` only when exact auth-sensitive
 replay artifacts are required.
 

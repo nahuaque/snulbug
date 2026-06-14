@@ -40,7 +40,7 @@ def test_expose_normal_mode_generates_tunnel_safe_config(tmp_path, monkeypatch):
     assert result["commands"]["provider"] == [
         "ngrok http 8080 --traffic-policy-file .snulbug/configs/ngrok-traffic-policy.yml"
     ]
-    assert "snulbug mcp inspect .snulbug/configs/traces/audit.jsonl" in result["commands"]["inspect_audit"]
+    assert "snulbug mcp evidence inspect .snulbug/configs/traces/audit.jsonl" in result["commands"]["inspect_audit"]
     assert (tmp_path / ".snulbug/configs/snulbug.toml").is_file()
     assert (tmp_path / ".snulbug/configs/ngrok-traffic-policy.yml").is_file()
 

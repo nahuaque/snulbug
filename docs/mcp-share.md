@@ -148,7 +148,7 @@ the exact forwarding URL printed by the tunnel provider.
 When the task is complete:
 
 ```bash
-uv run snulbug mcp inspect .snulbug/shares/share-*/traces/audit.jsonl \
+uv run snulbug mcp evidence inspect .snulbug/shares/share-*/traces/audit.jsonl \
   --kind audit \
   --report-out .snulbug/shares/share-*/session-report.md
 

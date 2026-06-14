@@ -290,9 +290,9 @@ def _command_plan(
             f"(cd {shlex.quote(str(tunnel_dir))} && {str(command['command'])})" for command in provider_commands
         ],
         "doctor": "\n".join(doctor_lines),
-        "inspect_session": f"uv run snulbug mcp inspect {shlex.quote(str(session))}",
+        "inspect_session": f"uv run snulbug mcp evidence inspect {shlex.quote(str(session))}",
         "inspect_audit": (
-            f"uv run snulbug mcp inspect {shlex.quote(str(audit))} "
+            f"uv run snulbug mcp evidence inspect {shlex.quote(str(audit))} "
             f"--kind audit --report-out {shlex.quote(str(share_dir / 'session-report.md'))}"
         ),
         "revoke_lease": (

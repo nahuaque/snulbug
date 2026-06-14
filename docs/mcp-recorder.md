@@ -1,13 +1,13 @@
-# MCP recorder and replay
+# MCP evidence record, replay, and inspect
 
-`snulbug` can store replayable MCP request decisions as JSONL. This is useful
-when developing a local MCP gateway policy because each observed request becomes
-a deterministic regression fixture.
+`snulbug mcp evidence` stores replayable MCP request decisions as JSONL. This is
+useful when developing a local MCP gateway policy because each observed request
+becomes a deterministic regression fixture.
 
 Record one request fixture:
 
 ```bash
-uv run snulbug mcp record policy.snulbug/policy.lua request.json --out traces/session.jsonl
+uv run snulbug mcp evidence record policy.snulbug/policy.lua request.json --out traces/session.jsonl
 ```
 
 Record live traffic while proxying:
@@ -21,7 +21,7 @@ uv run snulbug mcp proxy \
 Record with state, context, response metadata, or custom metadata:
 
 ```bash
-uv run snulbug mcp record policy.snulbug/policy.lua request.json \
+uv run snulbug mcp evidence record policy.snulbug/policy.lua request.json \
   --state state.json \
   --context context.json \
   --response response.json \
@@ -32,23 +32,36 @@ uv run snulbug mcp record policy.snulbug/policy.lua request.json \
 Replay the log against the recorded policy path:
 
 ```bash
-uv run snulbug mcp replay traces/session.jsonl
+uv run snulbug mcp evidence replay traces/session.jsonl
 ```
 
 Replay the same requests against a candidate policy:
 
 ```bash
-uv run snulbug mcp replay traces/session.jsonl --script candidate.lua
+uv run snulbug mcp evidence replay traces/session.jsonl --script candidate.lua
 ```
 
 The replay command exits with status `1` when any current decision differs from
 the recorded decision.
 
+Diff two policy files against request fixtures:
+
+```bash
+uv run snulbug mcp evidence diff active.lua draft.lua fixtures/
+```
+
+Use per-fixture state snapshots when reviewing stateful policies:
+
+```bash
+uv run snulbug mcp evidence diff active.lua draft.lua fixtures/ \
+  --state-snapshots snapshots/
+```
+
 Inspect a captured replay or audit log without a running proxy:
 
 ```bash
-uv run snulbug mcp inspect traces/session.jsonl
-uv run snulbug mcp inspect traces/audit.jsonl --kind audit
+uv run snulbug mcp evidence inspect traces/session.jsonl
+uv run snulbug mcp evidence inspect traces/audit.jsonl --kind audit
 ```
 
 The inspection report summarizes decisions, MCP methods, tools, targets, reason
@@ -58,7 +71,7 @@ events for notable findings.
 Write a Markdown session report:
 
 ```bash
-uv run snulbug mcp inspect traces/audit.jsonl \
+uv run snulbug mcp evidence inspect traces/audit.jsonl \
   --kind audit \
   --report-out traces/session-report.md
 ```
@@ -93,7 +106,7 @@ uv run snulbug mcp proxy \
 Write a redacted audit log while recording:
 
 ```bash
-uv run snulbug mcp record policy.snulbug/policy.lua request.json \
+uv run snulbug mcp evidence record policy.snulbug/policy.lua request.json \
   --out traces/session.jsonl \
   --audit-out traces/audit.jsonl
 ```
@@ -111,7 +124,7 @@ access key IDs.
 To write an exact replay record for local debugging, opt in explicitly:
 
 ```bash
-uv run snulbug mcp record policy.snulbug/policy.lua request.json \
+uv run snulbug mcp evidence record policy.snulbug/policy.lua request.json \
   --out traces/session.exact.jsonl \
   --no-redact
 ```

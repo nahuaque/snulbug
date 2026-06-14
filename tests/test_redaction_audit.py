@@ -275,6 +275,7 @@ def test_mcp_record_cli_redacts_record_and_audit_log_by_default(tmp_path, capsys
     status = simulator_main(
         [
             "mcp",
+            "evidence",
             "record",
             str(policy),
             str(request),
@@ -316,7 +317,7 @@ def test_mcp_record_cli_can_write_exact_record_when_explicitly_requested(tmp_pat
     )
 
     status = simulator_main(
-        ["mcp", "record", str(policy), str(request), "--out", str(record_log), "--no-redact", "--compact"]
+        ["mcp", "evidence", "record", str(policy), str(request), "--out", str(record_log), "--no-redact", "--compact"]
     )
 
     output = json.loads(capsys.readouterr().out)
@@ -351,7 +352,7 @@ def test_mcp_record_cli_can_redact_record_itself(tmp_path, capsys):
     )
 
     status = simulator_main(
-        ["mcp", "record", str(policy), str(request), "--out", str(record_log), "--redact", "--compact"]
+        ["mcp", "evidence", "record", str(policy), str(request), "--out", str(record_log), "--redact", "--compact"]
     )
 
     output = json.loads(capsys.readouterr().out)

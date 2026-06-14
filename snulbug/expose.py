@@ -219,7 +219,7 @@ def _proxy_command(config_path: str, *, decision_console: bool) -> str:
 
 
 def _inspect_command(audit_log: str, report_path: str) -> str:
-    return f"snulbug mcp inspect {shlex.quote(audit_log)} --kind audit --report-out {shlex.quote(report_path)}"
+    return f"snulbug mcp evidence inspect {shlex.quote(audit_log)} --kind audit --report-out {shlex.quote(report_path)}"
 
 
 def _steps(commands: Mapping[str, Any], *, report_path: str) -> list[dict[str, Any]]:

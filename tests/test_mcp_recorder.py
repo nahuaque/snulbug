@@ -51,9 +51,11 @@ def test_mcp_record_and_replay_cli(tmp_path, capsys):
         encoding="utf-8",
     )
 
-    record_status = simulator_main(["mcp", "record", str(policy), str(request), "--out", str(log), "--compact"])
+    record_status = simulator_main(
+        ["mcp", "evidence", "record", str(policy), str(request), "--out", str(log), "--compact"]
+    )
     record_output = json.loads(capsys.readouterr().out)
-    replay_status = simulator_main(["mcp", "replay", str(log), "--compact"])
+    replay_status = simulator_main(["mcp", "evidence", "replay", str(log), "--compact"])
     replay_output = json.loads(capsys.readouterr().out)
 
     assert record_status == 0
@@ -72,7 +74,7 @@ def test_mcp_replay_cli_returns_nonzero_for_drift(tmp_path, capsys):
     log = tmp_path / "requests.jsonl"
     append_record(log, record_policy_request(old_policy, request))
 
-    status = simulator_main(["mcp", "replay", str(log), "--script", str(new_policy), "--compact"])
+    status = simulator_main(["mcp", "evidence", "replay", str(log), "--script", str(new_policy), "--compact"])
 
     output = json.loads(capsys.readouterr().out)
     assert status == 1

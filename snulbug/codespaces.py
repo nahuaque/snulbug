@@ -119,7 +119,7 @@ def prepare_codespace_attach(
         "logs": {"record_out": str(record_out), "audit_out": str(audit_out)},
         "commands": {
             "proxy": f"uv run snulbug mcp proxy --config {config}",
-            "inspect_audit": f"uv run snulbug mcp inspect {audit_out} --kind audit",
+            "inspect_audit": f"uv run snulbug mcp evidence inspect {audit_out} --kind audit",
         },
     }
 

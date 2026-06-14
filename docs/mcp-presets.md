@@ -58,8 +58,8 @@ uv run snulbug bundle test policy.snulbug
 Record and replay decisions while tuning the copied policy:
 
 ```bash
-uv run snulbug mcp record policy.snulbug/policy.lua request.json --out traces/session.jsonl
-uv run snulbug mcp replay traces/session.jsonl
+uv run snulbug mcp evidence record policy.snulbug/policy.lua request.json --out traces/session.jsonl
+uv run snulbug mcp evidence replay traces/session.jsonl
 ```
 
 Run the copied policy as a local reverse proxy:

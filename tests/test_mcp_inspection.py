@@ -135,7 +135,7 @@ def test_mcp_inspect_cli_outputs_compact_report(tmp_path, capsys):
         ),
     )
 
-    status = simulator_main(["mcp", "inspect", str(record_log), "--compact"])
+    status = simulator_main(["mcp", "evidence", "inspect", str(record_log), "--compact"])
 
     output = json.loads(capsys.readouterr().out)
     assert status == 0
@@ -161,7 +161,9 @@ def test_mcp_inspect_cli_writes_markdown_session_report(tmp_path, capsys):
         ),
     )
 
-    status = simulator_main(["mcp", "inspect", str(record_log), "--report-out", str(report_path), "--compact"])
+    status = simulator_main(
+        ["mcp", "evidence", "inspect", str(record_log), "--report-out", str(report_path), "--compact"]
+    )
 
     output = json.loads(capsys.readouterr().out)
     report = report_path.read_text(encoding="utf-8")
@@ -178,7 +180,7 @@ def test_mcp_inspect_cli_returns_nonzero_for_bad_log(tmp_path, capsys):
     log = tmp_path / "bad.jsonl"
     log.write_text("{}\n", encoding="utf-8")
 
-    status = simulator_main(["mcp", "inspect", str(log), "--compact"])
+    status = simulator_main(["mcp", "evidence", "inspect", str(log), "--compact"])
 
     output = json.loads(capsys.readouterr().out)
     assert status == 1

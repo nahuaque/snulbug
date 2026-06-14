@@ -415,8 +415,8 @@ tool or target, JSON-RPC id, action, and reason code.
 After the session, inspect the captured logs:
 
 ```bash
-uv run snulbug mcp inspect traces/session.jsonl
-uv run snulbug mcp inspect traces/audit.jsonl --kind audit
+uv run snulbug mcp evidence inspect traces/session.jsonl
+uv run snulbug mcp evidence inspect traces/audit.jsonl --kind audit
 ```
 
 Replay records are redacted by default. If you need exact replay for a local
