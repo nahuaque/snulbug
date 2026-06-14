@@ -480,6 +480,73 @@ def test_confirm_action_can_allow_once_and_record_audit(tmp_path):
     assert audit["decision"]["confirmation"]["reason_code"] == "confirm.approved_once"
 
 
+def test_confirmable_reject_can_allow_once_and_record_audit(tmp_path):
+    server, seen = start_upstream()
+    policy = write_confirmable_reject_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+
+    def allow_once(decision, request, scope):
+        assert decision["action"] == "reject"
+        assert decision["confirm"] is True
+        assert decision["remember_key"] == "tool:shell_exec"
+        assert request["path"] == "/mcp"
+        assert scope["path"] == "/mcp"
+        return {"approved": True, "mode": "once", "reason_code": "confirm.approved_once"}
+
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        event_sinks=audit_event_sinks(audit_log),
+        confirm_handler=allow_once,
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shell_exec"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    records = load_record_log(record_log)
+    audit = json.loads(audit_log.read_text(encoding="utf-8"))
+    assert sent[0]["status"] == 200
+    assert seen["count"] == 1
+    assert records[0]["result"]["action"] == "continue"
+    assert records[0]["result"]["decision"]["reason_code"] == "mcp.policy.tool_rejected"
+    assert records[0]["result"]["decision"]["confirmation"]["approved"] is True
+    assert records[0]["result"]["decision"]["confirmation"]["mode"] == "once"
+    assert audit["decision"]["allowed"] is True
+    assert audit["decision"]["confirmation"]["reason_code"] == "confirm.approved_once"
+
+
+def test_confirmable_reject_fails_closed_without_handler(tmp_path):
+    server, seen = start_upstream()
+    policy = write_confirmable_reject_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(f"http://127.0.0.1:{server.server_port}", policy, record_out=record_log)
+
+    try:
+        sent = run_asgi(
+            app,
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shell_exec"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    records = load_record_log(record_log)
+    assert sent[0]["status"] == 403
+    assert sent[1]["body"] == b"blocked by policy"
+    assert seen["count"] == 0
+    assert records[0]["result"]["action"] == "reject"
+    assert records[0]["result"]["decision"]["confirmation"]["approved"] is False
+    assert records[0]["result"]["decision"]["confirmation"]["reason_code"] == "confirm.unavailable"
+
+
 def test_confirm_broker_can_cache_session_approval(tmp_path):
     server, seen = start_upstream()
     policy = write_confirm_policy(tmp_path)
@@ -2203,6 +2270,34 @@ def write_confirm_policy(tmp_path):
               body = "confirmation denied",
               reason = "Shell-like tool requires approval",
               reason_code = "mcp.confirm.risky_tool",
+              context = { method = mcp.method(request), tool = tool }
+            }
+          end
+          return { action = "continue", reason = "request allowed", reason_code = "test.allowed" }
+        end
+        """,
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_confirmable_reject_policy(tmp_path):
+    path = tmp_path / "confirmable-reject-policy.lua"
+    path.write_text(
+        """
+        return function(request, context, state)
+          local tool = mcp.tool_name(request)
+          if tool == "shell_exec" then
+            return {
+              action = "reject",
+              confirm = true,
+              prompt = "Allow blocked shell_exec once?",
+              remember_key = "tool:" .. tool,
+              timeout_seconds = 30,
+              status = 403,
+              body = "blocked by policy",
+              reason = "Tool is outside the approved policy",
+              reason_code = "mcp.policy.tool_rejected",
               context = { method = mcp.method(request), tool = tool }
             }
           end

@@ -115,26 +115,15 @@ class LuaMiddleware:
                 shadow_state=self._shadow_state_for_request(),
             )
 
-        if action == "confirm":
-            confirmation = await self._confirm(decision, request, child_scope)
-            final_decision = _confirm_final_decision(decision, confirmation)
-            if self.config.trace:
-                _attach_trace_with_decision(
-                    child_scope,
-                    self.config.trace_scope_key,
-                    execution,
-                    final_decision,
-                    body_read=self.config.read_body,
-                    confirmation=confirmation,
-                )
-            if confirmation["approved"]:
-                _merge_context(child_scope, self.config.context_scope_key, final_decision.get("context"))
-                await self.app(child_scope, replay_receive, send)
-                return
-            status = int(final_decision.get("status", 403))
-            body_bytes = _body_bytes(final_decision.get("body", "confirmation denied"))
-            headers = _decision_headers(final_decision.get("headers"))
-            await _send_response(send, status=status, headers=headers, body=body_bytes)
+        if _confirmation_required(action, decision):
+            await self._handle_confirmed_decision(
+                decision,
+                request,
+                child_scope,
+                replay_receive,
+                send,
+                execution,
+            )
             return
 
         if action in {"continue", "set_context"}:
@@ -217,6 +206,35 @@ class LuaMiddleware:
         if isawaitable(result):
             result = await result
         return _normalize_confirmation_result(result)
+
+    async def _handle_confirmed_decision(
+        self,
+        decision: Mapping[str, Any],
+        request: Mapping[str, Any],
+        child_scope: Scope,
+        replay_receive: Receive,
+        send: Send,
+        execution: LuaDecisionTrace,
+    ) -> None:
+        confirmation = await self._confirm(decision, request, child_scope)
+        final_decision = _confirm_final_decision(decision, confirmation)
+        if self.config.trace:
+            _attach_trace_with_decision(
+                child_scope,
+                self.config.trace_scope_key,
+                execution,
+                final_decision,
+                body_read=self.config.read_body,
+                confirmation=confirmation,
+            )
+        if confirmation["approved"]:
+            _merge_context(child_scope, self.config.context_scope_key, final_decision.get("context"))
+            await self.app(child_scope, replay_receive, send)
+            return
+        status = int(final_decision.get("status", 403))
+        body_bytes = _body_bytes(final_decision.get("body", "confirmation denied"))
+        headers = _decision_headers(final_decision.get("headers"))
+        await _send_response(send, status=status, headers=headers, body=body_bytes)
 
     def _coerce_script(self, script: str | Path | CompiledLuaScript | ScriptLoader) -> ScriptLoader:
         if isinstance(script, CompiledLuaScript):
@@ -365,6 +383,14 @@ def _validate_action(decision: Mapping[str, Any]) -> DecisionAction:
             f"challenge, redirect, rate_limit, confirm; got {action!r}"
         )
     return action  # type: ignore[return-value]
+
+
+def _confirmation_required(action: DecisionAction, decision: Mapping[str, Any]) -> bool:
+    return action == "confirm" or (action == "reject" and _rejection_confirmation_requested(decision))
+
+
+def _rejection_confirmation_requested(decision: Mapping[str, Any]) -> bool:
+    return decision.get("confirm") is True
 
 
 def _merge_context(scope: Scope, key: str, context: Any) -> None:

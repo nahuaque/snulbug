@@ -460,6 +460,19 @@ The interactive prompt supports:
 - `a`: allow for this proxy session when `remember_key` is set
 - `d`: deny
 
+If a policy branch is conceptually a denial but should have a human override
+path, return `action = "reject"` with `confirm = true`. snulbug routes that
+through the same confirmation broker instead of a separate approval mechanism:
+
+```lua
+return decision.reject(403, "blocked by policy", {
+  confirm = true,
+  prompt = "Allow this blocked tool once?",
+  remember_key = "tool:" .. mcp.tool_name(request),
+  reason_code = "mcp.policy.tool_rejected"
+})
+```
+
 Timeouts, non-interactive stdin, and disabled confirmation all reject the
 request. Replay and audit records include the confirmation result.
 

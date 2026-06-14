@@ -250,7 +250,7 @@ Response-side policy:
 - maximum MCP response body size
 - optional blocking for instruction-like tool output
 - `tools/list` description and schema pinning to catch silent upstream changes
-- human confirmation for risky calls, with allow-once or session approval
+- human confirmation for risky or otherwise blocked calls, with allow-once or session approval
 
 Workflow:
 

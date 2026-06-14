@@ -99,9 +99,9 @@ return {
 
 ## confirm
 
-Ask an approval broker before continuing. In proxy mode, set `confirm = true`
-under `[mcp.proxy]` in `snulbug.toml`. Without an enabled broker, confirmation
-fails closed and the request is rejected.
+Ask the existing approval broker before continuing. In proxy mode, set
+`confirm = true` under `[mcp.proxy]` in `snulbug.toml`. Without an enabled
+broker, confirmation fails closed and the request is rejected.
 
 ```lua
 return {
@@ -118,3 +118,18 @@ return {
 
 The interactive broker supports allow once, allow for the current proxy session,
 or deny. Session approval requires `remember_key`.
+
+Policies that normally return a hard rejection can reuse the same broker by
+adding `confirm = true` to a `reject` decision. This does not create a separate
+approval mechanism: it is normalized through the same confirmation path, uses
+the same prompt choices, and records the same `decision.confirmation` audit
+fields.
+
+```lua
+return decision.reject(403, "blocked by policy", {
+  confirm = true,
+  prompt = "Allow this blocked tool once?",
+  remember_key = "tool:" .. mcp.tool_name(request),
+  reason_code = "mcp.policy.tool_rejected"
+})
+```

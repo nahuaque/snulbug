@@ -338,7 +338,7 @@ def _add_quickstart_args(parser: argparse.ArgumentParser) -> None:
         "--confirm",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="prompt before executing Lua confirm decisions",
+        help="prompt before executing Lua confirm decisions or confirmable reject decisions",
     )
     parser.add_argument("--max-body-bytes", type=int, default=65536)
     parser.add_argument("--response-max-bytes", type=int, default=262144)

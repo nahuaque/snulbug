@@ -81,13 +81,17 @@ Available builders:
 - `decision.set_context(context, options)`: merge context into the downstream ASGI scope.
 - `decision.respond(status, body, options)`: return a response directly.
 - `decision.reject(status, body, options)`: reject before reaching the upstream.
+  Set `options.confirm = true` to route the rejection through the same approval
+  broker used by `decision.confirm`.
 - `decision.challenge(options)`: build an auth challenge.
 - `decision.redirect(location, options)`: build a redirect.
 - `decision.rate_limit(key, limit, window, options)`: invoke configured bounded policy state.
 - `decision.confirm(prompt, options)`: ask the live decision console for approval.
 
 `options` can include `reason`, `reason_code`, `context`, and `headers` where
-the underlying action supports them.
+the underlying action supports them. Confirmation options such as `prompt`,
+`remember_key`, and `timeout_seconds` are also available for `decision.confirm`
+and confirmable `decision.reject` results.
 
 ## Capability guards
 
