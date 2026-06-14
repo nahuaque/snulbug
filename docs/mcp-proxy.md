@@ -483,6 +483,13 @@ when present, and never forwards or logs raw caller tokens. `jwt_or_introspectio
 tries JWT first and falls back to introspection; `jwt_and_introspection` requires
 both a valid JWT and an active introspection response.
 
+OAuth audit metadata includes an `auth.runtime` summary with safe per-process
+counters for JWKS, issuer-metadata, and introspection caches. The same runtime
+summary tracks allowed/denied auth decisions, reason-code counts, JWKS refreshes
+after key rotation, issuer/JWKS/introspection fetch failures, and scope-denial
+counts by MCP selector such as `tools/call:git.status`. These counters never
+include bearer tokens or introspected token bodies.
+
 For public MCP shares, treat `mcp.auth.resource` and `mcp.auth.audience` as exact
 resource indicators: they should match the public MCP URL a client uses, such as
 `https://mcp.example.com/mcp`. If the same gateway is intentionally reachable

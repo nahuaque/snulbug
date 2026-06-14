@@ -34,6 +34,7 @@ from .leases import LeasePolicyConfig, enforce_mcp_lease_policy, mcp_lease_error
 from .manifests import load_manifest, verify_upstream_manifest
 from .mcp_auth import (
     OAuthResourceConfig,
+    auth_runtime_summary,
     evaluate_oauth_request,
     oauth_resource_metadata_url,
     protected_resource_metadata,
@@ -1679,6 +1680,7 @@ class OAuthResourceMiddleware:
         _ensure_scope_state(scope)
         decision = evaluate_oauth_request(scope, config=self.config, body=body)
         auth_metadata = dict(decision.metadata)
+        auth_metadata["runtime"] = auth_runtime_summary(self.config)
         if decision.allowed:
             auth_metadata["anti_passthrough"] = _anti_passthrough_metadata(scope, self.config)
         _set_proxy_metadata(scope, {"auth": auth_metadata})

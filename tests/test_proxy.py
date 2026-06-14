@@ -14,6 +14,7 @@ from typing import Any
 from urllib.parse import parse_qs
 
 import jwt
+import pytest
 
 from snulbug import (
     EVENT_RELOAD_FAILED,
@@ -467,10 +468,27 @@ def test_reverse_proxy_oauth_fetches_and_caches_remote_jwks(tmp_path):
 
     assert seen["count"] == 2
     assert jwks_server.request_count == 1  # type: ignore[attr-defined]
-    assert [record["metadata"]["auth"]["reason_code"] for record in load_record_log(record_log)] == [
+    jwks_url = f"http://127.0.0.1:{jwks_server.server_port}/jwks"
+    jwks_snapshot = auth_config.jwks_cache.snapshot()
+    assert jwks_snapshot["entries"] == 1
+    assert jwks_snapshot["totals"]["hits"] == 1
+    assert jwks_snapshot["totals"]["misses"] == 1
+    assert jwks_snapshot["totals"]["fetches"] == 1
+    assert jwks_snapshot["totals"]["failures"] == 0
+    assert jwks_snapshot["urls"][jwks_url]["key_count"] == 1
+    records = load_record_log(record_log)
+    assert [record["metadata"]["auth"]["reason_code"] for record in records] == [
         "oauth.allowed",
         "oauth.allowed",
     ]
+    runtime_jwks = records[-1]["metadata"]["auth"]["runtime"]["caches"]["jwks"]
+    assert runtime_jwks["entries"] == 1
+    assert runtime_jwks["hits"] == 1
+    assert runtime_jwks["misses"] == 1
+    assert runtime_jwks["fetches"] == 1
+    assert runtime_jwks["refreshes"] == 0
+    assert runtime_jwks["failures"] == 0
+    assert "last_fetch_at" in runtime_jwks
 
 
 def test_reverse_proxy_oauth_discovers_issuer_jwks_and_caches_metadata(tmp_path):
@@ -486,11 +504,12 @@ def test_reverse_proxy_oauth_discovers_issuer_jwks_and_caches_metadata(tmp_path)
     policy = write_oauth_context_policy(tmp_path)
     record_log = tmp_path / "records.jsonl"
     token = make_oauth_token(secret, scopes=["mcp:connect", "mcp:tools"], extra_claims={"iss": issuer})
+    auth_config = discovered_oauth_auth_config(jwks_server)
     app = create_proxy_application(
         f"http://127.0.0.1:{server.server_port}",
         policy,
         record_out=record_log,
-        auth_config=discovered_oauth_auth_config(jwks_server),
+        auth_config=auth_config,
     )
 
     try:
@@ -515,7 +534,51 @@ def test_reverse_proxy_oauth_discovers_issuer_jwks_and_caches_metadata(tmp_path)
     assert seen["count"] == 2
     assert jwks_server.metadata_count == 1  # type: ignore[attr-defined]
     assert jwks_server.request_count == 1  # type: ignore[attr-defined]
-    assert load_record_log(record_log)[0]["metadata"]["auth"]["issuer"] == issuer
+    issuer_url = f"{issuer}/.well-known/oauth-authorization-server"
+    issuer_snapshot = auth_config.issuer_metadata_cache.snapshot()
+    assert issuer_snapshot["entries"] == 1
+    assert issuer_snapshot["totals"]["hits"] == 1
+    assert issuer_snapshot["totals"]["misses"] == 1
+    assert issuer_snapshot["totals"]["fetches"] == 1
+    assert issuer_snapshot["totals"]["failures"] == 0
+    assert issuer_snapshot["urls"][issuer_url]["cached"] is True
+    records = load_record_log(record_log)
+    assert records[0]["metadata"]["auth"]["issuer"] == issuer
+    runtime_issuer = records[-1]["metadata"]["auth"]["runtime"]["caches"]["issuer_metadata"]
+    assert runtime_issuer["entries"] == 1
+    assert runtime_issuer["hits"] == 1
+    assert runtime_issuer["misses"] == 1
+    assert runtime_issuer["fetches"] == 1
+    assert runtime_issuer["refreshes"] == 0
+    assert runtime_issuer["failures"] == 0
+    assert "last_fetch_at" in runtime_issuer
+
+
+def test_remote_issuer_metadata_cache_records_fetch_failures():
+    metadata_server = ThreadingHTTPServer(("127.0.0.1", 0), FailingAuthMetadataHandler)
+    metadata_server.request_count = 0  # type: ignore[attr-defined]
+    metadata_thread = threading.Thread(target=metadata_server.serve_forever, daemon=True)
+    metadata_thread.start()
+    cache = RemoteIssuerMetadataCache()
+    url = f"http://127.0.0.1:{metadata_server.server_port}/.well-known/oauth-authorization-server"
+
+    try:
+        with pytest.raises(ValueError, match="HTTP 500"):
+            cache.get(url, ttl_seconds=30.0, timeout=2.0)
+    finally:
+        metadata_server.shutdown()
+        metadata_server.server_close()
+        metadata_thread.join(timeout=2)
+
+    snapshot = cache.snapshot()
+    assert metadata_server.request_count == 1  # type: ignore[attr-defined]
+    assert snapshot["entries"] == 0
+    assert snapshot["totals"]["misses"] == 1
+    assert snapshot["totals"]["fetches"] == 0
+    assert snapshot["totals"]["failures"] == 1
+    assert "HTTP 500" in snapshot["totals"]["last_error"]
+    assert snapshot["urls"][url]["cached"] is False
+    assert snapshot["urls"][url]["failures"] == 1
 
 
 def test_reverse_proxy_oauth_refreshes_remote_jwks_on_key_rotation(tmp_path):
@@ -571,7 +634,16 @@ def test_reverse_proxy_oauth_refreshes_remote_jwks_on_key_rotation(tmp_path):
 
     assert seen["count"] == 2
     assert jwks_server.request_count == 2  # type: ignore[attr-defined]
-    assert len(load_record_log(record_log)) == 2
+    jwks_snapshot = auth_config.jwks_cache.snapshot()
+    assert jwks_snapshot["entries"] == 1
+    assert jwks_snapshot["totals"]["hits"] == 1
+    assert jwks_snapshot["totals"]["misses"] == 2
+    assert jwks_snapshot["totals"]["fetches"] == 2
+    assert jwks_snapshot["totals"]["refreshes"] == 1
+    assert jwks_snapshot["totals"]["failures"] == 0
+    records = load_record_log(record_log)
+    assert len(records) == 2
+    assert records[-1]["metadata"]["auth"]["runtime"]["caches"]["jwks"]["refreshes"] == 1
 
 
 def test_reverse_proxy_oauth_introspects_and_caches_opaque_tokens(tmp_path):
@@ -593,11 +665,12 @@ def test_reverse_proxy_oauth_introspects_and_caches_opaque_tokens(tmp_path):
     introspection_thread.start()
     policy = write_oauth_context_policy(tmp_path)
     record_log = tmp_path / "records.jsonl"
+    auth_config = introspection_oauth_auth_config(introspection_server)
     app = create_proxy_application(
         f"http://127.0.0.1:{server.server_port}",
         policy,
         record_out=record_log,
-        auth_config=introspection_oauth_auth_config(introspection_server),
+        auth_config=auth_config,
     )
 
     try:
@@ -625,6 +698,13 @@ def test_reverse_proxy_oauth_introspects_and_caches_opaque_tokens(tmp_path):
     assert records[0]["metadata"]["auth"]["subject"] == "user-1"
     assert records[0]["metadata"]["auth"]["validation_method"] == "introspection"
     assert records[0]["metadata"]["auth"]["scopes"] == ["mcp:connect", "mcp:tools"]
+    introspection_snapshot = auth_config.introspection_cache.snapshot()
+    assert introspection_snapshot["entries"] == 1
+    assert introspection_snapshot["totals"]["hits"] == 1
+    assert introspection_snapshot["totals"]["misses"] == 1
+    assert introspection_snapshot["totals"]["fetches"] == 1
+    assert introspection_snapshot["totals"]["failures"] == 0
+    assert records[-1]["metadata"]["auth"]["runtime"]["caches"]["introspection"]["hits"] == 1
     assert "opaque-good" not in json.dumps(records)
 
 
@@ -1041,6 +1121,9 @@ def test_reverse_proxy_oauth_scope_map_blocks_unmapped_tool_before_lua_and_upstr
     assert scope_map["accepted_scopes"] == ["mcp:tool.git.status"]
     assert record["metadata"]["auth"]["scope_match"]["allowed"] is False
     assert record["metadata"]["auth"]["scope_match"]["reason_code"] == "oauth.scope_map_denied"
+    runtime_decisions = record["metadata"]["auth"]["runtime"]["decisions"]
+    assert runtime_decisions["reason_codes"]["oauth.scope_map_denied"] >= 1
+    assert runtime_decisions["scope_denials"]["tools/call:git.status"] >= 1
     assert audit["auth"]["scope_map"]["reason_code"] == "oauth.scope_map_denied"
     assert token not in json.dumps(record)
 
@@ -3501,6 +3584,20 @@ class JwksHandler(BaseHTTPRequestHandler):
         self.server.request_count += 1  # type: ignore[attr-defined]
         raw = json.dumps(self.server.jwks, sort_keys=True).encode("utf-8")  # type: ignore[attr-defined]
         self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+        return
+
+
+class FailingAuthMetadataHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802
+        self.server.request_count += 1  # type: ignore[attr-defined]
+        raw = b'{"error":"temporarily unavailable"}'
+        self.send_response(500)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(raw)))
         self.end_headers()

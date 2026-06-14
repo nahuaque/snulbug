@@ -34,9 +34,11 @@ MCP-specific authorization layer on top:
 - map tenant, group, subject, client ID, or custom claims to tool allowlists
 - strip caller OAuth tokens before upstream calls and inject separate upstream credentials
 - compose OAuth identity with task-scoped leases and Lua policy before a tool call is allowed
+- surface auth runtime counters for JWKS cache state, refreshes, issuer failures, and scope denials
 
 Audit records include the selected auth profile, scope/claim-policy decisions,
-lease state, and Lua decision without logging raw bearer tokens.
+lease state, auth runtime counters, and Lua decision without logging raw bearer
+tokens.
 
 ## Install
 

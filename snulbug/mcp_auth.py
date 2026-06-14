@@ -5,6 +5,7 @@ import json
 import os
 import threading
 import time
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -86,10 +87,12 @@ class RemoteJwksCache:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._entries: dict[str, dict[str, Any]] = {}
+        self._metrics: dict[str, dict[str, Any]] = {}
 
     def get(self, url: str, *, ttl_seconds: float, timeout: float, force_refresh: bool = False) -> dict[str, Any]:
         now = time.monotonic()
         with self._lock:
+            metrics = self._metrics.setdefault(url, _new_cache_metrics())
             entry = self._entries.get(url)
             if (
                 not force_refresh
@@ -97,13 +100,43 @@ class RemoteJwksCache:
                 and float(entry.get("expires_at", 0.0)) > now
                 and isinstance(entry.get("jwks"), Mapping)
             ):
+                metrics["hits"] += 1
                 return dict(entry["jwks"])
+            metrics["misses"] += 1
 
-        jwks = _fetch_remote_jwks(url, timeout=timeout)
+        try:
+            jwks = _fetch_remote_jwks(url, timeout=timeout)
+        except Exception as exc:
+            with self._lock:
+                _record_cache_failure(self._metrics.setdefault(url, _new_cache_metrics()), exc)
+            raise
         expires_at = now + max(0.0, float(ttl_seconds))
         with self._lock:
             self._entries[url] = {"jwks": dict(jwks), "expires_at": expires_at, "fetched_at": now}
+            metrics = self._metrics.setdefault(url, _new_cache_metrics())
+            _record_cache_fetch(metrics, force_refresh=force_refresh)
         return jwks
+
+    def snapshot(self) -> dict[str, Any]:
+        now = time.monotonic()
+        with self._lock:
+            urls: dict[str, Any] = {}
+            for url in sorted({*self._entries, *self._metrics}):
+                entry = self._entries.get(url, {})
+                jwks = entry.get("jwks")
+                keys = jwks.get("keys") if isinstance(jwks, Mapping) else []
+                key_count = len(keys) if isinstance(keys, Sequence) and not isinstance(keys, str | bytes) else 0
+                urls[url] = _cache_entry_snapshot(
+                    self._metrics.get(url, _new_cache_metrics()),
+                    entry=entry,
+                    now=now,
+                    extra={"key_count": key_count},
+                )
+            return {
+                "entries": len(self._entries),
+                "totals": _cache_totals(self._metrics.values()),
+                "urls": urls,
+            }
 
 
 class RemoteIssuerMetadataCache:
@@ -112,10 +145,12 @@ class RemoteIssuerMetadataCache:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._entries: dict[str, dict[str, Any]] = {}
+        self._metrics: dict[str, dict[str, Any]] = {}
 
     def get(self, url: str, *, ttl_seconds: float, timeout: float, force_refresh: bool = False) -> dict[str, Any]:
         now = time.monotonic()
         with self._lock:
+            metrics = self._metrics.setdefault(url, _new_cache_metrics())
             entry = self._entries.get(url)
             if (
                 not force_refresh
@@ -123,13 +158,37 @@ class RemoteIssuerMetadataCache:
                 and float(entry.get("expires_at", 0.0)) > now
                 and isinstance(entry.get("metadata"), Mapping)
             ):
+                metrics["hits"] += 1
                 return dict(entry["metadata"])
+            metrics["misses"] += 1
 
-        metadata = _fetch_remote_issuer_metadata(url, timeout=timeout)
+        try:
+            metadata = _fetch_remote_issuer_metadata(url, timeout=timeout)
+        except Exception as exc:
+            with self._lock:
+                _record_cache_failure(self._metrics.setdefault(url, _new_cache_metrics()), exc)
+            raise
         expires_at = now + max(0.0, float(ttl_seconds))
         with self._lock:
             self._entries[url] = {"metadata": dict(metadata), "expires_at": expires_at, "fetched_at": now}
+            metrics = self._metrics.setdefault(url, _new_cache_metrics())
+            _record_cache_fetch(metrics, force_refresh=force_refresh)
         return metadata
+
+    def snapshot(self) -> dict[str, Any]:
+        now = time.monotonic()
+        with self._lock:
+            urls = {
+                url: _cache_entry_snapshot(self._metrics.get(url, _new_cache_metrics()), entry=entry, now=now)
+                for url, entry in sorted(self._entries.items())
+            }
+            for url in sorted(set(self._metrics) - set(urls)):
+                urls[url] = _cache_entry_snapshot(self._metrics[url], entry={}, now=now)
+            return {
+                "entries": len(self._entries),
+                "totals": _cache_totals(self._metrics.values()),
+                "urls": urls,
+            }
 
 
 class TokenIntrospectionCache:
@@ -138,6 +197,7 @@ class TokenIntrospectionCache:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._entries: dict[str, dict[str, Any]] = {}
+        self._metrics = _new_cache_metrics()
 
     def get(self, token: str, *, config: OAuthResourceConfig, force_refresh: bool = False) -> dict[str, Any]:
         key = _token_cache_key(token)
@@ -150,22 +210,223 @@ class TokenIntrospectionCache:
                 and float(entry.get("expires_at", 0.0)) > now
                 and isinstance(entry.get("response"), Mapping)
             ):
+                self._metrics["hits"] += 1
                 return dict(entry["response"])
+            self._metrics["misses"] += 1
 
-        response = _fetch_token_introspection(token, config=config)
+        try:
+            response = _fetch_token_introspection(token, config=config)
+        except Exception as exc:
+            with self._lock:
+                _record_cache_failure(self._metrics, exc)
+            raise
         expires_at = _introspection_cache_expiry(response, now=now, ttl_seconds=config.introspection_cache_seconds)
         with self._lock:
             self._entries[key] = {"response": dict(response), "expires_at": expires_at, "fetched_at": now}
+            _record_cache_fetch(self._metrics, force_refresh=force_refresh)
         return response
+
+    def snapshot(self) -> dict[str, Any]:
+        now = time.monotonic()
+        with self._lock:
+            expires_in = [
+                max(0.0, float(entry.get("expires_at", 0.0)) - now)
+                for entry in self._entries.values()
+                if isinstance(entry, Mapping)
+            ]
+            result = {
+                "entries": len(self._entries),
+                "totals": _cache_metrics_snapshot(self._metrics),
+            }
+            if expires_in:
+                result["min_expires_in_seconds"] = round(min(expires_in), 3)
+                result["max_expires_in_seconds"] = round(max(expires_in), 3)
+            return result
+
+
+class AuthRuntimeDecisionStats:
+    """Per-process OAuth decision counters for live diagnostics."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._totals = Counter()
+        self._reason_codes = Counter()
+        self._scope_denials = Counter()
+
+    def record(self, metadata: Mapping[str, Any]) -> None:
+        reason_code = str(metadata.get("reason_code") or "unknown")
+        allowed = metadata.get("allowed") is True
+        scope_denial_key = _scope_denial_key(metadata)
+        with self._lock:
+            self._totals["total"] += 1
+            self._totals["allowed" if allowed else "denied"] += 1
+            self._reason_codes[reason_code] += 1
+            if scope_denial_key:
+                self._scope_denials[scope_denial_key] += 1
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                **dict(self._totals),
+                "reason_codes": dict(sorted(self._reason_codes.items())),
+                "scope_denials": dict(sorted(self._scope_denials.items())),
+            }
 
 
 class _RemoteJwksRetry(ValueError):
     pass
 
 
+def _new_cache_metrics() -> dict[str, Any]:
+    return {
+        "hits": 0,
+        "misses": 0,
+        "fetches": 0,
+        "refreshes": 0,
+        "failures": 0,
+        "last_fetch_at": None,
+        "last_refresh_at": None,
+        "last_failure_at": None,
+        "last_error": None,
+    }
+
+
+def _record_cache_fetch(metrics: dict[str, Any], *, force_refresh: bool) -> None:
+    now = time.time()
+    metrics["fetches"] = int(metrics.get("fetches") or 0) + 1
+    metrics["last_fetch_at"] = now
+    metrics["last_error"] = None
+    if force_refresh:
+        metrics["refreshes"] = int(metrics.get("refreshes") or 0) + 1
+        metrics["last_refresh_at"] = now
+
+
+def _record_cache_failure(metrics: dict[str, Any], exc: Exception) -> None:
+    metrics["failures"] = int(metrics.get("failures") or 0) + 1
+    metrics["last_failure_at"] = time.time()
+    metrics["last_error"] = f"{type(exc).__name__}: {exc}"[:500]
+
+
+def _cache_entry_snapshot(
+    metrics: Mapping[str, Any],
+    *,
+    entry: Mapping[str, Any],
+    now: float,
+    extra: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    snapshot = _cache_metrics_snapshot(metrics)
+    if entry:
+        snapshot["cached"] = True
+        snapshot["expires_in_seconds"] = round(max(0.0, float(entry.get("expires_at", 0.0)) - now), 3)
+        if entry.get("fetched_at") is not None:
+            snapshot["age_seconds"] = round(max(0.0, now - float(entry.get("fetched_at", 0.0))), 3)
+    else:
+        snapshot["cached"] = False
+    if extra:
+        snapshot.update(dict(extra))
+    return snapshot
+
+
+def _cache_metrics_snapshot(metrics: Mapping[str, Any]) -> dict[str, Any]:
+    snapshot = {key: int(metrics.get(key) or 0) for key in ("hits", "misses", "fetches", "refreshes", "failures")}
+    for key in ("last_fetch_at", "last_refresh_at", "last_failure_at", "last_error"):
+        value = metrics.get(key)
+        if value not in (None, ""):
+            snapshot[key] = value
+    return snapshot
+
+
+def _cache_totals(metrics_values: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    totals = {key: 0 for key in ("hits", "misses", "fetches", "refreshes", "failures")}
+    latest: dict[str, Any] = {}
+    for metrics in metrics_values:
+        for key in totals:
+            totals[key] += int(metrics.get(key) or 0)
+        for key in ("last_fetch_at", "last_refresh_at", "last_failure_at"):
+            value = metrics.get(key)
+            if isinstance(value, int | float) and value > float(latest.get(key, 0.0) or 0.0):
+                latest[key] = value
+                if key == "last_failure_at" and metrics.get("last_error"):
+                    latest["last_error"] = metrics["last_error"]
+    return {**totals, **latest}
+
+
+def _scope_denial_key(metadata: Mapping[str, Any]) -> str | None:
+    scope_map = metadata.get("scope_map")
+    if not isinstance(scope_map, Mapping) or scope_map.get("allowed") is not False:
+        return None
+    target = scope_map.get("target")
+    if isinstance(target, Mapping):
+        if target.get("tool"):
+            return f"tools/call:{target['tool']}"
+        selectors = target.get("selectors")
+        if isinstance(selectors, Sequence) and not isinstance(selectors, str | bytes | bytearray) and selectors:
+            return str(selectors[0])
+        if target.get("method"):
+            return str(target["method"])
+        if target.get("reason"):
+            return str(target["reason"])
+    return str(scope_map.get("reason_code") or metadata.get("reason_code") or "unknown")
+
+
 _GLOBAL_REMOTE_JWKS_CACHE = RemoteJwksCache()
 _GLOBAL_ISSUER_METADATA_CACHE = RemoteIssuerMetadataCache()
 _GLOBAL_TOKEN_INTROSPECTION_CACHE = TokenIntrospectionCache()
+_GLOBAL_AUTH_DECISION_STATS = AuthRuntimeDecisionStats()
+
+
+def auth_runtime_snapshot(config: OAuthResourceConfig | None = None) -> dict[str, Any]:
+    """Return detailed per-process OAuth cache and decision counters."""
+
+    return {
+        "caches": {
+            "jwks": _auth_jwks_cache(config).snapshot(),
+            "issuer_metadata": _auth_issuer_metadata_cache(config).snapshot(),
+            "introspection": _auth_introspection_cache(config).snapshot(),
+        },
+        "decisions": _GLOBAL_AUTH_DECISION_STATS.snapshot(),
+    }
+
+
+def auth_runtime_summary(config: OAuthResourceConfig | None = None) -> dict[str, Any]:
+    """Return a compact OAuth runtime summary safe to attach to audit metadata."""
+
+    snapshot = auth_runtime_snapshot(config)
+    caches = snapshot["caches"]
+    return {
+        "caches": {
+            name: {
+                "entries": cache.get("entries", 0),
+                **dict(cache.get("totals") if isinstance(cache.get("totals"), Mapping) else {}),
+            }
+            for name, cache in caches.items()
+            if isinstance(cache, Mapping)
+        },
+        "decisions": snapshot["decisions"],
+    }
+
+
+def _recorded_auth_decision(decision: OAuthDecision) -> OAuthDecision:
+    _GLOBAL_AUTH_DECISION_STATS.record(decision.metadata)
+    return decision
+
+
+def _auth_jwks_cache(config: OAuthResourceConfig | None) -> RemoteJwksCache:
+    if config is not None and isinstance(config.jwks_cache, RemoteJwksCache):
+        return config.jwks_cache
+    return _GLOBAL_REMOTE_JWKS_CACHE
+
+
+def _auth_issuer_metadata_cache(config: OAuthResourceConfig | None) -> RemoteIssuerMetadataCache:
+    if config is not None and isinstance(config.issuer_metadata_cache, RemoteIssuerMetadataCache):
+        return config.issuer_metadata_cache
+    return _GLOBAL_ISSUER_METADATA_CACHE
+
+
+def _auth_introspection_cache(config: OAuthResourceConfig | None) -> TokenIntrospectionCache:
+    if config is not None and isinstance(config.introspection_cache, TokenIntrospectionCache):
+        return config.introspection_cache
+    return _GLOBAL_TOKEN_INTROSPECTION_CACHE
 
 
 def protected_resource_metadata(config: OAuthResourceConfig) -> dict[str, Any]:
@@ -234,10 +495,10 @@ def evaluate_oauth_request(
         )
     token = _bearer_token(scope.get("headers", []))
     if not token:
-        return _reject(config, reason_code="oauth.missing_token", error="invalid_token")
+        return _recorded_auth_decision(_reject(config, reason_code="oauth.missing_token", error="invalid_token"))
     if config.profiles:
-        return _evaluate_oauth_profiles(token, parent_config=config, body=body)
-    return _evaluate_oauth_token(token, config=config, challenge_config=config, body=body)
+        return _recorded_auth_decision(_evaluate_oauth_profiles(token, parent_config=config, body=body))
+    return _recorded_auth_decision(_evaluate_oauth_token(token, config=config, challenge_config=config, body=body))
 
 
 def _evaluate_oauth_profiles(
