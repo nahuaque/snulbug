@@ -218,6 +218,9 @@ def run_mcp_auth_lab(
         output / "leases.json",
         task="Inspect git status for the auth lab",
         allow_tools=["git.status"],
+        allow_subjects=["user-1"],
+        allow_tenants=["tenant-a"],
+        allow_groups=["platform-dev"],
         ttl="30m",
         max_calls=5,
     )

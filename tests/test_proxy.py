@@ -1308,6 +1308,7 @@ def test_reverse_proxy_oauth_scope_and_task_lease_compose_for_tool_call(tmp_path
         lease_file,
         task="Inspect git status",
         allow_tools=["git.status"],
+        allow_subjects=["user-1"],
         ttl="30m",
         token="sbl_test-token",
     )
@@ -1352,9 +1353,12 @@ def test_reverse_proxy_oauth_scope_and_task_lease_compose_for_tool_call(tmp_path
     assert record["metadata"]["auth"]["subject"] == "user-1"
     assert record["metadata"]["auth"]["scope_map"]["matched_scope"] == "mcp:tool.git.status"
     assert record["metadata"]["lease_preview"]["allowed"] is True
+    assert record["metadata"]["lease_preview"]["auth_bound"] is True
+    assert record["metadata"]["lease_preview"]["auth"]["subject"] == "user-1"
     assert record["metadata"]["lease_preview"]["preview"] is True
     assert record["metadata"]["lease"]["allowed"] is True
     assert record["metadata"]["lease"]["id"] == lease["lease"]["id"]
+    assert record["metadata"]["lease"]["auth_bound"] is True
     assert record["metadata"]["access"]["allowed"] is True
     assert record["metadata"]["access"]["reason_code"] == "access.oauth_scope_lease_lua_allowed"
     assert record["metadata"]["access"]["auth"]["subject"] == "user-1"
@@ -1364,6 +1368,64 @@ def test_reverse_proxy_oauth_scope_and_task_lease_compose_for_tool_call(tmp_path
     assert audit["access"]["reason_code"] == "access.oauth_scope_lease_lua_allowed"
     assert audit["metadata"]["lease"]["allowed"] is True
     assert leases["leases"][0]["use_count"] == 1
+    assert token not in json.dumps(record)
+
+
+def test_reverse_proxy_auth_bound_task_lease_blocks_wrong_subject_before_upstream(tmp_path):
+    server, seen = start_upstream()
+    lease_file = tmp_path / "leases.json"
+    lease = create_lease(
+        lease_file,
+        task="Inspect git status",
+        allow_tools=["git.status"],
+        allow_subjects=["user-1"],
+        ttl="30m",
+        token="sbl_test-token",
+    )
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    token = make_oauth_token(secret, scopes=["mcp:connect", "mcp:tool.git.status"], subject="user-2")
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        lease_file=lease_file,
+        lease_required=True,
+        auth_config=oauth_auth_config(jwks_path, scope_map=oauth_scope_map()),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {token}".encode("ascii")),
+                (b"x-snulbug-lease", b"sbl_test-token"),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"git.status"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    record = load_record_log(record_log)[0]
+    leases = list_leases(lease_file)
+    assert sent[0]["status"] == 200
+    assert payload["error"]["code"] == -32000
+    assert "lease.subject_not_allowed" in payload["error"]["message"]
+    assert seen["count"] == 0
+    assert record["metadata"]["auth"]["subject"] == "user-2"
+    assert record["metadata"]["lease_preview"]["reason_code"] == "lease.subject_not_allowed"
+    assert record["metadata"]["lease_preview"]["auth_bound"] is True
+    assert record["metadata"]["lease"]["reason_code"] == "lease.subject_not_allowed"
+    assert record["metadata"]["lease"]["auth_subject"] == "user-2"
+    assert record["metadata"]["access"]["allowed"] is False
+    assert record["metadata"]["access"]["reason_code"] == "lease.subject_not_allowed"
+    assert record["metadata"]["access"]["lease"]["id"] == lease["lease"]["id"]
+    assert leases["leases"][0]["use_count"] == 0
     assert token not in json.dumps(record)
 
 

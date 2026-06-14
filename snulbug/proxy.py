@@ -2453,6 +2453,14 @@ def _lease_context_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
             "path": metadata.get("path"),
             "host": metadata.get("host"),
             "command": metadata.get("command"),
+            "auth_bound": metadata.get("auth_bound"),
+            "auth": metadata.get("auth"),
+            "auth_subject": metadata.get("auth_subject"),
+            "auth_issuer": metadata.get("auth_issuer"),
+            "auth_tenant": metadata.get("auth_tenant"),
+            "auth_client_id": metadata.get("auth_client_id"),
+            "auth_groups": metadata.get("auth_groups"),
+            "auth_profile_id": metadata.get("auth_profile_id"),
             "preview": metadata.get("consume") is False,
         }
     )
@@ -2555,6 +2563,8 @@ def _composed_access_metadata(scope: Scope, *, lease: Mapping[str, Any] | None =
                     "id": lease_metadata.get("id"),
                     "task": lease_metadata.get("task"),
                     "tool": lease_metadata.get("tool"),
+                    "auth_bound": lease_metadata.get("auth_bound"),
+                    "auth": lease_metadata.get("auth"),
                     "reason_code": lease_metadata.get("reason_code"),
                 }
             ),

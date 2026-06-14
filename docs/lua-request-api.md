@@ -249,9 +249,21 @@ Available helpers:
 - `lease.id()`: return the matched lease id.
 - `lease.task()`: return the matched lease task label.
 - `lease.reason_code()`: return the lease denial reason, such as
-  `lease.missing` or `lease.path_not_allowed`.
+  `lease.missing`, `lease.path_not_allowed`, or
+  `lease.subject_not_allowed`.
 - `lease.require(options)`: return `nil` when no lease is needed or the active
   lease covers the request, otherwise a `decision.reject`.
+
+For auth-bound leases, `lease.info()` / `context.lease` also includes:
+
+- `auth_bound`: true when the matched lease has OAuth identity constraints.
+- `auth`: sanitized OAuth fields used for the binding check, such as
+  `subject`, `issuer`, `tenant`, `client_id`, `groups`, and `profile_id`.
+
+Auth-bound lease denials use reason codes such as `lease.auth_missing`,
+`lease.subject_not_allowed`, `lease.issuer_not_allowed`,
+`lease.tenant_not_allowed`, `lease.client_id_not_allowed`,
+`lease.group_not_allowed`, and `lease.auth_profile_not_allowed`.
 
 For public shares, the intended composition is: valid OAuth subject, required
 MCP scopes, active snulbug task lease, and Lua policy approval.

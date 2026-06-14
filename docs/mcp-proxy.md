@@ -598,8 +598,10 @@ this first adapter.
 
 Leases give a client temporary MCP capabilities for one named task. A lease can
 allow exact tools, path prefixes, URL hosts, command names, and a maximum number
-of `tools/call` uses. The lease file stores token hashes only; the plaintext
-token is shown once when the lease is created.
+of `tools/call` uses. In OAuth protected-resource mode, a lease can also be
+bound to sanitized identity claims such as subject, issuer, tenant, client ID,
+group, or snulbug auth profile. The lease file stores token hashes only; the
+plaintext token is shown once when the lease is created.
 
 Create a lease:
 
@@ -609,6 +611,9 @@ snulbug mcp share lease create \
   --task "Read README before editing docs" \
   --allow-tool safe_read_file \
   --allow-path README.md \
+  --allow-subject user-1 \
+  --allow-tenant tenant-a \
+  --allow-group platform-dev \
   --ttl 30m \
   --max-calls 5
 ```
@@ -616,6 +621,16 @@ snulbug mcp share lease create \
 Send the returned `x-snulbug-lease` header with MCP requests. The proxy hot-loads
 the JSON file on each call, so new leases and revocations do not require a proxy
 restart.
+
+Auth binding flags are optional. When any are present, the current OAuth context
+must match every configured dimension before the lease covers the request. Use:
+
+- `--allow-subject` for JWT `sub`
+- `--allow-issuer` for JWT `iss`
+- `--allow-tenant` for `tenant` or `tid`
+- `--allow-client-id` for `client_id` or `azp`
+- `--allow-group` for one required group membership
+- `--allow-auth-profile` for a matched `[[mcp.auth.issuers]]` profile id
 
 Require leases for every MCP tool call:
 
@@ -629,7 +644,9 @@ lease_header = "x-snulbug-lease"
 When a lease file is configured, Lua receives a non-consuming preview as
 `context.lease` and can use helpers such as `lease.require()`, `lease.id()`, and
 `lease.task()`. The proxy still performs the final lease check and only consumes
-a lease use when the request reaches the upstream.
+a lease use when the request reaches the upstream. For auth-bound leases,
+`context.lease.auth_bound` is true and `context.lease.auth` contains the matched
+sanitized OAuth identity fields.
 
 Useful operations:
 

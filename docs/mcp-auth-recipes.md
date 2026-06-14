@@ -131,8 +131,9 @@ snulbug leases and Lua policy enabled for task-specific bounds after Access
 succeeds.
 
 GitHub OIDC should be treated as workload identity, not user OAuth. Require
-`lease_required = true` and add Lua checks for the exact workflow subject when
-the share is sensitive.
+`lease_required = true`, bind the task lease to the exact workflow subject or
+repository claims where possible, and keep Lua checks for any workflow-specific
+rules that do not fit the lease fields.
 
 ## Keycloak Compose Demo
 

@@ -14,7 +14,8 @@ Use these controls:
 - `state_limits` for bounded state operations
 - Redis or another shared store for multi-node state
 - redacted audit logs for local-dev MCP gateway visibility
-- task-scoped leases for temporary tool/path grants
+- task-scoped leases for temporary tool/path grants, with optional OAuth
+  subject, issuer, tenant, client ID, group, or auth-profile binding
 - MCP `tools/call` argument validation against cached `inputSchema`
 - response caps and response secret redaction for MCP tool/resource/prompt
   results
@@ -57,10 +58,11 @@ required claims, scope maps, and claim policies separated per profile.
 
 OAuth can be composed with snulbug task leases. OAuth answers who the caller is
 and which MCP scopes they hold; leases answer which temporary task capability is
-currently active. For public shares, the recommended high-assurance path is:
-valid OAuth subject, required MCP scopes, active task lease, and Lua policy
-approval. Audit events expose this as `metadata.access` without logging raw
-tokens.
+currently active. Auth-bound leases can require that the same sanitized OAuth
+context matches the lease before a copied lease token is useful. For public
+shares, the recommended high-assurance path is: valid OAuth subject, required
+MCP scopes, auth-bound active task lease, and Lua policy approval. Audit events
+expose this as `metadata.access` without logging raw tokens.
 
 Lua policies can now express identity fences directly with helpers such as
 `auth.require_subject`, `auth.require_tenant`, and `auth.require_group`. Use

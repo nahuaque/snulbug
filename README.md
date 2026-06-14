@@ -15,7 +15,8 @@ It gives you a tight loop for agent-tool safety:
 - record redacted replay and audit logs
 - learn a least-privilege policy from observed traffic
 - amend blocked requests into reviewable candidate bundles
-- use task-scoped leases for temporary tool/path grants
+- use task-scoped leases for temporary tool/path grants, optionally bound to
+  OAuth subject, tenant, client, group, issuer, or auth profile
 - turn OAuth identity into MCP-specific tool permissions
 - pin facade upstream identity with signed manifests
 
@@ -250,13 +251,16 @@ uv run snulbug mcp share lease create \
   --task "Read project docs only" \
   --allow-tool safe_read_file \
   --allow-path README.md \
+  --allow-subject user-1 \
   --ttl 30m
 ```
 
 Send the returned `x-snulbug-lease` header with MCP requests. Set
 `lease_required = true` in `snulbug.toml` when every `tools/call` must carry an
 active lease. OAuth-protected shares can require both a valid scoped OAuth token
-and an active task lease before Lua allows the tool call.
+and an active task lease before Lua allows the tool call. If a lease includes
+auth binding flags, the current sanitized OAuth context must match those bounds
+too; a copied lease token alone is not enough.
 
 After a session, inspect the logs:
 
@@ -323,7 +327,7 @@ Workflow:
 - OAuth scope-to-MCP method/tool mapping for least-privilege public shares
 - OAuth resource/audience drift checks for tunnel-safe public shares
 - generated auth setup flows for Keycloak, Auth0, Okta, Entra, Cloudflare Access, and GitHub OIDC
-- composable OAuth + task lease + Lua policy access decisions
+- composable OAuth + auth-bound task lease + Lua policy access decisions
 - anti-passthrough credential brokering so caller OAuth tokens stop at snulbug
 - learned least-privilege bundles from observed traffic
 - candidate amendments for blocked legitimate requests

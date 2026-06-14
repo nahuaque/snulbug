@@ -496,6 +496,12 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                     allow_paths=args.allow_path,
                     allow_hosts=args.allow_host,
                     allow_commands=args.allow_command,
+                    allow_subjects=args.allow_subject,
+                    allow_issuers=args.allow_issuer,
+                    allow_tenants=args.allow_tenant,
+                    allow_client_ids=args.allow_client_id,
+                    allow_groups=args.allow_group,
+                    allow_auth_profiles=args.allow_auth_profile,
                     ttl=args.ttl,
                     max_calls=args.max_calls,
                 )
@@ -976,6 +982,17 @@ def _add_share_lease_args(parser: argparse.ArgumentParser) -> None:
     add_allow_path_arg(lease_create, help="allowed path or path prefix")
     lease_create.add_argument("--allow-host", action="append", default=[], help="allowed URL host")
     lease_create.add_argument("--allow-command", action="append", default=[], help="allowed command name")
+    lease_create.add_argument("--allow-subject", action="append", default=[], help="allowed OAuth subject claim")
+    lease_create.add_argument("--allow-issuer", action="append", default=[], help="allowed OAuth issuer claim")
+    lease_create.add_argument("--allow-tenant", action="append", default=[], help="allowed OAuth tenant claim")
+    lease_create.add_argument("--allow-client-id", action="append", default=[], help="allowed OAuth client id claim")
+    lease_create.add_argument("--allow-group", action="append", default=[], help="allowed OAuth group claim")
+    lease_create.add_argument(
+        "--allow-auth-profile",
+        action="append",
+        default=[],
+        help="allowed snulbug auth issuer profile id",
+    )
     lease_create.add_argument("--ttl", default="1h", help="lease TTL, such as 30m, 2h, or 1d")
     lease_create.add_argument("--max-calls", type=int, help="maximum number of allowed tools/call uses")
     add_compact_arg(lease_create)

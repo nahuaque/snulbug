@@ -396,13 +396,13 @@ def _github_oidc_recipe(
         "assumptions": [
             "A GitHub Actions workflow has `id-token: write` permission.",
             "The workflow requests an ID token with the MCP public URL as the audience.",
-            "Lua policy or leases constrain the repository/ref/job that can use the share.",
+            "Auth-bound leases or Lua policy constrain the repository/ref/job that can use the share.",
         ],
         "provider_steps": [
             "In the workflow, grant `permissions: id-token: write` for the job that needs MCP access.",
             f"Request an OIDC token with audience `{recipe_audience}`.",
             "Pass the token to the MCP client as `Authorization: Bearer <token>`.",
-            "Add a snulbug lease for the workflow task and require the lease header for tool calls.",
+            "Add an auth-bound snulbug lease for the workflow task and require the lease header for tool calls.",
         ],
         "client_request": {
             "issuer": recipe_issuer,
@@ -417,7 +417,7 @@ def _github_oidc_recipe(
         "commands": _auth_recipe_commands(public_url),
         "notes": [
             "This is not an OAuth access-token flow with MCP scopes.",
-            "Use `context.auth.subject` or `auth.require_subject(...)` for exact workflow subject fences.",
+            "Bind the task lease to the exact workflow subject where possible; use Lua for richer workflow fences.",
             "Keep `lease_required = true` so a valid GitHub OIDC token is not enough by itself.",
         ],
         "docs": [PROVIDER_DOCS["github-oidc"]],

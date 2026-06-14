@@ -50,6 +50,12 @@ def create_lease(
     allow_paths: Sequence[str] = (),
     allow_hosts: Sequence[str] = (),
     allow_commands: Sequence[str] = (),
+    allow_subjects: Sequence[str] = (),
+    allow_issuers: Sequence[str] = (),
+    allow_tenants: Sequence[str] = (),
+    allow_client_ids: Sequence[str] = (),
+    allow_groups: Sequence[str] = (),
+    allow_auth_profiles: Sequence[str] = (),
     ttl: str | int | float = "1h",
     max_calls: int | None = None,
     token: str | None = None,
@@ -76,6 +82,12 @@ def create_lease(
         "allow_paths": _dedupe(allow_paths),
         "allow_hosts": _dedupe(host.lower() for host in allow_hosts),
         "allow_commands": _dedupe(allow_commands),
+        "allow_subjects": _dedupe(allow_subjects),
+        "allow_issuers": _dedupe(allow_issuers),
+        "allow_tenants": _dedupe(allow_tenants),
+        "allow_client_ids": _dedupe(allow_client_ids),
+        "allow_groups": _dedupe(allow_groups),
+        "allow_auth_profiles": _dedupe(allow_auth_profiles),
         "max_calls": max_calls,
         "use_count": 0,
         "last_used_at": None,
@@ -149,6 +161,7 @@ def _evaluate_mcp_lease_policy(
     consume: bool,
 ) -> tuple[bool, dict[str, Any]]:
     method = request.get("method") if isinstance(request, Mapping) else None
+    auth_context = _scope_auth_context(scope)
     metadata: dict[str, Any] = {
         "enabled": config.lease_file is not None,
         "required": config.required,
@@ -195,6 +208,7 @@ def _evaluate_mcp_lease_policy(
             "expires_at": lease.get("expires_at"),
             "use_count": int(lease.get("use_count") or 0),
             "max_calls": lease.get("max_calls"),
+            **_lease_auth_metadata(lease, auth_context),
         }
     )
     params = request.get("params")
@@ -203,7 +217,7 @@ def _evaluate_mcp_lease_policy(
     if isinstance(tool, str):
         metadata["tool"] = tool
 
-    denied_reason = _lease_denial_reason(lease, request)
+    denied_reason = _lease_denial_reason(lease, request, auth_context=auth_context)
     if denied_reason is not None:
         metadata.update(denied_reason)
         metadata["blocked"] = True
@@ -222,6 +236,7 @@ def preview_mcp_lease_coverage(
     path: str | Path,
     *,
     consumption: dict[str, int] | None = None,
+    auth_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Evaluate whether any active lease would cover a tools/call request without mutating lease state."""
 
@@ -259,7 +274,7 @@ def preview_mcp_lease_coverage(
         lease_id = str(lease.get("id", ""))
         extra_consumption = consumption.get(lease_id, 0) if consumption is not None else 0
         use_count = int(lease.get("use_count") or 0) + extra_consumption
-        denial = _lease_denial_reason(lease, request, use_count=use_count)
+        denial = _lease_denial_reason(lease, request, use_count=use_count, auth_context=auth_context)
         if denial is None:
             matches.append(_lease_view(lease))
         else:
@@ -308,6 +323,7 @@ def _lease_denial_reason(
     request: Mapping[str, Any],
     *,
     use_count: int | None = None,
+    auth_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     now = _now()
     revoked_at = lease.get("revoked_at")
@@ -321,6 +337,10 @@ def _lease_denial_reason(
     effective_use_count = int(lease.get("use_count") or 0) if use_count is None else use_count
     if isinstance(max_calls, int) and effective_use_count >= max_calls:
         return {"reason_code": "lease.max_calls_exceeded"}
+
+    auth_denial = _lease_auth_denial_reason(lease, auth_context)
+    if auth_denial is not None:
+        return auth_denial
 
     params = request.get("params")
     params = params if isinstance(params, Mapping) else {}
@@ -424,11 +444,140 @@ def _lease_view(lease: Mapping[str, Any]) -> dict[str, Any]:
         "allow_paths": list(lease.get("allow_paths", [])),
         "allow_hosts": list(lease.get("allow_hosts", [])),
         "allow_commands": list(lease.get("allow_commands", [])),
+        "allow_subjects": list(lease.get("allow_subjects", [])),
+        "allow_issuers": list(lease.get("allow_issuers", [])),
+        "allow_tenants": list(lease.get("allow_tenants", [])),
+        "allow_client_ids": list(lease.get("allow_client_ids", [])),
+        "allow_groups": list(lease.get("allow_groups", [])),
+        "allow_auth_profiles": list(lease.get("allow_auth_profiles", [])),
+        "auth_bound": _lease_auth_bound(lease),
         "max_calls": lease.get("max_calls"),
         "use_count": int(lease.get("use_count") or 0),
         "last_used_at": lease.get("last_used_at"),
         "last_tool": lease.get("last_tool"),
     }
+
+
+def _lease_auth_bound(lease: Mapping[str, Any]) -> bool:
+    return any(
+        _string_list(lease.get(field))
+        for field in (
+            "allow_subjects",
+            "allow_issuers",
+            "allow_tenants",
+            "allow_client_ids",
+            "allow_groups",
+            "allow_auth_profiles",
+        )
+    )
+
+
+def _lease_auth_metadata(lease: Mapping[str, Any], auth_context: Mapping[str, Any] | None) -> dict[str, Any]:
+    bound = _lease_auth_bound(lease)
+    metadata: dict[str, Any] = {"auth_bound": bound}
+    if not bound:
+        return metadata
+    auth = auth_context if isinstance(auth_context, Mapping) else {}
+    return {
+        **metadata,
+        "auth": _drop_empty(
+            {
+                "subject": auth.get("subject"),
+                "issuer": auth.get("issuer"),
+                "tenant": auth.get("tenant"),
+                "client_id": auth.get("client_id"),
+                "groups": _string_list(auth.get("groups")),
+                "profile_id": auth.get("profile_id"),
+            }
+        ),
+    }
+
+
+def _lease_auth_denial_reason(
+    lease: Mapping[str, Any],
+    auth_context: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not _lease_auth_bound(lease):
+        return None
+    auth = auth_context if isinstance(auth_context, Mapping) else {}
+    if not auth or auth.get("enabled") is not True:
+        return {"reason_code": "lease.auth_missing", "auth_bound": True}
+
+    subjects = _string_list(lease.get("allow_subjects"))
+    if subjects and str(auth.get("subject") or "") not in subjects:
+        return {
+            "reason_code": "lease.subject_not_allowed",
+            "auth_bound": True,
+            "auth_subject": auth.get("subject"),
+        }
+
+    issuers = _string_list(lease.get("allow_issuers"))
+    if issuers and str(auth.get("issuer") or "") not in issuers:
+        return {
+            "reason_code": "lease.issuer_not_allowed",
+            "auth_bound": True,
+            "auth_issuer": auth.get("issuer"),
+        }
+
+    tenants = _string_list(lease.get("allow_tenants"))
+    if tenants and str(auth.get("tenant") or "") not in tenants:
+        return {
+            "reason_code": "lease.tenant_not_allowed",
+            "auth_bound": True,
+            "auth_tenant": auth.get("tenant"),
+        }
+
+    client_ids = _string_list(lease.get("allow_client_ids"))
+    if client_ids and str(auth.get("client_id") or "") not in client_ids:
+        return {
+            "reason_code": "lease.client_id_not_allowed",
+            "auth_bound": True,
+            "auth_client_id": auth.get("client_id"),
+        }
+
+    groups = _string_list(lease.get("allow_groups"))
+    if groups:
+        auth_groups = set(_string_list(auth.get("groups")))
+        if not auth_groups.intersection(groups):
+            return {
+                "reason_code": "lease.group_not_allowed",
+                "auth_bound": True,
+                "auth_groups": sorted(auth_groups),
+            }
+
+    profiles = _string_list(lease.get("allow_auth_profiles"))
+    if profiles and str(auth.get("profile_id") or "") not in profiles:
+        return {
+            "reason_code": "lease.auth_profile_not_allowed",
+            "auth_bound": True,
+            "auth_profile_id": auth.get("profile_id"),
+        }
+
+    return None
+
+
+def _scope_auth_context(scope: Scope) -> Mapping[str, Any] | None:
+    state = scope.get("state")
+    proxy_metadata = state.get("snulbug_proxy") if isinstance(state, Mapping) else {}
+    if isinstance(proxy_metadata, Mapping) and isinstance(proxy_metadata.get("auth"), Mapping):
+        return proxy_metadata["auth"]
+
+    lua_context = scope.get("lua")
+    if isinstance(lua_context, Mapping) and isinstance(lua_context.get("auth"), Mapping):
+        return lua_context["auth"]
+    return None
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, Sequence) and not isinstance(value, bytes | bytearray):
+        return [str(item) for item in value if str(item)]
+    return []
+
+
+def _drop_empty(value: Mapping[str, Any]) -> dict[str, Any]:
+    return {str(key): item for key, item in value.items() if item not in (None, [], {}, "")}
 
 
 def _header_value(scope: Scope, name: str) -> str | None:

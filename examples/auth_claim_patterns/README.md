@@ -79,6 +79,6 @@ required_claims = {
 }
 ```
 
-In a real share, keep `lease_required = true` so a valid CI identity still needs
-a temporary snulbug task lease for the specific job.
-
+In a real share, keep `lease_required = true`, bind the temporary snulbug task
+lease to the CI subject where possible, and use required-claim or Lua checks for
+repository/ref-specific fences.

@@ -223,7 +223,12 @@ def _analyze_lease(records: Sequence[Mapping[str, Any]], *, lease_file: str | Pa
         if isinstance(tool, str):
             tools[tool] += 1
         request = _jsonrpc_request(record)
-        coverage = preview_mcp_lease_coverage(request, lease_path, consumption=coverage_consumption)
+        coverage = preview_mcp_lease_coverage(
+            request,
+            lease_path,
+            consumption=coverage_consumption,
+            auth_context=_event_auth_context(event),
+        )
         coverage_results.append({"line": line, **_event_summary(event), **_coverage_summary(coverage)})
         if coverage.get("covered"):
             covered += 1
@@ -248,6 +253,13 @@ def _analyze_lease(records: Sequence[Mapping[str, Any]], *, lease_file: str | Pa
         "risk_findings": _lease_risks(lease_list.get("leases", [])),
         "leases": lease_list.get("leases", []),
     }
+
+
+def _event_auth_context(event: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    auth = _mapping(event.get("auth"))
+    if not auth:
+        return None
+    return {"enabled": True, **auth}
 
 
 def _findings(policy: Mapping[str, Any], lease: Mapping[str, Any]) -> list[dict[str, Any]]:
