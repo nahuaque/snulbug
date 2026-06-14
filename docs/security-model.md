@@ -54,6 +54,11 @@ valid OAuth subject, required MCP scopes, active task lease, and Lua policy
 approval. Audit events expose this as `metadata.access` without logging raw
 tokens.
 
+Lua policies can now express identity fences directly with helpers such as
+`auth.require_subject`, `auth.require_tenant`, and `auth.require_group`. Use
+those for share-specific trust boundaries like "only this tenant's developers
+may use this remote container's write-capable tools."
+
 Do not reuse caller OAuth tokens as upstream credentials. The default OAuth
 proxy behavior strips the caller `Authorization` header before forwarding.
 Use `mcp.proxy.upstream_credential` or per-facade-upstream `auth` references to

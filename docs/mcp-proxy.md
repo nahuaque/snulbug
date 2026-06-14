@@ -314,6 +314,8 @@ With this enabled, snulbug:
 - exposes sanitized claims to Lua as `context.auth`
 - exposes Lua helpers such as `auth.has_scope("mcp:tool.git.status")` and
   `auth.can("tools/call:git.status")`
+- exposes identity policy helpers such as `auth.require_subject(...)`,
+  `auth.require_tenant(...)`, and `auth.require_group(...)`
 - composes with task-scoped leases, so a tool call can require both an OAuth
   subject/scope and an active snulbug lease
 - records redacted `auth` audit metadata
@@ -326,6 +328,20 @@ tool-specific selectors such as `tools/call:git.status`. A selector ending in
 `*` matches by prefix, for example `tools/call:filesystem.*`. MCP handshake
 messages such as `initialize`, `ping`, and `notifications/*` are allowed once
 `required_scopes` has passed, so you do not need to map protocol setup traffic.
+
+Use Lua identity helpers when authorization depends on who is using a share,
+not just what scope the token carries:
+
+```lua
+local denied = auth.require_tenant("tenant-a", {
+  reason_code = "oauth.tenant_required"
+}) or auth.require_group({ "platform-dev", "mcp-admins" }, {
+  reason_code = "oauth.group_required"
+})
+if denied then
+  return denied
+end
+```
 
 The JWT verifier uses `PyJWT[crypto]`. This mode does not perform dynamic
 client registration, token introspection, or authorization-code flows; use your

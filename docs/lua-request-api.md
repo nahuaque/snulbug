@@ -145,6 +145,20 @@ context produced by the proxy; it never exposes the raw bearer token.
 
 ```lua
 return function(request, context)
+  local wrong_tenant = auth.require_tenant("tenant-a", {
+    reason_code = "oauth.tenant_required"
+  })
+  if wrong_tenant then
+    return wrong_tenant
+  end
+
+  local missing_group = auth.require_group({ "platform-dev", "mcp-admins" }, {
+    reason_code = "oauth.platform_group_required"
+  })
+  if missing_group then
+    return missing_group
+  end
+
   local denied = auth.require("tools/call:git.status", {
     reason_code = "oauth.git_status_scope_required"
   })
@@ -154,6 +168,8 @@ return function(request, context)
 
   return decision.allow("mcp.allowed", {
     subject = auth.subject(),
+    tenant = auth.tenant(),
+    groups = auth.groups(),
     client_id = auth.client_id(),
   })
 end
@@ -164,10 +180,24 @@ Available helpers:
 - `auth.claims()`: return the sanitized `context.auth` table.
 - `auth.subject()`: return the JWT subject claim.
 - `auth.client_id()`: return `azp` or `client_id` when present.
+- `auth.email()`: return the token email claim when present.
+- `auth.tenant()`: return `tid` or `tenant` when present.
+- `auth.groups()`: return token groups as an array.
+- `auth.is_subject(subject_or_subjects)`: true when the token subject matches
+  a string or one entry in an array.
+- `auth.in_tenant(tenant_or_tenants)`: true when the token tenant matches a
+  string or one entry in an array.
+- `auth.has_group(group_or_groups)`: true when any required group is present.
 - `auth.scopes()`: return the token scopes as an array.
 - `auth.has_scope(scope)`: true when the token includes `scope`.
 - `auth.can(selector)`: true when the token has a scope mapped to an MCP
   selector such as `tools/list` or `tools/call:git.status`.
+- `auth.require_subject(subject_or_subjects, options)`: return `nil` when the
+  subject matches, otherwise a 403 reject.
+- `auth.require_tenant(tenant_or_tenants, options)`: return `nil` when the
+  tenant matches, otherwise a 403 reject.
+- `auth.require_group(group_or_groups, options)`: return `nil` when any group
+  matches, otherwise a 403 reject.
 - `auth.require_scope(scope, options)`: return `nil` when present, otherwise a
   `decision.challenge` with `error = "insufficient_scope"`.
 - `auth.require(selector, options)`: return `nil` when `auth.can(selector)` is
@@ -175,6 +205,10 @@ Available helpers:
 
 `auth.can` uses the same `[mcp.auth.scope_map]` selectors enforced by the
 proxy, so Lua policy and pre-Lua OAuth enforcement stay aligned.
+Use the subject, tenant, and group helpers for identity fences inside a share:
+for example, "only members of `platform-dev` in `tenant-a` may call this
+write-capable tool." These helpers read sanitized claims only; raw bearer
+tokens are never exposed to Lua.
 
 ## Task Lease Helpers
 

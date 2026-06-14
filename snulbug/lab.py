@@ -244,6 +244,11 @@ def run_mcp_auth_lab(
             subject="user-1",
             issuer=issuer_url,
             audience=proxy_url,
+            extra_claims={
+                "email": "user@example.test",
+                "groups": ["platform-dev", "mcp-users"],
+                "tid": "tenant-a",
+            },
         ),
         "missing_tool_scope": _auth_lab_token(
             secret,
@@ -251,6 +256,11 @@ def run_mcp_auth_lab(
             subject="user-2",
             issuer=issuer_url,
             audience=proxy_url,
+            extra_claims={
+                "email": "user2@example.test",
+                "groups": ["platform-dev", "mcp-users"],
+                "tid": "tenant-a",
+            },
         ),
     }
     tokens_path = auth_dir / "tokens.json"
@@ -656,6 +666,7 @@ def _auth_lab_token(
     subject: str,
     issuer: str,
     audience: str,
+    extra_claims: Mapping[str, Any] | None = None,
 ) -> str:
     now = int(time.time())
     return jwt.encode(
@@ -667,6 +678,7 @@ def _auth_lab_token(
             "scope": " ".join(scopes),
             "iat": now,
             "exp": now + 600,
+            **dict(extra_claims or {}),
         },
         secret,
         algorithm="HS256",
@@ -743,6 +755,30 @@ return function(request, context, state)
       return missing_scope
     end
 
+    local wrong_tenant = auth.require_tenant("tenant-a", {
+      reason_code = "auth_lab.tenant_required",
+      body = "tenant-a required"
+    })
+    if wrong_tenant then
+      return wrong_tenant
+    end
+
+    local missing_group = auth.require_group("platform-dev", {
+      reason_code = "auth_lab.platform_group_required",
+      body = "platform-dev group required"
+    })
+    if missing_group then
+      return missing_group
+    end
+
+    local wrong_subject = auth.require_subject({"user-1", "breakglass-user"}, {
+      reason_code = "auth_lab.subject_required",
+      body = "approved OAuth subject required"
+    })
+    if wrong_subject then
+      return wrong_subject
+    end
+
     local missing_lease = lease.require({
       reason_code = "auth_lab.active_lease_required",
       body = "active task lease required"
@@ -759,6 +795,8 @@ return function(request, context, state)
         method = method,
         tool = tool,
         auth_subject = auth.subject() or "",
+        auth_tenant = auth.tenant() or "",
+        auth_group = "platform-dev",
         lease_active = lease.active(),
         lease_id = lease.id() or "",
         lease_task = lease.task() or ""
@@ -971,6 +1009,8 @@ def _auth_lab_access_events(audit_log: Path) -> list[dict[str, Any]]:
                 "allowed": access.get("allowed"),
                 "reason_code": access.get("reason_code"),
                 "auth_subject": auth.get("subject"),
+                "auth_tenant": auth.get("tenant"),
+                "auth_groups": auth.get("groups"),
                 "scope_matched": scope.get("matched_scope"),
                 "scope_selector": scope.get("matched_selector"),
                 "lease_id": lease.get("id"),

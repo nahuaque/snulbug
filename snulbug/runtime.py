@@ -496,6 +496,16 @@ return function(source, source_name, instruction_limit)
     return false
   end
 
+  local function value_matches(value, allowed)
+    if value == nil then
+      return false
+    end
+    if type(allowed) == "table" then
+      return list_contains(allowed, value)
+    end
+    return value == allowed
+  end
+
   local function table_is_array(value)
     if type(value) ~= "table" then
       return false
@@ -637,6 +647,41 @@ return function(source, source_name, instruction_limit)
     return current_auth.client_id
   end
 
+  function auth.email()
+    return current_auth.email
+  end
+
+  function auth.tenant()
+    return current_auth.tenant
+  end
+
+  function auth.groups()
+    if type(current_auth.groups) == "table" then
+      return current_auth.groups
+    end
+    return {}
+  end
+
+  function auth.is_subject(subjects)
+    return value_matches(auth.subject(), subjects)
+  end
+
+  function auth.in_tenant(tenants)
+    return value_matches(auth.tenant(), tenants)
+  end
+
+  function auth.has_group(groups)
+    if type(groups) == "table" then
+      for _, group in ipairs(groups) do
+        if list_contains(auth.groups(), group) then
+          return true
+        end
+      end
+      return false
+    end
+    return list_contains(auth.groups(), groups)
+  end
+
   function auth.scopes()
     if type(current_auth.scopes) == "table" then
       return current_auth.scopes
@@ -679,6 +724,66 @@ return function(source, source_name, instruction_limit)
       reason_code = reason_code,
       context = {
         missing_scope = scope,
+      },
+    })
+  end
+
+  local function identity_reject(options, defaults)
+    options = copy_options(options)
+    local context = options.context
+    if type(context) ~= "table" then
+      context = {}
+    end
+    for key, value in pairs(defaults.context or {}) do
+      if context[key] == nil then
+        context[key] = value
+      end
+    end
+    local body = options.body or defaults.body
+    options.reason = options.reason or body
+    options.reason_code = options.reason_code or defaults.reason_code
+    options.context = context
+    return decision.reject(options.status or 403, body, options)
+  end
+
+  function auth.require_subject(subjects, options)
+    if auth.is_subject(subjects) then
+      return nil
+    end
+    return identity_reject(options, {
+      body = "subject not allowed",
+      reason_code = "oauth.subject_denied",
+      context = {
+        subject = auth.subject(),
+        required_subject = subjects,
+      },
+    })
+  end
+
+  function auth.require_tenant(tenants, options)
+    if auth.in_tenant(tenants) then
+      return nil
+    end
+    return identity_reject(options, {
+      body = "tenant not allowed",
+      reason_code = "oauth.tenant_denied",
+      context = {
+        tenant = auth.tenant(),
+        required_tenant = tenants,
+      },
+    })
+  end
+
+  function auth.require_group(groups, options)
+    if auth.has_group(groups) then
+      return nil
+    end
+    return identity_reject(options, {
+      body = "group not allowed",
+      reason_code = "oauth.group_denied",
+      context = {
+        groups = auth.groups(),
+        required_group = groups,
       },
     })
   end

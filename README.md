@@ -175,8 +175,8 @@ least-privilege policy, amends a blocked request into a candidate policy, and
 writes replay/audit/report artifacts under `.snulbug-lab/`.
 
 Run the OAuth auth lab when you want to prove the stronger public-share model:
-valid OAuth subject, mapped MCP tool scope, active task lease, Lua approval, and
-redacted audit output.
+valid OAuth subject, tenant/group identity fence, mapped MCP tool scope, active
+task lease, Lua approval, and redacted audit output.
 
 ```bash
 uv run snulbug mcp share auth lab

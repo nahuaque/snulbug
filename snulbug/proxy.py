@@ -2489,6 +2489,9 @@ def _composed_access_metadata(scope: Scope, *, lease: Mapping[str, Any] | None =
                     "subject": auth.get("subject"),
                     "issuer": auth.get("issuer"),
                     "client_id": auth.get("client_id"),
+                    "email": auth.get("email"),
+                    "tenant": auth.get("tenant"),
+                    "groups": auth.get("groups"),
                     "reason_code": auth.get("reason_code"),
                     "scope_match": auth.get("scope_match"),
                 }

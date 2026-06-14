@@ -617,6 +617,100 @@ def test_reverse_proxy_oauth_scope_map_allows_tool_and_lua_auth_helpers(tmp_path
     assert audit["decision"]["reason_code"] == "test.oauth_scope_helper"
 
 
+def test_reverse_proxy_oauth_identity_helpers_allow_subject_group_and_tenant_policy(tmp_path):
+    server, seen = start_upstream()
+    policy = write_oauth_identity_helper_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    token = make_oauth_token(
+        secret,
+        scopes=["mcp:connect", "mcp:tool.git.status"],
+        extra_claims={
+            "email": "user@example.test",
+            "groups": ["platform-dev", "mcp-users"],
+            "tid": "tenant-a",
+        },
+    )
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        event_sinks=audit_event_sinks(audit_log),
+        auth_config=oauth_auth_config(jwks_path, scope_map=oauth_scope_map()),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {token}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"git.status"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    record = load_record_log(record_log)[0]
+    audit = json.loads(audit_log.read_text(encoding="utf-8"))
+    context = record["result"]["decision"]["context"]
+    assert sent[0]["status"] == 200
+    assert seen["count"] == 1
+    assert context["auth_subject"] == "user-1"
+    assert context["auth_email"] == "user@example.test"
+    assert context["auth_tenant"] == "tenant-a"
+    assert context["auth_has_platform_group"] is True
+    assert context["auth_group_count"] == 2
+    assert record["metadata"]["auth"]["tenant"] == "tenant-a"
+    assert record["metadata"]["auth"]["groups"] == ["platform-dev", "mcp-users"]
+    assert record["metadata"]["access"]["auth"]["tenant"] == "tenant-a"
+    assert record["metadata"]["access"]["auth"]["groups"] == ["platform-dev", "mcp-users"]
+    assert audit["auth"]["tenant"] == "tenant-a"
+    assert audit["access"]["auth"]["tenant"] == "tenant-a"
+
+
+def test_reverse_proxy_oauth_identity_helper_blocks_missing_group_before_upstream(tmp_path):
+    server, seen = start_upstream()
+    policy = write_oauth_identity_helper_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    token = make_oauth_token(
+        secret,
+        scopes=["mcp:connect", "mcp:tool.git.status"],
+        extra_claims={"groups": ["contractor"], "tid": "tenant-a"},
+    )
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        auth_config=oauth_auth_config(jwks_path, scope_map=oauth_scope_map()),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {token}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"git.status"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    record = load_record_log(record_log)[0]
+    assert sent[0]["status"] == 403
+    assert seen["count"] == 0
+    assert record["result"]["decision"]["reason_code"] == "test.platform_group_required"
+    assert record["metadata"]["access"]["allowed"] is False
+    assert record["metadata"]["access"]["reason_code"] == "test.platform_group_required"
+
+
 def test_reverse_proxy_oauth_scope_and_task_lease_compose_for_tool_call(tmp_path):
     server, seen = start_upstream()
     lease_file = tmp_path / "leases.json"
@@ -2722,17 +2816,24 @@ def write_hs256_jwks(tmp_path) -> tuple[Path, str]:
     return path, secret
 
 
-def make_oauth_token(secret: str, *, scopes: list[str]) -> str:
+def make_oauth_token(
+    secret: str,
+    *,
+    scopes: list[str],
+    subject: str = "user-1",
+    extra_claims: dict[str, Any] | None = None,
+) -> str:
     now = int(time.time())
     return jwt.encode(
         {
             "iss": "https://issuer.example.test",
-            "sub": "user-1",
+            "sub": subject,
             "aud": "https://mcp.example.test/mcp",
             "client_id": "agent-client",
             "scope": " ".join(scopes),
             "iat": now,
             "exp": now + 300,
+            **(extra_claims or {}),
         },
         secret,
         algorithm="HS256",
@@ -2857,6 +2958,55 @@ def write_oauth_scope_helper_policy(tmp_path):
               auth_subject = captured_auth.subject(),
               auth_client_id = captured_auth.client_id(),
               auth_can_git_status = captured_auth.can("tools/call:git.status")
+            }
+          }
+        end
+        """,
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_oauth_identity_helper_policy(tmp_path):
+    path = tmp_path / "oauth-identity-helper-policy.lua"
+    path.write_text(
+        """
+        local captured_auth = auth
+
+        return function(request, context, state)
+          local wrong_subject = captured_auth.require_subject({"user-1", "breakglass-user"}, {
+            reason_code = "test.subject_required"
+          })
+          if wrong_subject then
+            return wrong_subject
+          end
+
+          local wrong_tenant = captured_auth.require_tenant({"tenant-a", "tenant-b"}, {
+            reason_code = "test.tenant_required"
+          })
+          if wrong_tenant then
+            return wrong_tenant
+          end
+
+          local missing_group = captured_auth.require_group({"platform-dev", "mcp-admins"}, {
+            reason_code = "test.platform_group_required"
+          })
+          if missing_group then
+            return missing_group
+          end
+
+          return {
+            action = "continue",
+            reason = "request allowed",
+            reason_code = "test.oauth_identity_helper",
+            context = {
+              auth_subject = captured_auth.subject(),
+              auth_email = captured_auth.email(),
+              auth_tenant = captured_auth.tenant(),
+              auth_has_platform_group = captured_auth.has_group("platform-dev"),
+              auth_group_count = #captured_auth.groups(),
+              auth_in_tenant = captured_auth.in_tenant("tenant-a"),
+              auth_is_subject = captured_auth.is_subject("user-1")
             }
           }
         end
