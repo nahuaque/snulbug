@@ -61,6 +61,9 @@ Send an error response. Defaults to HTTP 403.
 return { action = "reject", status = 403, body = "forbidden" }
 ```
 
+When using the `decision.reject` helper, `confirm`, `prompt`, `remember_key`,
+and `timeout_seconds` options are copied onto the rejection decision.
+
 ## challenge
 
 Send a `WWW-Authenticate` challenge.

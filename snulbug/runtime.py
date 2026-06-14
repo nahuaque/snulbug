@@ -454,12 +454,30 @@ return function(source, source_name, instruction_limit)
     end
   end
 
+  local function copy_options(options)
+    local copied = {}
+    options = options_table(options)
+    for key, value in pairs(options) do
+      copied[key] = value
+    end
+    return copied
+  end
+
   local function with_options(result, options)
     options = options_table(options)
     copy_option(result, options, "reason")
     copy_option(result, options, "reason_code")
     copy_option(result, options, "context")
     copy_option(result, options, "headers")
+    return result
+  end
+
+  local function with_confirmation_options(result, options)
+    options = options_table(options)
+    copy_option(result, options, "confirm")
+    copy_option(result, options, "prompt")
+    copy_option(result, options, "remember_key")
+    copy_option(result, options, "timeout_seconds")
     return result
   end
 
@@ -531,7 +549,7 @@ return function(source, source_name, instruction_limit)
       body = message,
       reason = message,
     }
-    return with_options(result, options)
+    return with_confirmation_options(with_options(result, options), options)
   end
 
   function decision.challenge(options)
@@ -689,6 +707,37 @@ return function(source, source_name, instruction_limit)
     return mcp.call(request).params
   end
 
+  local function mcp_call_from(value)
+    if type(value) ~= "table" then
+      return { args = {} }
+    end
+    if type(value.args) == "table" and (value.method ~= nil or value.is_tool_call ~= nil or value.params ~= nil) then
+      return value
+    end
+    return mcp.call(value)
+  end
+
+  function mcp.arg(request_or_call, key)
+    local call = mcp_call_from(request_or_call)
+    if type(call.args) ~= "table" then
+      return nil
+    end
+    return call.args[key]
+  end
+
+  function mcp.arg_keys(request_or_call)
+    local call = mcp_call_from(request_or_call)
+    local keys = {}
+    if type(call.args) ~= "table" then
+      return keys
+    end
+    for key, _ in pairs(call.args) do
+      table.insert(keys, tostring(key))
+    end
+    table.sort(keys)
+    return keys
+  end
+
   function mcp.is_method(request, method)
     return mcp.method(request) == method
   end
@@ -714,15 +763,12 @@ return function(source, source_name, instruction_limit)
     if type(request_or_name) == "table" then
       name = mcp.tool_name(request_or_name)
     end
-    options = options or {}
-    local message = body or ("MCP tool not allowed: " .. tostring(name))
-    return {
-      action = "reject",
-      status = status or 403,
-      body = message,
-      reason = options.reason or message,
-      reason_code = options.reason_code or "mcp.tool_not_allowed",
-    }
+    options = options_table(options)
+    local message = body or options.body or ("MCP tool not allowed: " .. tostring(name))
+    local decision_options = copy_options(options)
+    decision_options.reason = options.reason or message
+    decision_options.reason_code = options.reason_code or "mcp.tool_not_allowed"
+    return decision.reject(status or options.status or 403, message, decision_options)
   end
 
   function mcp.allow_tools(request, allowed, options)
@@ -730,11 +776,8 @@ return function(source, source_name, instruction_limit)
     if name == nil or list_contains(allowed, name) then
       return nil
     end
-    options = options or {}
-    return mcp.reject_tool(name, options.status or 403, options.body, {
-      reason = options.reason,
-      reason_code = options.reason_code,
-    })
+    options = options_table(options)
+    return mcp.reject_tool(name, options.status or 403, options.body, options)
   end
 
   safe_env.mcp = mcp
@@ -743,12 +786,10 @@ return function(source, source_name, instruction_limit)
 
   local function rejection(options, body, reason_code)
     options = options_table(options)
-    return decision.reject(options.status or 403, options.body or body, {
-      reason = options.reason or body,
-      reason_code = options.reason_code or reason_code,
-      context = options.context,
-      headers = options.headers,
-    })
+    local decision_options = copy_options(options)
+    decision_options.reason = options.reason or body
+    decision_options.reason_code = options.reason_code or reason_code
+    return decision.reject(options.status or 403, options.body or body, decision_options)
   end
 
   local function value_allowed(value, allowed)
@@ -839,6 +880,30 @@ return function(source, source_name, instruction_limit)
     return rejection(options, "path not allowed: " .. path, "mcp.path_not_allowed")
   end
 
+  local function argument_value(request_or_call, key)
+    return mcp.arg(request_or_call, key)
+  end
+
+  local function argument_label(key)
+    return "argument " .. tostring(key)
+  end
+
+  function cap.arg_string(request_or_call, key, options)
+    local value = argument_value(request_or_call, key)
+    if type(value) == "string" and value ~= "" then
+      return nil
+    end
+    return rejection(options, argument_label(key) .. " must be a non-empty string", "mcp.argument_invalid")
+  end
+
+  function cap.arg_path(request_or_call, key, allowed_paths, options)
+    local invalid = cap.arg_string(request_or_call, key, options)
+    if invalid ~= nil then
+      return invalid
+    end
+    return cap.path(argument_value(request_or_call, key), allowed_paths, options)
+  end
+
   local function extract_host(value)
     if type(value) ~= "string" or value == "" then
       return nil
@@ -879,6 +944,14 @@ return function(source, source_name, instruction_limit)
     return rejection(options, "host not allowed: " .. tostring(host), "mcp.host_not_allowed")
   end
 
+  function cap.arg_host(request_or_call, key, allowed_hosts, options)
+    local invalid = cap.arg_string(request_or_call, key, options)
+    if invalid ~= nil then
+      return invalid
+    end
+    return cap.host(argument_value(request_or_call, key), allowed_hosts, options)
+  end
+
   local function command_name(command)
     if type(command) ~= "string" then
       return nil
@@ -892,6 +965,14 @@ return function(source, source_name, instruction_limit)
       return nil
     end
     return rejection(options, "command not allowed: " .. tostring(name), "mcp.command_not_allowed")
+  end
+
+  function cap.arg_command(request_or_call, key, allowed_commands, options)
+    local invalid = cap.arg_string(request_or_call, key, options)
+    if invalid ~= nil then
+      return invalid
+    end
+    return cap.command(argument_value(request_or_call, key), allowed_commands, options)
   end
 
   safe_env.cap = cap

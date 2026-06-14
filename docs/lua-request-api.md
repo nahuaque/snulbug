@@ -33,6 +33,7 @@ local method = mcp.method(request)
 local params = mcp.params(request)
 local tool = mcp.tool_name(request)
 local call = mcp.call(request)
+local path = mcp.arg(call, "path")
 
 if mcp.is_tool_call(request) then
   local blocked = mcp.allow_tools(request, { "safe_read_file", "list_project_files" })
@@ -46,6 +47,8 @@ Available helpers:
 
 - `mcp.body(request)`: parsed JSON-RPC body table, or `nil` for missing/malformed JSON.
 - `mcp.call(request)`: normalized JSON-RPC call table with `method`, `params`, `args`, `tool`, `id`, `batch`, `invalid`, `error`, `is_tool_call`, `is_read`, and `is_write` fields.
+- `mcp.arg(request_or_call, key)`: read one tool/prompt argument from a request or normalized call.
+- `mcp.arg_keys(request_or_call)`: sorted list of observed tool/prompt argument keys.
 - `mcp.method(request)`: JSON-RPC method string, or `nil`.
 - `mcp.params(request)`: JSON-RPC params table, or an empty table.
 - `mcp.is_method(request, method)`: true when the request method matches.
@@ -104,7 +107,7 @@ return function(request, context)
   local call = mcp.call(request)
   return cap.method(request, { "tools/call" })
     or cap.tool(request, { "safe_read_file" })
-    or cap.path(call.args.path, { "README.md", "docs" })
+    or cap.arg_path(call, "path", { "README.md", "docs" })
     or decision.allow("mcp.allowed", { tool = call.tool })
 end
 ```
@@ -114,6 +117,22 @@ Available guards:
 - `cap.allowed(value, allowed)`: boolean membership check for array or map allowlists.
 - `cap.method(request_or_method, allowed, options)`: allow listed JSON-RPC methods.
 - `cap.tool(request_or_name, allowed, options)`: allow listed MCP tools; non-tool calls pass through.
+- `cap.arg_string(request_or_call, key, options)`: require a non-empty string argument.
+- `cap.arg_path(request_or_call, key, allowed_paths, options)`: require a relative path argument under listed roots.
+- `cap.arg_host(request_or_call, key, allowed_hosts, options)`: require a URL/host argument matching listed hosts.
+- `cap.arg_command(request_or_call, key, allowed_commands, options)`: require a shell-like command argument whose first token is allowed.
 - `cap.path(path, allowed_paths, options)`: allow non-absolute, non-traversing relative paths under listed roots.
 - `cap.host(url_or_host, allowed_hosts, options)`: allow listed hosts, including `*.example.com` suffix entries.
 - `cap.command(command, allowed_commands, options)`: allow shell-like command strings by first token.
+
+Every `cap.*` rejection and `mcp.allow_tools` supports confirmation options:
+
+```lua
+return cap.tool(request, { "files.read_file" }, {
+  confirm = true,
+  prompt = "Allow unlisted tool once?",
+  remember_key = "tool:" .. tostring(mcp.tool_name(request)),
+  timeout_seconds = 30,
+  reason_code = "mcp.policy.tool_rejected"
+})
+```

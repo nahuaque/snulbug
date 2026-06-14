@@ -169,6 +169,45 @@ def test_mcp_call_normalizes_tool_call_arguments():
     }
 
 
+def test_mcp_argument_helpers_read_values_and_sorted_keys():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          local call = mcp.call(request)
+          local keys = mcp.arg_keys(call)
+          return decision.allow("test.args", {
+            request_path = mcp.arg(request, "path"),
+            call_path = mcp.arg(call, "path"),
+            first_key = keys[1],
+            second_key = keys[2],
+            missing_type = type(mcp.arg(call, "missing"))
+          })
+        end
+        """
+    )
+
+    decision = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","id":"1","method":"tools/call",'
+                '"params":{"name":"safe_read_file","arguments":{"path":"docs/api.md","encoding":"utf-8"}}}'
+            )
+        }
+    )
+
+    assert decision == {
+        "action": "continue",
+        "reason_code": "test.args",
+        "context": {
+            "request_path": "docs/api.md",
+            "call_path": "docs/api.md",
+            "first_key": "encoding",
+            "second_key": "path",
+            "missing_type": "nil",
+        },
+    }
+
+
 def test_mcp_call_identifies_batch_requests():
     script = compile_lua_script(
         """
@@ -227,6 +266,66 @@ def test_decision_helpers_build_supported_actions():
     }
 
 
+def test_decision_reject_carries_confirmation_options():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return decision.reject(403, "blocked by policy", {
+            confirm = true,
+            prompt = "Allow once?",
+            remember_key = "tool:shell_exec",
+            timeout_seconds = 5,
+            reason_code = "test.confirmable"
+          })
+        end
+        """
+    )
+
+    decision = script.decide({"body": "{}"})
+
+    assert decision == {
+        "action": "reject",
+        "status": 403,
+        "body": "blocked by policy",
+        "reason": "blocked by policy",
+        "reason_code": "test.confirmable",
+        "confirm": True,
+        "prompt": "Allow once?",
+        "remember_key": "tool:shell_exec",
+        "timeout_seconds": 5,
+    }
+
+
+def test_mcp_allow_tools_carries_confirmation_options():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return mcp.allow_tools(request, { safe_read_file = true }, {
+            confirm = true,
+            prompt = "Allow unlisted tool?",
+            remember_key = "tool:" .. tostring(mcp.tool_name(request)),
+            timeout_seconds = 10,
+            reason_code = "test.tool_rejected"
+          }) or decision.allow("test.allowed")
+        end
+        """
+    )
+
+    decision = script.decide({"body": '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shell_exec"}}'})
+
+    assert decision == {
+        "action": "reject",
+        "status": 403,
+        "body": "MCP tool not allowed: shell_exec",
+        "reason": "MCP tool not allowed: shell_exec",
+        "reason_code": "test.tool_rejected",
+        "confirm": True,
+        "prompt": "Allow unlisted tool?",
+        "remember_key": "tool:shell_exec",
+        "timeout_seconds": 10,
+    }
+
+
 def test_capability_guards_return_nil_when_all_checks_pass():
     script = compile_lua_script(
         """
@@ -261,6 +360,98 @@ def test_capability_guards_return_nil_when_all_checks_pass():
         "action": "continue",
         "reason_code": "test.allowed",
         "context": {"tool": "safe_fetch", "path": "docs/api.md"},
+    }
+
+
+def test_argument_capability_guards_return_nil_when_all_checks_pass():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          local call = mcp.call(request)
+          return cap.tool(request, { "safe_fetch" })
+            or cap.arg_path(call, "path", { "README.md", "docs" })
+            or cap.arg_host(request, "url", { "api.example.com", "*.trusted.local" })
+            or cap.arg_command(call, "command", { "git" })
+            or decision.allow("test.allowed", {
+              tool = call.tool,
+              path = mcp.arg(call, "path")
+            })
+        end
+        """
+    )
+
+    decision = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","id":"1","method":"tools/call",'
+                '"params":{"name":"safe_fetch","arguments":{'
+                '"path":"docs/api.md",'
+                '"url":"https://cache.trusted.local/v1",'
+                '"command":"git status"}}}'
+            )
+        }
+    )
+
+    assert decision == {
+        "action": "continue",
+        "reason_code": "test.allowed",
+        "context": {"tool": "safe_fetch", "path": "docs/api.md"},
+    }
+
+
+def test_argument_capability_guards_reject_missing_argument():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          local call = mcp.call(request)
+          return cap.arg_path(call, "path", { "docs" }, {
+            body = "path is required",
+            reason_code = "test.path_missing"
+          }) or decision.allow("test.allowed")
+        end
+        """
+    )
+
+    decision = script.decide(
+        {"body": '{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"safe_read_file","arguments":{}}}'}
+    )
+
+    assert decision == {
+        "action": "reject",
+        "status": 403,
+        "body": "path is required",
+        "reason": "argument path must be a non-empty string",
+        "reason_code": "test.path_missing",
+    }
+
+
+def test_capability_guards_carry_confirmation_options():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return cap.tool(request, { "safe_read_file" }, {
+            confirm = true,
+            prompt = "Allow this tool once?",
+            remember_key = "tool:" .. tostring(mcp.tool_name(request)),
+            timeout_seconds = 15,
+            reason_code = "test.tool_guard"
+          }) or decision.allow("test.allowed")
+        end
+        """
+    )
+
+    decision = script.decide({"body": '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shell_exec"}}'})
+
+    assert decision == {
+        "action": "reject",
+        "status": 403,
+        "body": "MCP tool not allowed: shell_exec",
+        "reason": "MCP tool not allowed: shell_exec",
+        "reason_code": "test.tool_guard",
+        "confirm": True,
+        "prompt": "Allow this tool once?",
+        "remember_key": "tool:shell_exec",
+        "timeout_seconds": 15,
     }
 
 
