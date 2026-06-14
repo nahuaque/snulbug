@@ -52,11 +52,20 @@ export SNULBUG_SHARE_TOKEN=...
 uv run snulbug mcp share run .snulbug/shares/share-...
 ```
 
-`share run` starts the snulbug proxy from the session manifest and streams the
-decision console. The generated `SHARE.md` still includes the lower-level
-provider command when the selected tunnel or peer bridge needs a second process.
-For the default Holepunch peer bridge, that provider command is a Hypertele
-command from the generated `tunnel/` directory.
+Or run from inside the generated share directory:
+
+```bash
+cd .snulbug/shares/share-...
+uv run snulbug mcp share run
+```
+
+`share run` starts the snulbug proxy from the canonical session model when
+`.snulbug/share/session.json` is present. It reconciles the active config,
+policy, lease, replay log, and audit log paths before starting the gateway. The
+generated `SHARE.md` still includes the lower-level provider command when the
+selected tunnel or peer bridge needs a second process. For the default
+Holepunch peer bridge, that provider command is a Hypertele command from the
+generated `tunnel/` directory.
 
 Before sharing `mcp-client.json`, verify the session:
 

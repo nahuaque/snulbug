@@ -154,6 +154,7 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
         share_report,
         share_status,
     )
+    from ..share_session import share_session_model_path
 
     try:
         command = args.share_command
@@ -239,11 +240,14 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                     parser.error("mcp share run cannot combine a share directory with proxy config arguments")
                     return 2
                 return _run_proxy_from_share_args(args)
-            if args.directory is None:
+            directory = args.directory
+            if directory is None and share_session_model_path(Path.cwd()).is_file():
+                directory = Path.cwd()
+            if directory is None:
                 parser.error("mcp share run requires a share directory or --config")
                 return 2
             result = run_mcp_share(
-                args.directory,
+                directory,
                 dry_run=args.dry_run,
             )
             if result is not None:
@@ -534,7 +538,12 @@ def _add_share_create_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_share_run_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("directory", nargs="?", type=Path, help="share session directory")
+    parser.add_argument(
+        "directory",
+        nargs="?",
+        type=Path,
+        help="share session directory; defaults to cwd when .snulbug/share/session.json exists",
+    )
     parser.add_argument("--dry-run", action="store_true", help="print the run plan without starting the proxy")
     parser.add_argument("--config", type=Path, help="TOML config file")
     parser.add_argument("--upstream", help="upstream MCP HTTP server URL")

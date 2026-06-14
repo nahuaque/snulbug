@@ -1534,44 +1534,178 @@ def close_mcp_share(
 
 
 def run_mcp_share(
-    directory: str | Path,
+    directory: str | Path = ".",
     *,
     dry_run: bool = False,
 ) -> dict[str, Any] | None:
     """Run the proxy for a generated MCP share session."""
 
-    share_dir = Path(directory)
-    manifest = load_mcp_share(share_dir)
-    commands = manifest.get("commands") if isinstance(manifest.get("commands"), Mapping) else {}
-    files = manifest.get("files") if isinstance(manifest.get("files"), Mapping) else {}
-    config = files.get("config")
-    if not isinstance(config, str) or not config:
-        raise ValueError("share manifest does not contain a config path")
+    context = _share_run_context(directory)
+    share_dir = context["share_dir"]
+    manifest = context["manifest"]
+    session_model = context["session_model"]
+    commands = context["commands"]
+    resolved_paths = context["resolved_paths"]
+    config_path = resolved_paths.get("config")
+    if not isinstance(config_path, Path):
+        raise ValueError("share session does not contain an active config path")
+    if not config_path.is_file():
+        raise FileNotFoundError(f"share config not found: {config_path}")
     if dry_run:
         return {
             "ok": True,
             "share": str(share_dir),
-            "state": manifest.get("state", "created"),
+            "state": context["state"],
+            "source": context["source"],
+            "session_model_path": str(context["session_model_path"]),
+            "resolved_paths": {key: str(value) for key, value in resolved_paths.items() if isinstance(value, Path)},
             "commands": commands,
         }
 
     from .config import load_mcp_fabric_config, load_mcp_proxy_config
     from .proxy import run_mcp_proxy_config
 
-    config_path = _resolve_share_path(share_dir, config)
     proxy_config = load_mcp_proxy_config(config_path)
+    proxy_config = _reconcile_proxy_config_with_share_session(proxy_config, resolved_paths)
     fabric_config = load_mcp_fabric_config(config_path)
     fabric_config["proxy"] = proxy_config
-    _update_share_manifest(
-        share_dir,
-        state="running",
-        runtime={
-            "started_at": _now_iso(),
-            "config": str(config_path),
-        },
-    )
+    runtime = {
+        "started_at": _now_iso(),
+        "config": str(config_path),
+        "source": context["source"],
+        "resolved_paths": {key: str(value) for key, value in resolved_paths.items() if isinstance(value, Path)},
+    }
+    if manifest is not None:
+        _update_share_manifest(share_dir, state="running", runtime=runtime)
+        _update_share_session_runtime(share_dir, session_model, runtime=runtime)
+    else:
+        _update_share_session_runtime(share_dir, session_model, runtime=runtime)
     run_mcp_proxy_config(proxy_config, fabric_config)
     return None
+
+
+def _share_run_context(directory: str | Path) -> dict[str, Any]:
+    share_dir = Path(directory)
+    manifest_path = share_dir / SHARE_MANIFEST
+    model_path = share_session_model_path(share_dir)
+    manifest = load_mcp_share(share_dir) if manifest_path.is_file() else None
+    session_model = load_share_session_model(share_dir) if model_path.is_file() else None
+    if session_model is None and manifest is not None:
+        session_model = build_share_session_model(manifest, directory=share_dir)
+    if session_model is None:
+        raise FileNotFoundError(f"share session model not found: {model_path}")
+    source = "session_model" if model_path.is_file() else "manifest"
+    commands = _mapping(manifest.get("commands")) if manifest is not None else {}
+    state = _mapping(session_model.get("status")).get("state") or (
+        manifest.get("state", "created") if manifest is not None else "created"
+    )
+    return {
+        "share_dir": share_dir,
+        "manifest": manifest,
+        "session_model": session_model,
+        "session_model_path": model_path,
+        "source": source,
+        "state": state,
+        "commands": commands,
+        "resolved_paths": _share_run_resolved_paths(share_dir, session_model, manifest),
+    }
+
+
+def _share_run_resolved_paths(
+    share_dir: Path,
+    session_model: Mapping[str, Any],
+    manifest: Mapping[str, Any] | None,
+) -> dict[str, Path | None]:
+    files = _mapping(manifest.get("files")) if manifest is not None else {}
+    gateway = _mapping(session_model.get("gateway"))
+    policy = _mapping(session_model.get("policy"))
+    lease = _mapping(session_model.get("lease"))
+    evidence = _mapping(session_model.get("evidence"))
+    paths = _mapping(session_model.get("paths"))
+    return {
+        "config": _resolve_optional_share_path(
+            share_dir,
+            gateway.get("config") or paths.get("config") or paths.get("fabric_config") or files.get("config"),
+        ),
+        "policy": _resolve_optional_share_path(
+            share_dir,
+            policy.get("active_policy") or paths.get("active_policy") or files.get("policy_file"),
+        ),
+        "policy_bundle": _resolve_optional_share_path(
+            share_dir,
+            policy.get("bundle") or paths.get("policy_bundle") or files.get("policy"),
+        ),
+        "lease_file": _resolve_optional_share_path(
+            share_dir,
+            lease.get("file") or paths.get("lease_file") or files.get("lease_file"),
+        ),
+        "record_log": _resolve_optional_share_path(
+            share_dir,
+            evidence.get("record_log") or paths.get("record_log") or files.get("session_log"),
+        ),
+        "audit_log": _resolve_optional_share_path(
+            share_dir,
+            evidence.get("audit_log") or paths.get("audit_log") or files.get("audit_log"),
+        ),
+    }
+
+
+def _reconcile_proxy_config_with_share_session(
+    proxy_config: Mapping[str, Any],
+    resolved_paths: Mapping[str, Path | None],
+) -> dict[str, Any]:
+    reconciled = dict(proxy_config)
+    if resolved_paths.get("policy") is not None:
+        reconciled["policy"] = resolved_paths["policy"]
+    if resolved_paths.get("lease_file") is not None:
+        reconciled["lease_file"] = resolved_paths["lease_file"]
+    if resolved_paths.get("record_log") is not None:
+        reconciled["record_out"] = resolved_paths["record_log"]
+    if resolved_paths.get("audit_log") is not None:
+        reconciled["event_sinks"] = _reconcile_audit_event_sink(
+            _sequence(reconciled.get("event_sinks")),
+            resolved_paths["audit_log"],
+        )
+    return reconciled
+
+
+def _reconcile_audit_event_sink(event_sinks: Sequence[Any], audit_log: Path | None) -> list[dict[str, Any]]:
+    if audit_log is None:
+        return [dict(sink) for sink in event_sinks if isinstance(sink, Mapping)]
+    reconciled = []
+    replaced = False
+    for sink in event_sinks:
+        if not isinstance(sink, Mapping):
+            continue
+        item = dict(sink)
+        if item.get("type") == "audit_jsonl":
+            item["path"] = audit_log
+            replaced = True
+        reconciled.append(item)
+    if not replaced:
+        reconciled.append({"type": "audit_jsonl", "path": audit_log})
+    return reconciled
+
+
+def _update_share_session_runtime(
+    share_dir: Path,
+    session_model: Mapping[str, Any],
+    *,
+    runtime: Mapping[str, Any],
+) -> None:
+    model = json.loads(json.dumps(dict(session_model), default=str))
+    status = dict(_mapping(model.get("status")))
+    status["state"] = "running"
+    status["updated_at"] = _now_iso()
+    model["status"] = status
+    model["runtime"] = dict(runtime)
+    write_share_session_model(share_dir, model, force=True)
+
+
+def _resolve_optional_share_path(share_dir: Path, value: Any) -> Path | None:
+    if value in (None, ""):
+        return None
+    return _resolve_share_path(share_dir, value)
 
 
 def _share_directory(directory: str | Path | None) -> Path:

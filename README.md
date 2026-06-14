@@ -126,6 +126,10 @@ export SNULBUG_SHARE_TOKEN=...
 uv run snulbug mcp share run .snulbug/shares/share-...
 ```
 
+Inside a generated share directory, `uv run snulbug mcp share run` is enough;
+it reads `.snulbug/share/session.json` and reconciles the active config,
+policy, lease, and log paths before starting the gateway.
+
 Run the provider command from `.snulbug/shares/share-.../tunnel/`, then copy the
 exact public HTTPS URL printed by the provider into the generated
 `mcp-client.json` if you used a random forwarding URL.

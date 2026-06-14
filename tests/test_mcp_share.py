@@ -16,6 +16,7 @@ from snulbug import (
     share_report,
     share_session_model_path,
     share_status,
+    write_share_session_model,
 )
 from snulbug.simulator import main as simulator_main
 
@@ -257,7 +258,94 @@ def test_mcp_share_lifecycle_helpers_read_manifest(tmp_path):
     assert status["recordings"]["audit_log"]["exists"] is False
     assert client["config"]["mcpServers"]["snulbug-share"]["headers"]["Authorization"] == "Bearer share-secret"
     assert run_plan is not None
+    assert run_plan["source"] == "session_model"
+    assert run_plan["resolved_paths"]["config"] == str(tmp_path / "snulbug.toml")
+    assert run_plan["resolved_paths"]["policy"] == str(tmp_path / "policy.snulbug" / "policy.lua")
+    assert run_plan["resolved_paths"]["lease_file"] == str(tmp_path / "leases.json")
+    assert run_plan["resolved_paths"]["record_log"] == str(tmp_path / "traces" / "session.jsonl")
+    assert run_plan["resolved_paths"]["audit_log"] == str(tmp_path / "traces" / "audit.jsonl")
     assert run_plan["commands"]["run"] == f"uv run snulbug mcp share run {tmp_path}"
+
+
+def test_mcp_share_run_reconciles_from_session_model_without_manifest(tmp_path, capsys, monkeypatch):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    (tmp_path / "share.json").unlink()
+
+    run_plan = run_mcp_share(tmp_path, dry_run=True)
+
+    assert run_plan is not None
+    assert run_plan["source"] == "session_model"
+    assert run_plan["commands"] == {}
+    assert run_plan["resolved_paths"]["config"] == str(tmp_path / "snulbug.toml")
+    assert run_plan["resolved_paths"]["policy"] == str(tmp_path / "policy.snulbug" / "policy.lua")
+    assert run_plan["resolved_paths"]["lease_file"] == str(tmp_path / "leases.json")
+    assert run_plan["resolved_paths"]["record_log"] == str(tmp_path / "traces" / "session.jsonl")
+    assert run_plan["resolved_paths"]["audit_log"] == str(tmp_path / "traces" / "audit.jsonl")
+
+    monkeypatch.chdir(tmp_path)
+    status_code = simulator_main(["mcp", "share", "run", "--dry-run", "--compact"])
+    output = json.loads(capsys.readouterr().out)
+
+    assert status_code == 0
+    assert output["source"] == "session_model"
+    assert output["share"] == str(tmp_path)
+    assert output["resolved_paths"]["config"] == str(tmp_path / "snulbug.toml")
+
+
+def test_mcp_share_run_applies_session_model_paths_before_starting_gateway(tmp_path, monkeypatch):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    active_policy = tmp_path / "policy.snulbug" / "active.lua"
+    active_policy.write_text(
+        'return { handle_request = function() return { action = "continue" } end }\n',
+        encoding="utf-8",
+    )
+    replay_log = tmp_path / "traces" / "active-session.jsonl"
+    audit_log = tmp_path / "traces" / "active-audit.jsonl"
+    lease_file = tmp_path / "active-leases.json"
+
+    session_model = load_share_session_model(tmp_path)
+    session_model["policy"]["active_policy"] = str(active_policy)
+    session_model["lease"]["file"] = str(lease_file)
+    session_model["evidence"]["record_log"] = str(replay_log)
+    session_model["evidence"]["audit_log"] = str(audit_log)
+    write_share_session_model(tmp_path, session_model, force=True)
+    calls = []
+
+    def fake_run_mcp_proxy_config(proxy_config, fabric_config):
+        calls.append((proxy_config, fabric_config))
+
+    monkeypatch.setattr("snulbug.proxy.run_mcp_proxy_config", fake_run_mcp_proxy_config)
+
+    result = run_mcp_share(tmp_path)
+    updated_model = load_share_session_model(tmp_path)
+
+    assert result is None
+    assert len(calls) == 1
+    proxy_config, fabric_config = calls[0]
+    assert proxy_config["policy"] == active_policy
+    assert proxy_config["lease_file"] == lease_file
+    assert proxy_config["record_out"] == replay_log
+    assert any(
+        sink.get("type") == "audit_jsonl" and sink.get("path") == audit_log for sink in proxy_config["event_sinks"]
+    )
+    assert fabric_config["proxy"] == proxy_config
+    assert updated_model["status"]["state"] == "running"
+    assert updated_model["policy"]["active_policy"] == str(active_policy)
+    assert updated_model["runtime"]["resolved_paths"]["policy"] == str(active_policy)
 
 
 def test_mcp_share_status_and_report_summarize_session_evidence(tmp_path):
