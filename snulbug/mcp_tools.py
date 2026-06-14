@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
@@ -9,6 +8,8 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
+
+from .mcp_schemas import MCP_SCHEMA_CATALOG_SCHEMA, build_mcp_schema_catalog
 
 MCP_TOOL_SNAPSHOT_SCHEMA = "snulbug.mcp-tools-snapshot.v1"
 MCP_TOOL_SNAPSHOT_VERSION = 1
@@ -103,7 +104,7 @@ def build_mcp_tool_snapshot(
     label: str | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
-    normalized = [_normalize_tool(tool) for tool in tools]
+    normalized = _normalize_tools_with_schema_catalog(tools)
     names = [tool["name"] for tool in normalized]
     duplicates = sorted({name for name in names if names.count(name) > 1})
     if duplicates:
@@ -266,35 +267,30 @@ def _append_tool_change_section(lines: list[str], title: str, tools: Any, *, has
 
 
 def _normalize_tool(tool: Any) -> dict[str, Any]:
-    if not isinstance(tool, Mapping):
+    return _normalize_tools_with_schema_catalog([tool])[0]
+
+
+def _normalize_tools_with_schema_catalog(tools: Sequence[Any]) -> list[dict[str, Any]]:
+    if any(not isinstance(tool, Mapping) for tool in tools):
         raise ValueError("MCP tool entries must be objects")
-    name = tool.get("name")
-    if not isinstance(name, str) or not name:
-        raise ValueError("MCP tool entries must include a non-empty string name")
-    description = tool.get("description") if isinstance(tool.get("description"), str) else None
-    input_schema = tool.get("inputSchema") if isinstance(tool.get("inputSchema"), Mapping) else None
-    normalized = {
-        "name": name,
-        "description": description,
-        "inputSchema": dict(input_schema) if isinstance(input_schema, Mapping) else None,
-    }
-    normalized["hash"] = mcp_tool_digest(normalized)
-    return normalized
+    catalog = build_mcp_schema_catalog(
+        {"tools/list": {"result": {"tools": list(tools)}}},
+        methods=("tools/list",),
+    )
+    normalized = catalog.get("surfaces", {}).get("tools", [])
+    return [dict(tool) for tool in normalized if isinstance(tool, Mapping)]
 
 
 def mcp_tool_digest(tool: Mapping[str, Any]) -> str:
-    pinned_shape = {
-        "name": tool.get("name"),
-        "description": tool.get("description"),
-        "inputSchema": tool.get("inputSchema"),
-    }
-    data = json.dumps(pinned_shape, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
-    return hashlib.sha256(data).hexdigest()
+    return _normalize_tool(tool)["hash"]
 
 
 def _tools_from_payload(payload: Any) -> Sequence[Any]:
     if isinstance(payload, Mapping) and payload.get("schema") == MCP_TOOL_SNAPSHOT_SCHEMA:
         tools = payload.get("tools")
+    elif isinstance(payload, Mapping) and payload.get("schema") == MCP_SCHEMA_CATALOG_SCHEMA:
+        surfaces = payload.get("surfaces")
+        tools = surfaces.get("tools") if isinstance(surfaces, Mapping) else None
     elif isinstance(payload, Mapping) and isinstance(payload.get("result"), Mapping):
         tools = payload["result"].get("tools")
     elif isinstance(payload, Mapping):
@@ -368,8 +364,8 @@ def _tool_summary(tool: Mapping[str, Any]) -> dict[str, Any]:
 
 def _changed_tool_fields(before: Mapping[str, Any], after: Mapping[str, Any]) -> list[str]:
     fields = []
-    for field in ("description", "inputSchema"):
-        if before.get(field) != after.get(field):
+    for field in sorted(set(before) | set(after)):
+        if field != "hash" and before.get(field) != after.get(field):
             fields.append(field)
     return fields or ["hash"]
 

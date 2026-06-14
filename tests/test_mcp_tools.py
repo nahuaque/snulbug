@@ -4,6 +4,7 @@ import json
 
 from snulbug import (
     MCP_TOOL_SNAPSHOT_SCHEMA,
+    build_mcp_schema_catalog,
     build_mcp_tool_snapshot,
     diff_mcp_tool_snapshots,
     parse_mcp_tool_headers,
@@ -49,6 +50,34 @@ def test_snapshot_mcp_tools_normalizes_tools_list_response(tmp_path):
     assert [tool["name"] for tool in snapshot["tools"]] == ["read_file", "write_file"]
     assert len(snapshot["tools"][0]["hash"]) == 64
     assert saved["tools"] == snapshot["tools"]
+
+
+def test_tool_snapshot_reuses_schema_catalog_tool_normalization(tmp_path):
+    tools = [
+        {
+            "name": "read_file",
+            "title": "Read File",
+            "description": "Read a file",
+            "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}},
+            "outputSchema": {"type": "object", "properties": {"content": {"type": "string"}}},
+            "annotations": {"readOnlyHint": True},
+        }
+    ]
+    snapshot = build_mcp_tool_snapshot(tools, label="tools")
+    catalog = build_mcp_schema_catalog(
+        {"tools/list": {"result": {"tools": tools}}},
+        methods=("tools/list",),
+        label="schemas",
+    )
+    catalog_path = tmp_path / "schema-catalog.json"
+    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+    from_catalog = snapshot_mcp_tools(source=catalog_path)
+
+    assert snapshot["tools"] == catalog["surfaces"]["tools"]
+    assert from_catalog["tools"] == catalog["surfaces"]["tools"]
+    assert snapshot["tools"][0]["title"] == "Read File"
+    assert snapshot["tools"][0]["outputSchema"] == tools[0]["outputSchema"]
+    assert snapshot["tools"][0]["annotations"] == tools[0]["annotations"]
 
 
 def test_diff_mcp_tool_snapshots_reports_added_changed_and_removed():

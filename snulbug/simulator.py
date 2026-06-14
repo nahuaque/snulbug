@@ -9,6 +9,18 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .cli_helpers import (
+    add_allow_path_arg,
+    add_compact_arg,
+    add_force_arg,
+    add_report_out_arg,
+    add_token_arg,
+    add_token_env_arg,
+    add_validate_arg,
+    write_json_output,
+    write_report_output,
+    write_result_output,
+)
 from .fabric_runtime import (
     DEFAULT_FABRIC_RUNTIME_LEASE_TTL_SECONDS,
     DEFAULT_FABRIC_RUNTIME_STATE,
@@ -107,7 +119,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     simulate.add_argument("--state", type=Path, help="optional JSON state snapshot")
     simulate.add_argument("--instruction-limit", type=int, default=100_000)
     simulate.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
-    simulate.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(simulate)
 
     diff = subparsers.add_parser("diff", help="compare two policies against JSON request fixtures")
     diff.add_argument("old_script", type=Path, help="path to the active Lua policy")
@@ -117,7 +129,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     diff.add_argument("--state-snapshots", type=Path, help="optional state snapshot file or directory")
     diff.add_argument("--instruction-limit", type=int, default=100_000)
     diff.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
-    diff.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(diff)
     diff.add_argument("--no-fail", action="store_true", help="return exit code 0 even when regressions are found")
 
     bundle = subparsers.add_parser("bundle", help="validate, test, and pack policy bundles")
@@ -125,18 +137,18 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     bundle_validate = bundle_subparsers.add_parser("validate", help="validate a policy bundle manifest")
     bundle_validate.add_argument("bundle", type=Path, help="path to a policy bundle directory")
-    bundle_validate.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(bundle_validate)
 
     bundle_test = bundle_subparsers.add_parser("test", help="run bundle fixtures against the bundle policy")
     bundle_test.add_argument("bundle", type=Path, help="path to a policy bundle directory")
     bundle_test.add_argument("--instruction-limit", type=int, default=100_000)
     bundle_test.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
-    bundle_test.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(bundle_test)
 
     bundle_pack = bundle_subparsers.add_parser("pack", help="pack a policy bundle as a tar.gz archive")
     bundle_pack.add_argument("bundle", type=Path, help="path to a policy bundle directory")
     bundle_pack.add_argument("output", type=Path, help="output tar.gz path")
-    bundle_pack.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(bundle_pack)
 
     bundle_states = ("observed", "proposed", "approved", "active")
 
@@ -154,11 +166,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     tunnel_init.add_argument("--local-url", help="local snulbug MCP URL or origin")
     tunnel_init.add_argument("--url", "--public-url", dest="url", help="public tunnel MCP URL")
     tunnel_init.add_argument("--hostname", help="provider hostname to use when --url is omitted")
-    tunnel_init.add_argument("--token-env", default="SNULBUG_TOKEN", help="environment variable holding bearer token")
+    add_token_env_arg(tunnel_init, default="SNULBUG_TOKEN", help="environment variable holding bearer token")
     tunnel_init.add_argument("--path", default="/mcp", help="MCP path to append when URLs omit a path")
     tunnel_init.add_argument("--output-dir", type=Path, help="optional directory for generated setup files")
-    tunnel_init.add_argument("--force", action="store_true", help="overwrite generated files")
-    tunnel_init.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_force_arg(tunnel_init, help="overwrite generated files")
+    add_compact_arg(tunnel_init)
 
     tunnel_doctor = tunnel_subparsers.add_parser("doctor", help="verify tunnel-safe MCP proxy exposure")
     tunnel_doctor.add_argument(
@@ -177,10 +189,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=[],
         help="authenticated probe header as 'Name: value'; repeat for multiple headers",
     )
-    tunnel_doctor.add_argument("--token", help="bearer token for authenticated MCP probes")
+    add_token_arg(tunnel_doctor, help="bearer token for authenticated MCP probes")
     tunnel_doctor.add_argument("--path", default="/mcp", help="MCP path to append when URLs omit a path")
     tunnel_doctor.add_argument("--timeout", type=float, default=5.0, help="HTTP probe timeout in seconds")
-    tunnel_doctor.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(tunnel_doctor)
 
     expose = subparsers.add_parser("expose", help="plan a tunnel-safe MCP exposure session")
     expose.add_argument(
@@ -193,19 +205,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     expose.add_argument("--local-url", help="local snulbug MCP URL or origin")
     expose.add_argument("--url", "--public-url", dest="url", help="public tunnel MCP URL")
     expose.add_argument("--hostname", help="provider hostname to use when --url is omitted")
-    expose.add_argument("--token-env", default="SNULBUG_TOKEN", help="environment variable holding bearer token")
+    add_token_env_arg(expose, default="SNULBUG_TOKEN", help="environment variable holding bearer token")
     expose.add_argument("--path", default="/mcp", help="MCP path to append when URLs omit a path")
     expose.add_argument("--output-dir", type=Path, help="optional directory for generated setup files")
-    expose.add_argument("--report-out", type=Path, help="session report path for the generated inspect command")
+    add_report_out_arg(expose, help="session report path for the generated inspect command")
     expose.add_argument(
         "--decision-console",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="include decision-console mode in the proxy command",
     )
-    expose.add_argument("--force", action="store_true", help="overwrite generated files")
+    add_force_arg(expose, help="overwrite generated files")
     expose.add_argument("--dry-run", action="store_true", help="print the exposure plan without writing files")
-    expose.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(expose)
 
     mcp = subparsers.add_parser("mcp", help="work with local-dev MCP policy helpers and presets")
     mcp_subparsers = mcp.add_subparsers(dest="mcp_command", required=True)
@@ -217,7 +229,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="all",
         help="workflow to print",
     )
-    mcp_guide.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_guide)
 
     mcp_policy = mcp_subparsers.add_parser("policy", help="create, amend, and manage MCP policy bundles")
     mcp_policy_subparsers = mcp_policy.add_subparsers(dest="policy_command", required=True)
@@ -228,18 +240,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="preset name to copy; omit to list presets unless --output is supplied",
     )
     mcp_policy_preset.add_argument("--output", "--out", type=Path, help="output bundle directory")
-    mcp_policy_preset.add_argument("--force", action="store_true", help="overwrite the output directory when it exists")
-    mcp_policy_preset.add_argument("--token", help="bearer token to render into generated policy")
-    mcp_policy_preset.add_argument(
-        "--token-env",
+    add_force_arg(mcp_policy_preset, help="overwrite the output directory when it exists")
+    add_token_arg(mcp_policy_preset, help="bearer token to render into generated policy")
+    add_token_env_arg(
+        mcp_policy_preset,
         help="context key used by generated policy for env-derived token lookup",
     )
     mcp_policy_preset.add_argument("--allow-tool", action="append", default=[], help="allowed MCP tool name")
-    mcp_policy_preset.add_argument("--allow-path", action="append", default=[], help="allowed project path or prefix")
+    add_allow_path_arg(mcp_policy_preset, help="allowed project path or prefix")
     mcp_policy_preset.add_argument("--rate-limit", type=int, help="fixed-window request limit")
     mcp_policy_preset.add_argument("--rate-window", type=int, help="fixed-window duration in seconds")
     mcp_policy_preset.add_argument("--list", action="store_true", help="list bundled presets")
-    mcp_policy_preset.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_policy_preset)
     mcp_policy_learn = mcp_policy_subparsers.add_parser(
         "learn",
         help="compile MCP replay or audit logs into a policy bundle",
@@ -247,14 +259,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_policy_learn.add_argument("log", type=Path, help="JSONL replay or audit log")
     mcp_policy_learn.add_argument("--out", "--output", type=Path, required=True, help="output policy bundle directory")
     mcp_policy_learn.add_argument("--kind", choices=("auto", "record", "audit"), default="auto", help="input log type")
-    mcp_policy_learn.add_argument("--force", action="store_true", help="overwrite files in the output directory")
-    mcp_policy_learn.add_argument(
-        "--validate",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="validate the generated policy bundle",
-    )
-    mcp_policy_learn.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_force_arg(mcp_policy_learn, help="overwrite files in the output directory")
+    add_validate_arg(mcp_policy_learn, help="validate the generated policy bundle")
+    add_compact_arg(mcp_policy_learn)
     mcp_policy_amend = mcp_policy_subparsers.add_parser(
         "amend",
         help="propose a candidate amendment for a learned MCP policy",
@@ -269,19 +276,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="candidate output policy bundle directory",
     )
     mcp_policy_amend.add_argument("--kind", choices=("auto", "record", "audit"), default="auto", help="input log type")
-    mcp_policy_amend.add_argument("--force", action="store_true", help="overwrite files in the output directory")
+    add_force_arg(mcp_policy_amend, help="overwrite files in the output directory")
     mcp_policy_amend.add_argument(
         "--allow-risky",
         action="store_true",
         help="allow risky shell/exec-style tool names into the candidate policy",
     )
-    mcp_policy_amend.add_argument(
-        "--validate",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="validate the generated policy bundle",
-    )
-    mcp_policy_amend.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_validate_arg(mcp_policy_amend, help="validate the generated policy bundle")
+    add_compact_arg(mcp_policy_amend)
     mcp_policy_from_schema = mcp_policy_subparsers.add_parser(
         "from-schema",
         help="generate a reviewable policy bundle from an MCP schema catalog",
@@ -294,16 +296,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         required=True,
         help="output policy bundle directory",
     )
-    mcp_policy_from_schema.add_argument("--force", action="store_true", help="overwrite the output directory")
-    mcp_policy_from_schema.add_argument("--token", help="bearer token to render into the generated policy")
-    mcp_policy_from_schema.add_argument(
-        "--token-env",
+    add_force_arg(mcp_policy_from_schema, help="overwrite the output directory")
+    add_token_arg(mcp_policy_from_schema, help="bearer token to render into the generated policy")
+    add_token_env_arg(
+        mcp_policy_from_schema,
         help="context key used by generated policy for env-derived token lookup",
     )
-    mcp_policy_from_schema.add_argument(
-        "--allow-path",
-        action="append",
-        default=[],
+    add_allow_path_arg(
+        mcp_policy_from_schema,
         help="allowed project path or prefix for path-like tool arguments; repeat to add multiple",
     )
     mcp_policy_from_schema.add_argument(
@@ -312,13 +312,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="confirm",
         help="action for tools scored high risk from the discovered schema",
     )
-    mcp_policy_from_schema.add_argument(
-        "--validate",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="validate and test the generated policy bundle",
-    )
-    mcp_policy_from_schema.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_validate_arg(mcp_policy_from_schema, help="validate and test the generated policy bundle")
+    add_compact_arg(mcp_policy_from_schema)
     mcp_policy_lifecycle = mcp_policy_subparsers.add_parser(
         "lifecycle",
         help="inspect, sign, verify, or promote policy bundle lifecycle state",
@@ -332,7 +327,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="inspect policy bundle lifecycle metadata",
     )
     mcp_policy_lifecycle_status.add_argument("bundle", type=Path, help="path to a policy bundle directory")
-    mcp_policy_lifecycle_status.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_policy_lifecycle_status)
     mcp_policy_lifecycle_sign = mcp_policy_lifecycle_subparsers.add_parser(
         "sign",
         help="sign current policy bundle lifecycle metadata",
@@ -347,7 +342,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     mcp_policy_lifecycle_sign.add_argument("--actor", help="actor to record in lifecycle history")
     mcp_policy_lifecycle_sign.add_argument("--note", help="note to record in lifecycle history")
-    mcp_policy_lifecycle_sign.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_policy_lifecycle_sign)
     mcp_policy_lifecycle_verify = mcp_policy_lifecycle_subparsers.add_parser(
         "verify",
         help="verify signed policy bundle lifecycle metadata",
@@ -363,7 +358,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="SNULBUG_BUNDLE_SECRET",
         help="environment variable containing the bundle signing secret",
     )
-    mcp_policy_lifecycle_verify.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_policy_lifecycle_verify)
     mcp_policy_lifecycle_promote = mcp_policy_lifecycle_subparsers.add_parser(
         "promote",
         help="advance a signed policy bundle through observed, proposed, approved, and active",
@@ -385,7 +380,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_policy_lifecycle_promote.add_argument("--note", help="note to record in lifecycle history")
     mcp_policy_lifecycle_promote.add_argument("--instruction-limit", type=int, default=100_000)
     mcp_policy_lifecycle_promote.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
-    mcp_policy_lifecycle_promote.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_policy_lifecycle_promote)
 
     mcp_quickstart = mcp_subparsers.add_parser("quickstart", help="create a local MCP policy proxy starter")
     mcp_quickstart.add_argument("--directory", "--dir", type=Path, default=Path("."), help="starter output directory")
@@ -394,10 +389,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_quickstart.add_argument("--config-output", type=Path, default=Path("snulbug.toml"), help="config file path")
     mcp_quickstart.add_argument("--traces-dir", type=Path, default=Path("traces"), help="trace directory path")
     mcp_quickstart.add_argument("--upstream", default="http://127.0.0.1:9000", help="upstream MCP HTTP server URL")
-    mcp_quickstart.add_argument("--token", help="bearer token to render into generated policy")
-    mcp_quickstart.add_argument("--token-env", help="context key used by generated policy for env-derived token lookup")
+    add_token_arg(mcp_quickstart, help="bearer token to render into generated policy")
+    add_token_env_arg(mcp_quickstart, help="context key used by generated policy for env-derived token lookup")
     mcp_quickstart.add_argument("--allow-tool", action="append", default=[], help="allowed MCP tool name")
-    mcp_quickstart.add_argument("--allow-path", action="append", default=[], help="allowed project path or prefix")
+    add_allow_path_arg(mcp_quickstart, help="allowed project path or prefix")
     mcp_quickstart.add_argument("--rate-limit", type=int, help="fixed-window request limit")
     mcp_quickstart.add_argument("--rate-window", type=int, help="fixed-window duration in seconds")
     mcp_quickstart.add_argument("--host", default="127.0.0.1", help="proxy bind host")
@@ -525,14 +520,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="allowed Cloudflare Access authenticated email domain; repeat for multiple domains",
     )
     mcp_quickstart.add_argument("--timeout", type=float, default=30.0, help="upstream timeout in seconds")
-    mcp_quickstart.add_argument("--force", action="store_true", help="overwrite generated policy and config")
-    mcp_quickstart.add_argument(
-        "--validate",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="validate and test the generated policy bundle",
-    )
-    mcp_quickstart.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_force_arg(mcp_quickstart, help="overwrite generated policy and config")
+    add_validate_arg(mcp_quickstart, help="validate and test the generated policy bundle")
+    add_compact_arg(mcp_quickstart)
 
     mcp_codespace = mcp_subparsers.add_parser("codespace", help="attach GitHub Codespace MCP upstreams")
     mcp_codespace_subparsers = mcp_codespace.add_subparsers(dest="codespace_command", required=True)
@@ -587,7 +577,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="write artifacts and print the plan without starting the gateway",
     )
-    mcp_codespace_attach.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_codespace_attach)
     mcp_codespace_serve_demo = mcp_codespace_subparsers.add_parser(
         "serve-demo",
         help="run the bundled mock MCP server inside a Codespace",
@@ -608,7 +598,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="print the inferred URLs and commands without starting the server",
     )
-    mcp_codespace_serve_demo.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_codespace_serve_demo)
 
     mcp_share = mcp_subparsers.add_parser(
         "share",
@@ -625,11 +615,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_share.add_argument("--upstream", default="http://127.0.0.1:9000", help="upstream MCP HTTP server")
     mcp_share.add_argument("--hostname", help="provider hostname to use when --url is omitted")
     mcp_share.add_argument("--url", "--public-url", dest="url", help="public tunnel or client bridge MCP URL")
-    mcp_share.add_argument("--token", help="bearer token; defaults to a generated session token")
+    add_token_arg(mcp_share, help="bearer token; defaults to a generated session token")
     mcp_share.add_argument("--ttl", default="30m", help="share lease TTL, such as 30m, 2h, or 1d")
     mcp_share.add_argument("--task", default="Ephemeral MCP share session", help="human-readable share task")
     mcp_share.add_argument("--allow-tool", action="append", default=[], help="allowed MCP tool name")
-    mcp_share.add_argument("--allow-path", action="append", default=[], help="allowed path or path prefix")
+    add_allow_path_arg(mcp_share, help="allowed path or path prefix")
     mcp_share.add_argument("--allow-host", action="append", default=[], help="allowed URL host")
     mcp_share.add_argument("--allow-command", action="append", default=[], help="allowed command name")
     mcp_share.add_argument("--max-calls", type=int, help="maximum number of allowed tools/call uses")
@@ -648,21 +638,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="HTTP header carrying the task lease token",
     )
     mcp_share.add_argument("--client-name", default="snulbug-share", help="MCP client config server name")
-    mcp_share.add_argument("--force", action="store_true", help="overwrite generated share files")
-    mcp_share.add_argument(
-        "--validate",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="validate and test the generated policy bundle",
-    )
-    mcp_share.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_force_arg(mcp_share, help="overwrite generated share files")
+    add_validate_arg(mcp_share, help="validate and test the generated policy bundle")
+    add_compact_arg(mcp_share)
 
     mcp_config = mcp_subparsers.add_parser("config", help="work with MCP TOML config files")
     mcp_config_subparsers = mcp_config.add_subparsers(dest="config_command", required=True)
     mcp_config_init = mcp_config_subparsers.add_parser("init", help="write a starter snulbug.toml config")
     mcp_config_init.add_argument("--output", type=Path, default=Path("snulbug.toml"), help="config file path")
-    mcp_config_init.add_argument("--force", action="store_true", help="overwrite the config file when it exists")
-    mcp_config_init.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_force_arg(mcp_config_init, help="overwrite the config file when it exists")
+    add_compact_arg(mcp_config_init)
 
     mcp_tools = mcp_subparsers.add_parser("tools", help="snapshot and diff MCP tools/list declarations")
     mcp_tools_subparsers = mcp_tools.add_subparsers(dest="tools_command", required=True)
@@ -679,11 +664,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     mcp_tools_snapshot_source.add_argument("--url", help="MCP HTTP URL to call with tools/list")
     mcp_tools_snapshot.add_argument("--header", action="append", default=[], help="HTTP header as 'Name: value'")
-    mcp_tools_snapshot.add_argument("--token", help="bearer token for live MCP tools/list calls")
+    add_token_arg(mcp_tools_snapshot, help="bearer token for live MCP tools/list calls")
     mcp_tools_snapshot.add_argument("--timeout", type=float, default=10.0, help="live tools/list timeout in seconds")
     mcp_tools_snapshot.add_argument("--label", help="human label stored in the snapshot")
     mcp_tools_snapshot.add_argument("--out", type=Path, help="write snapshot JSON to this path")
-    mcp_tools_snapshot.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_tools_snapshot)
     mcp_tools_diff = mcp_tools_subparsers.add_parser("diff", help="compare two MCP tool snapshots")
     mcp_tools_diff.add_argument("baseline", type=Path, help="baseline snapshot or tools/list response JSON")
     mcp_tools_diff.add_argument("current", type=Path, help="current snapshot or tools/list response JSON")
@@ -694,7 +679,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=("added", "changed", "removed", "any"),
         help="return exit code 1 when this change type is present; repeat or use any",
     )
-    mcp_tools_diff.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_tools_diff)
 
     mcp_schemas = mcp_subparsers.add_parser(
         "schemas",
@@ -731,7 +716,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="MCP method or surface to discover; repeat to limit the catalog",
     )
     mcp_schemas_discover.add_argument("--header", action="append", default=[], help="HTTP header as 'Name: value'")
-    mcp_schemas_discover.add_argument("--token", help="bearer token for live MCP schema discovery")
+    add_token_arg(mcp_schemas_discover, help="bearer token for live MCP schema discovery")
     mcp_schemas_discover.add_argument("--timeout", type=float, default=10.0, help="live discovery timeout in seconds")
     mcp_schemas_discover.add_argument(
         "--protocol-version",
@@ -740,8 +725,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     mcp_schemas_discover.add_argument("--label", help="human label stored in the catalog")
     mcp_schemas_discover.add_argument("--out", type=Path, help="write schema catalog JSON to this path")
-    mcp_schemas_discover.add_argument("--report-out", type=Path, help="write a Markdown schema report")
-    mcp_schemas_discover.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_report_out_arg(mcp_schemas_discover, help="write a Markdown schema report")
+    add_compact_arg(mcp_schemas_discover)
     mcp_schemas_diff = mcp_schemas_subparsers.add_parser("diff", help="compare two MCP schema catalogs")
     mcp_schemas_diff.add_argument("baseline", type=Path, help="baseline catalog or response collection JSON")
     mcp_schemas_diff.add_argument("current", type=Path, help="current catalog or response collection JSON")
@@ -752,13 +737,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=("added", "changed", "removed", "any"),
         help="return exit code 1 when this change type is present; repeat or use any",
     )
-    mcp_schemas_diff.add_argument("--report-out", type=Path, help="write a Markdown schema diff report")
-    mcp_schemas_diff.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_report_out_arg(mcp_schemas_diff, help="write a Markdown schema diff report")
+    add_compact_arg(mcp_schemas_diff)
     mcp_fabric = mcp_subparsers.add_parser("fabric", help="inspect and verify declarative MCP fabric config")
     mcp_fabric_subparsers = mcp_fabric.add_subparsers(dest="fabric_command", required=True)
     mcp_fabric_status = mcp_fabric_subparsers.add_parser("status", help="summarize declared MCP fabric topology")
     mcp_fabric_status.add_argument("--config", type=Path, default=Path("snulbug.toml"), help="snulbug.toml config file")
-    mcp_fabric_status.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_fabric_status)
     mcp_fabric_discover = mcp_fabric_subparsers.add_parser(
         "discover",
         help="resolve configured MCP fabric discovery providers",
@@ -766,7 +751,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_fabric_discover.add_argument(
         "--config", type=Path, default=Path("snulbug.toml"), help="snulbug.toml config file"
     )
-    mcp_fabric_discover.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_fabric_discover)
     mcp_fabric_doctor = mcp_fabric_subparsers.add_parser(
         "doctor",
         help="verify declared MCP fabric config, manifests, and reachable endpoints",
@@ -779,7 +764,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=[],
         help="authenticated probe header as 'Name: value'; repeat for multiple headers",
     )
-    mcp_fabric_doctor.add_argument("--token", help="bearer token for authenticated MCP probes")
+    add_token_arg(mcp_fabric_doctor, help="bearer token for authenticated MCP probes")
     mcp_fabric_doctor.add_argument("--timeout", type=float, help="HTTP probe timeout in seconds")
     mcp_fabric_doctor.add_argument(
         "--probe-gateway",
@@ -793,7 +778,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="actively probe declared HTTP/Holepunch upstream URLs",
     )
-    mcp_fabric_doctor.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_fabric_doctor)
     mcp_fabric_learn = mcp_fabric_subparsers.add_parser(
         "learn",
         help="learn a declarative fabric profile from topology-aware logs",
@@ -806,8 +791,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="auto",
         help="input log type",
     )
-    mcp_fabric_learn.add_argument("--force", action="store_true", help="overwrite the output directory")
-    mcp_fabric_learn.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_force_arg(mcp_fabric_learn, help="overwrite the output directory")
+    add_compact_arg(mcp_fabric_learn)
     mcp_fabric_conformance = mcp_fabric_subparsers.add_parser(
         "conformance",
         help="generate and run fabric conformance test packs",
@@ -846,8 +831,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="auto",
         help="input log type",
     )
-    mcp_fabric_conformance_generate.add_argument("--force", action="store_true", help="overwrite generated files")
-    mcp_fabric_conformance_generate.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_force_arg(mcp_fabric_conformance_generate, help="overwrite generated files")
+    add_compact_arg(mcp_fabric_conformance_generate)
     mcp_fabric_conformance_run = mcp_fabric_conformance_subparsers.add_parser(
         "run",
         help="run a generated fabric conformance test pack",
@@ -860,7 +845,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=[],
         help="authenticated probe header as 'Name: value'; repeat for multiple headers",
     )
-    mcp_fabric_conformance_run.add_argument("--token", help="bearer token for authenticated MCP probes")
+    add_token_arg(mcp_fabric_conformance_run, help="bearer token for authenticated MCP probes")
     mcp_fabric_conformance_run.add_argument("--timeout", type=float, help="HTTP probe timeout in seconds")
     mcp_fabric_conformance_run.add_argument(
         "--probe-gateway",
@@ -876,7 +861,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     mcp_fabric_conformance_run.add_argument("--instruction-limit", type=int, default=100_000)
     mcp_fabric_conformance_run.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
-    mcp_fabric_conformance_run.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_fabric_conformance_run)
     mcp_fabric_runtime = mcp_fabric_subparsers.add_parser(
         "runtime",
         help="inspect or clear persisted managed data-plane runtime state",
@@ -896,7 +881,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_FABRIC_RUNTIME_STATE_KEY,
         help="runtime state key for shared stores",
     )
-    mcp_fabric_runtime_status.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_fabric_runtime_status)
     mcp_fabric_runtime_clear = mcp_fabric_runtime_subparsers.add_parser(
         "clear",
         help="delete the persisted managed data-plane runtime state",
@@ -911,7 +896,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_FABRIC_RUNTIME_STATE_KEY,
         help="runtime state key for shared stores",
     )
-    mcp_fabric_runtime_clear.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_fabric_runtime_clear)
     mcp_fabric_control = mcp_fabric_subparsers.add_parser(
         "control",
         help="issue or inspect live fabric operational controls",
@@ -1128,7 +1113,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     mcp_fabric_controller.add_argument("--status-host", default="127.0.0.1", help="status server bind host")
     mcp_fabric_controller.add_argument("--status-port", type=int, default=0, help="status server bind port")
-    mcp_fabric_controller.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_fabric_controller)
     mcp_fabric_run = mcp_fabric_subparsers.add_parser(
         "run",
         help="run the fabric controller and live-reloading MCP data plane together",
@@ -1198,7 +1183,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_FABRIC_RUNTIME_LEASE_TTL_SECONDS,
         help="seconds before another instance may acquire the shared runtime lease",
     )
-    mcp_fabric_run.add_argument("--compact", action="store_true", help="emit compact JSON startup output")
+    add_compact_arg(mcp_fabric_run, help="emit compact JSON startup output")
 
     mcp_manifest = mcp_subparsers.add_parser("manifest", help="sign and verify MCP upstream manifests")
     mcp_manifest_subparsers = mcp_manifest.add_subparsers(dest="manifest_command", required=True)
@@ -1211,7 +1196,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="SNULBUG_MANIFEST_SECRET",
         help="environment variable containing the manifest signing secret",
     )
-    mcp_manifest_sign.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_manifest_sign)
     mcp_manifest_verify = mcp_manifest_subparsers.add_parser("verify", help="verify a signed upstream manifest")
     mcp_manifest_verify.add_argument("manifest", type=Path, help="signed upstream manifest JSON file")
     mcp_manifest_verify.add_argument("--key-id", help="manifest signing key id; defaults to the manifest key_id")
@@ -1221,7 +1206,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="environment variable containing the manifest signing secret",
     )
     mcp_manifest_verify.add_argument("--expect-identity", help="required manifest identity")
-    mcp_manifest_verify.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_manifest_verify)
 
     mcp_lease = mcp_subparsers.add_parser("lease", help="create and manage task-scoped MCP capability leases")
     mcp_lease_subparsers = mcp_lease.add_subparsers(dest="lease_command", required=True)
@@ -1230,22 +1215,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_lease_create.add_argument("--file", type=Path, default=Path("leases.json"), help="lease JSON file")
     mcp_lease_create.add_argument("--task", required=True, help="human-readable task this lease grants")
     mcp_lease_create.add_argument("--allow-tool", action="append", required=True, help="allowed MCP tool name")
-    mcp_lease_create.add_argument("--allow-path", action="append", default=[], help="allowed path or path prefix")
+    add_allow_path_arg(mcp_lease_create, help="allowed path or path prefix")
     mcp_lease_create.add_argument("--allow-host", action="append", default=[], help="allowed URL host")
     mcp_lease_create.add_argument("--allow-command", action="append", default=[], help="allowed command name")
     mcp_lease_create.add_argument("--ttl", default="1h", help="lease TTL, such as 30m, 2h, or 1d")
     mcp_lease_create.add_argument("--max-calls", type=int, help="maximum number of allowed tools/call uses")
-    mcp_lease_create.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_lease_create)
 
     mcp_lease_list = mcp_lease_subparsers.add_parser("list", help="list task-scoped MCP capability leases")
     mcp_lease_list.add_argument("--file", type=Path, default=Path("leases.json"), help="lease JSON file")
     mcp_lease_list.add_argument("--active-only", action="store_true", help="show only active leases")
-    mcp_lease_list.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_lease_list)
 
     mcp_lease_revoke = mcp_lease_subparsers.add_parser("revoke", help="revoke a task-scoped MCP capability lease")
     mcp_lease_revoke.add_argument("lease_id", help="lease id to revoke")
     mcp_lease_revoke.add_argument("--file", type=Path, default=Path("leases.json"), help="lease JSON file")
-    mcp_lease_revoke.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_lease_revoke)
 
     mcp_record = mcp_subparsers.add_parser("record", help="record one replayable MCP request decision")
     mcp_record.add_argument("script", type=Path, help="path to a Lua policy file")
@@ -1264,27 +1249,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     mcp_record.add_argument("--instruction-limit", type=int, default=100_000)
     mcp_record.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
-    mcp_record.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_record)
 
     mcp_replay = mcp_subparsers.add_parser("replay", help="replay an MCP request JSONL log")
     mcp_replay.add_argument("log", type=Path, help="JSONL request log")
     mcp_replay.add_argument("--script", type=Path, help="override policy script for all records")
     mcp_replay.add_argument("--instruction-limit", type=int, default=100_000)
     mcp_replay.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
-    mcp_replay.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_replay)
 
     mcp_inspect = mcp_subparsers.add_parser("inspect", help="summarize MCP replay or audit JSONL logs offline")
     mcp_inspect.add_argument("log", type=Path, help="JSONL replay or audit log")
     mcp_inspect.add_argument("--kind", choices=("auto", "record", "audit"), default="auto", help="input log type")
     mcp_inspect.add_argument("--top", type=int, default=10, help="number of top values to include per category")
-    mcp_inspect.add_argument("--report-out", type=Path, help="optional Markdown session report path")
+    add_report_out_arg(mcp_inspect, help="optional Markdown session report path")
     mcp_inspect.add_argument(
         "--report-format",
         choices=("markdown",),
         default="markdown",
         help="session report output format",
     )
-    mcp_inspect.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_inspect)
 
     mcp_impact = mcp_subparsers.add_parser("impact", help="preview policy or lease impact against MCP replay logs")
     mcp_impact.add_argument("log", type=Path, help="JSONL replay log")
@@ -1292,7 +1277,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_impact.add_argument("--lease", "--lease-file", dest="lease_file", type=Path, help="task lease JSON file")
     mcp_impact.add_argument("--instruction-limit", type=int, default=100_000)
     mcp_impact.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
-    mcp_impact.add_argument("--report-out", type=Path, help="optional Markdown impact report path")
+    add_report_out_arg(mcp_impact, help="optional Markdown impact report path")
     mcp_impact.add_argument(
         "--report-format",
         choices=("markdown",),
@@ -1300,7 +1285,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="impact report output format",
     )
     mcp_impact.add_argument("--no-fail", action="store_true", help="return exit code 0 even when impact has errors")
-    mcp_impact.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_impact)
 
     mcp_lab = mcp_subparsers.add_parser("lab", help="run the one-command local MCP policy lab")
     mcp_lab.add_argument("--output-dir", type=Path, default=Path(".snulbug-lab"), help="lab artifact directory")
@@ -1310,7 +1295,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=True,
         help="overwrite the lab artifact directory",
     )
-    mcp_lab.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(mcp_lab)
 
     mcp_proxy = mcp_subparsers.add_parser("proxy", help="run a local-dev MCP reverse proxy")
     mcp_proxy.add_argument("--config", type=Path, help="TOML config file")
@@ -1486,9 +1471,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             instruction_limit=args.instruction_limit,
             memory_limit_bytes=memory_limit,
         )
-        indent = None if args.compact else 2
-        sys.stdout.write(json.dumps(result, indent=indent, sort_keys=True))
-        sys.stdout.write("\n")
+        write_json_output(result, compact=args.compact)
         return 0
 
     if args.command == "diff":
@@ -1505,9 +1488,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             instruction_limit=args.instruction_limit,
             memory_limit_bytes=memory_limit,
         )
-        indent = None if args.compact else 2
-        sys.stdout.write(json.dumps(result, indent=indent, sort_keys=True))
-        sys.stdout.write("\n")
+        write_json_output(result, compact=args.compact)
         return 0 if args.no_fail or result["safe_to_promote"] else 1
 
     if args.command == "bundle":
@@ -1543,9 +1524,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
             status = 1
 
-        indent = None if args.compact else 2
-        sys.stdout.write(json.dumps(result, indent=indent, sort_keys=True))
-        sys.stdout.write("\n")
+        write_json_output(result, compact=args.compact)
         return status
 
     if args.command == "tunnel":
@@ -1593,17 +1572,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(f"unknown tunnel command: {args.tunnel_command}")
             return 2
 
-        if args.compact:
-            sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
-        else:
-            if "checks" in result:
-                output = format_tunnel_doctor_report(result)
-            elif "commands" in result:
-                output = format_tunnel_init_report(result)
-            else:
-                output = json.dumps(result, indent=2)
-            sys.stdout.write(output)
-        sys.stdout.write("\n")
+        formatter = None
+        if "checks" in result:
+            formatter = format_tunnel_doctor_report
+        elif "commands" in result:
+            formatter = format_tunnel_init_report
+        write_result_output(result, compact=args.compact, formatter=formatter)
         return status
 
     if args.command == "expose":
@@ -1629,11 +1603,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = {"ok": False, "error": str(exc)}
             status = 1
 
-        if args.compact:
-            sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
-        else:
-            sys.stdout.write(format_exposure_session_report(result))
-        sys.stdout.write("\n")
+        write_result_output(result, compact=args.compact, formatter=format_exposure_session_report)
         return status
 
     if args.command == "mcp":
@@ -1661,12 +1631,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 status = 1
             else:
                 status = 0
-            if args.compact:
-                output = json.dumps(result, separators=(",", ":"), sort_keys=True)
-            else:
-                output = format_mcp_guide(result) if status == 0 else json.dumps(result, indent=2, sort_keys=True)
-            sys.stdout.write(output)
-            sys.stdout.write("\n")
+            formatter = format_mcp_guide if status == 0 else None
+            write_result_output(result, compact=args.compact, formatter=formatter)
             return status
         elif args.mcp_command == "policy":
             try:
@@ -1750,8 +1716,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                     status = 0 if result["ok"] else 1
                     if not args.compact:
-                        sys.stdout.write(format_mcp_schema_policy_report(result))
-                        sys.stdout.write("\n")
+                        write_result_output(result, compact=False, formatter=format_mcp_schema_policy_report)
                         return status
                 elif args.policy_command == "lifecycle":
                     from .bundle import (
@@ -1935,20 +1900,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                         result["smoke_check"] = smoke_check_codespace_upstream(args.url, timeout=args.smoke_timeout)
                         if not result["smoke_check"]["ok"]:
                             status = 1
-                            if args.compact:
-                                sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
-                            else:
-                                sys.stdout.write(format_codespace_attach_report(result))
-                            sys.stdout.write("\n")
+                            write_result_output(
+                                result,
+                                compact=args.compact,
+                                formatter=format_codespace_attach_report,
+                            )
                             return status
                     result["dry_run"] = bool(args.dry_run)
                     status = 0
                     if args.dry_run:
-                        if args.compact:
-                            sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
-                        else:
-                            sys.stdout.write(format_codespace_attach_report(result))
-                        sys.stdout.write("\n")
+                        write_result_output(result, compact=args.compact, formatter=format_codespace_attach_report)
                         return status
 
                     import os
@@ -1958,11 +1919,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     fabric_config = load_mcp_fabric_config(result["config"])
                     fabric_config["proxy"] = proxy_config
                     result["starting_proxy"] = True
-                    if args.compact:
-                        sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
-                    else:
-                        sys.stdout.write(format_codespace_attach_report(result))
-                    sys.stdout.write("\n")
+                    write_result_output(result, compact=args.compact, formatter=format_codespace_attach_report)
                     sys.stdout.flush()
 
                     from .fabric import build_fabric_audit_metadata
@@ -1978,11 +1935,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 except Exception as exc:
                     result = {"ok": False, "url": args.url, "directory": str(args.directory), "error": str(exc)}
                     status = 1
-                    if args.compact:
-                        sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
-                    else:
-                        sys.stdout.write(json.dumps(result, indent=2, sort_keys=True))
-                    sys.stdout.write("\n")
+                    write_json_output(result, compact=args.compact)
                     return status
             if args.codespace_command == "serve-demo":
                 try:
@@ -1994,19 +1947,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                             path=args.path,
                         )
                         result["dry_run"] = True
-                        if args.compact:
-                            sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
-                        else:
-                            sys.stdout.write(format_codespace_demo_report(result))
-                        sys.stdout.write("\n")
+                        write_result_output(result, compact=args.compact, formatter=format_codespace_demo_report)
                         return 0
 
                     def emit_codespace_demo(payload: Mapping[str, Any]) -> None:
-                        if args.compact:
-                            sys.stdout.write(json.dumps(payload, separators=(",", ":"), sort_keys=True))
-                        else:
-                            sys.stdout.write(format_codespace_demo_report(payload))
-                        sys.stdout.write("\n")
+                        write_result_output(payload, compact=args.compact, formatter=format_codespace_demo_report)
                         sys.stdout.flush()
 
                     result = serve_codespace_demo(
@@ -2027,11 +1972,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "path": args.path,
                         "error": str(exc),
                     }
-                    if args.compact:
-                        sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True))
-                    else:
-                        sys.stdout.write(json.dumps(result, indent=2, sort_keys=True))
-                    sys.stdout.write("\n")
+                    write_json_output(result, compact=args.compact)
                     return 1
             parser.error(f"unknown mcp codespace command: {args.codespace_command}")
             return 2
@@ -2072,15 +2013,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                     status = 0
                     if not args.compact:
-                        sys.stdout.write(format_mcp_tool_snapshot_report(result))
-                        sys.stdout.write("\n")
+                        write_result_output(result, compact=False, formatter=format_mcp_tool_snapshot_report)
                         return status
                 elif args.tools_command == "diff":
                     result = diff_mcp_tool_snapshots(args.baseline, args.current, fail_on=args.fail_on)
                     status = 0 if result["ok"] else 1
                     if not args.compact:
-                        sys.stdout.write(format_mcp_tool_diff_report(result))
-                        sys.stdout.write("\n")
+                        write_result_output(result, compact=False, formatter=format_mcp_tool_diff_report)
                         return status
                 else:
                     parser.error(f"unknown mcp tools command: {args.tools_command}")
@@ -2117,19 +2056,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                     status = 0
                     if not args.compact:
-                        sys.stdout.write(format_mcp_schema_catalog_report(result))
-                        sys.stdout.write("\n")
+                        write_result_output(result, compact=False, formatter=format_mcp_schema_catalog_report)
                         return status
                 elif args.schemas_command == "diff":
                     result = diff_mcp_schema_catalogs(args.baseline, args.current, fail_on=args.fail_on)
                     status = 0 if result["ok"] else 1
                     if args.report_out is not None:
-                        args.report_out.parent.mkdir(parents=True, exist_ok=True)
-                        args.report_out.write_text(format_mcp_schema_diff_report(result) + "\n", encoding="utf-8")
-                        result["report_out"] = str(args.report_out)
+                        write_report_output(
+                            args.report_out,
+                            format_mcp_schema_diff_report(result),
+                            result,
+                            trailing_newline=True,
+                        )
                     if not args.compact:
-                        sys.stdout.write(format_mcp_schema_diff_report(result))
-                        sys.stdout.write("\n")
+                        write_result_output(result, compact=False, formatter=format_mcp_schema_diff_report)
                         return status
                 else:
                     parser.error(f"unknown mcp schemas command: {args.schemas_command}")
@@ -2439,8 +2379,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         if status_server is not None:
                             payload = {**dict(payload), "status_server": status_server_url(status_server)}
                         if args.compact:
-                            sys.stdout.write(json.dumps(payload, sort_keys=True, separators=(",", ":")))
-                            sys.stdout.write("\n")
+                            write_json_output(payload, compact=True)
                         else:
                             sys.stdout.write(format_fabric_controller_report(payload))
                             if status_server is not None:
@@ -2471,8 +2410,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
                     def emit_fabric_run_started(payload: Mapping[str, Any]) -> None:
                         if args.compact:
-                            sys.stdout.write(json.dumps(payload, sort_keys=True, separators=(",", ":")))
-                            sys.stdout.write("\n")
+                            write_json_output(payload, compact=True)
                         else:
                             sys.stdout.write(format_fabric_run_report(payload))
                             sys.stdout.write("\n")
@@ -2614,10 +2552,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result = inspect_mcp_log(args.log, kind=args.kind, top=args.top)
                 if args.report_out is not None:
                     report_text = format_mcp_inspection_report(result, output_format=args.report_format)
-                    args.report_out.parent.mkdir(parents=True, exist_ok=True)
-                    args.report_out.write_text(report_text, encoding="utf-8")
-                    result["report_out"] = str(args.report_out)
-                    result["report_format"] = args.report_format
+                    write_report_output(
+                        args.report_out,
+                        report_text,
+                        result,
+                        report_format=args.report_format,
+                    )
                 status = 0
             except Exception as exc:
                 result = {"ok": False, "log": str(args.log), "error": str(exc)}
@@ -2636,10 +2576,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 if args.report_out is not None:
                     report_text = format_mcp_impact_report(result, output_format=args.report_format)
-                    args.report_out.parent.mkdir(parents=True, exist_ok=True)
-                    args.report_out.write_text(report_text, encoding="utf-8")
-                    result["report_out"] = str(args.report_out)
-                    result["report_format"] = args.report_format
+                    write_report_output(
+                        args.report_out,
+                        report_text,
+                        result,
+                        report_format=args.report_format,
+                    )
                 status = 0 if args.no_fail or result["ok"] else 1
             except Exception as exc:
                 result = {"ok": False, "log": str(args.log), "error": str(exc)}
@@ -2732,9 +2674,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(f"unknown mcp command: {args.mcp_command}")
             return 2
 
-        indent = None if args.compact else 2
-        sys.stdout.write(json.dumps(result, indent=indent, sort_keys=True))
-        sys.stdout.write("\n")
+        write_json_output(result, compact=args.compact)
         return status
 
     parser.error(f"unknown command: {args.command}")
@@ -2752,7 +2692,7 @@ def _add_fabric_control_store_args(parser: argparse.ArgumentParser) -> None:
         default=DEFAULT_FABRIC_RUNTIME_STATE_KEY,
         help="runtime state key for shared stores",
     )
-    parser.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(parser)
 
 
 def _add_fabric_control_issue_args(parser: argparse.ArgumentParser, *, default_ttl: float | None = None) -> None:
@@ -2777,7 +2717,7 @@ def _add_fabric_member_registry_args(parser: argparse.ArgumentParser) -> None:
         default="snulbug:fabric:members",
         help="fabric member registry key when --registry uses SQLite or Redis state",
     )
-    parser.add_argument("--compact", action="store_true", help="emit compact JSON")
+    add_compact_arg(parser)
 
 
 def _parse_member_upstreams(values: Sequence[str]) -> list[dict[str, Any]]:
