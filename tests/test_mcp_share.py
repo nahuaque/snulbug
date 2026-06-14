@@ -6,11 +6,13 @@ from pathlib import Path
 import pytest
 
 from snulbug import (
+    activate_mcp_share_policy,
     close_mcp_share,
     create_mcp_share,
     doctor_mcp_share,
     load_mcp_proxy_config,
     load_share_session_model,
+    promote_mcp_share_policy,
     run_mcp_share,
     share_client_config,
     share_report,
@@ -346,6 +348,70 @@ def test_mcp_share_run_applies_session_model_paths_before_starting_gateway(tmp_p
     assert updated_model["status"]["state"] == "running"
     assert updated_model["policy"]["active_policy"] == str(active_policy)
     assert updated_model["runtime"]["resolved_paths"]["policy"] == str(active_policy)
+
+
+def test_mcp_share_lifecycle_shortcuts_update_session_model_and_report(tmp_path, monkeypatch):
+    monkeypatch.setenv("SNULBUG_BUNDLE_SECRET", "dev-secret")
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    proposed = promote_mcp_share_policy(tmp_path, to_state="proposed", secret="dev-secret", key_id="dev")
+    approved = promote_mcp_share_policy(tmp_path, to_state="approved", secret="dev-secret", key_id="dev")
+    activated = activate_mcp_share_policy(tmp_path, secret="dev-secret", key_id="dev")
+    session_model = load_share_session_model(tmp_path)
+    status = share_status(tmp_path, live_checks=False)
+    report = share_report(tmp_path, live_checks=False)
+
+    assert proposed["ok"] is True
+    assert proposed["from_state"] == "observed"
+    assert proposed["state"] == "proposed"
+    assert approved["ok"] is True
+    assert approved["from_state"] == "proposed"
+    assert approved["state"] == "approved"
+    assert activated["ok"] is True
+    assert activated["action"] == "activate"
+    assert activated["from_state"] == "approved"
+    assert activated["state"] == "active"
+    assert session_model["policy"]["lifecycle_state"] == "active"
+    assert session_model["policy"]["lifecycle_signed"] is True
+    assert session_model["policy"]["last_lifecycle"]["action"] == "activate"
+    assert status["policy"]["lifecycle_state"] == "active"
+    assert status["policy"]["last_lifecycle"]["action"] == "activate"
+    assert "activate approved->active" in report["report"]
+
+
+def test_mcp_share_lifecycle_cli_promote_and_activate_from_cwd(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("SNULBUG_BUNDLE_SECRET", "dev-secret")
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    monkeypatch.chdir(tmp_path)
+
+    proposed_code = simulator_main(["mcp", "share", "promote", "--to", "proposed", "--key-id", "dev", "--compact"])
+    proposed = json.loads(capsys.readouterr().out)
+    approved_code = simulator_main(["mcp", "share", "promote", "--to", "approved", "--key-id", "dev", "--compact"])
+    approved = json.loads(capsys.readouterr().out)
+    active_code = simulator_main(["mcp", "share", "activate", "--key-id", "dev", "--compact"])
+    active = json.loads(capsys.readouterr().out)
+
+    assert proposed_code == 0
+    assert proposed["state"] == "proposed"
+    assert approved_code == 0
+    assert approved["state"] == "approved"
+    assert active_code == 0
+    assert active["state"] == "active"
+    assert load_share_session_model(tmp_path)["policy"]["last_lifecycle"]["action"] == "activate"
 
 
 def test_mcp_share_status_and_report_summarize_session_evidence(tmp_path):

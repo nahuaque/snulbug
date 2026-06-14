@@ -217,6 +217,7 @@ from .scaffolds import (
 )
 from .schema_policy import SchemaPolicyConfig
 from .share import (
+    activate_mcp_share_policy,
     close_mcp_share,
     create_mcp_share,
     doctor_mcp_share,
@@ -224,6 +225,7 @@ from .share import (
     format_share_report,
     format_share_status_report,
     load_mcp_share,
+    promote_mcp_share_policy,
     run_mcp_share,
     share_client_config,
     share_report,
@@ -359,6 +361,7 @@ __all__ = [
     "amend_mcp_policy",
     "analyze_mcp_impact",
     "annotate_topology_audit",
+    "activate_mcp_share_policy",
     "build_audit_event",
     "build_event_dispatcher",
     "build_fabric_audit_metadata",
@@ -493,6 +496,7 @@ __all__ = [
     "normalize_mcp_schema_methods",
     "normalize_event_sink_configs",
     "promote_bundle_lifecycle",
+    "promote_mcp_share_policy",
     "prepare_webhook_payload",
     "sign_bundle_lifecycle",
     "sign_upstream_manifest",

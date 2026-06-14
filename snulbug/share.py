@@ -430,6 +430,91 @@ def share_report(
     }
 
 
+def promote_mcp_share_policy(
+    directory: str | Path = ".",
+    *,
+    to_state: str,
+    secret: str,
+    key_id: str,
+    actor: str | None = None,
+    note: str | None = None,
+    instruction_limit: int = 100_000,
+    memory_limit_bytes: int | None = 8 * 1024 * 1024,
+    lifecycle_action: str = "promote",
+) -> dict[str, Any]:
+    """Promote the active share policy bundle and refresh the session model."""
+
+    from .bundle import inspect_bundle_lifecycle, promote_bundle_lifecycle
+
+    share_dir, manifest, session_model = _load_share_model_context(directory)
+    bundle = _share_policy_bundle_path(share_dir, session_model, manifest)
+    before = inspect_bundle_lifecycle(bundle)
+    promotion = promote_bundle_lifecycle(
+        bundle,
+        to_state=to_state,
+        secret=secret,
+        key_id=key_id,
+        actor=actor,
+        note=note,
+        instruction_limit=instruction_limit,
+        memory_limit_bytes=memory_limit_bytes,
+    )
+    after = inspect_bundle_lifecycle(bundle)
+    lifecycle = {
+        "action": lifecycle_action,
+        "requested_state": to_state,
+        "from_state": before.get("state"),
+        "to_state": promotion.get("to_state") or after.get("state"),
+        "state": after.get("state"),
+        "signed": after.get("signed"),
+        "signature": after.get("signature"),
+        "result": promotion,
+        "updated_at": _now_iso(),
+    }
+    updated_model = _record_share_policy_lifecycle(share_dir, manifest, session_model, lifecycle=lifecycle)
+    return {
+        "ok": bool(promotion.get("ok")),
+        "share": str(share_dir),
+        "bundle": str(bundle),
+        "action": lifecycle_action,
+        "requested_state": to_state,
+        "from_state": before.get("state"),
+        "to_state": promotion.get("to_state"),
+        "state": after.get("state"),
+        "promotion": promotion,
+        "lifecycle": after,
+        "session_model": str(share_session_model_path(share_dir)),
+        "policy": _mapping(updated_model.get("policy")),
+    }
+
+
+def activate_mcp_share_policy(
+    directory: str | Path = ".",
+    *,
+    secret: str,
+    key_id: str,
+    actor: str | None = None,
+    note: str | None = None,
+    instruction_limit: int = 100_000,
+    memory_limit_bytes: int | None = 8 * 1024 * 1024,
+) -> dict[str, Any]:
+    """Promote the active share policy bundle to active."""
+
+    result = promote_mcp_share_policy(
+        directory,
+        to_state="active",
+        secret=secret,
+        key_id=key_id,
+        actor=actor,
+        note=note,
+        instruction_limit=instruction_limit,
+        memory_limit_bytes=memory_limit_bytes,
+        lifecycle_action="activate",
+    )
+    result["activation"] = result.get("promotion")
+    return result
+
+
 def format_share_status_report(result: Mapping[str, Any]) -> str:
     """Render share status as Markdown."""
 
@@ -1307,6 +1392,7 @@ def _share_report_lines(result: Mapping[str, Any], *, title: str) -> list[str]:
             f"- Active policy: `{policy.get('active_policy') or '-'}`",
             f"- Lifecycle: `{policy.get('lifecycle_state') or 'observed'}`",
             f"- Signed: `{_yes_no_unknown(policy.get('lifecycle_signed'))}`",
+            f"- Last lifecycle action: `{_share_last_lifecycle_label(policy)}`",
             "",
             "## Policy Amendments",
             "",
@@ -1456,6 +1542,16 @@ def _yes_no_unknown(value: Any) -> str:
     if value is False:
         return "no"
     return "unknown"
+
+
+def _share_last_lifecycle_label(policy: Mapping[str, Any]) -> str:
+    lifecycle = _mapping(policy.get("last_lifecycle"))
+    if not lifecycle:
+        return "-"
+    action = lifecycle.get("action") or "lifecycle"
+    from_state = lifecycle.get("from_state") or "?"
+    to_state = lifecycle.get("to_state") or lifecycle.get("state") or "?"
+    return f"{action} {from_state}->{to_state}"
 
 
 def close_mcp_share(
@@ -1609,6 +1705,70 @@ def _share_run_context(directory: str | Path) -> dict[str, Any]:
         "commands": commands,
         "resolved_paths": _share_run_resolved_paths(share_dir, session_model, manifest),
     }
+
+
+def _load_share_model_context(directory: str | Path) -> tuple[Path, dict[str, Any] | None, dict[str, Any]]:
+    share_dir = Path(directory)
+    manifest_path = share_dir / SHARE_MANIFEST
+    model_path = share_session_model_path(share_dir)
+    manifest = load_mcp_share(share_dir) if manifest_path.is_file() else None
+    if model_path.is_file():
+        session_model = load_share_session_model(share_dir)
+    elif manifest is not None:
+        session_model = build_share_session_model(manifest, directory=share_dir)
+    else:
+        raise FileNotFoundError(f"share session model not found: {model_path}")
+    return share_dir, manifest, session_model
+
+
+def _share_policy_bundle_path(
+    share_dir: Path,
+    session_model: Mapping[str, Any],
+    manifest: Mapping[str, Any] | None,
+) -> Path:
+    files = _mapping(manifest.get("files")) if manifest is not None else {}
+    policy = _mapping(session_model.get("policy"))
+    paths = _mapping(session_model.get("paths"))
+    value = policy.get("bundle") or paths.get("policy_bundle") or files.get("policy")
+    if not isinstance(value, str) or not value:
+        raise ValueError("share session does not contain an active policy bundle")
+    bundle = _resolve_share_path(share_dir, value)
+    if not bundle.is_dir():
+        raise FileNotFoundError(f"share policy bundle not found: {bundle}")
+    return bundle
+
+
+def _record_share_policy_lifecycle(
+    share_dir: Path,
+    manifest: Mapping[str, Any] | None,
+    session_model: Mapping[str, Any],
+    *,
+    lifecycle: Mapping[str, Any],
+) -> dict[str, Any]:
+    if manifest is not None:
+        updated_manifest = dict(manifest)
+        policy = dict(_mapping(updated_manifest.get("policy")))
+        policy["last_lifecycle"] = dict(lifecycle)
+        updated_manifest["policy"] = policy
+        updated_manifest["updated_at"] = _now_iso()
+        (share_dir / SHARE_MANIFEST).write_text(
+            json.dumps(updated_manifest, indent=2, sort_keys=True, default=str) + "\n",
+            encoding="utf-8",
+        )
+        return update_share_session_model(share_dir, manifest=updated_manifest)
+
+    model = json.loads(json.dumps(dict(session_model), default=str))
+    status = dict(_mapping(model.get("status")))
+    status["updated_at"] = _now_iso()
+    model["status"] = status
+    policy = dict(_mapping(model.get("policy")))
+    policy["lifecycle_state"] = lifecycle.get("state")
+    policy["lifecycle_signed"] = lifecycle.get("signed")
+    policy["lifecycle_signature"] = lifecycle.get("signature")
+    policy["last_lifecycle"] = dict(lifecycle)
+    model["policy"] = policy
+    write_share_session_model(share_dir, model, force=True)
+    return model
 
 
 def _share_run_resolved_paths(

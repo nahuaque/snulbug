@@ -37,6 +37,7 @@ def build_share_session_model(
     closeout = _mapping(manifest.get("closeout"))
     recipes = _mapping(manifest.get("recipes"))
     health = _mapping(manifest.get("health"))
+    policy_metadata = _mapping(manifest.get("policy"))
 
     policy_bundle = files.get("policy")
     policy_file = files.get("policy_file")
@@ -82,7 +83,9 @@ def build_share_session_model(
             "active_policy": policy_file,
             "lifecycle_state": lifecycle.get("state"),
             "lifecycle_signed": lifecycle.get("signed"),
-            "last_amendment": _mapping(manifest.get("policy")).get("last_amendment"),
+            "lifecycle_signature": lifecycle.get("signature"),
+            "last_amendment": policy_metadata.get("last_amendment"),
+            "last_lifecycle": policy_metadata.get("last_lifecycle"),
         },
         "lease": {
             "file": files.get("lease_file") or lease.get("file"),
@@ -205,11 +208,13 @@ def _policy_lifecycle(share_dir: Path, bundle: Any) -> dict[str, Any]:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except Exception:
         return {"state": "unknown", "signed": False}
-    lifecycle = _mapping(_mapping(manifest).get("lifecycle"))
+    manifest_mapping = _mapping(manifest)
+    lifecycle = _mapping(manifest_mapping.get("snulbug_lifecycle") or manifest_mapping.get("lifecycle"))
     signature = _mapping(lifecycle.get("signature"))
     return {
         "state": lifecycle.get("state", "observed"),
         "signed": bool(signature),
+        "signature": signature,
         "signature_key_id": signature.get("key_id"),
     }
 

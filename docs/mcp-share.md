@@ -129,6 +129,30 @@ and replay logs. It lists what was exposed, observed clients and source IPs,
 tools observed, allowed/blocked/confirmed counts, redaction and risk findings,
 upstream health, policy state, and exact next commands.
 
+## Policy lifecycle shortcuts
+
+The share command wraps the normal policy bundle lifecycle flow and keeps the
+session model in sync:
+
+```bash
+export SNULBUG_BUNDLE_SECRET=...
+uv run snulbug mcp share promote .snulbug/shares/share-... --to proposed --key-id local-review
+uv run snulbug mcp share promote .snulbug/shares/share-... --to approved --key-id local-review
+uv run snulbug mcp share activate .snulbug/shares/share-... --key-id local-review
+```
+
+From inside a generated share directory, omit the directory:
+
+```bash
+uv run snulbug mcp share promote --to proposed --key-id local-review
+uv run snulbug mcp share activate --key-id local-review
+```
+
+These commands call the same signed policy lifecycle machinery as
+`snulbug mcp policy lifecycle promote`, then update
+`.snulbug/share/session.json` so `share status` and `share report` show the
+current lifecycle state and last share-scoped lifecycle action.
+
 ## Client config
 
 `mcp-client.json` contains the URL and headers for the client:

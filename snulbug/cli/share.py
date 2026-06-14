@@ -17,6 +17,7 @@ from ..cli_helpers import (
     write_json_output,
     write_result_output,
 )
+from .common import read_required_env
 
 PROVIDERS = ("generic", "ngrok", "cloudflare", "tailscale", "localxpose", "pinggy", "holepunch")
 QUICKSTART_TUNNEL_PROVIDERS = ("auto", *PROVIDERS)
@@ -85,6 +86,12 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
     add_force_arg(share_report, help="overwrite --output when it exists")
     add_compact_arg(share_report)
 
+    share_promote = share_subparsers.add_parser("promote", help="promote the share policy bundle lifecycle")
+    _add_share_lifecycle_args(share_promote, include_to=True)
+
+    share_activate = share_subparsers.add_parser("activate", help="activate the share policy bundle")
+    _add_share_lifecycle_args(share_activate, include_to=False)
+
     share_doctor = share_subparsers.add_parser("doctor", help="verify a generated share session")
     share_doctor.add_argument("directory", type=Path, help="share session directory")
     share_doctor.add_argument(
@@ -144,11 +151,13 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
     from ..leases import create_lease, list_leases, revoke_lease
     from ..quickstart import create_mcp_quickstart
     from ..share import (
+        activate_mcp_share_policy,
         close_mcp_share,
         create_mcp_share,
         doctor_mcp_share,
         format_share_doctor_report,
         format_share_status_report,
+        promote_mcp_share_policy,
         run_mcp_share,
         share_client_config,
         share_report,
@@ -317,6 +326,39 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
             )
             status = 0 if result["ok"] else 1
             write_result_output(result, compact=args.compact, formatter=lambda value: value["report"])
+            return status
+
+        if command == "promote":
+            directory = _share_directory_arg(args)
+            memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
+            result = promote_mcp_share_policy(
+                directory,
+                to_state=args.to,
+                secret=read_required_env(args.secret_env),
+                key_id=args.key_id,
+                actor=args.actor,
+                note=args.note,
+                instruction_limit=args.instruction_limit,
+                memory_limit_bytes=memory_limit,
+            )
+            status = 0 if result["ok"] else 1
+            write_json_output(result, compact=args.compact)
+            return status
+
+        if command == "activate":
+            directory = _share_directory_arg(args)
+            memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
+            result = activate_mcp_share_policy(
+                directory,
+                secret=read_required_env(args.secret_env),
+                key_id=args.key_id,
+                actor=args.actor,
+                note=args.note,
+                instruction_limit=args.instruction_limit,
+                memory_limit_bytes=memory_limit,
+            )
+            status = 0 if result["ok"] else 1
+            write_json_output(result, compact=args.compact)
             return status
 
         if command == "doctor":
@@ -572,6 +614,28 @@ def _add_share_run_args(parser: argparse.ArgumentParser) -> None:
     add_compact_arg(parser)
 
 
+def _add_share_lifecycle_args(parser: argparse.ArgumentParser, *, include_to: bool) -> None:
+    parser.add_argument(
+        "directory",
+        nargs="?",
+        type=Path,
+        help="share session directory; defaults to cwd when .snulbug/share/session.json exists",
+    )
+    if include_to:
+        parser.add_argument("--to", choices=("proposed", "approved"), required=True, help="target lifecycle state")
+    parser.add_argument("--key-id", required=True, help="bundle signing key id")
+    parser.add_argument(
+        "--secret-env",
+        default="SNULBUG_BUNDLE_SECRET",
+        help="environment variable containing the bundle signing secret",
+    )
+    parser.add_argument("--actor", help="actor to record in lifecycle history")
+    parser.add_argument("--note", help="note to record in lifecycle history")
+    parser.add_argument("--instruction-limit", type=int, default=100_000)
+    parser.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
+    add_compact_arg(parser)
+
+
 def _add_share_lease_args(parser: argparse.ArgumentParser) -> None:
     lease_subparsers = parser.add_subparsers(dest="share_lease_command", required=True)
 
@@ -756,6 +820,12 @@ def _handle_share_codespace_command(args: argparse.Namespace, parser: argparse.A
 
     parser.error(f"unknown mcp share codespace command: {args.share_codespace_command}")
     return 2
+
+
+def _share_directory_arg(args: argparse.Namespace) -> Path:
+    if args.directory is not None:
+        return args.directory
+    return Path.cwd()
 
 
 def _has_proxy_run_args(args: argparse.Namespace) -> bool:

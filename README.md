@@ -170,6 +170,14 @@ uv run snulbug mcp share report .snulbug/shares/share-... \
   --output .snulbug/shares/share-.../share-report.md
 ```
 
+Promote and activate the share policy without leaving the share workflow:
+
+```bash
+uv run snulbug mcp share promote .snulbug/shares/share-... --to proposed --key-id local-review
+uv run snulbug mcp share promote .snulbug/shares/share-... --to approved --key-id local-review
+uv run snulbug mcp share activate .snulbug/shares/share-... --key-id local-review
+```
+
 For multi-upstream facade setups, inspect the declared fabric before handing it
 to an agent:
 
