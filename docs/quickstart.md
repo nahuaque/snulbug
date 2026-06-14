@@ -99,7 +99,7 @@ small rate limit.
 To create a similar policy manually:
 
 ```bash
-uv run snulbug mcp init tunnel-safe \
+uv run snulbug mcp policy preset tunnel-safe \
   --output policy.snulbug \
   --token local-dev-secret \
   --allow-tool safe_read_file \

@@ -87,8 +87,8 @@ def test_mcp_schemas_policy_cli_generates_bundle(tmp_path, capsys):
     status = simulator_main(
         [
             "mcp",
-            "schemas",
             "policy",
+            "from-schema",
             str(catalog_path),
             "--out",
             str(output),

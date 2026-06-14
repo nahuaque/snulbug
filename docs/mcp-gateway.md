@@ -48,8 +48,8 @@ end
 For a packaged starter policy, use the bundled presets:
 
 ```bash
-uv run snulbug mcp presets
-uv run snulbug mcp init tunnel-safe --output policy.snulbug
+uv run snulbug mcp policy preset
+uv run snulbug mcp policy preset tunnel-safe --output policy.snulbug
 ```
 
 Record request decisions and replay them later:

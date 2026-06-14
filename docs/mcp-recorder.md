@@ -72,7 +72,7 @@ copying request bodies, headers, params, or tool arguments into the report.
 Compile a replay or audit log into a policy bundle:
 
 ```bash
-uv run snulbug mcp learn traces/session.jsonl --out learned-policy.snulbug
+uv run snulbug mcp policy learn traces/session.jsonl --out learned-policy.snulbug
 ```
 
 The generated bundle contains `policy.lua`, `manifest.json`, and `LEARNED.md`.

@@ -47,8 +47,8 @@ def test_builtin_mcp_presets_copy_validate_and_test(tmp_path):
         assert bundle_result["passed"] == bundle_result["fixture_count"]
 
 
-def test_mcp_presets_cli_lists_presets(capsys):
-    status = simulator_main(["mcp", "presets", "--compact"])
+def test_mcp_policy_preset_cli_lists_presets(capsys):
+    status = simulator_main(["mcp", "policy", "preset", "--compact"])
 
     output = json.loads(capsys.readouterr().out)
     assert status == 0
@@ -64,10 +64,10 @@ def test_mcp_presets_cli_lists_presets(capsys):
     ]
 
 
-def test_mcp_init_cli_copies_default_preset(tmp_path, capsys):
+def test_mcp_policy_preset_cli_copies_default_preset(tmp_path, capsys):
     output_path = tmp_path / "policy.snulbug"
 
-    status = simulator_main(["mcp", "init", "--output", str(output_path), "--compact"])
+    status = simulator_main(["mcp", "policy", "preset", "--output", str(output_path), "--compact"])
 
     output = json.loads(capsys.readouterr().out)
     assert status == 0
@@ -77,11 +77,11 @@ def test_mcp_init_cli_copies_default_preset(tmp_path, capsys):
     assert run_bundle_tests(output_path)["ok"] is True
 
 
-def test_mcp_init_cli_refuses_to_overwrite(tmp_path, capsys):
+def test_mcp_policy_preset_cli_refuses_to_overwrite(tmp_path, capsys):
     output_path = tmp_path / "policy.snulbug"
     output_path.mkdir()
 
-    status = simulator_main(["mcp", "init", "auth-required", "--output", str(output_path), "--compact"])
+    status = simulator_main(["mcp", "policy", "preset", "auth-required", "--output", str(output_path), "--compact"])
 
     output = json.loads(capsys.readouterr().out)
     assert status == 1
@@ -211,13 +211,14 @@ def test_generate_workspace_firewall_profile_blocks_generated_write_paths(tmp_pa
     assert validate_bundle(output_path)["ok"] is True
 
 
-def test_mcp_init_cli_generates_custom_policy(tmp_path, capsys):
+def test_mcp_policy_preset_cli_generates_custom_policy(tmp_path, capsys):
     output_path = tmp_path / "policy.snulbug"
 
     status = simulator_main(
         [
             "mcp",
-            "init",
+            "policy",
+            "preset",
             "project-path-allowlist",
             "--output",
             str(output_path),

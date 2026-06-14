@@ -290,7 +290,7 @@ def sign_bundle_lifecycle(
     current_state = str(lifecycle["state"])
     target_state = state or current_state
     if target_state != current_state:
-        raise ValueError("bundle sign does not change lifecycle state; use bundle promote")
+        raise ValueError("bundle sign does not change lifecycle state; use mcp policy lifecycle promote")
     now = _utc_now()
     manifest = dict(bundle.manifest)
     history = _lifecycle_history(lifecycle)

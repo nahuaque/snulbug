@@ -1,6 +1,6 @@
 # MCP learn mode
 
-`snulbug mcp learn` compiles captured MCP replay or audit logs into a
+`snulbug mcp policy learn` compiles captured MCP replay or audit logs into a
 least-privilege policy bundle. It is designed for the local-dev loop:
 
 1. Run a permissive or preset policy while developing.
@@ -18,7 +18,7 @@ uv run snulbug mcp proxy --config snulbug.toml
 Generate a policy bundle:
 
 ```bash
-uv run snulbug mcp learn traces/session.jsonl --out learned-policy.snulbug
+uv run snulbug mcp policy learn traces/session.jsonl --out learned-policy.snulbug
 ```
 
 The output bundle contains:
@@ -101,7 +101,7 @@ and generate a candidate amendment instead of editing the active policy in
 place:
 
 ```bash
-uv run snulbug mcp amend \
+uv run snulbug mcp policy amend \
   learned-policy.snulbug \
   traces/audit.jsonl \
   --out candidate-policy.snulbug

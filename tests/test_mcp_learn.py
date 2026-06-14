@@ -24,7 +24,7 @@ def test_learn_mcp_policy_generates_enforcing_bundle(tmp_path):
     assert result["tools"] == ["files.read_file"]
     assert validate_bundle(output)["ok"] is True
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["generated_by"] == "snulbug mcp learn"
+    assert manifest["generated_by"] == "snulbug mcp policy learn"
     assert manifest["learned"]["tools"] == ["files.read_file"]
     report = (output / "LEARNED.md").read_text(encoding="utf-8")
     assert "`files.read_file`" in report
@@ -73,11 +73,11 @@ def test_learn_mcp_policy_generates_enforcing_bundle(tmp_path):
     assert unknown_argument["decision"]["reason_code"] == "mcp.learn.argument_not_observed"
 
 
-def test_mcp_learn_cli_writes_bundle(tmp_path, capsys):
+def test_mcp_policy_learn_cli_writes_bundle(tmp_path, capsys):
     log = write_observed_log(tmp_path)
     output = tmp_path / "learned.snulbug"
 
-    status = simulator_main(["mcp", "learn", str(log), "--out", str(output), "--compact"])
+    status = simulator_main(["mcp", "policy", "learn", str(log), "--out", str(output), "--compact"])
 
     payload = json.loads(capsys.readouterr().out)
     assert status == 0
@@ -117,7 +117,7 @@ def test_amend_mcp_policy_generates_candidate_from_blocked_events(tmp_path):
     assert result["baseline"]["checked"] == 2
     assert validate_bundle(candidate)["ok"] is True
     manifest = json.loads((candidate / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["generated_by"] == "snulbug mcp amend"
+    assert manifest["generated_by"] == "snulbug mcp policy amend"
     assert manifest["learned"]["tools"] == ["files.read_file", "git.status"]
     report = (candidate / "AMEND.md").read_text(encoding="utf-8")
     assert "git.status" in report
@@ -164,14 +164,16 @@ def test_amend_mcp_policy_generates_candidate_from_blocked_events(tmp_path):
     assert risky_tool["decision"]["reason_code"] == "mcp.learn.tool_not_observed"
 
 
-def test_mcp_amend_cli_writes_candidate_bundle(tmp_path, capsys):
+def test_mcp_policy_amend_cli_writes_candidate_bundle(tmp_path, capsys):
     source_log = write_observed_log(tmp_path)
     learned = tmp_path / "learned.snulbug"
     learn_mcp_policy(source_log, learned)
     blocked_log = write_blocked_log(tmp_path, learned / "policy.lua")
     candidate = tmp_path / "candidate.snulbug"
 
-    status = simulator_main(["mcp", "amend", str(learned), str(blocked_log), "--out", str(candidate), "--compact"])
+    status = simulator_main(
+        ["mcp", "policy", "amend", str(learned), str(blocked_log), "--out", str(candidate), "--compact"]
+    )
 
     payload = json.loads(capsys.readouterr().out)
     assert status == 0

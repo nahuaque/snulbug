@@ -20,13 +20,13 @@ Copy a starter policy. For public tunnel use, `tunnel-safe` is the recommended
 default:
 
 ```bash
-uv run snulbug mcp init tunnel-safe --output policy.snulbug
+uv run snulbug mcp policy preset tunnel-safe --output policy.snulbug
 ```
 
 Or generate one with project-specific values:
 
 ```bash
-uv run snulbug mcp init tunnel-safe \
+uv run snulbug mcp policy preset tunnel-safe \
   --output policy.snulbug \
   --token local-dev-secret \
   --allow-tool safe_read_file \

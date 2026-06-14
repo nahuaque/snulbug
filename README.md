@@ -215,7 +215,7 @@ uv run snulbug mcp inspect traces/audit.jsonl --kind audit
 Learn a least-privilege bundle from observed traffic:
 
 ```bash
-uv run snulbug mcp learn traces/session.jsonl --out learned-policy.snulbug
+uv run snulbug mcp policy learn traces/session.jsonl --out learned-policy.snulbug
 uv run snulbug bundle validate learned-policy.snulbug
 uv run snulbug bundle test learned-policy.snulbug
 ```
@@ -233,7 +233,7 @@ When the learned policy blocks a legitimate request, generate a candidate
 amendment instead of editing the active policy in place:
 
 ```bash
-uv run snulbug mcp amend \
+uv run snulbug mcp policy amend \
   learned-policy.snulbug \
   traces/audit.jsonl \
   --out candidate-policy.snulbug

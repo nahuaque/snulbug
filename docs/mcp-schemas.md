@@ -111,7 +111,7 @@ surface must match exactly.
 Turn a discovered schema catalog into a reviewable policy bundle:
 
 ```bash
-uv run snulbug mcp schemas policy \
+uv run snulbug mcp policy from-schema \
   .snulbug/schemas/local-gateway.json \
   --out policy.schema.snulbug \
   --token "${SNULBUG_TOKEN}"
@@ -144,7 +144,7 @@ The generated policy:
 Customize the policy guardrails while generating:
 
 ```bash
-uv run snulbug mcp schemas policy \
+uv run snulbug mcp policy from-schema \
   .snulbug/schemas/local-gateway.json \
   --out policy.schema.snulbug \
   --allow-path README.md \

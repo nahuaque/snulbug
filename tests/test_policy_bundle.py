@@ -145,12 +145,14 @@ def test_bundle_lifecycle_cli_promotes_and_verifies(tmp_path, capsys, monkeypatc
     monkeypatch.setenv("SNULBUG_BUNDLE_SECRET", "dev-secret")
 
     promote_status = simulator_main(
-        ["bundle", "promote", str(bundle), "--to", "proposed", "--key-id", "dev", "--compact"]
+        ["mcp", "policy", "lifecycle", "promote", str(bundle), "--to", "proposed", "--key-id", "dev", "--compact"]
     )
     promote_output = json.loads(capsys.readouterr().out)
-    lifecycle_status = simulator_main(["bundle", "lifecycle", str(bundle), "--compact"])
+    lifecycle_status = simulator_main(["mcp", "policy", "lifecycle", "status", str(bundle), "--compact"])
     lifecycle_output = json.loads(capsys.readouterr().out)
-    verify_status = simulator_main(["bundle", "verify", str(bundle), "--state", "proposed", "--compact"])
+    verify_status = simulator_main(
+        ["mcp", "policy", "lifecycle", "verify", str(bundle), "--state", "proposed", "--compact"]
+    )
     verify_output = json.loads(capsys.readouterr().out)
 
     assert promote_status == 0

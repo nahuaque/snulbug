@@ -139,56 +139,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     bundle_pack.add_argument("--compact", action="store_true", help="emit compact JSON")
 
     bundle_states = ("observed", "proposed", "approved", "active")
-    bundle_lifecycle = bundle_subparsers.add_parser("lifecycle", help="inspect policy bundle lifecycle metadata")
-    bundle_lifecycle.add_argument("bundle", type=Path, help="path to a policy bundle directory")
-    bundle_lifecycle.add_argument("--compact", action="store_true", help="emit compact JSON")
-
-    bundle_sign = bundle_subparsers.add_parser("sign", help="sign current policy bundle lifecycle metadata")
-    bundle_sign.add_argument("bundle", type=Path, help="path to a policy bundle directory")
-    bundle_sign.add_argument("--state", choices=bundle_states, help="current lifecycle state to require before signing")
-    bundle_sign.add_argument("--key-id", required=True, help="bundle signing key id")
-    bundle_sign.add_argument(
-        "--secret-env",
-        default="SNULBUG_BUNDLE_SECRET",
-        help="environment variable containing the bundle signing secret",
-    )
-    bundle_sign.add_argument("--actor", help="actor to record in lifecycle history")
-    bundle_sign.add_argument("--note", help="note to record in lifecycle history")
-    bundle_sign.add_argument("--compact", action="store_true", help="emit compact JSON")
-
-    bundle_verify = bundle_subparsers.add_parser("verify", help="verify signed policy bundle lifecycle metadata")
-    bundle_verify.add_argument("bundle", type=Path, help="path to a policy bundle directory")
-    bundle_verify.add_argument("--state", choices=bundle_states, help="required lifecycle state")
-    bundle_verify.add_argument("--key-id", help="bundle signing key id; defaults to lifecycle signature key_id")
-    bundle_verify.add_argument(
-        "--secret-env",
-        default="SNULBUG_BUNDLE_SECRET",
-        help="environment variable containing the bundle signing secret",
-    )
-    bundle_verify.add_argument("--compact", action="store_true", help="emit compact JSON")
-
-    bundle_promote = bundle_subparsers.add_parser(
-        "promote",
-        help="advance a signed policy bundle through observed, proposed, approved, and active",
-    )
-    bundle_promote.add_argument("bundle", type=Path, help="path to a policy bundle directory")
-    bundle_promote.add_argument(
-        "--to",
-        choices=("next", "proposed", "approved", "active"),
-        default="next",
-        help="target lifecycle state; defaults to the next valid state",
-    )
-    bundle_promote.add_argument("--key-id", required=True, help="bundle signing key id")
-    bundle_promote.add_argument(
-        "--secret-env",
-        default="SNULBUG_BUNDLE_SECRET",
-        help="environment variable containing the bundle signing secret",
-    )
-    bundle_promote.add_argument("--actor", help="actor to record in lifecycle history")
-    bundle_promote.add_argument("--note", help="note to record in lifecycle history")
-    bundle_promote.add_argument("--instruction-limit", type=int, default=100_000)
-    bundle_promote.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
-    bundle_promote.add_argument("--compact", action="store_true", help="emit compact JSON")
 
     tunnel = subparsers.add_parser("tunnel", help="work with public tunnel interop checks")
     tunnel_subparsers = tunnel.add_subparsers(dest="tunnel_command", required=True)
@@ -269,8 +219,173 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     mcp_guide.add_argument("--compact", action="store_true", help="emit compact JSON")
 
-    mcp_presets = mcp_subparsers.add_parser("presets", help="list bundled MCP policy presets")
-    mcp_presets.add_argument("--compact", action="store_true", help="emit compact JSON")
+    mcp_policy = mcp_subparsers.add_parser("policy", help="create, amend, and manage MCP policy bundles")
+    mcp_policy_subparsers = mcp_policy.add_subparsers(dest="policy_command", required=True)
+    mcp_policy_preset = mcp_policy_subparsers.add_parser("preset", help="list or copy a bundled MCP policy preset")
+    mcp_policy_preset.add_argument(
+        "preset",
+        nargs="?",
+        help="preset name to copy; omit to list presets unless --output is supplied",
+    )
+    mcp_policy_preset.add_argument("--output", "--out", type=Path, help="output bundle directory")
+    mcp_policy_preset.add_argument("--force", action="store_true", help="overwrite the output directory when it exists")
+    mcp_policy_preset.add_argument("--token", help="bearer token to render into generated policy")
+    mcp_policy_preset.add_argument(
+        "--token-env",
+        help="context key used by generated policy for env-derived token lookup",
+    )
+    mcp_policy_preset.add_argument("--allow-tool", action="append", default=[], help="allowed MCP tool name")
+    mcp_policy_preset.add_argument("--allow-path", action="append", default=[], help="allowed project path or prefix")
+    mcp_policy_preset.add_argument("--rate-limit", type=int, help="fixed-window request limit")
+    mcp_policy_preset.add_argument("--rate-window", type=int, help="fixed-window duration in seconds")
+    mcp_policy_preset.add_argument("--list", action="store_true", help="list bundled presets")
+    mcp_policy_preset.add_argument("--compact", action="store_true", help="emit compact JSON")
+    mcp_policy_learn = mcp_policy_subparsers.add_parser(
+        "learn",
+        help="compile MCP replay or audit logs into a policy bundle",
+    )
+    mcp_policy_learn.add_argument("log", type=Path, help="JSONL replay or audit log")
+    mcp_policy_learn.add_argument("--out", "--output", type=Path, required=True, help="output policy bundle directory")
+    mcp_policy_learn.add_argument("--kind", choices=("auto", "record", "audit"), default="auto", help="input log type")
+    mcp_policy_learn.add_argument("--force", action="store_true", help="overwrite files in the output directory")
+    mcp_policy_learn.add_argument(
+        "--validate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="validate the generated policy bundle",
+    )
+    mcp_policy_learn.add_argument("--compact", action="store_true", help="emit compact JSON")
+    mcp_policy_amend = mcp_policy_subparsers.add_parser(
+        "amend",
+        help="propose a candidate amendment for a learned MCP policy",
+    )
+    mcp_policy_amend.add_argument("bundle", type=Path, help="source learned policy bundle")
+    mcp_policy_amend.add_argument("log", type=Path, help="JSONL replay or audit log containing blocked decisions")
+    mcp_policy_amend.add_argument(
+        "--out",
+        "--output",
+        type=Path,
+        required=True,
+        help="candidate output policy bundle directory",
+    )
+    mcp_policy_amend.add_argument("--kind", choices=("auto", "record", "audit"), default="auto", help="input log type")
+    mcp_policy_amend.add_argument("--force", action="store_true", help="overwrite files in the output directory")
+    mcp_policy_amend.add_argument(
+        "--allow-risky",
+        action="store_true",
+        help="allow risky shell/exec-style tool names into the candidate policy",
+    )
+    mcp_policy_amend.add_argument(
+        "--validate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="validate the generated policy bundle",
+    )
+    mcp_policy_amend.add_argument("--compact", action="store_true", help="emit compact JSON")
+    mcp_policy_from_schema = mcp_policy_subparsers.add_parser(
+        "from-schema",
+        help="generate a reviewable policy bundle from an MCP schema catalog",
+    )
+    mcp_policy_from_schema.add_argument("catalog", type=Path, help="MCP schema catalog JSON")
+    mcp_policy_from_schema.add_argument(
+        "--out",
+        "--output",
+        type=Path,
+        required=True,
+        help="output policy bundle directory",
+    )
+    mcp_policy_from_schema.add_argument("--force", action="store_true", help="overwrite the output directory")
+    mcp_policy_from_schema.add_argument("--token", help="bearer token to render into the generated policy")
+    mcp_policy_from_schema.add_argument(
+        "--token-env",
+        help="context key used by generated policy for env-derived token lookup",
+    )
+    mcp_policy_from_schema.add_argument(
+        "--allow-path",
+        action="append",
+        default=[],
+        help="allowed project path or prefix for path-like tool arguments; repeat to add multiple",
+    )
+    mcp_policy_from_schema.add_argument(
+        "--high-risk-action",
+        choices=("allow", "confirm", "reject"),
+        default="confirm",
+        help="action for tools scored high risk from the discovered schema",
+    )
+    mcp_policy_from_schema.add_argument(
+        "--validate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="validate and test the generated policy bundle",
+    )
+    mcp_policy_from_schema.add_argument("--compact", action="store_true", help="emit compact JSON")
+    mcp_policy_lifecycle = mcp_policy_subparsers.add_parser(
+        "lifecycle",
+        help="inspect, sign, verify, or promote policy bundle lifecycle state",
+    )
+    mcp_policy_lifecycle_subparsers = mcp_policy_lifecycle.add_subparsers(
+        dest="policy_lifecycle_command",
+        required=True,
+    )
+    mcp_policy_lifecycle_status = mcp_policy_lifecycle_subparsers.add_parser(
+        "status",
+        help="inspect policy bundle lifecycle metadata",
+    )
+    mcp_policy_lifecycle_status.add_argument("bundle", type=Path, help="path to a policy bundle directory")
+    mcp_policy_lifecycle_status.add_argument("--compact", action="store_true", help="emit compact JSON")
+    mcp_policy_lifecycle_sign = mcp_policy_lifecycle_subparsers.add_parser(
+        "sign",
+        help="sign current policy bundle lifecycle metadata",
+    )
+    mcp_policy_lifecycle_sign.add_argument("bundle", type=Path, help="path to a policy bundle directory")
+    mcp_policy_lifecycle_sign.add_argument("--state", choices=bundle_states, help="current lifecycle state to require")
+    mcp_policy_lifecycle_sign.add_argument("--key-id", required=True, help="bundle signing key id")
+    mcp_policy_lifecycle_sign.add_argument(
+        "--secret-env",
+        default="SNULBUG_BUNDLE_SECRET",
+        help="environment variable containing the bundle signing secret",
+    )
+    mcp_policy_lifecycle_sign.add_argument("--actor", help="actor to record in lifecycle history")
+    mcp_policy_lifecycle_sign.add_argument("--note", help="note to record in lifecycle history")
+    mcp_policy_lifecycle_sign.add_argument("--compact", action="store_true", help="emit compact JSON")
+    mcp_policy_lifecycle_verify = mcp_policy_lifecycle_subparsers.add_parser(
+        "verify",
+        help="verify signed policy bundle lifecycle metadata",
+    )
+    mcp_policy_lifecycle_verify.add_argument("bundle", type=Path, help="path to a policy bundle directory")
+    mcp_policy_lifecycle_verify.add_argument("--state", choices=bundle_states, help="required lifecycle state")
+    mcp_policy_lifecycle_verify.add_argument(
+        "--key-id",
+        help="bundle signing key id; defaults to lifecycle signature key_id",
+    )
+    mcp_policy_lifecycle_verify.add_argument(
+        "--secret-env",
+        default="SNULBUG_BUNDLE_SECRET",
+        help="environment variable containing the bundle signing secret",
+    )
+    mcp_policy_lifecycle_verify.add_argument("--compact", action="store_true", help="emit compact JSON")
+    mcp_policy_lifecycle_promote = mcp_policy_lifecycle_subparsers.add_parser(
+        "promote",
+        help="advance a signed policy bundle through observed, proposed, approved, and active",
+    )
+    mcp_policy_lifecycle_promote.add_argument("bundle", type=Path, help="path to a policy bundle directory")
+    mcp_policy_lifecycle_promote.add_argument(
+        "--to",
+        choices=("next", *bundle_states),
+        default="next",
+        help="target lifecycle state; defaults to next",
+    )
+    mcp_policy_lifecycle_promote.add_argument("--key-id", required=True, help="bundle signing key id")
+    mcp_policy_lifecycle_promote.add_argument(
+        "--secret-env",
+        default="SNULBUG_BUNDLE_SECRET",
+        help="environment variable containing the bundle signing secret",
+    )
+    mcp_policy_lifecycle_promote.add_argument("--actor", help="actor to record in lifecycle history")
+    mcp_policy_lifecycle_promote.add_argument("--note", help="note to record in lifecycle history")
+    mcp_policy_lifecycle_promote.add_argument("--instruction-limit", type=int, default=100_000)
+    mcp_policy_lifecycle_promote.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
+    mcp_policy_lifecycle_promote.add_argument("--compact", action="store_true", help="emit compact JSON")
 
     mcp_quickstart = mcp_subparsers.add_parser("quickstart", help="create a local MCP policy proxy starter")
     mcp_quickstart.add_argument("--directory", "--dir", type=Path, default=Path("."), help="starter output directory")
@@ -542,18 +657,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     mcp_share.add_argument("--compact", action="store_true", help="emit compact JSON")
 
-    mcp_init = mcp_subparsers.add_parser("init", help="copy a bundled MCP policy preset")
-    mcp_init.add_argument("preset", nargs="?", default="local-dev-safe", help="preset name to copy")
-    mcp_init.add_argument("--output", type=Path, help="output bundle directory")
-    mcp_init.add_argument("--force", action="store_true", help="overwrite the output directory when it exists")
-    mcp_init.add_argument("--token", help="bearer token to render into generated policy")
-    mcp_init.add_argument("--token-env", help="context key used by generated policy for env-derived token lookup")
-    mcp_init.add_argument("--allow-tool", action="append", default=[], help="allowed MCP tool name")
-    mcp_init.add_argument("--allow-path", action="append", default=[], help="allowed project path or prefix")
-    mcp_init.add_argument("--rate-limit", type=int, help="fixed-window request limit")
-    mcp_init.add_argument("--rate-window", type=int, help="fixed-window duration in seconds")
-    mcp_init.add_argument("--compact", action="store_true", help="emit compact JSON")
-
     mcp_config = mcp_subparsers.add_parser("config", help="work with MCP TOML config files")
     mcp_config_subparsers = mcp_config.add_subparsers(dest="config_command", required=True)
     mcp_config_init = mcp_config_subparsers.add_parser("init", help="write a starter snulbug.toml config")
@@ -651,44 +754,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     mcp_schemas_diff.add_argument("--report-out", type=Path, help="write a Markdown schema diff report")
     mcp_schemas_diff.add_argument("--compact", action="store_true", help="emit compact JSON")
-    mcp_schemas_policy = mcp_schemas_subparsers.add_parser(
-        "policy",
-        help="generate a reviewable policy bundle from an MCP schema catalog",
-    )
-    mcp_schemas_policy.add_argument("catalog", type=Path, help="MCP schema catalog JSON")
-    mcp_schemas_policy.add_argument(
-        "--out",
-        "--output",
-        type=Path,
-        required=True,
-        help="output policy bundle directory",
-    )
-    mcp_schemas_policy.add_argument("--force", action="store_true", help="overwrite the output directory")
-    mcp_schemas_policy.add_argument("--token", help="bearer token to render into the generated policy")
-    mcp_schemas_policy.add_argument(
-        "--token-env",
-        help="context key used by generated policy for env-derived token lookup",
-    )
-    mcp_schemas_policy.add_argument(
-        "--allow-path",
-        action="append",
-        default=[],
-        help="allowed project path or prefix for path-like tool arguments; repeat to add multiple",
-    )
-    mcp_schemas_policy.add_argument(
-        "--high-risk-action",
-        choices=("allow", "confirm", "reject"),
-        default="confirm",
-        help="action for tools scored high risk from the discovered schema",
-    )
-    mcp_schemas_policy.add_argument(
-        "--validate",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="validate and test the generated policy bundle",
-    )
-    mcp_schemas_policy.add_argument("--compact", action="store_true", help="emit compact JSON")
-
     mcp_fabric = mcp_subparsers.add_parser("fabric", help="inspect and verify declarative MCP fabric config")
     mcp_fabric_subparsers = mcp_fabric.add_subparsers(dest="fabric_command", required=True)
     mcp_fabric_status = mcp_fabric_subparsers.add_parser("status", help="summarize declared MCP fabric topology")
@@ -1237,44 +1302,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_impact.add_argument("--no-fail", action="store_true", help="return exit code 0 even when impact has errors")
     mcp_impact.add_argument("--compact", action="store_true", help="emit compact JSON")
 
-    mcp_learn = mcp_subparsers.add_parser("learn", help="compile MCP replay or audit logs into a policy bundle")
-    mcp_learn.add_argument("log", type=Path, help="JSONL replay or audit log")
-    mcp_learn.add_argument("--out", "--output", type=Path, required=True, help="output policy bundle directory")
-    mcp_learn.add_argument("--kind", choices=("auto", "record", "audit"), default="auto", help="input log type")
-    mcp_learn.add_argument("--force", action="store_true", help="overwrite files in the output directory")
-    mcp_learn.add_argument(
-        "--validate",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="validate the generated policy bundle",
-    )
-    mcp_learn.add_argument("--compact", action="store_true", help="emit compact JSON")
-
-    mcp_amend = mcp_subparsers.add_parser("amend", help="propose a candidate amendment for a learned MCP policy")
-    mcp_amend.add_argument("bundle", type=Path, help="source learned policy bundle")
-    mcp_amend.add_argument("log", type=Path, help="JSONL replay or audit log containing blocked decisions")
-    mcp_amend.add_argument(
-        "--out",
-        "--output",
-        type=Path,
-        required=True,
-        help="candidate output policy bundle directory",
-    )
-    mcp_amend.add_argument("--kind", choices=("auto", "record", "audit"), default="auto", help="input log type")
-    mcp_amend.add_argument("--force", action="store_true", help="overwrite files in the output directory")
-    mcp_amend.add_argument(
-        "--allow-risky",
-        action="store_true",
-        help="allow risky shell/exec-style tool names into the candidate policy",
-    )
-    mcp_amend.add_argument(
-        "--validate",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="validate the generated policy bundle",
-    )
-    mcp_amend.add_argument("--compact", action="store_true", help="emit compact JSON")
-
     mcp_lab = mcp_subparsers.add_parser("lab", help="run the one-command local MCP policy lab")
     mcp_lab.add_argument("--output-dir", type=Path, default=Path(".snulbug-lab"), help="lab artifact directory")
     mcp_lab.add_argument(
@@ -1485,13 +1512,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "bundle":
         from .bundle import (
-            inspect_bundle_lifecycle,
             pack_bundle,
-            promote_bundle_lifecycle,
-            sign_bundle_lifecycle,
             test_bundle,
             validate_bundle,
-            verify_bundle_lifecycle,
         )
 
         try:
@@ -1508,49 +1531,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 status = 0 if result["ok"] else 1
             elif args.bundle_command == "pack":
                 result = pack_bundle(args.bundle, args.output)
-                status = 0 if result["ok"] else 1
-            elif args.bundle_command == "lifecycle":
-                result = inspect_bundle_lifecycle(args.bundle)
-                status = 0
-            elif args.bundle_command == "sign":
-                result = sign_bundle_lifecycle(
-                    args.bundle,
-                    secret=_read_required_env(args.secret_env),
-                    key_id=args.key_id,
-                    state=args.state,
-                    actor=args.actor,
-                    note=args.note,
-                )
-                status = 0
-            elif args.bundle_command == "verify":
-                lifecycle = inspect_bundle_lifecycle(args.bundle)
-                signature = lifecycle.get("signature") if isinstance(lifecycle, Mapping) else None
-                signature_key_id = signature.get("key_id") if isinstance(signature, Mapping) else None
-                key_id = args.key_id or signature_key_id
-                if not isinstance(key_id, str) or not key_id:
-                    raise ValueError("bundle key_id is required; pass --key-id or include a lifecycle signature key_id")
-                result = {
-                    "ok": True,
-                    "bundle": str(args.bundle),
-                    "verified": verify_bundle_lifecycle(
-                        args.bundle,
-                        secrets={key_id: _read_required_env(args.secret_env)},
-                        required_state=args.state,
-                    ),
-                }
-                status = 0
-            elif args.bundle_command == "promote":
-                memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
-                result = promote_bundle_lifecycle(
-                    args.bundle,
-                    to_state=args.to,
-                    secret=_read_required_env(args.secret_env),
-                    key_id=args.key_id,
-                    actor=args.actor,
-                    note=args.note,
-                    instruction_limit=args.instruction_limit,
-                    memory_limit_bytes=memory_limit,
-                )
                 status = 0 if result["ok"] else 1
             else:
                 parser.error(f"unknown bundle command: {args.bundle_command}")
@@ -1688,9 +1668,161 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.stdout.write(output)
             sys.stdout.write("\n")
             return status
-        elif args.mcp_command == "presets":
-            result = {"presets": list_builtin_presets()}
-            status = 0
+        elif args.mcp_command == "policy":
+            try:
+                if args.policy_command == "preset":
+                    customized = any(
+                        (
+                            args.token,
+                            args.token_env,
+                            args.allow_tool,
+                            args.allow_path,
+                            args.rate_limit,
+                            args.rate_window,
+                        )
+                    )
+                    if args.list or (args.preset is None and args.output is None and not customized):
+                        result = {"presets": list_builtin_presets()}
+                        status = 0
+                    else:
+                        preset = args.preset or "local-dev-safe"
+                        output = args.output or Path(f"{preset}.snulbug")
+                        result = generate_mcp_preset(
+                            preset,
+                            output,
+                            options=McpPolicyOptions(
+                                token=args.token,
+                                token_env=args.token_env,
+                                allowed_tools=args.allow_tool or None,
+                                allowed_paths=args.allow_path or None,
+                                rate_limit=args.rate_limit,
+                                rate_window=args.rate_window,
+                            ),
+                            force=args.force,
+                        )
+                        result["next_steps"] = [
+                            f"uv run snulbug bundle validate {output}",
+                            f"uv run snulbug bundle test {output}",
+                        ]
+                        status = 0
+                elif args.policy_command == "learn":
+                    from .learn import learn_mcp_policy
+
+                    result = learn_mcp_policy(
+                        args.log,
+                        args.out,
+                        kind=args.kind,
+                        force=args.force,
+                        validate=args.validate,
+                    )
+                    status = 0 if result["ok"] else 1
+                elif args.policy_command == "amend":
+                    from .learn import amend_mcp_policy
+
+                    result = amend_mcp_policy(
+                        args.bundle,
+                        args.log,
+                        args.out,
+                        kind=args.kind,
+                        force=args.force,
+                        validate=args.validate,
+                        allow_risky=args.allow_risky,
+                    )
+                    status = 0 if result["ok"] else 1
+                elif args.policy_command == "from-schema":
+                    from .mcp_schema_policy import (
+                        SchemaPolicyOptions,
+                        format_mcp_schema_policy_report,
+                        generate_mcp_schema_policy,
+                    )
+
+                    result = generate_mcp_schema_policy(
+                        args.catalog,
+                        args.out,
+                        options=SchemaPolicyOptions(
+                            token=args.token,
+                            token_env=args.token_env,
+                            allowed_paths=args.allow_path,
+                            high_risk_action=args.high_risk_action,
+                        ),
+                        force=args.force,
+                        validate=args.validate,
+                    )
+                    status = 0 if result["ok"] else 1
+                    if not args.compact:
+                        sys.stdout.write(format_mcp_schema_policy_report(result))
+                        sys.stdout.write("\n")
+                        return status
+                elif args.policy_command == "lifecycle":
+                    from .bundle import (
+                        inspect_bundle_lifecycle,
+                        promote_bundle_lifecycle,
+                        sign_bundle_lifecycle,
+                        verify_bundle_lifecycle,
+                    )
+
+                    if args.policy_lifecycle_command == "status":
+                        result = inspect_bundle_lifecycle(args.bundle)
+                        status = 0
+                    elif args.policy_lifecycle_command == "sign":
+                        result = sign_bundle_lifecycle(
+                            args.bundle,
+                            secret=_read_required_env(args.secret_env),
+                            key_id=args.key_id,
+                            state=args.state,
+                            actor=args.actor,
+                            note=args.note,
+                        )
+                        status = 0
+                    elif args.policy_lifecycle_command == "verify":
+                        lifecycle = inspect_bundle_lifecycle(args.bundle)
+                        signature = lifecycle.get("signature") if isinstance(lifecycle, Mapping) else None
+                        signature_key_id = signature.get("key_id") if isinstance(signature, Mapping) else None
+                        key_id = args.key_id or signature_key_id
+                        if not isinstance(key_id, str) or not key_id:
+                            raise ValueError(
+                                "bundle key_id is required; pass --key-id or include a lifecycle signature key_id"
+                            )
+                        result = {
+                            "ok": True,
+                            "bundle": str(args.bundle),
+                            "verified": verify_bundle_lifecycle(
+                                args.bundle,
+                                secrets={key_id: _read_required_env(args.secret_env)},
+                                required_state=args.state,
+                            ),
+                        }
+                        status = 0
+                    elif args.policy_lifecycle_command == "promote":
+                        memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
+                        result = promote_bundle_lifecycle(
+                            args.bundle,
+                            to_state=args.to,
+                            secret=_read_required_env(args.secret_env),
+                            key_id=args.key_id,
+                            actor=args.actor,
+                            note=args.note,
+                            instruction_limit=args.instruction_limit,
+                            memory_limit_bytes=memory_limit,
+                        )
+                        status = 0 if result["ok"] else 1
+                    else:
+                        parser.error(f"unknown mcp policy lifecycle command: {args.policy_lifecycle_command}")
+                        return 2
+                else:
+                    parser.error(f"unknown mcp policy command: {args.policy_command}")
+                    return 2
+            except Exception as exc:
+                result = {"ok": False, "error": str(exc)}
+                if hasattr(args, "bundle") and args.bundle is not None:
+                    result["bundle"] = str(args.bundle)
+                if hasattr(args, "log") and args.log is not None:
+                    result["log"] = str(args.log)
+                if hasattr(args, "out") and args.out is not None:
+                    result["output"] = str(args.out)
+                if hasattr(args, "catalog") and args.catalog is not None:
+                    result["catalog"] = str(args.catalog)
+                status = 1
         elif args.mcp_command == "share":
             from .share import create_mcp_share
 
@@ -1903,36 +2035,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     return 1
             parser.error(f"unknown mcp codespace command: {args.codespace_command}")
             return 2
-        elif args.mcp_command == "init":
-            output = args.output or Path(f"{args.preset}.snulbug")
-            try:
-                result = generate_mcp_preset(
-                    args.preset,
-                    output,
-                    options=McpPolicyOptions(
-                        token=args.token,
-                        token_env=args.token_env,
-                        allowed_tools=args.allow_tool or None,
-                        allowed_paths=args.allow_path or None,
-                        rate_limit=args.rate_limit,
-                        rate_window=args.rate_window,
-                    ),
-                    force=args.force,
-                )
-                result["next_steps"] = [
-                    f"uv run snulbug bundle validate {output}",
-                    f"uv run snulbug bundle test {output}",
-                ]
-                status = 0
-            except Exception as exc:
-                result = {"ok": False, "preset": args.preset, "output": str(output), "error": str(exc)}
-                status = 1
         elif args.mcp_command == "config":
             if args.config_command == "init":
                 try:
                     result = write_sample_config(args.output, force=args.force)
                     result["next_steps"] = [
-                        "uv run snulbug mcp init local-dev-safe --output policy.snulbug",
+                        "uv run snulbug mcp policy preset local-dev-safe --output policy.snulbug",
                         f"uv run snulbug mcp proxy --config {args.output}",
                     ]
                     status = 0
@@ -1985,11 +2093,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     result["url"] = args.url
                 status = 1
         elif args.mcp_command == "schemas":
-            from .mcp_schema_policy import (
-                SchemaPolicyOptions,
-                format_mcp_schema_policy_report,
-                generate_mcp_schema_policy,
-            )
             from .mcp_schemas import (
                 diff_mcp_schema_catalogs,
                 discover_mcp_schemas,
@@ -2026,24 +2129,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                         result["report_out"] = str(args.report_out)
                     if not args.compact:
                         sys.stdout.write(format_mcp_schema_diff_report(result))
-                        sys.stdout.write("\n")
-                        return status
-                elif args.schemas_command == "policy":
-                    result = generate_mcp_schema_policy(
-                        args.catalog,
-                        args.out,
-                        options=SchemaPolicyOptions(
-                            token=args.token,
-                            token_env=args.token_env,
-                            allowed_paths=args.allow_path,
-                            high_risk_action=args.high_risk_action,
-                        ),
-                        force=args.force,
-                        validate=args.validate,
-                    )
-                    status = 0 if result["ok"] else 1
-                    if not args.compact:
-                        sys.stdout.write(format_mcp_schema_policy_report(result))
                         sys.stdout.write("\n")
                         return status
                 else:
@@ -2558,44 +2643,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 status = 0 if args.no_fail or result["ok"] else 1
             except Exception as exc:
                 result = {"ok": False, "log": str(args.log), "error": str(exc)}
-                status = 1
-        elif args.mcp_command == "learn":
-            from .learn import learn_mcp_policy
-
-            try:
-                result = learn_mcp_policy(
-                    args.log,
-                    args.out,
-                    kind=args.kind,
-                    force=args.force,
-                    validate=args.validate,
-                )
-                status = 0 if result["ok"] else 1
-            except Exception as exc:
-                result = {"ok": False, "log": str(args.log), "output": str(args.out), "error": str(exc)}
-                status = 1
-        elif args.mcp_command == "amend":
-            from .learn import amend_mcp_policy
-
-            try:
-                result = amend_mcp_policy(
-                    args.bundle,
-                    args.log,
-                    args.out,
-                    kind=args.kind,
-                    force=args.force,
-                    validate=args.validate,
-                    allow_risky=args.allow_risky,
-                )
-                status = 0 if result["ok"] else 1
-            except Exception as exc:
-                result = {
-                    "ok": False,
-                    "bundle": str(args.bundle),
-                    "log": str(args.log),
-                    "output": str(args.out),
-                    "error": str(exc),
-                }
                 status = 1
         elif args.mcp_command == "lab":
             from .lab import run_mcp_lab

@@ -5,13 +5,13 @@
 List presets:
 
 ```bash
-uv run snulbug mcp presets
+uv run snulbug mcp policy preset
 ```
 
 Copy the default local-dev policy:
 
 ```bash
-uv run snulbug mcp init --output policy.snulbug
+uv run snulbug mcp policy preset --output policy.snulbug
 ```
 
 Create the full local proxy starter instead:
@@ -23,13 +23,13 @@ uv run snulbug mcp quickstart
 Copy a specific preset:
 
 ```bash
-uv run snulbug mcp init tool-allowlist --output policy.snulbug
+uv run snulbug mcp policy preset tool-allowlist --output policy.snulbug
 ```
 
 Generate a tailored preset:
 
 ```bash
-uv run snulbug mcp init local-dev-safe \
+uv run snulbug mcp policy preset local-dev-safe \
   --output policy.snulbug \
   --token local-dev-secret \
   --allow-tool safe_read_file \
@@ -89,7 +89,7 @@ allows only configured safe tools, and rate-limits traffic. Use it when a client
 should inspect local context without making write-like MCP calls.
 
 ```bash
-uv run snulbug mcp init read-only-local-dev --output policy.snulbug
+uv run snulbug mcp policy preset read-only-local-dev --output policy.snulbug
 ```
 
 `no-shell-tools` requires bearer auth and blocks tool names that look like shell
@@ -97,7 +97,7 @@ or process execution, such as `shell_exec`, `run_command`, `terminal`, `bash`,
 `powershell`, `spawn`, or `system`.
 
 ```bash
-uv run snulbug mcp init no-shell-tools --output policy.snulbug
+uv run snulbug mcp policy preset no-shell-tools --output policy.snulbug
 ```
 
 `project-path-allowlist` requires bearer auth, applies a tool allowlist, and
@@ -105,7 +105,7 @@ rejects `params.arguments.path` / `params.arguments.paths` outside configured
 project paths.
 
 ```bash
-uv run snulbug mcp init project-path-allowlist \
+uv run snulbug mcp policy preset project-path-allowlist \
   --output policy.snulbug \
   --allow-tool safe_read_file \
   --allow-path README.md \
@@ -121,7 +121,7 @@ and blocks write-like tools from targeting generated/cache paths such as
 Allowed decisions include `context.workspace.path_class` for audit/reporting.
 
 ```bash
-uv run snulbug mcp init workspace-firewall \
+uv run snulbug mcp policy preset workspace-firewall \
   --output policy.snulbug \
   --allow-tool safe_read_file \
   --allow-tool list_project_files \

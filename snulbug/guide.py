@@ -287,7 +287,7 @@ def _workflows() -> dict[str, dict[str, Any]]:
                 {
                     "id": "learn-policy",
                     "title": "Learn least privilege from observed traffic",
-                    "command": "snulbug mcp learn traces/session.jsonl --out learned-policy.snulbug",
+                    "command": "snulbug mcp policy learn traces/session.jsonl --out learned-policy.snulbug",
                     "requires": ["representative replay or audit log"],
                     "produces": ["learned-policy.snulbug/"],
                     "success_signals": ["learned bundle validates", "learned bundle tests pass"],
@@ -313,7 +313,7 @@ def _workflows() -> dict[str, dict[str, Any]]:
                     "title": "Generate a candidate amendment for legitimate blocks",
                     "command": "\n".join(
                         [
-                            "snulbug mcp amend learned-policy.snulbug traces/audit.jsonl \\",
+                            "snulbug mcp policy amend learned-policy.snulbug traces/audit.jsonl \\",
                             "  --out candidate-policy.snulbug",
                         ]
                     ),
@@ -415,7 +415,7 @@ def _workflows() -> dict[str, dict[str, Any]]:
                 {
                     "id": "learn-facade-policy",
                     "title": "Learn a facade-aware policy",
-                    "command": "snulbug mcp learn traces/session.jsonl --out learned-facade-policy.snulbug",
+                    "command": "snulbug mcp policy learn traces/session.jsonl --out learned-facade-policy.snulbug",
                     "requires": ["facade traffic recorded in traces/session.jsonl"],
                     "produces": ["learned-facade-policy.snulbug/"],
                     "success_signals": ["learned tools include upstream namespaces"],

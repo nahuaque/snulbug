@@ -45,7 +45,7 @@ Use this when the MCP client runs on the same machine as the local MCP server.
 Create a policy and config:
 
 ```bash
-uv run snulbug mcp init local-dev-safe \
+uv run snulbug mcp policy preset local-dev-safe \
   --output policy.snulbug \
   --token local-dev-secret \
   --allow-tool safe_read_file \
@@ -434,7 +434,7 @@ arguments.
 Start with the tools the client should actually call:
 
 ```bash
-uv run snulbug mcp init local-dev-safe \
+uv run snulbug mcp policy preset local-dev-safe \
   --output policy.snulbug \
   --token local-dev-secret \
   --allow-tool read_repo \
@@ -462,7 +462,7 @@ not possible, keep the proxy bound to `127.0.0.1` and avoid public tunnels.
 For a loopback-only workflow, you can use `tool-allowlist`:
 
 ```bash
-uv run snulbug mcp init tool-allowlist \
+uv run snulbug mcp policy preset tool-allowlist \
   --output policy.snulbug \
   --allow-tool safe_read_file \
   --allow-tool list_project_files

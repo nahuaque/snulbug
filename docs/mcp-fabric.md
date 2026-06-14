@@ -675,7 +675,7 @@ and upstreams are already running and you want the pack to include live MCP
 ## Learn Mode
 
 `learn` compiles topology-aware replay or audit logs into a reviewable fabric
-profile. It is the fabric-level companion to `snulbug mcp learn`: policy learn
+profile. It is the fabric-level companion to `snulbug mcp policy learn`: policy learn
 infers least-privilege tool rules, while fabric learn infers the gateway,
 upstreams, routes, transports, bridge metadata, and manifest identities observed
 while proxying.
@@ -710,7 +710,7 @@ snulbug mcp fabric doctor --config learned-fabric/snulbug.fabric.toml
 ```
 
 Use this after a live facade recording session to convert "what actually routed
-where" into a declarative fabric baseline. Then run `snulbug mcp learn` on the
+where" into a declarative fabric baseline. Then run `snulbug mcp policy learn` on the
 same session log if you also want a least-privilege Lua policy for the observed
 tools.
 
