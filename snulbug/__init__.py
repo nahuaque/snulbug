@@ -138,7 +138,7 @@ from .gateway_templates import GatewayTemplate, render_gateway_toml
 from .guide import MCP_GUIDE_WORKFLOWS, build_mcp_guide, format_mcp_guide
 from .impact import analyze_mcp_impact, format_mcp_impact_report
 from .inspection import format_mcp_inspection_report, inspect_mcp_log
-from .lab import run_mcp_lab
+from .lab import format_mcp_auth_lab_report, run_mcp_auth_lab, run_mcp_lab
 from .learn import amend_mcp_policy, learn_mcp_policy
 from .leases import LeasePolicyConfig, create_lease, list_leases, revoke_lease
 from .manifests import load_manifest, manifest_digest, sign_upstream_manifest, verify_upstream_manifest, write_manifest
@@ -440,6 +440,7 @@ __all__ = [
     "format_mcp_schema_policy_report",
     "format_mcp_tool_diff_report",
     "format_mcp_tool_snapshot_report",
+    "format_mcp_auth_lab_report",
     "format_event_sinks_toml",
     "format_scaffold_report",
     "format_session_report",
@@ -492,6 +493,7 @@ __all__ = [
     "render_gateway_toml",
     "replay_record_log",
     "revoke_lease",
+    "run_mcp_auth_lab",
     "run_mcp_lab",
     "serve_codespace_demo",
     "run_fabric_controller",

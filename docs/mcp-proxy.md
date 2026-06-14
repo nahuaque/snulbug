@@ -357,6 +357,15 @@ required MCP scopes, active task lease, and Lua approval. Audit records include
 `metadata.auth`, `metadata.lease`, and `metadata.access` so this composition is
 reviewable after the session.
 
+You can exercise that model locally with:
+
+```bash
+uv run snulbug mcp share auth lab
+```
+
+The lab writes `.snulbug-auth-lab/AUTH_LAB.md` plus the generated config,
+policy, JWKS, demo tokens, lease file, request fixtures, and redacted logs.
+
 ### Token Anti-Passthrough
 
 OAuth tokens are terminated at snulbug. By default,

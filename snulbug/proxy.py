@@ -2451,6 +2451,7 @@ def _composed_access_metadata(scope: Scope, *, lease: Mapping[str, Any] | None =
     scope_allowed = None if not scope_map_enabled else scope_map.get("allowed") is True
     lease_enabled = lease_metadata.get("enabled") is True
     lease_required = lease_metadata.get("required") is True
+    lease_required_for_request = lease_required and lease_metadata.get("method") == "tools/call"
     if lease_enabled and lease_metadata.get("checked"):
         lease_allowed = lease_metadata.get("allowed") is True
     else:
@@ -2461,7 +2462,7 @@ def _composed_access_metadata(scope: Scope, *, lease: Mapping[str, Any] | None =
     allowed = (
         (not oauth_enabled or oauth_allowed is True)
         and (not scope_map_enabled or scope_allowed is True)
-        and (not lease_required or lease_allowed is True)
+        and (not lease_required_for_request or lease_allowed is True)
         and lua_allowed
     )
     reason_code = "access.allowed"
@@ -2469,11 +2470,11 @@ def _composed_access_metadata(scope: Scope, *, lease: Mapping[str, Any] | None =
         reason_code = str(auth.get("reason_code") or "oauth.rejected")
     elif scope_map_enabled and scope_allowed is not True:
         reason_code = str(scope_map.get("reason_code") or "oauth.scope_map_denied")
-    elif lease_required and lease_allowed is not True:
+    elif lease_required_for_request and lease_allowed is not True:
         reason_code = str(lease_metadata.get("reason_code") or "lease.required")
     elif not lua_allowed:
         reason_code = str(decision.get("reason_code") or "lua.rejected")
-    elif oauth_enabled and lease_required:
+    elif oauth_enabled and lease_required_for_request:
         reason_code = "access.oauth_scope_lease_lua_allowed"
 
     return _drop_empty(
@@ -2506,6 +2507,7 @@ def _composed_access_metadata(scope: Scope, *, lease: Mapping[str, Any] | None =
                 {
                     "enabled": lease_enabled,
                     "required": lease_required,
+                    "required_for_request": lease_required_for_request,
                     "checked": lease_metadata.get("checked"),
                     "allowed": lease_allowed,
                     "id": lease_metadata.get("id"),

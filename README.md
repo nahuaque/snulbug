@@ -174,6 +174,17 @@ The lab creates fake MCP upstreams behind one facade, records traffic, learns a
 least-privilege policy, amends a blocked request into a candidate policy, and
 writes replay/audit/report artifacts under `.snulbug-lab/`.
 
+Run the OAuth auth lab when you want to prove the stronger public-share model:
+valid OAuth subject, mapped MCP tool scope, active task lease, Lua approval, and
+redacted audit output.
+
+```bash
+uv run snulbug mcp share auth lab
+```
+
+It writes a mock issuer, JWKS, demo tokens, lease file, proxy config, requests,
+session/audit logs, and `AUTH_LAB.md` under `.snulbug-auth-lab/`.
+
 For Codespaces, start the bundled mock MCP server in the Codespace terminal:
 
 ```bash

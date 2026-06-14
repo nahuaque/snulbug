@@ -64,6 +64,10 @@ metadata, issuer/JWKS reachability, public URL and audience alignment, raw-token
 logging safeguards, Cloudflare Access conflicts, and whether scope maps refer to
 actual discovered MCP tools.
 
+Run `uv run snulbug mcp share auth lab` to inspect the composed auth path in a
+self-contained demo. It proves one allowed call and two denied calls across
+OAuth scopes, task leases, Lua policy, and redacted audit evidence.
+
 It can also reduce risk from a compromised or surprising upstream MCP server by
 redacting likely secrets from results, detecting suspicious instruction-like
 content, and pinning `tools/list` descriptions and schemas. These controls are

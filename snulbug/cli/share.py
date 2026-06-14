@@ -120,6 +120,23 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
         help="probe protected-resource metadata, issuer metadata, JWKS, and tools/list",
     )
     add_compact_arg(share_auth_doctor)
+    share_auth_lab = share_auth_subparsers.add_parser(
+        "lab",
+        help="run a local OAuth scope + task lease auth lab",
+    )
+    share_auth_lab.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path(".snulbug-auth-lab"),
+        help="auth lab artifact directory",
+    )
+    share_auth_lab.add_argument(
+        "--force",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="overwrite the auth lab artifact directory",
+    )
+    add_compact_arg(share_auth_lab)
 
     share_doctor = share_subparsers.add_parser("doctor", help="verify a generated share session")
     share_doctor.add_argument("directory", type=Path, help="share session directory")
@@ -432,6 +449,14 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                 )
                 status = 0 if result["ok"] else 1
                 write_result_output(result, compact=args.compact, formatter=format_share_auth_doctor_report)
+                return status
+            if args.share_auth_command == "lab":
+                from ..lab import run_mcp_auth_lab
+
+                result = run_mcp_auth_lab(args.output_dir, force=args.force, emit=not args.compact)
+                status = 0 if result["ok"] else 1
+                if args.compact:
+                    write_generated_session_output(result, compact=True)
                 return status
             parser.error(f"unknown mcp share auth command: {args.share_auth_command}")
             return 2
