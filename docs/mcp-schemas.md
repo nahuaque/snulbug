@@ -106,6 +106,56 @@ uv run snulbug mcp schemas diff \
 Use `--fail-on removed` for compatibility gates, or `--fail-on any` when an MCP
 surface must match exactly.
 
+## Generate a policy from a catalog
+
+Turn a discovered schema catalog into a reviewable policy bundle:
+
+```bash
+uv run snulbug mcp schemas policy \
+  .snulbug/schemas/local-gateway.json \
+  --out policy.schema.snulbug \
+  --token "${SNULBUG_TOKEN}"
+```
+
+The generated bundle contains:
+
+- `policy.lua`: deny-by-default MCP policy derived from the schema catalog
+- `manifest.json`: bundle manifest with schema hash, risk summary, and lease suggestions
+- `SCHEMA_POLICY.md`: review report with tool risk annotations
+- `fixtures/`: bundle fixtures proving declared list calls pass and unknown tools fail
+
+Validate it like any other policy bundle:
+
+```bash
+uv run snulbug bundle validate policy.schema.snulbug
+uv run snulbug bundle test policy.schema.snulbug
+```
+
+The generated policy:
+
+- allows only declared MCP methods and tools
+- rejects unknown tools by default
+- checks required tool arguments from `inputSchema`
+- rejects extra arguments when `additionalProperties: false`
+- validates simple scalar argument types and enum values
+- constrains path-like arguments to project path prefixes
+- sends high-risk tools to `confirm` by default
+
+Customize the policy guardrails while generating:
+
+```bash
+uv run snulbug mcp schemas policy \
+  .snulbug/schemas/local-gateway.json \
+  --out policy.schema.snulbug \
+  --allow-path README.md \
+  --allow-path src/ \
+  --high-risk-action reject
+```
+
+`--high-risk-action` accepts `allow`, `confirm`, or `reject`. The default is
+`confirm`, which is usually the right local-dev behavior for tools that look
+like shell execution, destructive writes, network access, or secret handling.
+
 ## Catalog contents
 
 Catalogs are sorted and hashed with stable JSON SHA-256. The normalized catalog

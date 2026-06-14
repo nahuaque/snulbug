@@ -651,6 +651,43 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     mcp_schemas_diff.add_argument("--report-out", type=Path, help="write a Markdown schema diff report")
     mcp_schemas_diff.add_argument("--compact", action="store_true", help="emit compact JSON")
+    mcp_schemas_policy = mcp_schemas_subparsers.add_parser(
+        "policy",
+        help="generate a reviewable policy bundle from an MCP schema catalog",
+    )
+    mcp_schemas_policy.add_argument("catalog", type=Path, help="MCP schema catalog JSON")
+    mcp_schemas_policy.add_argument(
+        "--out",
+        "--output",
+        type=Path,
+        required=True,
+        help="output policy bundle directory",
+    )
+    mcp_schemas_policy.add_argument("--force", action="store_true", help="overwrite the output directory")
+    mcp_schemas_policy.add_argument("--token", help="bearer token to render into the generated policy")
+    mcp_schemas_policy.add_argument(
+        "--token-env",
+        help="context key used by generated policy for env-derived token lookup",
+    )
+    mcp_schemas_policy.add_argument(
+        "--allow-path",
+        action="append",
+        default=[],
+        help="allowed project path or prefix for path-like tool arguments; repeat to add multiple",
+    )
+    mcp_schemas_policy.add_argument(
+        "--high-risk-action",
+        choices=("allow", "confirm", "reject"),
+        default="confirm",
+        help="action for tools scored high risk from the discovered schema",
+    )
+    mcp_schemas_policy.add_argument(
+        "--validate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="validate and test the generated policy bundle",
+    )
+    mcp_schemas_policy.add_argument("--compact", action="store_true", help="emit compact JSON")
 
     mcp_fabric = mcp_subparsers.add_parser("fabric", help="inspect and verify declarative MCP fabric config")
     mcp_fabric_subparsers = mcp_fabric.add_subparsers(dest="fabric_command", required=True)
@@ -1948,6 +1985,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     result["url"] = args.url
                 status = 1
         elif args.mcp_command == "schemas":
+            from .mcp_schema_policy import (
+                SchemaPolicyOptions,
+                format_mcp_schema_policy_report,
+                generate_mcp_schema_policy,
+            )
             from .mcp_schemas import (
                 diff_mcp_schema_catalogs,
                 discover_mcp_schemas,
@@ -1986,6 +2028,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                         sys.stdout.write(format_mcp_schema_diff_report(result))
                         sys.stdout.write("\n")
                         return status
+                elif args.schemas_command == "policy":
+                    result = generate_mcp_schema_policy(
+                        args.catalog,
+                        args.out,
+                        options=SchemaPolicyOptions(
+                            token=args.token,
+                            token_env=args.token_env,
+                            allowed_paths=args.allow_path,
+                            high_risk_action=args.high_risk_action,
+                        ),
+                        force=args.force,
+                        validate=args.validate,
+                    )
+                    status = 0 if result["ok"] else 1
+                    if not args.compact:
+                        sys.stdout.write(format_mcp_schema_policy_report(result))
+                        sys.stdout.write("\n")
+                        return status
                 else:
                     parser.error(f"unknown mcp schemas command: {args.schemas_command}")
                     return 2
@@ -1993,6 +2053,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result = {"ok": False, "error": str(exc)}
                 if hasattr(args, "source") and args.source is not None:
                     result["source"] = str(args.source)
+                if hasattr(args, "catalog") and args.catalog is not None:
+                    result["catalog"] = str(args.catalog)
                 if hasattr(args, "url") and args.url is not None:
                     result["url"] = args.url
                 status = 1
