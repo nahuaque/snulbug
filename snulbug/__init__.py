@@ -199,7 +199,21 @@ from .recorder import append_record, load_record_log, record_audit_event, record
 from .redaction import RedactionConfig, append_audit_event, build_audit_event, redact_secrets
 from .response_policy import ResponsePolicyConfig
 from .runtime import LuaDecisionError, LuaDecisionTrace, LuaRuntimeError
-from .scaffolds import ScaffoldFile, ScaffoldPlan, format_scaffold_report, json_scaffold_file, write_scaffold
+from .scaffolds import (
+    GeneratedArtifact,
+    GeneratedClient,
+    GeneratedCommand,
+    GeneratedEnv,
+    GeneratedLog,
+    GeneratedSession,
+    ScaffoldFile,
+    ScaffoldPlan,
+    format_scaffold_report,
+    format_session_report,
+    json_scaffold_file,
+    session_result,
+    write_scaffold,
+)
 from .schema_policy import SchemaPolicyConfig
 from .share import (
     close_mcp_share,
@@ -289,6 +303,12 @@ __all__ = [
     "FabricControllerStatusServer",
     "FabricRuntimeStateStore",
     "GatewayTemplate",
+    "GeneratedArtifact",
+    "GeneratedClient",
+    "GeneratedCommand",
+    "GeneratedEnv",
+    "GeneratedLog",
+    "GeneratedSession",
     "JsonlEventSink",
     "ManagedHolepunchBridge",
     "ManagedStdioMcpClient",
@@ -386,6 +406,7 @@ __all__ = [
     "format_mcp_tool_snapshot_report",
     "format_event_sinks_toml",
     "format_scaffold_report",
+    "format_session_report",
     "format_tunnel_doctor_report",
     "format_tunnel_init_report",
     "generate_fabric_conformance_pack",
@@ -441,6 +462,7 @@ __all__ = [
     "score_mcp_schema_catalog",
     "share_client_config",
     "share_status",
+    "session_result",
     "simulate_policy",
     "smoke_check_codespace_upstream",
     "snapshot_mcp_tools",

@@ -17,7 +17,17 @@ from .presets import (
     McpPolicyOptions,
     generate_mcp_preset,
 )
-from .scaffolds import ScaffoldFile, ScaffoldPlan, write_scaffold
+from .scaffolds import (
+    GeneratedArtifact,
+    GeneratedClient,
+    GeneratedCommand,
+    GeneratedLog,
+    GeneratedSession,
+    ScaffoldFile,
+    ScaffoldPlan,
+    session_result,
+    write_scaffold,
+)
 
 
 def create_mcp_quickstart(
@@ -144,18 +154,76 @@ def create_mcp_quickstart(
         ok = ok and bool(bundle_tests["ok"])
 
     client_url = f"http://{host}:{port}/mcp"
+    record_path = _resolve_output(root, record_out)
+    lease_path = _resolve_output(root, lease_file)
+    client_headers = {"Authorization": f"Bearer {effective_token}"}
+    next_steps = [
+        f"uv run snulbug mcp proxy --config {config_path}",
+        (
+            "uv run snulbug mcp lease create "
+            f"--file {lease_path} "
+            "--task 'Inspect docs' --allow-tool safe_read_file --ttl 30m"
+        ),
+        f"configure your MCP client URL as {client_url}",
+        f"send Authorization: Bearer {effective_token}",
+        f"uv run snulbug mcp evidence inspect {record_path}",
+        f"uv run snulbug mcp evidence inspect {audit_event_out} --kind audit",
+    ]
+    if not validate:
+        next_steps.insert(0, f"uv run snulbug bundle test {policy_dir}")
+        next_steps.insert(0, f"uv run snulbug bundle validate {policy_dir}")
+    generated_session = session_result(
+        GeneratedSession(
+            name="mcp quickstart",
+            root=root,
+            generated_by="snulbug mcp quickstart",
+            artifacts=[
+                GeneratedArtifact("policy", policy_dir, "policy_bundle"),
+                GeneratedArtifact("policy_file", policy_file, "policy"),
+                GeneratedArtifact("config", config_path, "config"),
+                GeneratedArtifact("traces", traces_path, "directory"),
+                GeneratedArtifact("lease_file", lease_path, "lease_store"),
+            ],
+            commands=[
+                GeneratedCommand("proxy", next_steps[0 if validate else 2], "Start the MCP policy proxy"),
+                GeneratedCommand(
+                    "lease_create",
+                    (
+                        "uv run snulbug mcp lease create "
+                        f"--file {lease_path} "
+                        "--task 'Inspect docs' --allow-tool safe_read_file --ttl 30m"
+                    ),
+                    "Create a task-scoped lease",
+                ),
+                GeneratedCommand("inspect_session", f"uv run snulbug mcp evidence inspect {record_path}"),
+                GeneratedCommand(
+                    "inspect_audit",
+                    f"uv run snulbug mcp evidence inspect {audit_event_out} --kind audit",
+                ),
+            ],
+            clients=[GeneratedClient("default", client_url, client_headers)],
+            logs=[
+                GeneratedLog("record_out", record_path, "record_jsonl"),
+                GeneratedLog("audit_events", audit_event_out, "audit_jsonl"),
+            ],
+            next_steps=next_steps,
+            metadata={"preset": preset, "upstream": upstream},
+        ),
+        ok=ok,
+    )
+    primary_client = generated_session["primary_client"] or {}
     result: dict[str, Any] = {
         "ok": ok,
         "directory": str(root),
         "preset": preset,
-        "policy": str(policy_dir),
-        "policy_file": str(policy_file),
-        "config": str(config_path),
-        "traces": str(traces_path),
+        "policy": generated_session["file_map"]["policy"],
+        "policy_file": generated_session["file_map"]["policy_file"],
+        "config": generated_session["file_map"]["config"],
+        "traces": generated_session["file_map"]["traces"],
         "upstream": upstream,
         "client": {
-            "url": client_url,
-            "headers": {"Authorization": f"Bearer {effective_token}"},
+            "url": primary_client.get("url"),
+            "headers": primary_client.get("headers", {}),
         },
         "policy_options": {
             "token": effective_token,
@@ -169,7 +237,7 @@ def create_mcp_quickstart(
             "host": host,
             "port": port,
             "state": state,
-            "record_out": str(_resolve_output(root, record_out)),
+            "record_out": generated_session["log_map"]["record_out"],
             "redact_records": redact_records,
             "confirm": confirm,
             "event_sinks": event_sinks,
@@ -180,7 +248,7 @@ def create_mcp_quickstart(
             "tool_pinning_action": tool_pinning_action,
             "schema_validation": schema_validation,
             "schema_validation_action": schema_validation_action,
-            "lease_file": str(_resolve_output(root, lease_file)),
+            "lease_file": generated_session["file_map"]["lease_file"],
             "lease_required": lease_required,
             "lease_header": lease_header,
             "tunnel_provider": tunnel_provider,
@@ -194,22 +262,9 @@ def create_mcp_quickstart(
         },
         "validation": validation,
         "tests": bundle_tests,
-        "next_steps": [
-            f"uv run snulbug mcp proxy --config {config_path}",
-            (
-                "uv run snulbug mcp lease create "
-                f"--file {_resolve_output(root, lease_file)} "
-                "--task 'Inspect docs' --allow-tool safe_read_file --ttl 30m"
-            ),
-            f"configure your MCP client URL as {client_url}",
-            f"send Authorization: Bearer {effective_token}",
-            f"uv run snulbug mcp evidence inspect {_resolve_output(root, record_out)}",
-            f"uv run snulbug mcp evidence inspect {audit_event_out} --kind audit",
-        ],
+        "generated_session": generated_session,
+        "next_steps": generated_session["next_steps"],
     }
-    if not validate:
-        result["next_steps"].insert(0, f"uv run snulbug bundle test {policy_dir}")
-        result["next_steps"].insert(0, f"uv run snulbug bundle validate {policy_dir}")
     return result
 
 

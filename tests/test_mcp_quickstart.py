@@ -27,6 +27,11 @@ def test_create_mcp_quickstart_writes_policy_config_and_trace_dir(tmp_path):
         "url": "http://127.0.0.1:8181/mcp",
         "headers": {"Authorization": "Bearer dev-secret"},
     }
+    assert result["generated_session"]["file_map"]["config"] == str(config)
+    assert result["generated_session"]["primary_client"]["url"] == result["client"]["url"]
+    assert result["generated_session"]["log_map"]["audit_events"] == str(tmp_path / "traces/audit.jsonl")
+    assert result["generated_session"]["command_map"]["proxy"] == f"uv run snulbug mcp proxy --config {config}"
+    assert result["next_steps"] == result["generated_session"]["next_steps"]
     assert policy.is_dir()
     assert config.is_file()
     assert traces.is_dir()

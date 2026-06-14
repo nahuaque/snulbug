@@ -43,6 +43,11 @@ def test_create_mcp_share_writes_ephemeral_holepunch_session(tmp_path):
     assert result["client"]["url"] == "http://127.0.0.1:18080/mcp"
     assert result["client"]["headers"]["Authorization"] == "Bearer share-secret"
     assert result["client"]["headers"]["x-snulbug-lease"].startswith("sbl_")
+    assert result["generated_session"]["file_map"]["config"] == result["files"]["config"]
+    assert result["generated_session"]["primary_client"]["url"] == result["client"]["url"]
+    assert result["generated_session"]["command_map"]["run"] == result["commands"]["run"]
+    assert result["generated_session"]["log_map"]["audit_log"] == str(tmp_path / "traces" / "audit.jsonl")
+    assert result["next_steps"] == result["generated_session"]["next_steps"]
     assert client_config["mcpServers"]["snulbug-share"] == {
         "url": "http://127.0.0.1:18080/mcp",
         "headers": result["client"]["headers"],

@@ -13,7 +13,17 @@ from urllib.parse import SplitResult, urlsplit
 
 from .config import default_event_sink_configs
 from .gateway_templates import GatewayTemplate, render_gateway_toml
-from .scaffolds import ScaffoldFile, ScaffoldPlan, write_scaffold
+from .scaffolds import (
+    GeneratedArtifact,
+    GeneratedCommand,
+    GeneratedEnv,
+    GeneratedLog,
+    GeneratedSession,
+    ScaffoldFile,
+    ScaffoldPlan,
+    session_result,
+    write_scaffold,
+)
 
 DEFAULT_CODESPACE_ATTACH_DIR = Path(".snulbug/codespace-local")
 DEFAULT_CODESPACE_DISCOVERY_ENV = "SNULBUG_DISCOVERY_UPSTREAMS"
@@ -113,21 +123,53 @@ def prepare_codespace_attach(
     )
 
     gateway_url = f"http://{host}:{port}/mcp"
+    generated_session = session_result(
+        GeneratedSession(
+            name="codespace attach",
+            root=root,
+            generated_by="snulbug mcp codespace attach",
+            artifacts=[
+                GeneratedArtifact("policy", policy, "policy"),
+                GeneratedArtifact("config", config, "config"),
+                GeneratedArtifact("traces", traces, "directory"),
+            ],
+            commands=[
+                GeneratedCommand("proxy", f"uv run snulbug mcp proxy --config {config}"),
+                GeneratedCommand(
+                    "inspect_audit",
+                    f"uv run snulbug mcp evidence inspect {audit_out} --kind audit",
+                ),
+            ],
+            env=[GeneratedEnv(discovery_env, discovery_value, "Discovered Codespaces MCP upstreams")],
+            logs=[
+                GeneratedLog("record_out", record_out, "record_jsonl"),
+                GeneratedLog("audit_events", audit_out, "audit_jsonl"),
+            ],
+            next_steps=[
+                f"export {discovery_env}='{discovery_value}'",
+                f"uv run snulbug mcp proxy --config {config}",
+                f"uv run snulbug mcp evidence inspect {audit_out} --kind audit",
+            ],
+            scaffolds=[scaffold],
+            metadata={"upstream": upstream, "gateway": {"url": gateway_url, "host": host, "port": port}},
+        )
+    )
     return {
         "ok": True,
         "generated_by": "snulbug mcp codespace attach",
         "directory": str(root),
-        "config": str(config),
-        "policy": str(policy),
+        "config": generated_session["file_map"]["config"],
+        "policy": generated_session["file_map"]["policy"],
         "gateway": {"url": gateway_url, "host": host, "port": port},
         "upstream": upstream,
-        "env": {"name": discovery_env, "value": discovery_value},
-        "logs": {"record_out": str(record_out), "audit_events": str(audit_out)},
-        "scaffold": scaffold,
-        "commands": {
-            "proxy": f"uv run snulbug mcp proxy --config {config}",
-            "inspect_audit": f"uv run snulbug mcp evidence inspect {audit_out} --kind audit",
+        "env": {"name": discovery_env, "value": generated_session["env_map"][discovery_env]},
+        "logs": {
+            "record_out": generated_session["log_map"]["record_out"],
+            "audit_events": generated_session["log_map"]["audit_events"],
         },
+        "scaffold": scaffold,
+        "generated_session": generated_session,
+        "commands": generated_session["command_map"],
     }
 
 

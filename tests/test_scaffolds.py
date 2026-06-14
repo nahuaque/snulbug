@@ -5,10 +5,18 @@ import json
 import pytest
 
 from snulbug import (
+    GeneratedArtifact,
+    GeneratedClient,
+    GeneratedCommand,
+    GeneratedEnv,
+    GeneratedLog,
+    GeneratedSession,
     ScaffoldFile,
     ScaffoldPlan,
     format_scaffold_report,
+    format_session_report,
     json_scaffold_file,
+    session_result,
     write_scaffold,
 )
 
@@ -72,3 +80,30 @@ def test_format_scaffold_report_lists_files_and_commands(tmp_path):
     assert "# demo scaffold" in report
     assert str(tmp_path / "snulbug.toml") in report
     assert "uv run snulbug mcp proxy" in report
+
+
+def test_session_result_normalizes_generated_session_metadata(tmp_path):
+    result = session_result(
+        GeneratedSession(
+            name="demo session",
+            root=tmp_path,
+            generated_by="snulbug demo",
+            artifacts=[GeneratedArtifact("config", tmp_path / "snulbug.toml", "config")],
+            commands=[GeneratedCommand("run", "uv run snulbug mcp proxy --config snulbug.toml")],
+            clients=[GeneratedClient("default", "http://127.0.0.1:8080/mcp", {"Authorization": "Bearer test"})],
+            env=[GeneratedEnv("SNULBUG_TOKEN", "test")],
+            logs=[GeneratedLog("audit", tmp_path / "traces/audit.jsonl", "audit_jsonl")],
+            next_steps=["uv run snulbug mcp proxy --config snulbug.toml"],
+        )
+    )
+
+    assert result["file_map"]["config"] == str(tmp_path / "snulbug.toml")
+    assert result["command_map"]["run"] == "uv run snulbug mcp proxy --config snulbug.toml"
+    assert result["primary_client"]["url"] == "http://127.0.0.1:8080/mcp"
+    assert result["env_map"]["SNULBUG_TOKEN"] == "test"
+    assert result["log_map"]["audit"] == str(tmp_path / "traces/audit.jsonl")
+
+    report = format_session_report(result)
+    assert "# demo session" in report
+    assert "http://127.0.0.1:8080/mcp" in report
+    assert "traces/audit.jsonl" in report

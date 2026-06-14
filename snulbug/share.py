@@ -15,7 +15,18 @@ from .inspection import format_mcp_inspection_report, inspect_mcp_log
 from .leases import create_lease
 from .presets import DEFAULT_ALLOWED_PATHS, DEFAULT_ALLOWED_TOOLS, McpPolicyOptions, generate_mcp_preset
 from .quickstart import create_mcp_quickstart
-from .scaffolds import ScaffoldFile, ScaffoldPlan, json_scaffold_file, write_scaffold
+from .scaffolds import (
+    GeneratedArtifact,
+    GeneratedClient,
+    GeneratedCommand,
+    GeneratedLog,
+    GeneratedSession,
+    ScaffoldFile,
+    ScaffoldPlan,
+    json_scaffold_file,
+    session_result,
+    write_scaffold,
+)
 from .tunnel import TUNNEL_PROVIDERS, init_tunnel_provider
 
 DEFAULT_SHARE_PROVIDER = "holepunch"
@@ -198,9 +209,55 @@ def create_mcp_share(
         command_plan=command_plan,
     )
     _write_share_manifest(share_dir, manifest, force=force)
+    ok = bool(quickstart["ok"]) and bool(tunnel["ok"]) and bool(lease["ok"])
+    generated_session = session_result(
+        GeneratedSession(
+            name="mcp share",
+            root=share_dir,
+            generated_by="snulbug mcp share create",
+            artifacts=[
+                GeneratedArtifact("manifest", share_dir / SHARE_MANIFEST, "manifest"),
+                GeneratedArtifact("config", quickstart["config"], "config"),
+                GeneratedArtifact("policy", quickstart["policy"], "policy_bundle"),
+                GeneratedArtifact("policy_file", quickstart["policy_file"], "policy"),
+                GeneratedArtifact("lease_file", lease["file"], "lease_store"),
+                GeneratedArtifact("client_config", client_config_path, "client_config"),
+                GeneratedArtifact("report", report_path, "report"),
+                GeneratedArtifact("tunnel_dir", share_dir / "tunnel", "directory"),
+                GeneratedArtifact("container_recipes", container_recipe["directory"], "directory"),
+            ],
+            commands=[GeneratedCommand(name, command) for name, command in command_plan.items()],
+            clients=[
+                GeneratedClient(client_name, tunnel["client"]["url"], client_headers, config=client_config_path),
+            ],
+            logs=[
+                GeneratedLog("session_log", share_dir / "traces" / "session.jsonl", "record_jsonl"),
+                GeneratedLog("audit_log", share_dir / "traces" / "audit.jsonl", "audit_jsonl"),
+            ],
+            next_steps=[
+                command_plan["proxy"],
+                *command_plan["provider"],
+                command_plan["doctor"],
+                f"configure your MCP client from {client_config_path}",
+                command_plan["inspect_audit"],
+            ],
+            scaffolds=[container_recipe["scaffold"]],
+            metadata={
+                "session_id": session_id,
+                "provider": provider,
+                "preset": preset,
+                "ttl": ttl,
+                "task": task,
+                "upstream": upstream,
+            },
+        ),
+        ok=ok,
+    )
+    primary_client = generated_session["primary_client"] or {}
+    file_map = generated_session["file_map"]
 
     return {
-        "ok": bool(quickstart["ok"]) and bool(tunnel["ok"]) and bool(lease["ok"]),
+        "ok": ok,
         "session": {
             "id": session_id,
             "directory": str(share_dir),
@@ -220,31 +277,26 @@ def create_mcp_share(
         },
         "client": {
             "name": client_name,
-            "url": tunnel["client"]["url"],
-            "headers": client_headers,
-            "config": str(client_config_path),
+            "url": primary_client.get("url"),
+            "headers": primary_client.get("headers", {}),
+            "config": primary_client.get("config"),
         },
         "recipes": {
             "remote_container_upstream": container_recipe,
         },
-        "commands": command_plan,
+        "commands": generated_session["command_map"],
         "files": {
-            "manifest": str(share_dir / SHARE_MANIFEST),
-            "config": quickstart["config"],
-            "policy": quickstart["policy"],
-            "lease_file": lease["file"],
-            "client_config": str(client_config_path),
-            "report": str(report_path),
-            "tunnel_dir": str(share_dir / "tunnel"),
-            "container_recipes": container_recipe["directory"],
+            "manifest": file_map["manifest"],
+            "config": file_map["config"],
+            "policy": file_map["policy"],
+            "lease_file": file_map["lease_file"],
+            "client_config": file_map["client_config"],
+            "report": file_map["report"],
+            "tunnel_dir": file_map["tunnel_dir"],
+            "container_recipes": file_map["container_recipes"],
         },
-        "next_steps": [
-            command_plan["proxy"],
-            *command_plan["provider"],
-            command_plan["doctor"],
-            f"configure your MCP client from {client_config_path}",
-            command_plan["inspect_audit"],
-        ],
+        "generated_session": generated_session,
+        "next_steps": generated_session["next_steps"],
     }
 
 
