@@ -9,6 +9,7 @@ from ..cli_helpers import (
     add_force_arg,
     add_token_arg,
     add_validate_arg,
+    write_generated_session_output,
     write_json_output,
     write_result_output,
 )
@@ -115,7 +116,7 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                 validate=args.validate,
             )
             status = 0 if result["ok"] else 1
-            write_json_output(result, compact=args.compact)
+            write_generated_session_output(result, compact=args.compact)
             return status
 
         if command == "run":

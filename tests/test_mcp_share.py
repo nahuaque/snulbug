@@ -161,12 +161,13 @@ def test_mcp_share_cli_emits_compact_session_plan(tmp_path, capsys):
 
     assert status == 0
     assert output["ok"] is True
-    assert output["session"]["provider"] == "generic"
+    assert output["name"] == "mcp share"
+    assert output["metadata"]["provider"] == "generic"
     assert output["client"]["url"] == "https://mcp.example.test/mcp"
     assert output["client"]["headers"]["Authorization"] == "Bearer share-secret"
-    assert output["quickstart"]["tests"] is None
-    assert output["tunnel"]["written_files"] == [str(tmp_path / "tunnel" / "README.md")]
-    assert "fixture_count" not in json.dumps(output["tunnel"])
+    assert output["legacy"]["quickstart"]["tests"] is None
+    assert output["legacy"]["tunnel"]["written_files"] == [str(tmp_path / "tunnel" / "README.md")]
+    assert "fixture_count" not in json.dumps(output["legacy"]["tunnel"])
     assert (tmp_path / "mcp-client.json").is_file()
     assert (tmp_path / "share.json").is_file()
     assert (tmp_path / "SHARE.md").is_file()
@@ -205,6 +206,7 @@ def test_mcp_share_create_subcommand_emits_compact_session_plan(tmp_path, capsys
     assert status == 0
     assert output["ok"] is True
     assert output["files"]["manifest"] == str(tmp_path / "share.json")
+    assert output["legacy"]["files"]["manifest"] == str(tmp_path / "share.json")
     assert (tmp_path / "share.json").is_file()
 
 

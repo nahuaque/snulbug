@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
@@ -78,6 +79,37 @@ def write_result_output(
         target.write(format_json_output(payload, compact=compact))
     else:
         target.write(formatter(payload))
+    target.write("\n")
+
+
+def write_generated_session_output(
+    payload: Any,
+    *,
+    compact: bool,
+    formatter: Callable[[Any], str] | None = None,
+    stream: TextIO | None = None,
+    include_legacy: bool = True,
+    redact_compact: bool = False,
+) -> None:
+    if not isinstance(payload, Mapping) or not isinstance(payload.get("generated_session"), Mapping):
+        write_result_output(payload, compact=compact, formatter=formatter, stream=stream)
+        return
+
+    target = stream or sys.stdout
+    if compact:
+        from .scaffolds import session_summary
+
+        output = session_summary(payload["generated_session"], redact=redact_compact)
+        if include_legacy:
+            output["legacy"] = {str(key): value for key, value in payload.items() if key != "generated_session"}
+        target.write(format_json_output(output, compact=True))
+    else:
+        if formatter is not None:
+            target.write(formatter(payload))
+        else:
+            from .scaffolds import format_session_report
+
+            target.write(format_session_report(payload["generated_session"]))
     target.write("\n")
 
 

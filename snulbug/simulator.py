@@ -23,6 +23,7 @@ from .cli_helpers import (
     add_token_arg,
     add_token_env_arg,
     add_validate_arg,
+    write_generated_session_output,
     write_json_output,
     write_result_output,
 )
@@ -589,7 +590,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         result["smoke_check"] = smoke_check_codespace_upstream(args.url, timeout=args.smoke_timeout)
                         if not result["smoke_check"]["ok"]:
                             status = 1
-                            write_result_output(
+                            write_generated_session_output(
                                 result,
                                 compact=args.compact,
                                 formatter=format_codespace_attach_report,
@@ -598,7 +599,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     result["dry_run"] = bool(args.dry_run)
                     status = 0
                     if args.dry_run:
-                        write_result_output(result, compact=args.compact, formatter=format_codespace_attach_report)
+                        write_generated_session_output(
+                            result,
+                            compact=args.compact,
+                            formatter=format_codespace_attach_report,
+                        )
                         return status
 
                     import os
@@ -608,7 +613,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     fabric_config = load_mcp_fabric_config(result["config"])
                     fabric_config["proxy"] = proxy_config
                     result["starting_proxy"] = True
-                    write_result_output(result, compact=args.compact, formatter=format_codespace_attach_report)
+                    write_generated_session_output(
+                        result,
+                        compact=args.compact,
+                        formatter=format_codespace_attach_report,
+                    )
                     sys.stdout.flush()
 
                     from .proxy import run_mcp_proxy_config
@@ -763,7 +772,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(f"unknown mcp command: {args.mcp_command}")
             return 2
 
-        write_json_output(result, compact=args.compact)
+        write_generated_session_output(result, compact=args.compact)
         return status
 
     parser.error(f"unknown command: {args.command}")

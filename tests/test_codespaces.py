@@ -164,11 +164,12 @@ def test_mcp_codespace_attach_cli_dry_run_outputs_plan(tmp_path, capsys, monkeyp
     output = json.loads(capsys.readouterr().out)
     assert status == 0
     assert output["ok"] is True
-    assert output["dry_run"] is True
-    assert output["config"] == str(tmp_path / "snulbug.toml")
-    assert output["gateway"]["url"] == "http://127.0.0.1:8181/mcp"
-    assert output["env"]["name"] == "SNULBUG_DISCOVERY_UPSTREAMS"
-    assert "example-9001.app.github.dev" in output["env"]["value"]
+    assert output["name"] == "codespace attach"
+    assert output["legacy"]["dry_run"] is True
+    assert output["files"]["config"] == str(tmp_path / "snulbug.toml")
+    assert output["metadata"]["gateway"]["url"] == "http://127.0.0.1:8181/mcp"
+    assert "SNULBUG_DISCOVERY_UPSTREAMS" in output["env"]
+    assert "example-9001.app.github.dev" in output["env"]["SNULBUG_DISCOVERY_UPSTREAMS"]
     assert "SNULBUG_DISCOVERY_UPSTREAMS" not in os.environ
 
 
@@ -224,7 +225,7 @@ def test_mcp_codespace_attach_cli_sets_env_and_starts_proxy(tmp_path, capsys, mo
 
     output = json.loads(capsys.readouterr().out)
     assert status == 0
-    assert output["starting_proxy"] is True
+    assert output["legacy"]["starting_proxy"] is True
     assert started["proxy_config"]["upstreams"][0]["tool_prefix"] == "codespace.files."
     assert started["fabric_config"]["gateway_url"] == "http://127.0.0.1:8080/mcp"
     assert json.loads(os.environ["SNULBUG_DISCOVERY_UPSTREAMS"])[0]["name"] == "codespace-files"

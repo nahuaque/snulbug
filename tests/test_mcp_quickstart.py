@@ -89,13 +89,16 @@ def test_mcp_quickstart_cli_writes_compact_result(tmp_path, capsys):
     output = json.loads(capsys.readouterr().out)
     assert status == 0
     assert output["ok"] is True
-    assert output["policy"] == str(tmp_path / "policy.snulbug")
-    assert output["config"] == str(tmp_path / "snulbug.toml")
+    assert output["name"] == "mcp quickstart"
+    assert output["files"]["policy"] == str(tmp_path / "policy.snulbug")
+    assert output["files"]["config"] == str(tmp_path / "snulbug.toml")
     assert output["client"]["url"] == "http://127.0.0.1:8181/mcp"
     assert output["client"]["headers"]["Authorization"] == "Bearer dev-secret"
-    assert output["proxy"]["cloudflare_access"] == "off"
-    assert output["validation"]["ok"] is True
-    assert output["tests"]["ok"] is True
+    assert output["commands"]["proxy"] == f"uv run snulbug mcp proxy --config {tmp_path / 'snulbug.toml'}"
+    assert output["metadata"]["preset"] == "local-dev-safe"
+    assert output["legacy"]["proxy"]["cloudflare_access"] == "off"
+    assert output["legacy"]["validation"]["ok"] is True
+    assert output["legacy"]["tests"]["ok"] is True
 
 
 def test_mcp_quickstart_cli_can_generate_path_profile(tmp_path, capsys):
@@ -119,9 +122,9 @@ def test_mcp_quickstart_cli_can_generate_path_profile(tmp_path, capsys):
     policy = (tmp_path / "policy.snulbug" / "policy.lua").read_text(encoding="utf-8")
     assert status == 0
     assert output["ok"] is True
-    assert output["preset"] == "project-path-allowlist"
-    assert output["policy_options"]["allowed_tools"] == ["read_repo"]
-    assert output["policy_options"]["allowed_paths"] == ["src/"]
+    assert output["metadata"]["preset"] == "project-path-allowlist"
+    assert output["legacy"]["policy_options"]["allowed_tools"] == ["read_repo"]
+    assert output["legacy"]["policy_options"]["allowed_paths"] == ["src/"]
     assert '"read_repo",' in policy
     assert '"src/",' in policy
 
@@ -145,6 +148,6 @@ def test_mcp_quickstart_cli_can_skip_validation(tmp_path, capsys):
     output = json.loads(capsys.readouterr().out)
     assert status == 0
     assert output["ok"] is True
-    assert output["validation"] is None
-    assert output["tests"] is None
+    assert output["legacy"]["validation"] is None
+    assert output["legacy"]["tests"] is None
     assert output["next_steps"][0].startswith("uv run snulbug bundle validate")
