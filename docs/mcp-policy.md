@@ -62,6 +62,18 @@ uv run snulbug mcp policy amend \
   --out candidate-policy.snulbug
 ```
 
+If a human approved a blocked or risky request through the confirmation broker,
+use the same command with the approved-confirmation source to turn those
+approvals into a reviewable candidate bundle:
+
+```bash
+uv run snulbug mcp policy amend \
+  learned-policy.snulbug \
+  traces/session.jsonl \
+  --source approved-confirmations \
+  --out approval-candidate.snulbug
+```
+
 Promote only after review:
 
 ```bash
@@ -80,8 +92,11 @@ Use `learn` when the safest policy is the one your actual dev session already
 proved it needed. Learned policies are intentionally mechanical: they allow
 observed methods, tools, targets, and argument keys, then deny drift.
 
-Use `amend` when a real workflow was missed. It reads blocked `mcp.learn.*`
-decisions and proposes the smallest expansion in a new bundle.
+Use `amend` when a real workflow was missed. By default it reads blocked
+`mcp.learn.*` decisions and proposes the smallest expansion in a new bundle.
+With `--source approved-confirmations`, it reads approved confirmation results
+from replay evidence and proposes the observed paths, MCP methods, tools,
+targets, and argument keys.
 
 Use `policy schemas generate` when the upstream's declared contract should drive the
 starting policy. This is useful before trusting a new upstream or after a

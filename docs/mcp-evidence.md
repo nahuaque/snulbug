@@ -66,6 +66,18 @@ such as method, tool, target, reason code, tunnel provider, upstream identity,
 and response status without storing full request parameters or tool arguments.
 Use them for offline inspection, decision reports, and amendment workflows.
 
+For approval-driven amendments, prefer replay records when available:
+
+```bash
+uv run snulbug mcp policy amend learned-policy.snulbug traces/session.jsonl \
+  --source approved-confirmations \
+  --out approval-candidate.snulbug
+```
+
+The generated candidate is still deterministic: approved confirmations add the
+observed path, MCP method, target/tool name, and argument-key shape, then flow
+through the normal bundle review and lifecycle commands.
+
 Both CLI-created replay records and audit logs are redacted by default. Use
 exact replay records only for local debugging when you are comfortable storing
 auth-sensitive values.

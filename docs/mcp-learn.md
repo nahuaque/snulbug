@@ -122,6 +122,24 @@ matching expansion:
   learned tool.
 - `mcp.learn.target_not_observed` adds observed resource or prompt targets.
 
+It can also amend from human approvals produced by the existing confirmation
+broker. This is useful when a policy returns `action = "confirm"` or a
+confirmable reject, the user approves once or for the session, and you want to
+convert that approval into a reviewable policy change:
+
+```bash
+uv run snulbug mcp policy amend \
+  learned-policy.snulbug \
+  traces/session.jsonl \
+  --source approved-confirmations \
+  --out approval-candidate.snulbug
+```
+
+Approved-confirmation mode reads replay/audit evidence with
+`decision.confirmation.approved = true` and adds only the observed path, MCP
+method, tool/resource/prompt target, and tool argument keys. It does not promote
+the result automatically; the output is still a normal candidate bundle.
+
 The output is a new bundle with `policy.lua`, `manifest.json`, and `AMEND.md`.
 The source bundle is not modified.
 

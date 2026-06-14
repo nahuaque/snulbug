@@ -70,6 +70,12 @@ def add_mcp_policy_command(
         help="candidate output policy bundle directory",
     )
     mcp_policy_amend.add_argument("--kind", choices=("auto", "record", "audit"), default="auto", help="input log type")
+    mcp_policy_amend.add_argument(
+        "--source",
+        choices=("blocked", "approved-confirmations"),
+        default="blocked",
+        help="evidence source to amend from: blocked learned-policy rejects or approved confirmation decisions",
+    )
     add_force_arg(mcp_policy_amend, help="overwrite files in the output directory")
     mcp_policy_amend.add_argument(
         "--allow-risky",
@@ -215,6 +221,7 @@ def handle_mcp_policy_command(
                 args.log,
                 args.out,
                 kind=args.kind,
+                source=args.source,
                 force=args.force,
                 validate=args.validate,
                 allow_risky=args.allow_risky,

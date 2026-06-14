@@ -62,25 +62,33 @@ def amend_mcp_policy(
     output: str | Path,
     *,
     kind: str = "auto",
+    source: str = "blocked",
     force: bool = False,
     validate: bool = True,
     allow_risky: bool = False,
 ) -> dict[str, Any]:
-    """Propose a narrow candidate amendment from blocked MCP audit/replay events."""
+    """Propose a narrow candidate amendment from MCP audit/replay evidence."""
 
-    source = load_bundle(bundle)
-    model = _LearnedPolicy.from_manifest(source.manifest)
+    source_mode = source
+    if source_mode not in {"blocked", "approved-confirmations"}:
+        raise ValueError("source must be 'blocked' or 'approved-confirmations'")
+
+    source_bundle = load_bundle(bundle)
+    model = _LearnedPolicy.from_manifest(source_bundle.manifest)
     events = _load_events(log, kind=kind)
-    amendment = _Amendment(allow_risky=allow_risky)
+    amendment = _Amendment(allow_risky=allow_risky, source=source_mode)
     for event in events:
         amendment.add_event(model, event)
 
     output_path = Path(output)
-    manifest = model.manifest(source.manifest.get("generated_from", str(bundle)))
+    manifest = model.manifest(source_bundle.manifest.get("generated_from", str(bundle)))
     manifest["generated_by"] = "snulbug mcp policy amend"
-    manifest["amended_from"] = str(source.root)
+    manifest["amended_from"] = str(source_bundle.root)
     manifest["amendment_log"] = str(log)
     manifest["amendment"] = {
+        "source": source_mode,
+        "event_count": amendment.event_count,
+        "candidate_event_count": amendment.candidate_event_count,
         "additions": amendment.additions,
         "rejected": amendment.rejected,
         "ignored": amendment.ignored,
@@ -89,24 +97,27 @@ def amend_mcp_policy(
         output_path,
         policy=model.to_lua(),
         manifest=manifest,
-        report=amendment.report(source.root, log, model),
+        report=amendment.report(source_bundle.root, log, model),
         report_name="AMEND.md",
         force=force,
         exists_label="amend output",
         validate=validate,
     )
 
-    baseline = _verify_baseline_records(generated.policy, source.manifest.get("generated_from"))
+    baseline = _verify_baseline_records(generated.policy, source_bundle.manifest.get("generated_from"))
     ok = generated.ok
     ok = ok and bool(baseline["ok"])
     return {
         "ok": ok,
-        "bundle": str(source.root),
+        "bundle": str(source_bundle.root),
         "log": str(log),
         "output": str(output_path),
         "policy": str(generated.policy),
         "manifest": str(generated.manifest),
         "report": str(generated.report),
+        "source": source_mode,
+        "event_count": amendment.event_count,
+        "candidate_event_count": amendment.candidate_event_count,
         "additions": amendment.additions,
         "rejected": amendment.rejected,
         "ignored": amendment.ignored,
@@ -370,8 +381,11 @@ end
 
 
 class _Amendment:
-    def __init__(self, *, allow_risky: bool) -> None:
+    def __init__(self, *, allow_risky: bool, source: str = "blocked") -> None:
         self.allow_risky = allow_risky
+        self.source = source
+        self.event_count = 0
+        self.candidate_event_count = 0
         self.additions: list[dict[str, Any]] = []
         self.rejected: list[dict[str, Any]] = []
         self.ignored: list[dict[str, Any]] = []
@@ -380,6 +394,13 @@ class _Amendment:
         self._seen_ignored: set[tuple[str, str, str | None]] = set()
 
     def add_event(self, model: _LearnedPolicy, event: Mapping[str, Any]) -> None:
+        self.event_count += 1
+        if self.source == "approved-confirmations":
+            self._add_approved_confirmation_event(model, event)
+            return
+        self._add_blocked_event(model, event)
+
+    def _add_blocked_event(self, model: _LearnedPolicy, event: Mapping[str, Any]) -> None:
         decision = _mapping(event.get("decision"))
         if decision.get("allowed") is not False:
             return
@@ -387,6 +408,7 @@ class _Amendment:
         if not reason_code.startswith("mcp.learn."):
             self._ignore("unsupported_reason_code", reason_code or "missing", event)
             return
+        self.candidate_event_count += 1
 
         request = _mapping(event.get("request"))
         mcp = _mapping(event.get("mcp"))
@@ -453,6 +475,57 @@ class _Amendment:
 
         self._ignore("unsupported_learn_reason_code", reason_code, event)
 
+    def _add_approved_confirmation_event(self, model: _LearnedPolicy, event: Mapping[str, Any]) -> None:
+        decision = _mapping(event.get("decision"))
+        confirmation = _mapping(decision.get("confirmation"))
+        if confirmation.get("approved") is not True:
+            return
+
+        self.candidate_event_count += 1
+        reason_code = str(decision.get("reason_code") or "mcp.confirm.approved")
+        request = _mapping(event.get("request"))
+        mcp = _mapping(event.get("mcp"))
+        path = request.get("path")
+        method = mcp.get("method")
+        tool = mcp.get("tool")
+        target = mcp.get("target")
+
+        if isinstance(path, str) and path:
+            self._add_scalar(model.paths, "path", path, reason_code)
+        else:
+            self._ignore("missing_path", reason_code, event)
+
+        if isinstance(method, str) and method:
+            self._add_scalar(model.methods, "method", method, reason_code)
+        else:
+            self._ignore("missing_method", reason_code, event)
+            return
+
+        if method == "tools/call":
+            if not isinstance(tool, str) or not tool:
+                self._ignore("missing_tool", reason_code, event)
+                return
+            if _risky_tool(tool) and not self.allow_risky:
+                self._reject("risky_tool", "tool", tool, reason_code)
+                return
+            self._add_scalar(model.tools, "tool", tool, reason_code)
+            for key in _string_sequence(mcp.get("argument_keys")):
+                self._add_argument_key(model, tool, key, reason_code)
+            return
+
+        if method in {"resources/read", "resources/subscribe", "resources/unsubscribe"}:
+            if isinstance(target, str) and target:
+                self._add_scalar(model.resources, "resource", target, reason_code)
+            else:
+                self._ignore("missing_target", reason_code, event)
+            return
+
+        if method == "prompts/get":
+            if isinstance(target, str) and target:
+                self._add_scalar(model.prompts, "prompt", target, reason_code)
+            else:
+                self._ignore("missing_target", reason_code, event)
+
     def report(self, source_bundle: Path, log: str | Path, model: _LearnedPolicy) -> str:
         return "\n".join(
             [
@@ -460,6 +533,9 @@ class _Amendment:
                 "",
                 f"- Source bundle: `{source_bundle}`",
                 f"- Amendment log: `{log}`",
+                f"- Amendment source: `{self.source}`",
+                f"- Events inspected: {self.event_count}",
+                f"- Candidate events: {self.candidate_event_count}",
                 f"- Additions: {len(self.additions)}",
                 f"- Rejected: {len(self.rejected)}",
                 f"- Ignored: {len(self.ignored)}",

@@ -164,6 +164,81 @@ def test_amend_mcp_policy_generates_candidate_from_blocked_events(tmp_path):
     assert risky_tool["decision"]["reason_code"] == "mcp.learn.tool_not_observed"
 
 
+def test_amend_mcp_policy_generates_candidate_from_approved_confirmations(tmp_path):
+    source_log = write_observed_log(tmp_path)
+    learned = tmp_path / "learned.snulbug"
+    learn_mcp_policy(source_log, learned)
+    approvals_log = write_approved_confirmation_log(tmp_path, learned / "policy.lua")
+    candidate = tmp_path / "candidate-from-approvals.snulbug"
+
+    result = amend_mcp_policy(learned, approvals_log, candidate, source="approved-confirmations")
+
+    assert result["ok"] is True
+    assert result["source"] == "approved-confirmations"
+    assert result["event_count"] == 3
+    assert result["candidate_event_count"] == 3
+    assert {"kind": "tool", "value": "git.status", "reason_code": "mcp.policy.tool_rejected"} in result["additions"]
+    assert {
+        "kind": "argument_key",
+        "value": "encoding",
+        "parent": "files.read_file",
+        "reason_code": "mcp.policy.argument_rejected",
+    } in result["additions"]
+    assert result["rejected"] == [
+        {
+            "kind": "tool",
+            "value": "shell_exec",
+            "reason": "risky_tool",
+            "reason_code": "mcp.policy.tool_rejected",
+        }
+    ]
+    assert result["baseline"]["ok"] is True
+    manifest = json.loads((candidate / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["amendment"]["source"] == "approved-confirmations"
+    assert manifest["learned"]["tools"] == ["files.read_file", "git.status"]
+    report = (candidate / "AMEND.md").read_text(encoding="utf-8")
+    assert "Amendment source: `approved-confirmations`" in report
+
+    amended_tool = simulate_policy(
+        candidate / "policy.lua",
+        {
+            "method": "POST",
+            "path": "/mcp",
+            "body": (
+                '{"jsonrpc":"2.0","id":8,"method":"tools/call",'
+                '"params":{"name":"git.status","arguments":{"staged":true}}}'
+            ),
+        },
+    )
+    assert amended_tool["action"] == "continue"
+
+    amended_argument = simulate_policy(
+        candidate / "policy.lua",
+        {
+            "method": "POST",
+            "path": "/mcp",
+            "body": (
+                '{"jsonrpc":"2.0","id":9,"method":"tools/call",'
+                '"params":{"name":"files.read_file","arguments":{"path":"README.md","encoding":"utf-8"}}}'
+            ),
+        },
+    )
+    assert amended_argument["action"] == "continue"
+
+    risky_tool = simulate_policy(
+        candidate / "policy.lua",
+        {
+            "method": "POST",
+            "path": "/mcp",
+            "body": (
+                '{"jsonrpc":"2.0","id":10,"method":"tools/call",'
+                '"params":{"name":"shell_exec","arguments":{"command":"pwd"}}}'
+            ),
+        },
+    )
+    assert risky_tool["action"] == "reject"
+
+
 def test_mcp_policy_amend_cli_writes_candidate_bundle(tmp_path, capsys):
     source_log = write_observed_log(tmp_path)
     learned = tmp_path / "learned.snulbug"
@@ -179,6 +254,36 @@ def test_mcp_policy_amend_cli_writes_candidate_bundle(tmp_path, capsys):
     assert status == 0
     assert payload["ok"] is True
     assert payload["output"] == str(candidate)
+    assert (candidate / "policy.lua").is_file()
+    assert (candidate / "AMEND.md").is_file()
+
+
+def test_mcp_policy_amend_cli_can_use_approved_confirmations(tmp_path, capsys):
+    source_log = write_observed_log(tmp_path)
+    learned = tmp_path / "learned.snulbug"
+    learn_mcp_policy(source_log, learned)
+    approvals_log = write_approved_confirmation_log(tmp_path, learned / "policy.lua")
+    candidate = tmp_path / "approval-candidate.snulbug"
+
+    status = simulator_main(
+        [
+            "mcp",
+            "policy",
+            "amend",
+            str(learned),
+            str(approvals_log),
+            "--source",
+            "approved-confirmations",
+            "--out",
+            str(candidate),
+            "--compact",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert status == 0
+    assert payload["ok"] is True
+    assert payload["source"] == "approved-confirmations"
     assert (candidate / "policy.lua").is_file()
     assert (candidate / "AMEND.md").is_file()
 
@@ -257,4 +362,72 @@ def write_blocked_log(tmp_path, policy):
         },
     ]:
         append_record(log, record_policy_request(policy, request, response={"status": 403}))
+    return log
+
+
+def write_approved_confirmation_log(tmp_path, policy):
+    log = tmp_path / "approved-confirmations.jsonl"
+    for request, reason_code, confirmation_mode in [
+        (
+            {
+                "method": "POST",
+                "path": "/mcp",
+                "body": (
+                    '{"jsonrpc":"2.0","id":11,"method":"tools/call",'
+                    '"params":{"name":"git.status","arguments":{"staged":true}}}'
+                ),
+            },
+            "mcp.policy.tool_rejected",
+            "once",
+        ),
+        (
+            {
+                "method": "POST",
+                "path": "/mcp",
+                "body": (
+                    '{"jsonrpc":"2.0","id":12,"method":"tools/call",'
+                    '"params":{"name":"files.read_file","arguments":{"path":"README.md","encoding":"utf-8"}}}'
+                ),
+            },
+            "mcp.policy.argument_rejected",
+            "session",
+        ),
+        (
+            {
+                "method": "POST",
+                "path": "/mcp",
+                "body": (
+                    '{"jsonrpc":"2.0","id":13,"method":"tools/call",'
+                    '"params":{"name":"shell_exec","arguments":{"command":"pwd"}}}'
+                ),
+            },
+            "mcp.policy.tool_rejected",
+            "once",
+        ),
+    ]:
+        append_record(
+            log,
+            {
+                "type": "snulbug.request_record",
+                "version": 1,
+                "recorded_at": "2026-06-14T00:00:00+00:00",
+                "policy": {"source": str(policy)},
+                "request": request,
+                "result": {
+                    "action": "continue",
+                    "decision": {
+                        "action": "continue",
+                        "reason": "approved by user confirmation",
+                        "reason_code": reason_code,
+                        "context": {},
+                        "confirmation": {
+                            "approved": True,
+                            "mode": confirmation_mode,
+                            "reason_code": f"confirm.approved_{confirmation_mode}",
+                        },
+                    },
+                },
+                "response": {"status": 200},
+            },
+        )
     return log
