@@ -64,6 +64,12 @@ proxy behavior strips the caller `Authorization` header before forwarding.
 Use `mcp.proxy.upstream_credential` or per-facade-upstream `auth` references to
 inject credentials intended for each upstream resource.
 
+JWT signature validation supports both pinned local JWKS files and remote JWKS
+URLs. Remote JWKS responses are cached for a configured TTL and refreshed once
+when a token references a key id not present in cache, so issuer key rotation
+does not require restarting the gateway. Use HTTPS remote JWKS URLs except for
+localhost development.
+
 Run `snulbug mcp share auth doctor` for OAuth shares. It checks discovery
 metadata, issuer/JWKS reachability, public URL and audience alignment, raw-token
 logging safeguards, Cloudflare Access conflicts, and whether scope maps refer to

@@ -681,6 +681,52 @@ def test_mcp_share_auth_doctor_checks_live_metadata_jwks_and_scope_tools(tmp_pat
     assert result["live"]["tools_list"]["tools"] == ["safe_read_file"]
 
 
+def test_mcp_share_auth_doctor_accepts_configured_remote_jwks_without_local_file(tmp_path):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), OAuthMcpHandler)
+    origin = f"http://127.0.0.1:{server.server_port}"
+    server.resource = f"{origin}/mcp"  # type: ignore[attr-defined]
+    server.issuer = origin  # type: ignore[attr-defined]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    config = tmp_path / "snulbug.toml"
+    try:
+        config.write_text(
+            f"""
+[mcp.proxy]
+upstream = "http://127.0.0.1:9000/mcp"
+tunnel_public_url = {json.dumps(server.resource)}
+
+[mcp.auth]
+mode = "oauth-resource"
+resource = {json.dumps(server.resource)}
+issuer = {json.dumps(server.issuer)}
+authorization_servers = [{json.dumps(server.issuer)}]
+audience = {json.dumps(server.resource)}
+required_scopes = ["mcp:connect"]
+jwks_url = {json.dumps(f"{server.issuer}/jwks")}
+jwks_cache_seconds = 30
+jwks_fetch_timeout = 1
+
+[mcp.auth.scope_map]
+"mcp:tools.read" = ["tools/list"]
+"mcp:tool.files.read" = ["tools/call:safe_read_file"]
+""".lstrip(),
+            encoding="utf-8",
+        )
+        result = doctor_mcp_share_auth(config=config, public_url=server.resource, token="demo-token")  # type: ignore[attr-defined]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    checks = {check["id"]: check for check in result["checks"]}
+    assert result["ok"] is True
+    assert checks["auth.jwks.local"]["status"] == "skip"
+    assert checks["auth.jwks_or_introspection"]["status"] == "pass"
+    assert result["auth"]["jwks_url"].endswith("/jwks")
+    assert result["auth"]["jwks_cache_seconds"] == 30.0
+
+
 def test_mcp_share_auth_doctor_cli_accepts_config_without_share_directory(tmp_path, capsys):
     resource = "https://mcp.example.test/mcp"
     config = write_oauth_share_config(tmp_path, resource=resource, issuer="https://issuer.example.test")

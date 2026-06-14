@@ -156,6 +156,10 @@ settings, scope-to-tool mappings, and Cloudflare Access conflicts. Use
 `--no-live-checks` while editing local config, or `--config snulbug.toml` before
 a generated share directory exists.
 
+Runtime JWT validation can use either a pinned local `jwks_path` or a remote
+`jwks_url` with bounded caching and refresh-on-rotation. The auth doctor probes
+the configured remote JWKS endpoint during live checks.
+
 To exercise the full auth model locally without an external identity provider,
 run the auth lab:
 

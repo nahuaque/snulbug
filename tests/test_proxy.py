@@ -27,6 +27,7 @@ from snulbug import (
     EventDispatcher,
     JsonlEventSink,
     McpFacadeProxyApp,
+    OAuthResourceConfig,
     build_fabric_audit_metadata,
     create_lease,
     create_proxy_application,
@@ -34,6 +35,7 @@ from snulbug import (
     load_record_log,
     sign_upstream_manifest,
 )
+from snulbug.mcp_auth import RemoteJwksCache
 
 
 def audit_event_sinks(path: Path) -> list[dict[str, Any]]:
@@ -387,6 +389,108 @@ def test_reverse_proxy_oauth_allows_token_adds_lua_context_and_strips_authorizat
     assert audit["auth"]["scopes"] == ["mcp:connect", "mcp:tools"]
     assert token not in json.dumps(record)
     assert token not in json.dumps(audit)
+
+
+def test_reverse_proxy_oauth_fetches_and_caches_remote_jwks(tmp_path):
+    server, seen = start_upstream()
+    jwks_server = ThreadingHTTPServer(("127.0.0.1", 0), JwksHandler)
+    secret = "remote-jwks-secret-at-least-32-bytes"
+    jwks_server.jwks = hs256_jwks(secret)  # type: ignore[attr-defined]
+    jwks_server.request_count = 0  # type: ignore[attr-defined]
+    jwks_thread = threading.Thread(target=jwks_server.serve_forever, daemon=True)
+    jwks_thread.start()
+    policy = write_oauth_context_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    token = make_oauth_token(secret, scopes=["mcp:connect", "mcp:tools"])
+    auth_config = remote_oauth_auth_config(jwks_server)
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        auth_config=auth_config,
+    )
+
+    try:
+        for request_id in (1, 2):
+            sent = run_asgi(
+                app,
+                path="/mcp",
+                headers=[
+                    (b"content-type", b"application/json"),
+                    (b"authorization", f"Bearer {token}".encode("ascii")),
+                ],
+                body=f'{{"jsonrpc":"2.0","id":{request_id},"method":"tools/list"}}'.encode("ascii"),
+            )
+            assert sent[0]["status"] == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+        jwks_server.shutdown()
+        jwks_server.server_close()
+        jwks_thread.join(timeout=2)
+
+    assert seen["count"] == 2
+    assert jwks_server.request_count == 1  # type: ignore[attr-defined]
+    assert [record["metadata"]["auth"]["reason_code"] for record in load_record_log(record_log)] == [
+        "oauth.allowed",
+        "oauth.allowed",
+    ]
+
+
+def test_reverse_proxy_oauth_refreshes_remote_jwks_on_key_rotation(tmp_path):
+    server, seen = start_upstream()
+    jwks_server = ThreadingHTTPServer(("127.0.0.1", 0), JwksHandler)
+    old_secret = "old-remote-jwks-secret-at-least-32-bytes"
+    new_secret = "new-remote-jwks-secret-at-least-32-bytes"
+    jwks_server.jwks = hs256_jwks(old_secret, kid="old-key")  # type: ignore[attr-defined]
+    jwks_server.request_count = 0  # type: ignore[attr-defined]
+    jwks_thread = threading.Thread(target=jwks_server.serve_forever, daemon=True)
+    jwks_thread.start()
+    policy = write_oauth_context_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    auth_config = remote_oauth_auth_config(jwks_server)
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        auth_config=auth_config,
+    )
+
+    try:
+        old_token = make_oauth_token(old_secret, scopes=["mcp:connect", "mcp:tools"], key_id="old-key")
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {old_token}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+        assert sent[0]["status"] == 200
+
+        jwks_server.jwks = hs256_jwks(new_secret, kid="new-key")  # type: ignore[attr-defined]
+        new_token = make_oauth_token(new_secret, scopes=["mcp:connect", "mcp:tools"], key_id="new-key")
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {new_token}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":2,"method":"tools/list"}',
+        )
+        assert sent[0]["status"] == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+        jwks_server.shutdown()
+        jwks_server.server_close()
+        jwks_thread.join(timeout=2)
+
+    assert seen["count"] == 2
+    assert jwks_server.request_count == 2  # type: ignore[attr-defined]
+    assert len(load_record_log(record_log)) == 2
 
 
 def test_reverse_proxy_oauth_brokers_single_upstream_credential_without_token_passthrough(tmp_path, monkeypatch):
@@ -2805,12 +2909,16 @@ def sent_headers(sent: list[dict[str, Any]]) -> dict[str, str]:
     return {name.decode("latin-1").lower(): value.decode("latin-1") for name, value in headers}
 
 
+def hs256_jwks(secret: str, *, kid: str = "test-key") -> dict[str, Any]:
+    key = base64.urlsafe_b64encode(secret.encode("utf-8")).rstrip(b"=").decode("ascii")
+    return {"keys": [{"kty": "oct", "kid": kid, "alg": "HS256", "k": key}]}
+
+
 def write_hs256_jwks(tmp_path) -> tuple[Path, str]:
     secret = "local-oauth-signing-secret-32-bytes"
-    key = base64.urlsafe_b64encode(secret.encode("utf-8")).rstrip(b"=").decode("ascii")
     path = tmp_path / "jwks.json"
     path.write_text(
-        json.dumps({"keys": [{"kty": "oct", "kid": "test-key", "alg": "HS256", "k": key}]}),
+        json.dumps(hs256_jwks(secret)),
         encoding="utf-8",
     )
     return path, secret
@@ -2822,6 +2930,7 @@ def make_oauth_token(
     scopes: list[str],
     subject: str = "user-1",
     extra_claims: dict[str, Any] | None = None,
+    key_id: str = "test-key",
 ) -> str:
     now = int(time.time())
     return jwt.encode(
@@ -2837,7 +2946,7 @@ def make_oauth_token(
         },
         secret,
         algorithm="HS256",
-        headers={"kid": "test-key"},
+        headers={"kid": key_id},
     )
 
 
@@ -2854,11 +2963,44 @@ def oauth_auth_config(jwks_path: Path, *, scope_map: dict[str, list[str]] | None
     }
 
 
+def remote_oauth_auth_config(server: ThreadingHTTPServer) -> OAuthResourceConfig:
+    return OAuthResourceConfig(
+        mode="oauth-resource",
+        resource="https://mcp.example.test/mcp",
+        issuer="https://issuer.example.test",
+        authorization_servers=("https://issuer.example.test",),
+        audience="https://mcp.example.test/mcp",
+        required_scopes=("mcp:connect",),
+        jwks_url=f"http://127.0.0.1:{server.server_port}/jwks",
+        jwks_cache_seconds=3600.0,
+        jwks_fetch_timeout=2.0,
+        jwks_cache=RemoteJwksCache(),
+    )
+
+
 def oauth_scope_map() -> dict[str, list[str]]:
     return {
         "mcp:tools.read": ["tools/list", "resources/list"],
         "mcp:tool.git.status": ["tools/call:git.status"],
     }
+
+
+class JwksHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path != "/jwks":
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.server.request_count += 1  # type: ignore[attr-defined]
+        raw = json.dumps(self.server.jwks, sort_keys=True).encode("utf-8")  # type: ignore[attr-defined]
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+        return
 
 
 def write_hot_reload_config(config: Path, *, upstream_name: str, port: int) -> None:

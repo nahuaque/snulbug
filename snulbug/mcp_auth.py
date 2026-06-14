@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import http.client
 import json
+import threading
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 import jwt
 
@@ -20,6 +23,10 @@ class OAuthResourceConfig:
     required_scopes: tuple[str, ...] = ()
     scopes_supported: tuple[str, ...] = ()
     jwks_path: Path | None = None
+    jwks_url: str | None = None
+    jwks_cache_seconds: float = 300.0
+    jwks_fetch_timeout: float = 5.0
+    jwks_cache: Any = None
     resource_metadata_url: str | None = None
     realm: str = "mcp"
     leeway_seconds: float = 60.0
@@ -43,6 +50,39 @@ class OAuthDecision:
     headers: list[tuple[bytes, bytes]]
     metadata: dict[str, Any]
     context: dict[str, Any]
+
+
+class RemoteJwksCache:
+    """Small in-process JWKS cache keyed by URL."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._entries: dict[str, dict[str, Any]] = {}
+
+    def get(self, url: str, *, ttl_seconds: float, timeout: float, force_refresh: bool = False) -> dict[str, Any]:
+        now = time.monotonic()
+        with self._lock:
+            entry = self._entries.get(url)
+            if (
+                not force_refresh
+                and entry is not None
+                and float(entry.get("expires_at", 0.0)) > now
+                and isinstance(entry.get("jwks"), Mapping)
+            ):
+                return dict(entry["jwks"])
+
+        jwks = _fetch_remote_jwks(url, timeout=timeout)
+        expires_at = now + max(0.0, float(ttl_seconds))
+        with self._lock:
+            self._entries[url] = {"jwks": dict(jwks), "expires_at": expires_at, "fetched_at": now}
+        return jwks
+
+
+class _RemoteJwksRetry(ValueError):
+    pass
+
+
+_GLOBAL_REMOTE_JWKS_CACHE = RemoteJwksCache()
 
 
 def protected_resource_metadata(config: OAuthResourceConfig) -> dict[str, Any]:
@@ -162,8 +202,27 @@ def verify_jwt(token: str, *, config: OAuthResourceConfig) -> dict[str, Any]:
     algorithm = header.get("alg")
     if not isinstance(algorithm, str) or algorithm == "none":
         raise ValueError("JWT alg is missing or unsupported")
-    jwks = _load_jwks(config.jwks_path)
-    key = _select_jwks_key(jwks, kid=header.get("kid"), algorithm=algorithm)
+    try:
+        return _decode_jwt(token, header=header, algorithm=algorithm, config=config, force_refresh=False)
+    except _RemoteJwksRetry:
+        return _decode_jwt(token, header=header, algorithm=algorithm, config=config, force_refresh=True)
+
+
+def _decode_jwt(
+    token: str,
+    *,
+    header: Mapping[str, Any],
+    algorithm: str,
+    config: OAuthResourceConfig,
+    force_refresh: bool,
+) -> dict[str, Any]:
+    jwks = _load_jwks(config, force_refresh=force_refresh)
+    key = _select_jwks_key(
+        jwks,
+        kid=header.get("kid"),
+        algorithm=algorithm,
+        retryable=bool(config.jwks_url) and not force_refresh,
+    )
     try:
         decoded = jwt.decode(
             token,
@@ -177,6 +236,10 @@ def verify_jwt(token: str, *, config: OAuthResourceConfig) -> dict[str, Any]:
                 "verify_iss": bool(config.issuer),
             },
         )
+    except jwt.InvalidSignatureError as exc:
+        if config.jwks_url and not force_refresh:
+            raise _RemoteJwksRetry(str(exc)) from exc
+        raise ValueError(str(exc)) from exc
     except jwt.PyJWTError as exc:
         raise ValueError(str(exc)) from exc
     if not isinstance(decoded, Mapping):
@@ -357,11 +420,59 @@ def _reject(
     )
 
 
-def _load_jwks(path: Path | None) -> dict[str, Any]:
-    if path is None:
-        raise ValueError("JWT verification requires auth.jwks_path")
+def _load_jwks(config: OAuthResourceConfig, *, force_refresh: bool = False) -> dict[str, Any]:
+    if config.jwks_path is not None:
+        return _load_local_jwks(config.jwks_path)
+    if config.jwks_url:
+        cache = config.jwks_cache if isinstance(config.jwks_cache, RemoteJwksCache) else _GLOBAL_REMOTE_JWKS_CACHE
+        return cache.get(
+            config.jwks_url,
+            ttl_seconds=config.jwks_cache_seconds,
+            timeout=config.jwks_fetch_timeout,
+            force_refresh=force_refresh,
+        )
+    raise ValueError("JWT verification requires auth.jwks_path or auth.jwks_url")
+
+
+def _load_local_jwks(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as file:
         loaded = json.load(file)
+    return _normalize_jwks(loaded)
+
+
+def _fetch_remote_jwks(url: str, *, timeout: float) -> dict[str, Any]:
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError(f"unsupported JWKS URL: {url}")
+    if parsed.scheme == "http" and not _is_localhost(parsed.hostname):
+        raise ValueError("remote JWKS URL must use HTTPS except for localhost")
+    connection_class = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    connection = connection_class(parsed.hostname, parsed.port, timeout=timeout)
+    try:
+        connection.request(
+            "GET",
+            _request_target(parsed),
+            headers={
+                "accept": "application/json",
+                "user-agent": "snulbug-jwks-cache/0.1",
+            },
+        )
+        response = connection.getresponse()
+        body = response.read(1_048_577)
+        if len(body) > 1_048_576:
+            raise ValueError("remote JWKS response exceeds 1 MiB")
+        if response.status < 200 or response.status >= 300:
+            raise ValueError(f"remote JWKS fetch failed with HTTP {response.status}")
+        try:
+            loaded = json.loads(body.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"remote JWKS response is not JSON: {exc}") from exc
+    finally:
+        connection.close()
+    return _normalize_jwks(loaded)
+
+
+def _normalize_jwks(loaded: Any) -> dict[str, Any]:
     if not isinstance(loaded, Mapping):
         raise ValueError("JWKS must be a JSON object")
     keys = loaded.get("keys")
@@ -370,11 +481,13 @@ def _load_jwks(path: Path | None) -> dict[str, Any]:
     return {"keys": [dict(key) for key in keys if isinstance(key, Mapping)]}
 
 
-def _select_jwks_key(jwks: Mapping[str, Any], *, kid: Any, algorithm: str) -> Any:
+def _select_jwks_key(jwks: Mapping[str, Any], *, kid: Any, algorithm: str, retryable: bool = False) -> Any:
     keys = [key for key in jwks.get("keys", []) if isinstance(key, Mapping)]
     if kid is not None:
         keys = [key for key in keys if key.get("kid") == kid]
     if not keys:
+        if retryable:
+            raise _RemoteJwksRetry("JWKS does not contain a matching key")
         raise ValueError("JWKS does not contain a matching key")
     if len(keys) > 1 and kid is None:
         raise ValueError("JWT kid is required when JWKS contains multiple keys")
@@ -385,6 +498,17 @@ def _select_jwks_key(jwks: Mapping[str, Any], *, kid: Any, algorithm: str) -> An
         return jwt.PyJWK.from_dict(dict(key), algorithm=algorithm).key
     except jwt.PyJWTError as exc:
         raise ValueError(f"JWKS key is invalid: {exc}") from exc
+
+
+def _request_target(parsed: SplitResult) -> str:
+    target = parsed.path or "/"
+    if parsed.query:
+        target = f"{target}?{parsed.query}"
+    return target
+
+
+def _is_localhost(hostname: str) -> bool:
+    return hostname in {"localhost", "127.0.0.1", "::1"} or hostname.endswith(".localhost")
 
 
 def _claim_scopes(claims: Mapping[str, Any]) -> list[str]:

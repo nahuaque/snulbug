@@ -145,6 +145,7 @@ from .manifests import load_manifest, manifest_digest, sign_upstream_manifest, v
 from .mcp_auth import (
     OAuthDecision,
     OAuthResourceConfig,
+    RemoteJwksCache,
     evaluate_oauth_request,
     oauth_bearer_challenge,
     oauth_resource_metadata_url,
@@ -354,6 +355,7 @@ __all__ = [
     "POLICY_ACTIVATION_MODES",
     "RedisStateStore",
     "RedactionConfig",
+    "RemoteJwksCache",
     "ResponsePolicyConfig",
     "ReverseProxyApp",
     "SCHEMA_POLICY_HIGH_RISK_ACTIONS",

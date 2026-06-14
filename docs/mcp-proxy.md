@@ -284,8 +284,8 @@ For webhook sinks, when `signing_secret_env` resolves to a secret, snulbug adds:
 When exposing a public MCP endpoint to clients that understand MCP
 authorization, snulbug can act as an OAuth protected resource server. The
 authorization server remains external; snulbug validates incoming bearer JWTs
-against a local JWKS, issuer, audience, and required scopes before Lua policy
-or upstream forwarding.
+against a local or remote JWKS, issuer, audience, and required scopes before
+Lua policy or upstream forwarding.
 
 ```toml
 [mcp.auth]
@@ -297,6 +297,10 @@ audience = "https://mcp.example.com/mcp"
 required_scopes = ["mcp:connect"]
 scopes_supported = ["mcp:connect", "mcp:tools.read", "mcp:tool.git.status"]
 jwks_path = "auth/jwks.json"
+# Or use issuer-managed rotation:
+# jwks_url = "https://issuer.example.com/.well-known/jwks.json"
+# jwks_cache_seconds = 300
+# jwks_fetch_timeout = 5
 strip_authorization_upstream = true
 
 [mcp.auth.scope_map]
@@ -310,6 +314,8 @@ With this enabled, snulbug:
 - serves `GET /.well-known/oauth-protected-resource`
 - challenges missing or invalid tokens with `WWW-Authenticate: Bearer ...`
 - rejects insufficient scopes before Lua and upstream calls
+- validates JWT signatures from either `jwks_path` or a cached remote
+  `jwks_url`
 - maps OAuth scopes to MCP methods/tools using `[mcp.auth.scope_map]`
 - exposes sanitized claims to Lua as `context.auth`
 - exposes Lua helpers such as `auth.has_scope("mcp:tool.git.status")` and
@@ -346,6 +352,12 @@ end
 The JWT verifier uses `PyJWT[crypto]`. This mode does not perform dynamic
 client registration, token introspection, or authorization-code flows; use your
 identity provider or tunnel/access layer for those pieces.
+
+Use `jwks_path` when you want a pinned local key file. Use `jwks_url` when the
+issuer owns key rotation. Runtime remote JWKS fetches are cached for
+`jwks_cache_seconds`; if a token arrives with a `kid` missing from the cached
+set, snulbug refreshes the JWKS once and retries validation. Remote JWKS URLs
+must use HTTPS except for localhost development.
 
 Before sharing an OAuth-protected public MCP URL, run:
 

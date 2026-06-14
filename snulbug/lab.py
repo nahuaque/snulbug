@@ -713,7 +713,9 @@ issuer = {json.dumps(issuer_url)}
 authorization_servers = [{json.dumps(issuer_url)}]
 audience = {json.dumps(proxy_url)}
 required_scopes = ["mcp:connect"]
-jwks_path = "auth/jwks.json"
+jwks_url = {json.dumps(f"{issuer_url}/jwks")}
+jwks_cache_seconds = 300
+jwks_fetch_timeout = 5
 strip_authorization_upstream = true
 
 [mcp.auth.scope_map]

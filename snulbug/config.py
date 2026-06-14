@@ -26,6 +26,9 @@ DEFAULT_MCP_AUTH_CONFIG = {
     "required_scopes": [],
     "scopes_supported": [],
     "jwks_path": None,
+    "jwks_url": None,
+    "jwks_cache_seconds": 300.0,
+    "jwks_fetch_timeout": 5.0,
     "resource_metadata_url": None,
     "realm": "mcp",
     "leeway_seconds": 60.0,
@@ -158,6 +161,9 @@ timeout = 30.0
 # required_scopes = ["mcp:connect"]
 # scopes_supported = ["mcp:connect"]
 # jwks_path = "auth/jwks.json"
+# jwks_url = "https://issuer.example/.well-known/jwks.json"
+# jwks_cache_seconds = 300
+# jwks_fetch_timeout = 5
 # resource_metadata_url = "https://YOUR-TUNNEL.example/.well-known/oauth-protected-resource"
 # realm = "mcp"
 # leeway_seconds = 60.0
@@ -477,7 +483,7 @@ def normalize_mcp_auth_config(config: Mapping[str, Any] | None, *, base_dir: str
         raise ValueError("mcp.auth.mode must be a string")
     if mode not in {"off", "oauth-resource"}:
         raise ValueError("mcp.auth.mode must be 'off' or 'oauth-resource'")
-    for field in ("resource", "issuer", "audience", "resource_metadata_url", "realm"):
+    for field in ("resource", "issuer", "audience", "jwks_url", "resource_metadata_url", "realm"):
         value = normalized.get(field)
         if value is not None and not isinstance(value, str):
             raise ValueError(f"mcp.auth.{field} must be a string")
@@ -492,6 +498,12 @@ def normalize_mcp_auth_config(config: Mapping[str, Any] | None, *, base_dir: str
         normalized["jwks_path"] = _resolve_path(Path(base_dir), jwks_path)
     else:
         raise ValueError("mcp.auth.jwks_path must be a string path")
+    for field in ("jwks_cache_seconds", "jwks_fetch_timeout"):
+        if not isinstance(normalized.get(field), int | float) or float(normalized[field]) < 0:
+            raise ValueError(f"mcp.auth.{field} must be a non-negative number")
+        normalized[field] = float(normalized[field])
+    if normalized["jwks_fetch_timeout"] <= 0:
+        raise ValueError("mcp.auth.jwks_fetch_timeout must be positive")
     if not isinstance(normalized.get("leeway_seconds"), int | float) or float(normalized["leeway_seconds"]) < 0:
         raise ValueError("mcp.auth.leeway_seconds must be a non-negative number")
     normalized["leeway_seconds"] = float(normalized["leeway_seconds"])
@@ -501,8 +513,8 @@ def normalize_mcp_auth_config(config: Mapping[str, Any] | None, *, base_dir: str
     if normalized["mode"] == "oauth-resource":
         if not normalized.get("resource"):
             raise ValueError("mcp.auth.resource is required when mode is 'oauth-resource'")
-        if not normalized.get("jwks_path"):
-            raise ValueError("mcp.auth.jwks_path is required when mode is 'oauth-resource'")
+        if not normalized.get("jwks_path") and not normalized.get("jwks_url"):
+            raise ValueError("mcp.auth.jwks_path or mcp.auth.jwks_url is required when mode is 'oauth-resource'")
         if not normalized["scopes_supported"]:
             normalized["scopes_supported"] = sorted(
                 {

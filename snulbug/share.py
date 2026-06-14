@@ -888,6 +888,9 @@ def doctor_mcp_share_auth(
         required_scopes=tuple(str(item) for item in _sequence(auth.get("required_scopes"))),
         scopes_supported=tuple(str(item) for item in _sequence(auth.get("scopes_supported"))),
         jwks_path=auth.get("jwks_path") if isinstance(auth.get("jwks_path"), Path) else None,
+        jwks_url=auth.get("jwks_url") if isinstance(auth.get("jwks_url"), str) else None,
+        jwks_cache_seconds=float(auth.get("jwks_cache_seconds") or 300.0),
+        jwks_fetch_timeout=float(auth.get("jwks_fetch_timeout") or 5.0),
         resource_metadata_url=auth.get("resource_metadata_url")
         if isinstance(auth.get("resource_metadata_url"), str)
         else None,
@@ -904,16 +907,16 @@ def doctor_mcp_share_auth(
     _add_auth_url_checks(checks, auth, url, recommendations)
     _add_auth_safety_checks(checks, proxy_config, auth, manifest, recommendations)
 
-    jwks = _inspect_local_jwks(auth.get("jwks_path"))
+    jwks = _inspect_local_jwks(auth.get("jwks_path"), remote_url=auth.get("jwks_url"))
     _add_share_doctor_check(
         checks,
         "auth.jwks.local",
-        jwks["ok"],
+        jwks["ok"] if jwks.get("status") != "skip" else None,
         f"local JWKS contains {jwks.get('key_count', 0)} key(s)" if jwks["ok"] else str(jwks["message"]),
         component="auth",
         details={key: value for key, value in jwks.items() if key not in {"ok", "message"}},
     )
-    if not jwks["ok"]:
+    if not jwks["ok"] and jwks.get("status") != "skip":
         recommendations.append("Configure mcp.auth.jwks_path with a readable JWKS containing at least one key.")
 
     protected_metadata: Mapping[str, Any] | None = None
@@ -1019,6 +1022,7 @@ def doctor_mcp_share_auth(
         checks,
         issuer_metadata,
         local_jwks_ok=bool(jwks["ok"]),
+        configured_jwks_url=auth.get("jwks_url") if isinstance(auth.get("jwks_url"), str) else None,
         headers={},
         timeout=timeout,
         live_checks=live_checks,
@@ -1212,6 +1216,9 @@ def _auth_doctor_summary(auth: Mapping[str, Any]) -> dict[str, Any]:
         "required_scopes": [str(item) for item in _sequence(auth.get("required_scopes"))],
         "scopes_supported": [str(item) for item in _sequence(auth.get("scopes_supported"))],
         "jwks_path": str(jwks_path) if jwks_path else None,
+        "jwks_url": auth.get("jwks_url"),
+        "jwks_cache_seconds": auth.get("jwks_cache_seconds"),
+        "jwks_fetch_timeout": auth.get("jwks_fetch_timeout"),
         "resource_metadata_url": auth.get("resource_metadata_url"),
         "strip_authorization_upstream": auth.get("strip_authorization_upstream"),
         "scope_map": {
@@ -1373,8 +1380,17 @@ def _unsafe_auth_event_sinks(value: Any) -> list[dict[str, Any]]:
     return unsafe
 
 
-def _inspect_local_jwks(path_value: Any) -> dict[str, Any]:
+def _inspect_local_jwks(path_value: Any, *, remote_url: Any = None) -> dict[str, Any]:
     if not isinstance(path_value, str | Path):
+        if isinstance(remote_url, str) and remote_url:
+            return {
+                "ok": False,
+                "status": "skip",
+                "message": "local JWKS is not configured; runtime will use remote JWKS URL",
+                "path": None,
+                "jwks_url": remote_url,
+                "key_count": 0,
+            }
         return {"ok": False, "message": "mcp.auth.jwks_path is not configured", "path": None, "key_count": 0}
     path = Path(path_value)
     if not path.is_file():
@@ -1505,6 +1521,7 @@ def _add_jwks_or_introspection_check(
     issuer_metadata: Mapping[str, Any] | None,
     *,
     local_jwks_ok: bool,
+    configured_jwks_url: str | None,
     headers: Mapping[str, str],
     timeout: float,
     live_checks: bool,
@@ -1512,6 +1529,16 @@ def _add_jwks_or_introspection_check(
     recommendations: list[str],
 ) -> None:
     if not live_checks:
+        if configured_jwks_url:
+            _add_share_doctor_check(
+                checks,
+                "auth.jwks_or_introspection",
+                None,
+                "remote JWKS runtime fetch skipped",
+                component="auth",
+                details={"jwks_url": configured_jwks_url},
+            )
+            return
         _add_share_doctor_check(
             checks,
             "auth.jwks_or_introspection",
@@ -1519,6 +1546,25 @@ def _add_jwks_or_introspection_check(
             "local JWKS is usable" if local_jwks_ok else "local JWKS is not usable",
             component="auth",
         )
+        return
+
+    if configured_jwks_url:
+        probe = _fetch_auth_json_document(configured_jwks_url, headers=headers, timeout=timeout)
+        live["jwks"] = probe
+        jwks_keys = _sequence(_mapping(probe.get("json")).get("keys"))
+        ok = probe.get("ok") is True and bool(jwks_keys)
+        _add_share_doctor_check(
+            checks,
+            "auth.jwks_or_introspection",
+            ok,
+            f"configured remote JWKS contains {len(jwks_keys)} key(s)"
+            if ok
+            else f"configured remote JWKS is not usable at {configured_jwks_url}: {probe.get('error')}",
+            component="auth",
+            details=_http_probe_details(probe),
+        )
+        if not ok:
+            recommendations.append("Fix mcp.auth.jwks_url or configure a local mcp.auth.jwks_path fallback.")
         return
 
     metadata = _mapping(issuer_metadata)

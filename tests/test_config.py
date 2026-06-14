@@ -65,6 +65,9 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         required_scopes = ["mcp:connect"]
         scopes_supported = ["mcp:connect", "mcp:tools"]
         jwks_path = "auth/jwks.json"
+        jwks_url = "https://issuer.example.com/jwks"
+        jwks_cache_seconds = 120
+        jwks_fetch_timeout = 2.5
         resource_metadata_url = "https://mcp.example.com/.well-known/oauth-protected-resource"
         realm = "mcp"
         leeway_seconds = 30
@@ -134,6 +137,9 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         "required_scopes": ["mcp:connect"],
         "scopes_supported": ["mcp:connect", "mcp:tools"],
         "jwks_path": tmp_path / "auth/jwks.json",
+        "jwks_url": "https://issuer.example.com/jwks",
+        "jwks_cache_seconds": 120.0,
+        "jwks_fetch_timeout": 2.5,
         "resource_metadata_url": "https://mcp.example.com/.well-known/oauth-protected-resource",
         "realm": "mcp",
         "leeway_seconds": 30.0,
@@ -181,6 +187,34 @@ def test_load_mcp_proxy_config_accepts_holepunch_provider(tmp_path):
 
     assert result["tunnel_provider"] == "holepunch"
     assert result["tunnel_public_url"] == "http://127.0.0.1:18080/mcp"
+
+
+def test_load_mcp_proxy_config_accepts_remote_jwks_without_local_file(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.proxy]
+        policy = "policy.snulbug/policy.lua"
+
+        [mcp.auth]
+        mode = "oauth-resource"
+        resource = "https://mcp.example.com/mcp"
+        issuer = "https://issuer.example.com"
+        audience = "https://mcp.example.com/mcp"
+        required_scopes = ["mcp:connect"]
+        jwks_url = "https://issuer.example.com/.well-known/jwks.json"
+        jwks_cache_seconds = 60
+        jwks_fetch_timeout = 1.5
+        """,
+        encoding="utf-8",
+    )
+
+    result = load_mcp_proxy_config(config)
+
+    assert result["auth"]["jwks_path"] is None
+    assert result["auth"]["jwks_url"] == "https://issuer.example.com/.well-known/jwks.json"
+    assert result["auth"]["jwks_cache_seconds"] == 60.0
+    assert result["auth"]["jwks_fetch_timeout"] == 1.5
 
 
 def test_event_sink_toml_helper_writes_loadable_sink_blocks(tmp_path):
