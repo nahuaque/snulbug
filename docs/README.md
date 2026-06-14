@@ -30,7 +30,6 @@
 - [MCP learn and amend mode](mcp-learn.md)
 - [MCP evidence record, replay, and inspect](mcp-recorder.md)
 - [MCP evidence impact preview](mcp-impact.md)
-- [Legacy tools/list shortcut](mcp-tools.md)
 - [Policy bundles](bundles.md)
 - [State adapters](state.md)
 - [Security model](security-model.md)

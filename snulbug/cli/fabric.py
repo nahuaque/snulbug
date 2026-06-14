@@ -13,6 +13,7 @@ from ..fabric_runtime import (
     DEFAULT_FABRIC_RUNTIME_STATE,
     DEFAULT_FABRIC_RUNTIME_STATE_KEY,
 )
+from .common import read_required_env
 
 
 def add_mcp_fabric_command(mcp_subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -75,6 +76,7 @@ def add_mcp_fabric_command(mcp_subparsers: argparse._SubParsersAction[argparse.A
     add_force_arg(mcp_fabric_learn, help="overwrite the output directory")
     add_compact_arg(mcp_fabric_learn)
 
+    _add_fabric_manifest_command(mcp_fabric_subparsers)
     _add_fabric_conformance_command(mcp_fabric_subparsers)
     _add_fabric_runtime_command(mcp_fabric_subparsers)
     _add_fabric_control_command(mcp_fabric_subparsers)
@@ -157,6 +159,8 @@ def handle_mcp_fabric_command(args: argparse.Namespace, parser: argparse.Argumen
                 sys.stdout.write(format_fabric_learn_report(result))
                 sys.stdout.write("\n")
                 return status
+        elif args.fabric_command == "manifest":
+            return _handle_fabric_manifest_command(args, parser)
         elif args.fabric_command == "conformance":
             return _handle_fabric_conformance_command(args, parser, parse_tunnel_headers)
         elif args.fabric_command == "runtime":
@@ -261,6 +265,81 @@ def handle_mcp_fabric_command(args: argparse.Namespace, parser: argparse.Argumen
             result["config"] = str(args.config)
         if hasattr(args, "out"):
             result["output"] = str(args.out)
+        status = 1
+
+    write_json_output(result, compact=args.compact)
+    return status
+
+
+def _add_fabric_manifest_command(
+    mcp_fabric_subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    mcp_fabric_manifest = mcp_fabric_subparsers.add_parser(
+        "manifest",
+        help="sign and verify MCP upstream manifests",
+    )
+    manifest_subparsers = mcp_fabric_manifest.add_subparsers(dest="manifest_command", required=True)
+
+    manifest_sign = manifest_subparsers.add_parser("sign", help="sign an upstream manifest JSON file")
+    manifest_sign.add_argument("manifest", type=Path, help="unsigned upstream manifest JSON file")
+    manifest_sign.add_argument("--out", "--output", type=Path, required=True, help="signed manifest output path")
+    manifest_sign.add_argument("--key-id", required=True, help="manifest signing key id")
+    manifest_sign.add_argument(
+        "--secret-env",
+        default="SNULBUG_MANIFEST_SECRET",
+        help="environment variable containing the manifest signing secret",
+    )
+    add_compact_arg(manifest_sign)
+
+    manifest_verify = manifest_subparsers.add_parser("verify", help="verify a signed upstream manifest")
+    manifest_verify.add_argument("manifest", type=Path, help="signed upstream manifest JSON file")
+    manifest_verify.add_argument("--key-id", help="manifest signing key id; defaults to the manifest key_id")
+    manifest_verify.add_argument(
+        "--secret-env",
+        default="SNULBUG_MANIFEST_SECRET",
+        help="environment variable containing the manifest signing secret",
+    )
+    manifest_verify.add_argument("--expect-identity", help="required manifest identity")
+    add_compact_arg(manifest_verify)
+
+
+def _handle_fabric_manifest_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    from ..manifests import load_manifest, sign_upstream_manifest, verify_upstream_manifest, write_manifest
+
+    try:
+        secret = read_required_env(args.secret_env)
+        if args.manifest_command == "sign":
+            manifest = load_manifest(args.manifest)
+            signed_manifest = sign_upstream_manifest(manifest, secret=secret, key_id=args.key_id)
+            write_manifest(args.out, signed_manifest)
+            result = {
+                "ok": True,
+                "manifest": str(args.manifest),
+                "output": str(args.out),
+                "signature": signed_manifest["snulbug_signature"],
+            }
+        elif args.manifest_command == "verify":
+            manifest = load_manifest(args.manifest)
+            signature = manifest.get("snulbug_signature")
+            signature_key_id = signature.get("key_id") if isinstance(signature, Mapping) else None
+            key_id = args.key_id or signature_key_id
+            if not isinstance(key_id, str) or not key_id:
+                raise ValueError("manifest key_id is required; pass --key-id or include snulbug_signature.key_id")
+            result = {
+                "ok": True,
+                "manifest": str(args.manifest),
+                "verified": verify_upstream_manifest(
+                    manifest,
+                    secrets={key_id: secret},
+                    expected_identity=args.expect_identity,
+                ),
+            }
+        else:
+            parser.error(f"unknown mcp fabric manifest command: {args.manifest_command}")
+            return 2
+        status = 0
+    except Exception as exc:
+        result = {"ok": False, "manifest": str(args.manifest), "error": str(exc)}
         status = 1
 
     write_json_output(result, compact=args.compact)

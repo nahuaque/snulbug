@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from snulbug import (
     close_mcp_share,
     create_mcp_share,
@@ -120,6 +122,7 @@ def test_mcp_share_cli_emits_compact_session_plan(tmp_path, capsys):
         [
             "mcp",
             "share",
+            "create",
             "--directory",
             str(tmp_path),
             "--provider",
@@ -152,6 +155,13 @@ def test_mcp_share_cli_emits_compact_session_plan(tmp_path, capsys):
     assert (tmp_path / "mcp-client.json").is_file()
     assert (tmp_path / "share.json").is_file()
     assert (tmp_path / "SHARE.md").is_file()
+
+
+def test_mcp_share_requires_lifecycle_subcommand(tmp_path):
+    with pytest.raises(SystemExit) as exc:
+        simulator_main(["mcp", "share", "--directory", str(tmp_path)])
+
+    assert exc.value.code == 2
 
 
 def test_mcp_share_create_subcommand_emits_compact_session_plan(tmp_path, capsys):

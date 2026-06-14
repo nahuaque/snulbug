@@ -516,10 +516,10 @@ Sign and verify it with a shared secret kept outside the file:
 
 ```bash
 export SNULBUG_MANIFEST_SECRET="replace-with-a-local-secret"
-snulbug mcp manifest sign manifests/files.json \
+snulbug mcp fabric manifest sign manifests/files.json \
   --out manifests/files.signed.json \
   --key-id dev
-snulbug mcp manifest verify manifests/files.signed.json \
+snulbug mcp fabric manifest verify manifests/files.signed.json \
   --expect-identity files@local
 ```
 

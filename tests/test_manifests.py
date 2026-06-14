@@ -47,6 +47,7 @@ def test_mcp_manifest_cli_signs_and_verifies(tmp_path, capsys, monkeypatch):
     sign_status = simulator_main(
         [
             "mcp",
+            "fabric",
             "manifest",
             "sign",
             str(input_path),
@@ -67,6 +68,7 @@ def test_mcp_manifest_cli_signs_and_verifies(tmp_path, capsys, monkeypatch):
     verify_status = simulator_main(
         [
             "mcp",
+            "fabric",
             "manifest",
             "verify",
             str(output_path),

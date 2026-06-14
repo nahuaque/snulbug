@@ -17,45 +17,6 @@ from ..cli_helpers import (
 )
 
 
-def add_mcp_tools_command(mcp_subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    mcp_tools = mcp_subparsers.add_parser("tools", help=argparse.SUPPRESS)
-    mcp_tools_subparsers = mcp_tools.add_subparsers(dest="tools_command", required=True)
-    mcp_tools_snapshot = mcp_tools_subparsers.add_parser(
-        "snapshot",
-        help="capture a stable MCP tools/list snapshot from a response file or live endpoint",
-    )
-    mcp_tools_snapshot_source = mcp_tools_snapshot.add_mutually_exclusive_group(required=True)
-    mcp_tools_snapshot_source.add_argument(
-        "--from",
-        dest="source",
-        type=Path,
-        help="JSON file containing a tools/list response, tools array, or existing snapshot",
-    )
-    mcp_tools_snapshot_source.add_argument("--url", help="MCP HTTP URL to call with tools/list")
-    mcp_tools_snapshot.add_argument("--header", action="append", default=[], help="HTTP header as 'Name: value'")
-    add_token_arg(mcp_tools_snapshot, help="bearer token for live MCP tools/list calls")
-    mcp_tools_snapshot.add_argument("--timeout", type=float, default=10.0, help="live tools/list timeout in seconds")
-    mcp_tools_snapshot.add_argument("--label", help="human label stored in the snapshot")
-    mcp_tools_snapshot.add_argument("--out", type=Path, help="write snapshot JSON to this path")
-    add_compact_arg(mcp_tools_snapshot)
-
-    mcp_tools_diff = mcp_tools_subparsers.add_parser("diff", help="compare two MCP tool snapshots")
-    mcp_tools_diff.add_argument("baseline", type=Path, help="baseline snapshot or tools/list response JSON")
-    mcp_tools_diff.add_argument("current", type=Path, help="current snapshot or tools/list response JSON")
-    mcp_tools_diff.add_argument(
-        "--fail-on",
-        action="append",
-        default=[],
-        choices=("added", "changed", "removed", "any"),
-        help="return exit code 1 when this change type is present; repeat or use any",
-    )
-    add_compact_arg(mcp_tools_diff)
-
-    mcp_subparsers._choices_actions = [  # type: ignore[attr-defined]
-        action for action in mcp_subparsers._choices_actions if getattr(action, "dest", None) != "tools"
-    ]
-
-
 def add_mcp_schemas_command(mcp_subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     mcp_schemas = mcp_subparsers.add_parser(
         "schemas",
@@ -147,51 +108,6 @@ def add_mcp_schemas_command(mcp_subparsers: argparse._SubParsersAction[argparse.
     )
     add_validate_arg(mcp_schemas_policy, help="validate and test the generated policy bundle")
     add_compact_arg(mcp_schemas_policy)
-
-
-def handle_mcp_tools_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
-    from ..mcp_tools import (
-        diff_mcp_tool_snapshots,
-        format_mcp_tool_diff_report,
-        format_mcp_tool_snapshot_report,
-        parse_mcp_tool_headers,
-        snapshot_mcp_tools,
-    )
-
-    try:
-        if args.tools_command == "snapshot":
-            result = snapshot_mcp_tools(
-                source=args.source,
-                url=args.url,
-                headers=parse_mcp_tool_headers(args.header, token=args.token),
-                token=args.token,
-                timeout=args.timeout,
-                label=args.label,
-                out=args.out,
-            )
-            status = 0
-            if not args.compact:
-                write_result_output(result, compact=False, formatter=format_mcp_tool_snapshot_report)
-                return status
-        elif args.tools_command == "diff":
-            result = diff_mcp_tool_snapshots(args.baseline, args.current, fail_on=args.fail_on)
-            status = 0 if result["ok"] else 1
-            if not args.compact:
-                write_result_output(result, compact=False, formatter=format_mcp_tool_diff_report)
-                return status
-        else:
-            parser.error(f"unknown mcp tools command: {args.tools_command}")
-            return 2
-    except Exception as exc:
-        result = {"ok": False, "error": str(exc)}
-        if hasattr(args, "source") and args.source is not None:
-            result["source"] = str(args.source)
-        if hasattr(args, "url") and args.url is not None:
-            result["url"] = args.url
-        status = 1
-
-    write_json_output(result, compact=args.compact)
-    return status
 
 
 def handle_mcp_schemas_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:

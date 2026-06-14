@@ -176,5 +176,6 @@ uv run snulbug mcp schemas discover \
   --out .snulbug/schemas/tools-only.json
 ```
 
-`snulbug mcp tools` remains available as a legacy shortcut for tools-only
-pinning, but schema catalogs are the primary review artifact.
+The old tools-only CLI shortcut has been removed. Use schema catalogs for
+tools-only pinning and review gates so tool snapshots share the same workflow as
+resources, prompts, and server capabilities.

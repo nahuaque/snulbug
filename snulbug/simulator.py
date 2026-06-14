@@ -7,15 +7,13 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .cli.common import read_json, read_required_env
+from .cli.common import read_json
 from .cli.evidence import add_mcp_evidence_command, handle_mcp_evidence_command
 from .cli.fabric import add_mcp_fabric_command, handle_mcp_fabric_command
 from .cli.policy import add_mcp_policy_command, handle_mcp_policy_command
 from .cli.schemas import (
     add_mcp_schemas_command,
-    add_mcp_tools_command,
     handle_mcp_schemas_command,
-    handle_mcp_tools_command,
 )
 from .cli.share import add_mcp_share_command, handle_mcp_share_command
 from .cli_helpers import (
@@ -215,7 +213,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_subparsers = mcp.add_subparsers(
         dest="mcp_command",
         required=True,
-        metavar=("{guide,policy,quickstart,codespace,share,config,schemas,fabric,manifest,lease,evidence,lab,proxy}"),
+        metavar=("{guide,policy,quickstart,codespace,share,config,schemas,fabric,lease,evidence,lab,proxy}"),
     )
 
     mcp_guide = mcp_subparsers.add_parser("guide", help="print agent-oriented MCP workflow guidance")
@@ -456,32 +454,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     add_force_arg(mcp_config_init, help="overwrite the config file when it exists")
     add_compact_arg(mcp_config_init)
 
-    add_mcp_tools_command(mcp_subparsers)
     add_mcp_schemas_command(mcp_subparsers)
     add_mcp_fabric_command(mcp_subparsers)
-
-    mcp_manifest = mcp_subparsers.add_parser("manifest", help="sign and verify MCP upstream manifests")
-    mcp_manifest_subparsers = mcp_manifest.add_subparsers(dest="manifest_command", required=True)
-    mcp_manifest_sign = mcp_manifest_subparsers.add_parser("sign", help="sign an upstream manifest JSON file")
-    mcp_manifest_sign.add_argument("manifest", type=Path, help="unsigned upstream manifest JSON file")
-    mcp_manifest_sign.add_argument("--out", "--output", type=Path, required=True, help="signed manifest output path")
-    mcp_manifest_sign.add_argument("--key-id", required=True, help="manifest signing key id")
-    mcp_manifest_sign.add_argument(
-        "--secret-env",
-        default="SNULBUG_MANIFEST_SECRET",
-        help="environment variable containing the manifest signing secret",
-    )
-    add_compact_arg(mcp_manifest_sign)
-    mcp_manifest_verify = mcp_manifest_subparsers.add_parser("verify", help="verify a signed upstream manifest")
-    mcp_manifest_verify.add_argument("manifest", type=Path, help="signed upstream manifest JSON file")
-    mcp_manifest_verify.add_argument("--key-id", help="manifest signing key id; defaults to the manifest key_id")
-    mcp_manifest_verify.add_argument(
-        "--secret-env",
-        default="SNULBUG_MANIFEST_SECRET",
-        help="environment variable containing the manifest signing secret",
-    )
-    mcp_manifest_verify.add_argument("--expect-identity", help="required manifest identity")
-    add_compact_arg(mcp_manifest_verify)
 
     mcp_lease = mcp_subparsers.add_parser("lease", help="create and manage task-scoped MCP capability leases")
     mcp_lease_subparsers = mcp_lease.add_subparsers(dest="lease_command", required=True)
@@ -1010,52 +984,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 parser.error(f"unknown mcp config command: {args.config_command}")
                 return 2
-        elif args.mcp_command == "tools":
-            return handle_mcp_tools_command(args, parser)
         elif args.mcp_command == "schemas":
             return handle_mcp_schemas_command(args, parser)
         elif args.mcp_command == "fabric":
             return handle_mcp_fabric_command(args, parser)
-        elif args.mcp_command == "manifest":
-            from .manifests import load_manifest, sign_upstream_manifest, verify_upstream_manifest, write_manifest
-
-            try:
-                secret = _read_required_env(args.secret_env)
-                if args.manifest_command == "sign":
-                    manifest = load_manifest(args.manifest)
-                    signed_manifest = sign_upstream_manifest(manifest, secret=secret, key_id=args.key_id)
-                    write_manifest(args.out, signed_manifest)
-                    result = {
-                        "ok": True,
-                        "manifest": str(args.manifest),
-                        "output": str(args.out),
-                        "signature": signed_manifest["snulbug_signature"],
-                    }
-                elif args.manifest_command == "verify":
-                    manifest = load_manifest(args.manifest)
-                    signature = manifest.get("snulbug_signature")
-                    signature_key_id = signature.get("key_id") if isinstance(signature, Mapping) else None
-                    key_id = args.key_id or signature_key_id
-                    if not isinstance(key_id, str) or not key_id:
-                        raise ValueError(
-                            "manifest key_id is required; pass --key-id or include snulbug_signature.key_id"
-                        )
-                    result = {
-                        "ok": True,
-                        "manifest": str(args.manifest),
-                        "verified": verify_upstream_manifest(
-                            manifest,
-                            secrets={key_id: secret},
-                            expected_identity=args.expect_identity,
-                        ),
-                    }
-                else:
-                    parser.error(f"unknown mcp manifest command: {args.manifest_command}")
-                    return 2
-                status = 0
-            except Exception as exc:
-                result = {"ok": False, "manifest": str(args.manifest), "error": str(exc)}
-                status = 1
         elif args.mcp_command == "lease":
             try:
                 if args.lease_command == "create":
@@ -1179,10 +1111,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _read_json(path: Path) -> Any:
     return read_json(path)
-
-
-def _read_required_env(name: str) -> str:
-    return read_required_env(name)
 
 
 def _parse_facade_upstreams(values: Sequence[str] | None) -> list[dict[str, Any]] | None:

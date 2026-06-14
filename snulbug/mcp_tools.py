@@ -202,7 +202,7 @@ def parse_mcp_tool_headers(values: Sequence[str] | None, *, token: str | None = 
 
 def format_mcp_tool_snapshot_report(snapshot: Mapping[str, Any]) -> str:
     lines = [
-        "# snulbug mcp tools snapshot",
+        "# snulbug MCP tool snapshot",
         "",
         f"Label: {snapshot.get('label') or '-'}",
         f"Tools: {snapshot.get('tool_count', 0)}",
@@ -228,7 +228,7 @@ def format_mcp_tool_snapshot_report(snapshot: Mapping[str, Any]) -> str:
 def format_mcp_tool_diff_report(diff: Mapping[str, Any]) -> str:
     summary = diff.get("summary") if isinstance(diff.get("summary"), Mapping) else {}
     lines = [
-        "# snulbug mcp tools diff",
+        "# snulbug MCP tool diff",
         "",
         f"Result: {'ok' if diff.get('ok') else 'changed'}",
         (

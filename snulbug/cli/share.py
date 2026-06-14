@@ -21,8 +21,7 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
         "share",
         help="create and manage bounded MCP share sessions",
     )
-    _add_share_create_args(mcp_share)
-    share_subparsers = mcp_share.add_subparsers(dest="share_command")
+    share_subparsers = mcp_share.add_subparsers(dest="share_command", required=True)
 
     share_create = share_subparsers.add_parser("create", help="create a bounded MCP share session")
     _add_share_create_args(share_create)
@@ -89,7 +88,7 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
     from ..tunnel import format_tunnel_doctor_report
 
     try:
-        command = args.share_command or "create"
+        command = args.share_command
         if command == "create":
             result = create_mcp_share(
                 args.directory,

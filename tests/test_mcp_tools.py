@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from snulbug import (
     MCP_TOOL_SNAPSHOT_SCHEMA,
     build_mcp_schema_catalog,
@@ -120,11 +122,11 @@ def test_diff_mcp_tool_snapshots_reports_added_changed_and_removed():
     assert blocking["failing_changes"] == {"added": 0, "changed": 1, "removed": 1}
 
 
-def test_mcp_tools_cli_snapshot_and_diff(tmp_path, capsys):
+def test_tools_only_cli_flow_uses_schema_discovery(tmp_path, capsys):
     baseline_response = tmp_path / "baseline.json"
     current_response = tmp_path / "current.json"
-    baseline_snapshot = tmp_path / "baseline.snapshot.json"
-    current_snapshot = tmp_path / "current.snapshot.json"
+    baseline_catalog = tmp_path / "baseline.catalog.json"
+    current_catalog = tmp_path / "current.catalog.json"
     baseline_response.write_text(
         json.dumps({"result": {"tools": [{"name": "read_file", "description": "Read", "inputSchema": {}}]}}),
         encoding="utf-8",
@@ -146,12 +148,14 @@ def test_mcp_tools_cli_snapshot_and_diff(tmp_path, capsys):
     status = simulator_main(
         [
             "mcp",
+            "schemas",
+            "discover",
+            "--method",
             "tools",
-            "snapshot",
             "--from",
             str(baseline_response),
             "--out",
-            str(baseline_snapshot),
+            str(baseline_catalog),
             "--compact",
         ]
     )
@@ -159,12 +163,14 @@ def test_mcp_tools_cli_snapshot_and_diff(tmp_path, capsys):
     status_current = simulator_main(
         [
             "mcp",
+            "schemas",
+            "discover",
+            "--method",
             "tools",
-            "snapshot",
             "--from",
             str(current_response),
             "--out",
-            str(current_snapshot),
+            str(current_catalog),
             "--compact",
         ]
     )
@@ -172,10 +178,10 @@ def test_mcp_tools_cli_snapshot_and_diff(tmp_path, capsys):
     diff_status = simulator_main(
         [
             "mcp",
-            "tools",
+            "schemas",
             "diff",
-            str(baseline_snapshot),
-            str(current_snapshot),
+            str(baseline_catalog),
+            str(current_catalog),
             "--fail-on",
             "added",
             "--compact",
@@ -185,12 +191,21 @@ def test_mcp_tools_cli_snapshot_and_diff(tmp_path, capsys):
 
     assert status == 0
     assert status_current == 0
-    assert baseline_output["output"] == str(baseline_snapshot)
-    assert current_output["tool_count"] == 2
+    assert baseline_output["output"] == str(baseline_catalog)
+    assert current_output["summary"]["tools"] == 2
     assert diff_status == 1
     assert diff_output["ok"] is False
     assert diff_output["summary"]["added"] == 1
-    assert diff_output["added"][0]["name"] == "write_file"
+    assert diff_output["added"][0]["surface"] == "tools"
+    assert diff_output["added"][0]["id"] == "write_file"
+
+
+@pytest.mark.parametrize("argv", [["mcp", "tools", "--help"], ["mcp", "manifest", "--help"]])
+def test_removed_cli_surfaces_are_not_registered(argv):
+    with pytest.raises(SystemExit) as exc:
+        simulator_main(argv)
+
+    assert exc.value.code == 2
 
 
 def test_parse_mcp_tool_headers_adds_bearer_when_missing():
