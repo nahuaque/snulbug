@@ -8,6 +8,7 @@ import pytest
 from snulbug import (
     close_mcp_share,
     create_mcp_share,
+    doctor_mcp_share,
     load_mcp_proxy_config,
     run_mcp_share,
     share_client_config,
@@ -213,6 +214,34 @@ def test_mcp_share_lifecycle_helpers_read_manifest(tmp_path):
     assert client["config"]["mcpServers"]["snulbug-share"]["headers"]["Authorization"] == "Bearer share-secret"
     assert run_plan is not None
     assert run_plan["commands"]["run"] == f"uv run snulbug mcp share run {tmp_path}"
+
+
+def test_mcp_share_doctor_url_override_updates_manifest_and_client(tmp_path, monkeypatch):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://placeholder.example/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    calls = []
+
+    def fake_doctor_tunnel(**kwargs):
+        calls.append(kwargs)
+        return {"ok": True, "checks": []}
+
+    monkeypatch.setattr("snulbug.tunnel.doctor_tunnel", fake_doctor_tunnel)
+
+    result = doctor_mcp_share(tmp_path, public_url="https://actual.example/mcp")
+    manifest = json.loads((tmp_path / "share.json").read_text(encoding="utf-8"))
+    client_config = json.loads((tmp_path / "mcp-client.json").read_text(encoding="utf-8"))
+
+    assert result["ok"] is True
+    assert calls[0]["url"] == "https://actual.example/mcp"
+    assert manifest["client"]["url"] == "https://actual.example/mcp"
+    assert manifest["tunnel"]["public_url"] == "https://actual.example/mcp"
+    assert client_config["mcpServers"]["snulbug-share"]["url"] == "https://actual.example/mcp"
 
 
 def test_mcp_share_lifecycle_cli_status_client_run_and_close(tmp_path, capsys):

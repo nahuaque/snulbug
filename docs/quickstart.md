@@ -31,7 +31,6 @@ For a self-describing workflow that an agentic harness can parse:
 
 ```bash
 uv run snulbug mcp guide --workflow share --compact
-uv run snulbug mcp guide --workflow tunnel --compact
 ```
 
 For a temporary share session, let snulbug generate the policy, random bearer
@@ -194,15 +193,21 @@ Send this header from the client:
 Authorization: Bearer local-dev-secret
 ```
 
-To expose the protected proxy through a tunnel, expose the proxy port, not the
-upstream MCP server:
+To expose a protected local MCP server through a public tunnel, create a share
+session. The share command writes the `tunnel-safe` policy, bearer token, task
+lease, provider setup files, client config, audit paths, and closeout commands:
 
 ```bash
-uv run snulbug tunnel init \
-  --provider ngrok
-export SNULBUG_TOKEN=local-dev-secret
-uv run snulbug mcp proxy --config .snulbug/configs/snulbug.toml --decision-console
-ngrok http 8080 --traffic-policy-file .snulbug/configs/ngrok-traffic-policy.yml
+uv run snulbug mcp share create \
+  --provider ngrok \
+  --upstream http://127.0.0.1:9000 \
+  --allow-tool safe_read_file \
+  --allow-tool list_project_files \
+  --ttl 30m
+export SNULBUG_SHARE_TOKEN=...
+uv run snulbug mcp share run .snulbug/shares/share-...
+(cd .snulbug/shares/share-.../tunnel && \
+  ngrok http 8080 --traffic-policy-file ngrok-traffic-policy.yml)
 ```
 
 Copy the exact `Forwarding` HTTPS URL printed by ngrok. Random free ngrok URLs
@@ -214,20 +219,19 @@ Use curl as a minimal MCP client to verify `tools/list` through the tunnel:
 ```bash
 NGROK_URL=https://YOUR-NGROK-FORWARDING-DOMAIN
 curl -sS "${NGROK_URL}/mcp" \
-  -H "Authorization: Bearer ${SNULBUG_TOKEN}" \
+  -H "Authorization: Bearer ${SNULBUG_SHARE_TOKEN}" \
+  -H "x-snulbug-lease: YOUR_SHARE_LEASE_TOKEN" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":"tools-list","method":"tools/list","params":{}}'
 ```
 
-Before sharing the tunnel URL, verify the boundary:
+Before sharing the generated client config, verify the boundary:
 
 ```bash
-uv run snulbug tunnel doctor \
-  --provider ngrok \
-  --url "${NGROK_URL}/mcp" \
-  --config .snulbug/configs/snulbug.toml \
-  --token "${SNULBUG_TOKEN}"
+uv run snulbug mcp share doctor .snulbug/shares/share-... \
+  --url "${NGROK_URL}/mcp"
+uv run snulbug mcp share client .snulbug/shares/share-...
 ```
 
 Then point the client at the tunnel URL plus `/mcp` and keep the same bearer
@@ -314,12 +318,6 @@ auth-sensitive replay artifacts for a short-lived local debugging session.
   runs a standalone HTTP MCP upstream behind the generated proxy policy.
 - [MCP CLI guide for agents and harnesses](mcp-guide.md) shows copy-paste and
   compact JSON workflows.
-- [Expose](expose.md) prints the end-to-end proxy, tunnel, doctor, client, and
-  report commands as one session plan.
-- [Tunnel init](tunnel-init.md) generates provider-specific setup commands and
-  config snippets.
-- [Tunnel doctor](tunnel-doctor.md) checks a local proxy or public tunnel before
-  you share it.
 - [MCP client setup recipes](mcp-client-recipes.md) shows local, tunneled,
   header-authenticated, recording, and managed stdio upstream patterns.
 - [MCP reverse proxy](mcp-proxy.md) documents every proxy flag and config key.

@@ -59,7 +59,6 @@ from .controller import (
     run_fabric_data_plane,
 )
 from .discovery import discovery_provider_types, register_discovery_provider
-from .expose import format_exposure_session_report, plan_exposure_session
 from .fabric import (
     annotate_topology_audit,
     build_fabric_audit_metadata,
@@ -338,7 +337,6 @@ __all__ = [
     "format_fabric_status_report",
     "format_codespace_attach_report",
     "format_codespace_demo_report",
-    "format_exposure_session_report",
     "format_mcp_inspection_report",
     "format_mcp_impact_report",
     "format_mcp_guide",
@@ -378,7 +376,6 @@ __all__ = [
     "parse_mcp_schema_headers",
     "parse_mcp_tool_headers",
     "parse_tunnel_headers",
-    "plan_exposure_session",
     "prepare_codespace_attach",
     "prepare_codespace_demo",
     "record_audit_event",

@@ -20,7 +20,6 @@ from .cli_helpers import (
     add_allow_path_arg,
     add_compact_arg,
     add_force_arg,
-    add_report_out_arg,
     add_token_arg,
     add_token_env_arg,
     add_validate_arg,
@@ -142,73 +141,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     bundle_states = ("observed", "proposed", "approved", "active")
 
-    tunnel = subparsers.add_parser("tunnel", help="work with public tunnel interop checks")
-    tunnel_subparsers = tunnel.add_subparsers(dest="tunnel_command", required=True)
-
-    tunnel_init = tunnel_subparsers.add_parser("init", help="generate provider-specific tunnel setup snippets")
-    tunnel_init.add_argument(
-        "--provider",
-        choices=("generic", "ngrok", "cloudflare", "tailscale", "localxpose", "pinggy", "holepunch"),
-        required=True,
-        help="tunnel provider profile",
-    )
-    tunnel_init.add_argument("--config", type=Path, help="snulbug.toml config file")
-    tunnel_init.add_argument("--local-url", help="local snulbug MCP URL or origin")
-    tunnel_init.add_argument("--url", "--public-url", dest="url", help="public tunnel MCP URL")
-    tunnel_init.add_argument("--hostname", help="provider hostname to use when --url is omitted")
-    add_token_env_arg(tunnel_init, default="SNULBUG_TOKEN", help="environment variable holding bearer token")
-    tunnel_init.add_argument("--path", default="/mcp", help="MCP path to append when URLs omit a path")
-    tunnel_init.add_argument("--output-dir", type=Path, help="optional directory for generated setup files")
-    add_force_arg(tunnel_init, help="overwrite generated files")
-    add_compact_arg(tunnel_init)
-
-    tunnel_doctor = tunnel_subparsers.add_parser("doctor", help="verify tunnel-safe MCP proxy exposure")
-    tunnel_doctor.add_argument(
-        "--provider",
-        choices=("generic", "ngrok", "cloudflare", "tailscale", "localxpose", "pinggy", "holepunch"),
-        default="generic",
-        help="tunnel provider profile",
-    )
-    tunnel_doctor.add_argument("--url", "--public-url", dest="url", help="public tunnel URL to check")
-    tunnel_doctor.add_argument("--local-url", help="local snulbug proxy URL to check")
-    tunnel_doctor.add_argument("--config", type=Path, help="snulbug.toml config file")
-    tunnel_doctor.add_argument(
-        "--header",
-        "--auth-header",
-        action="append",
-        default=[],
-        help="authenticated probe header as 'Name: value'; repeat for multiple headers",
-    )
-    add_token_arg(tunnel_doctor, help="bearer token for authenticated MCP probes")
-    tunnel_doctor.add_argument("--path", default="/mcp", help="MCP path to append when URLs omit a path")
-    tunnel_doctor.add_argument("--timeout", type=float, default=5.0, help="HTTP probe timeout in seconds")
-    add_compact_arg(tunnel_doctor)
-
-    expose = subparsers.add_parser("expose", help="plan a tunnel-safe MCP exposure session")
-    expose.add_argument(
-        "--provider",
-        choices=("generic", "ngrok", "cloudflare", "tailscale", "localxpose", "pinggy", "holepunch"),
-        required=True,
-        help="tunnel provider or peer bridge profile",
-    )
-    expose.add_argument("--config", type=Path, help="snulbug.toml config file")
-    expose.add_argument("--local-url", help="local snulbug MCP URL or origin")
-    expose.add_argument("--url", "--public-url", dest="url", help="public tunnel MCP URL")
-    expose.add_argument("--hostname", help="provider hostname to use when --url is omitted")
-    add_token_env_arg(expose, default="SNULBUG_TOKEN", help="environment variable holding bearer token")
-    expose.add_argument("--path", default="/mcp", help="MCP path to append when URLs omit a path")
-    expose.add_argument("--output-dir", type=Path, help="optional directory for generated setup files")
-    add_report_out_arg(expose, help="session report path for the generated inspect command")
-    expose.add_argument(
-        "--decision-console",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="include decision-console mode in the proxy command",
-    )
-    add_force_arg(expose, help="overwrite generated files")
-    expose.add_argument("--dry-run", action="store_true", help="print the exposure plan without writing files")
-    add_compact_arg(expose)
-
     mcp = subparsers.add_parser("mcp", help="work with local-dev MCP policy helpers and presets")
     mcp_subparsers = mcp.add_subparsers(
         dest="mcp_command",
@@ -219,7 +151,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_guide = mcp_subparsers.add_parser("guide", help="print agent-oriented MCP workflow guidance")
     mcp_guide.add_argument(
         "--workflow",
-        choices=("all", "share", "tunnel", "learn-amend-impact", "leases", "facade"),
+        choices=("all", "share", "learn-amend-impact", "leases", "facade"),
         default="all",
         help="workflow to print",
     )
@@ -704,85 +636,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             status = 1
 
         write_json_output(result, compact=args.compact)
-        return status
-
-    if args.command == "tunnel":
-        from .tunnel import (
-            doctor_tunnel,
-            format_tunnel_doctor_report,
-            format_tunnel_init_report,
-            init_tunnel_provider,
-            parse_tunnel_headers,
-        )
-
-        if args.tunnel_command == "init":
-            try:
-                result = init_tunnel_provider(
-                    provider=args.provider,
-                    config=args.config,
-                    local_url=args.local_url,
-                    public_url=args.url,
-                    hostname=args.hostname,
-                    token_env=args.token_env,
-                    path=args.path,
-                    output_dir=args.output_dir,
-                    force=args.force,
-                )
-                status = 0
-            except Exception as exc:
-                result = {"ok": False, "error": str(exc)}
-                status = 1
-        elif args.tunnel_command == "doctor":
-            try:
-                result = doctor_tunnel(
-                    provider=args.provider,
-                    url=args.url,
-                    local_url=args.local_url,
-                    config=args.config,
-                    headers=parse_tunnel_headers(args.header, token=args.token),
-                    path=args.path,
-                    timeout=args.timeout,
-                )
-                status = 0 if result["ok"] else 1
-            except Exception as exc:
-                result = {"ok": False, "error": str(exc)}
-                status = 1
-        else:
-            parser.error(f"unknown tunnel command: {args.tunnel_command}")
-            return 2
-
-        formatter = None
-        if "checks" in result:
-            formatter = format_tunnel_doctor_report
-        elif "commands" in result:
-            formatter = format_tunnel_init_report
-        write_result_output(result, compact=args.compact, formatter=formatter)
-        return status
-
-    if args.command == "expose":
-        from .expose import format_exposure_session_report, plan_exposure_session
-
-        try:
-            result = plan_exposure_session(
-                provider=args.provider,
-                config=args.config,
-                local_url=args.local_url,
-                public_url=args.url,
-                hostname=args.hostname,
-                token_env=args.token_env,
-                path=args.path,
-                output_dir=args.output_dir,
-                report_out=args.report_out,
-                decision_console=args.decision_console,
-                force=args.force,
-                dry_run=args.dry_run,
-            )
-            status = 0 if result["ok"] else 1
-        except Exception as exc:
-            result = {"ok": False, "error": str(exc)}
-            status = 1
-
-        write_result_output(result, compact=args.compact, formatter=format_exposure_session_report)
         return status
 
     if args.command == "mcp":

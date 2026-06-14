@@ -6,6 +6,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from snulbug import doctor_tunnel, parse_tunnel_headers
 from snulbug.simulator import main as simulator_main
 
@@ -53,31 +55,11 @@ def test_tunnel_doctor_fails_when_public_url_reaches_unprotected_upstream():
     assert "Point the tunnel at snulbug" in result["recommendations"][0]
 
 
-def test_tunnel_doctor_cli_emits_compact_json_for_local_url(capsys):
-    server = start_mcp_server(mode="protected")
-    local_url = f"http://127.0.0.1:{server.server_port}/mcp"
+def test_tunnel_doctor_cli_surface_is_removed():
+    with pytest.raises(SystemExit) as exc:
+        simulator_main(["tunnel", "doctor", "--help"])
 
-    try:
-        status = simulator_main(
-            [
-                "tunnel",
-                "doctor",
-                "--local-url",
-                local_url,
-                "--token",
-                "local-dev-secret",
-                "--compact",
-            ]
-        )
-    finally:
-        stop_server(server)
-
-    output = json.loads(capsys.readouterr().out)
-    checks = {check["id"]: check for check in output["checks"]}
-    assert status == 0
-    assert output["ok"] is True
-    assert output["local_url"] == local_url
-    assert checks["local.authenticated_mcp_round_trip"]["status"] == "pass"
+    assert exc.value.code == 2
 
 
 def test_tunnel_doctor_explicit_missing_config_fails(tmp_path):

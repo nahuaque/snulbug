@@ -9,7 +9,6 @@ Human-readable guide:
 ```bash
 snulbug mcp guide
 snulbug mcp guide --workflow share
-snulbug mcp guide --workflow tunnel
 snulbug mcp guide --workflow learn-amend-impact
 ```
 
@@ -17,15 +16,13 @@ Machine-readable compact JSON:
 
 ```bash
 snulbug mcp guide --compact
-snulbug mcp guide --workflow tunnel --compact
+snulbug mcp guide --workflow share --compact
 ```
 
 ## Workflows
 
 - `share`: create a bounded share directory with generated bearer auth, task
   lease, provider setup, MCP client config, and close-out commands.
-- `tunnel`: create a conservative `tunnel-safe` policy, run the protected
-  reverse proxy, and expose the proxy through ngrok or another tunnel.
 - `learn-amend-impact`: inspect a captured session, learn a least-privilege
   policy, preview impact, and generate candidate amendments for legitimate
   blocks.

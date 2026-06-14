@@ -633,7 +633,7 @@ snulbug mcp fabric doctor \
 ```
 
 Use `fabric doctor` before handing an agent a fabric endpoint or sharing a
-tunnel/peer bridge. Use `tunnel doctor` for public tunnel exposure checks.
+tunnel/peer bridge. Use `mcp share doctor` for share-session exposure checks.
 
 ## Conformance Packs
 

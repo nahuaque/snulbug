@@ -56,6 +56,14 @@ Before sharing `mcp-client.json`, verify the session:
 uv run snulbug mcp share doctor .snulbug/shares/share-...
 ```
 
+If the provider prints a random public URL after startup, pass the exact MCP URL
+to doctor. This updates `share.json` and `mcp-client.json` before probing:
+
+```bash
+uv run snulbug mcp share doctor .snulbug/shares/share-... \
+  --url "${PUBLIC_MCP_URL}"
+```
+
 Inspect the generated client config without opening files by hand:
 
 ```bash
@@ -153,7 +161,8 @@ uv run snulbug mcp share create \
 For public tunnel providers, expose the snulbug proxy, not the upstream MCP
 server, and run the generated doctor command before sharing the client config.
 Pass `--hostname` only when you have a reserved tunnel hostname; otherwise copy
-the exact forwarding URL printed by the tunnel provider.
+the exact forwarding URL printed by the tunnel provider and pass it to
+`snulbug mcp share doctor --url`.
 
 ## Close out
 

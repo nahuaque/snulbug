@@ -91,7 +91,6 @@ Ask the CLI for a copy-paste workflow before wiring a client or harness:
 
 ```bash
 uv run snulbug mcp guide --workflow share
-uv run snulbug mcp guide --workflow tunnel
 uv run snulbug mcp guide --workflow learn-amend-impact --compact
 ```
 
@@ -107,61 +106,53 @@ uv run snulbug mcp share create \
   --ttl 30m
 ```
 
-For a tunnel-exposed local MCP server, `tunnel-safe` is the recommended default:
+For a public tunnel or peer bridge, use `mcp share create`; it generates the
+`tunnel-safe` policy, bearer token, lease, provider setup, client config, and
+doctor command as one bounded session:
 
 ```bash
-uv run snulbug mcp quickstart \
-  --preset tunnel-safe \
-  --token local-dev-secret \
+uv run snulbug mcp share create \
+  --provider ngrok \
+  --upstream http://127.0.0.1:9000 \
   --allow-tool safe_read_file \
-  --allow-tool list_project_files
-uv run snulbug mcp proxy --config snulbug.toml
+  --allow-tool list_project_files \
+  --ttl 30m
 ```
 
-Point the MCP client at:
-
-```text
-http://127.0.0.1:8080/mcp
-```
-
-Send:
-
-```text
-Authorization: Bearer local-dev-secret
-```
-
-Expose the proxy, not the upstream server:
+Start the protected proxy from the generated share directory:
 
 ```bash
-uv run snulbug tunnel init --provider ngrok
-export SNULBUG_TOKEN=local-dev-secret
-uv run snulbug mcp proxy --config .snulbug/configs/snulbug.toml --decision-console
-ngrok http 8080 --traffic-policy-file .snulbug/configs/ngrok-traffic-policy.yml
+export SNULBUG_SHARE_TOKEN=...
+uv run snulbug mcp share run .snulbug/shares/share-...
 ```
 
-Copy the exact `Forwarding` HTTPS URL printed by ngrok. Random free ngrok URLs
-commonly use domains such as `ngrok-free.dev` or `ngrok-free.app`; do not
-rewrite them into an `ngrok.app` hostname.
+Run the provider command from `.snulbug/shares/share-.../tunnel/`, then copy the
+exact public HTTPS URL printed by the provider into the generated
+`mcp-client.json` if you used a random forwarding URL.
+
+```bash
+(cd .snulbug/shares/share-.../tunnel && \
+  ngrok http 8080 --traffic-policy-file ngrok-traffic-policy.yml)
+```
 
 Smoke-test the public MCP endpoint:
 
 ```bash
 NGROK_URL=https://YOUR-NGROK-FORWARDING-DOMAIN
 curl -sS "${NGROK_URL}/mcp" \
-  -H "Authorization: Bearer ${SNULBUG_TOKEN}" \
+  -H "Authorization: Bearer ${SNULBUG_SHARE_TOKEN}" \
+  -H "x-snulbug-lease: YOUR_SHARE_LEASE_TOKEN" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":"tools-list","method":"tools/list","params":{}}'
 ```
 
-Before sharing the tunnel URL, run the doctor:
+Before sharing the client config, run the share doctor:
 
 ```bash
-uv run snulbug tunnel doctor \
-  --provider ngrok \
-  --url "${NGROK_URL}/mcp" \
-  --config .snulbug/configs/snulbug.toml \
-  --token "${SNULBUG_TOKEN}"
+uv run snulbug mcp share doctor .snulbug/shares/share-... \
+  --url "${NGROK_URL}/mcp"
+uv run snulbug mcp share client .snulbug/shares/share-...
 ```
 
 For multi-upstream facade setups, inspect the declared fabric before handing it
@@ -282,9 +273,6 @@ Start with:
 - [MCP reverse proxy](docs/mcp-proxy.md)
 - [MCP fabric config, discovery, and conformance](docs/mcp-fabric.md)
 - [MCP share sessions](docs/mcp-share.md)
-- [Expose session planner](docs/expose.md)
-- [Tunnel init](docs/tunnel-init.md)
-- [Tunnel doctor](docs/tunnel-doctor.md)
 - [Codespaces and devcontainers](docs/devcontainers.md)
 - [MCP client setup recipes](docs/mcp-client-recipes.md)
 - [Security model](docs/security-model.md)

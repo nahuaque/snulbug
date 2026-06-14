@@ -60,16 +60,20 @@ Lua policy before forwarding to the upstream server. Use `tunnel-safe` unless
 you have a stronger external access-control layer in front of the tunnel or
 peer bridge.
 
-Generate provider-specific tunnel setup files first. If no config exists,
-snulbug writes a starter config, policy bundle, traces directory, and provider
-files under `.snulbug/configs`:
+For public tunnel use, prefer a generated share session. It writes the policy,
+config, lease, client config, provider setup files, and doctor command together:
 
 ```bash
-uv run snulbug tunnel init \
-  --provider ngrok
-export SNULBUG_TOKEN=local-dev-secret
-uv run snulbug mcp proxy --config .snulbug/configs/snulbug.toml --decision-console
-ngrok http 8080 --traffic-policy-file .snulbug/configs/ngrok-traffic-policy.yml
+uv run snulbug mcp share create \
+  --provider ngrok \
+  --upstream http://127.0.0.1:9000 \
+  --allow-tool safe_read_file \
+  --allow-tool list_project_files \
+  --ttl 30m
+export SNULBUG_SHARE_TOKEN=...
+uv run snulbug mcp share run .snulbug/shares/share-...
+(cd .snulbug/shares/share-.../tunnel && \
+  ngrok http 8080 --traffic-policy-file ngrok-traffic-policy.yml)
 ```
 
 Copy the exact `Forwarding` HTTPS URL printed by ngrok. Random free ngrok URLs
@@ -104,16 +108,12 @@ Before sharing the public URL, verify that the tunnel reaches snulbug and that
 unauthenticated MCP traffic is blocked:
 
 ```bash
-snulbug tunnel doctor \
-  --provider ngrok \
-  --url "${NGROK_URL}/mcp" \
-  --config .snulbug/configs/snulbug.toml \
-  --token "${SNULBUG_TOKEN}"
+snulbug mcp share doctor .snulbug/shares/share-... \
+  --url "${NGROK_URL}/mcp"
 ```
 
-See [Tunnel init](tunnel-init.md) and [Tunnel doctor](tunnel-doctor.md) for
-Cloudflare Access, Tailscale Funnel, LocalXpose, Pinggy, and Holepunch peer
-bridge variants.
+See [MCP share sessions](mcp-share.md) for Cloudflare Access, Tailscale Funnel,
+LocalXpose, Pinggy, and Holepunch peer bridge variants.
 
 `--record-out` writes replayable request records for traffic that passes through
 the proxy. `--audit-out` writes redacted audit events. Rejected/challenged

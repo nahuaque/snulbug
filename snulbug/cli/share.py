@@ -43,6 +43,12 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
 
     share_doctor = share_subparsers.add_parser("doctor", help="verify a generated share session")
     share_doctor.add_argument("directory", type=Path, help="share session directory")
+    share_doctor.add_argument(
+        "--url",
+        "--public-url",
+        dest="url",
+        help="public or client bridge MCP URL override printed by the provider",
+    )
     share_doctor.add_argument("--timeout", type=float, default=5.0, help="HTTP probe timeout in seconds")
     add_compact_arg(share_doctor)
 
@@ -135,7 +141,7 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
             return status
 
         if command == "doctor":
-            result = doctor_mcp_share(args.directory, timeout=args.timeout)
+            result = doctor_mcp_share(args.directory, timeout=args.timeout, public_url=args.url)
             status = 0 if result["ok"] else 1
             write_result_output(result, compact=args.compact, formatter=format_tunnel_doctor_report)
             return status

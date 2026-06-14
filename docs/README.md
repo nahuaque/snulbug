@@ -18,9 +18,6 @@
 ## Sharing And Setup
 
 - [MCP share sessions](mcp-share.md)
-- [Expose session planner](expose.md)
-- [Tunnel init](tunnel-init.md)
-- [Tunnel doctor](tunnel-doctor.md)
 - [MCP client setup recipes](mcp-client-recipes.md)
 - [Codespaces and devcontainers](devcontainers.md)
 

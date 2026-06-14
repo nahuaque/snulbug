@@ -11,20 +11,19 @@ def test_build_mcp_guide_defaults_to_all_workflows():
 
     workflow_ids = [workflow["id"] for workflow in guide["workflows"]]
     assert guide["ok"] is True
-    assert workflow_ids == ["share", "tunnel", "learn-amend-impact", "leases", "facade"]
+    assert workflow_ids == ["share", "learn-amend-impact", "leases", "facade"]
     assert guide["default_public_tunnel_profile"] == "tunnel-safe"
 
 
-def test_format_mcp_guide_prints_copy_paste_tunnel_flow():
-    guide = build_mcp_guide(workflow="tunnel")
+def test_format_mcp_guide_prints_copy_paste_share_flow():
+    guide = build_mcp_guide(workflow="share")
 
     output = format_mcp_guide(guide)
 
     assert "# snulbug MCP guide" in output
-    assert "snulbug mcp quickstart \\" in output
-    assert "--preset tunnel-safe" in output
-    assert "snulbug mcp proxy --config snulbug.toml --decision-console" in output
-    assert "ngrok http 8080" in output
+    assert "snulbug mcp share create \\" in output
+    assert "--provider holepunch" in output
+    assert "uv run snulbug mcp share doctor .snulbug/shares/share-*" in output
     assert "Do not expose the upstream MCP server directly." in output
 
 
@@ -48,7 +47,7 @@ def test_mcp_guide_cli_emits_share_workflow(capsys):
     assert "uv run snulbug mcp share run .snulbug/shares/share-*" in output
     assert "uv run snulbug mcp share close .snulbug/shares/share-* --report --revoke" in output
     assert "--provider holepunch" in output
-    assert "Do not share mcp-client.json until tunnel doctor passes." in output
+    assert "Do not share mcp-client.json until share doctor passes." in output
 
 
 def test_mcp_guide_cli_emits_compact_json_for_harness(capsys):

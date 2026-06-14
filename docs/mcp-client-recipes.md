@@ -125,34 +125,21 @@ header.
 
 Use this when the MCP client cannot reach your laptop directly.
 
-For public tunnel use, start from the `tunnel-safe` preset. It requires bearer
-auth, rejects JSON-RPC batch requests, allows only configured safe tools, and
-rate-limits traffic.
+For public tunnel use, start from a bounded share session. It creates the
+`tunnel-safe` policy, bearer token, task lease, provider setup, MCP client
+config, replay/audit logs, and closeout commands together.
 
 ```bash
-uv run snulbug mcp quickstart \
-  --preset tunnel-safe \
+uv run snulbug mcp share create \
+  --provider ngrok \
   --upstream http://127.0.0.1:9000 \
-  --token local-dev-secret \
   --allow-tool safe_read_file \
   --allow-tool list_project_files \
-  --force
-```
-
-Run the proxy locally:
-
-```bash
-uv run snulbug mcp proxy --config snulbug.toml --decision-console
-```
-
-Expose the proxy, not the upstream MCP server:
-
-```bash
-uv run snulbug tunnel init \
-  --provider ngrok
-export SNULBUG_TOKEN=local-dev-secret
-uv run snulbug mcp proxy --config .snulbug/configs/snulbug.toml --decision-console
-ngrok http 8080 --traffic-policy-file .snulbug/configs/ngrok-traffic-policy.yml
+  --ttl 30m
+export SNULBUG_SHARE_TOKEN=...
+uv run snulbug mcp share run .snulbug/shares/share-...
+(cd .snulbug/shares/share-.../tunnel && \
+  ngrok http 8080 --traffic-policy-file ngrok-traffic-policy.yml)
 ```
 
 Copy the exact `Forwarding` HTTPS URL printed by ngrok. Random free ngrok URLs
@@ -164,7 +151,8 @@ Test with curl before configuring a full MCP client:
 ```bash
 NGROK_URL=https://YOUR-NGROK-FORWARDING-DOMAIN
 curl -sS "${NGROK_URL}/mcp" \
-  -H "Authorization: Bearer ${SNULBUG_TOKEN}" \
+  -H "Authorization: Bearer ${SNULBUG_SHARE_TOKEN}" \
+  -H "x-snulbug-lease: YOUR_SHARE_LEASE_TOKEN" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":"tools-list","method":"tools/list","params":{}}'
@@ -173,11 +161,9 @@ curl -sS "${NGROK_URL}/mcp" \
 Verify the public tunnel before sharing it:
 
 ```bash
-uv run snulbug tunnel doctor \
-  --provider ngrok \
-  --url "${NGROK_URL}/mcp" \
-  --config .snulbug/configs/snulbug.toml \
-  --token "${SNULBUG_TOKEN}"
+uv run snulbug mcp share doctor .snulbug/shares/share-... \
+  --url "${NGROK_URL}/mcp"
+uv run snulbug mcp share client .snulbug/shares/share-...
 ```
 
 Point the client at:
@@ -189,7 +175,8 @@ ${NGROK_URL}/mcp
 Keep the same bearer header:
 
 ```text
-Authorization: Bearer local-dev-secret
+Authorization: Bearer ${SNULBUG_SHARE_TOKEN}
+x-snulbug-lease: YOUR_SHARE_LEASE_TOKEN
 ```
 
 ### Tailscale Funnel with bearer and leases
@@ -199,21 +186,14 @@ snulbug proxy over public HTTPS; snulbug still enforces the MCP bearer token,
 policy, audit log, and optional leases.
 
 ```bash
-uv run snulbug mcp quickstart \
-  --preset tunnel-safe \
+uv run snulbug mcp share create \
+  --provider tailscale \
   --upstream http://127.0.0.1:9000 \
-  --token local-dev-secret \
   --allow-tool safe_read_file \
   --allow-tool list_project_files \
-  --force
-
-uv run snulbug mcp proxy --config snulbug.toml --decision-console
-
-uv run snulbug tunnel init \
-  --provider tailscale \
-  --config snulbug.toml \
-  --output-dir tunnel.tailscale
-
+  --ttl 30m
+export SNULBUG_SHARE_TOKEN=...
+uv run snulbug mcp share run .snulbug/shares/share-...
 sudo tailscale funnel 8080
 export TAILSCALE_FUNNEL_URL=https://HOST.TAILNET.ts.net
 ```
@@ -222,46 +202,15 @@ The MCP client should use the Funnel URL and bearer header:
 
 ```text
 ${TAILSCALE_FUNNEL_URL}/mcp
-Authorization: Bearer local-dev-secret
+Authorization: Bearer ${SNULBUG_SHARE_TOKEN}
+x-snulbug-lease: YOUR_SHARE_LEASE_TOKEN
 ```
 
-The generated quickstart config keeps leases optional by default:
-
-```toml
-[mcp.proxy]
-tunnel_provider = "tailscale"
-tunnel_public_url = "https://HOST.TAILNET.ts.net/mcp"
-lease_file = "leases.json"
-lease_required = false
-lease_header = "x-snulbug-lease"
-```
-
-Mint a short-lived lease when an agent needs one bounded task:
+Before sharing the Funnel URL, run:
 
 ```bash
-uv run snulbug mcp lease create \
-  --file leases.json \
-  --task "Tailscale Funnel MCP session" \
-  --allow-tool safe_read_file \
-  --allow-tool list_project_files \
-  --ttl 30m
-```
-
-Send the returned lease token as:
-
-```text
-x-snulbug-lease: <lease token>
-```
-
-Set `lease_required = true` when every `tools/call` through the Funnel should
-carry an active lease. Before sharing the Funnel URL, run:
-
-```bash
-uv run snulbug tunnel doctor \
-  --provider tailscale \
-  --url "${TAILSCALE_FUNNEL_URL}/mcp" \
-  --config snulbug.toml \
-  --token local-dev-secret
+uv run snulbug mcp share doctor .snulbug/shares/share-... \
+  --url "${TAILSCALE_FUNNEL_URL}/mcp"
 ```
 
 ### LocalXpose with bearer auth
@@ -271,12 +220,14 @@ default snulbug proxy port. Start snulbug first, then expose snulbug rather than
 the upstream MCP server:
 
 ```bash
-uv run snulbug tunnel init \
+uv run snulbug mcp share create \
   --provider localxpose \
-  --config snulbug.toml \
-  --output-dir tunnel.localxpose
-
-uv run snulbug mcp proxy --config snulbug.toml --decision-console
+  --upstream http://127.0.0.1:9000 \
+  --allow-tool safe_read_file \
+  --allow-tool list_project_files \
+  --ttl 30m
+export SNULBUG_SHARE_TOKEN=...
+uv run snulbug mcp share run .snulbug/shares/share-...
 loclx tunnel http
 export LOCALXPOSE_URL=https://YOUR-LOCALXPOSE-FORWARDING-DOMAIN
 ```
@@ -285,17 +236,15 @@ The MCP client should use the LocalXpose URL and bearer header:
 
 ```text
 ${LOCALXPOSE_URL}/mcp
-Authorization: Bearer local-dev-secret
+Authorization: Bearer ${SNULBUG_SHARE_TOKEN}
+x-snulbug-lease: YOUR_SHARE_LEASE_TOKEN
 ```
 
 Before sharing the LocalXpose URL, run:
 
 ```bash
-uv run snulbug tunnel doctor \
-  --provider localxpose \
-  --url "${LOCALXPOSE_URL}/mcp" \
-  --config snulbug.toml \
-  --token local-dev-secret
+uv run snulbug mcp share doctor .snulbug/shares/share-... \
+  --url "${LOCALXPOSE_URL}/mcp"
 ```
 
 ### Pinggy with bearer auth
@@ -305,12 +254,14 @@ provider-specific binary. Start snulbug first, then expose snulbug rather than
 the upstream MCP server:
 
 ```bash
-uv run snulbug tunnel init \
+uv run snulbug mcp share create \
   --provider pinggy \
-  --config snulbug.toml \
-  --output-dir tunnel.pinggy
-
-uv run snulbug mcp proxy --config snulbug.toml --decision-console
+  --upstream http://127.0.0.1:9000 \
+  --allow-tool safe_read_file \
+  --allow-tool list_project_files \
+  --ttl 30m
+export SNULBUG_SHARE_TOKEN=...
+uv run snulbug mcp share run .snulbug/shares/share-...
 ssh -p 443 -R0:localhost:8080 free.pinggy.io
 export PINGGY_URL=https://YOUR-PINGGY-FORWARDING-DOMAIN
 ```
@@ -319,17 +270,15 @@ The MCP client should use the Pinggy URL and bearer header:
 
 ```text
 ${PINGGY_URL}/mcp
-Authorization: Bearer local-dev-secret
+Authorization: Bearer ${SNULBUG_SHARE_TOKEN}
+x-snulbug-lease: YOUR_SHARE_LEASE_TOKEN
 ```
 
 Before sharing the Pinggy URL, run:
 
 ```bash
-uv run snulbug tunnel doctor \
-  --provider pinggy \
-  --url "${PINGGY_URL}/mcp" \
-  --config snulbug.toml \
-  --token local-dev-secret
+uv run snulbug mcp share doctor .snulbug/shares/share-... \
+  --url "${PINGGY_URL}/mcp"
 ```
 
 ### Holepunch peer bridge with Hypertele
@@ -342,21 +291,16 @@ machine.
 On the snulbug machine:
 
 ```bash
-uv run snulbug mcp quickstart \
-  --preset tunnel-safe \
+uv run snulbug mcp share create \
+  --provider holepunch \
   --upstream http://127.0.0.1:9000 \
-  --token local-dev-secret \
   --allow-tool safe_read_file \
   --allow-tool list_project_files \
-  --force
-
-uv run snulbug tunnel init \
-  --provider holepunch \
-  --config snulbug.toml \
-  --output-dir tunnel.holepunch
-
-uv run snulbug mcp proxy --config snulbug.toml --decision-console
-hypertele-server -l 8080 --address 127.0.0.1 -c tunnel.holepunch/hypertele-server.json --private
+  --ttl 30m
+export SNULBUG_SHARE_TOKEN=...
+uv run snulbug mcp share run .snulbug/shares/share-...
+hypertele-server -l 8080 --address 127.0.0.1 \
+  -c .snulbug/shares/share-.../tunnel/hypertele-server.json --private
 ```
 
 Replace the placeholder seed and peer keys in the generated Hypertele configs,
@@ -370,39 +314,14 @@ Point the MCP client at the local bridge:
 
 ```text
 http://127.0.0.1:18080/mcp
-Authorization: Bearer local-dev-secret
-```
-
-Use explicit audit labels in `snulbug.toml`:
-
-```toml
-[mcp.proxy]
-tunnel_provider = "holepunch"
-tunnel_public_url = "http://127.0.0.1:18080/mcp"
-lease_file = "leases.json"
-lease_required = false
-lease_header = "x-snulbug-lease"
-```
-
-Mint a lease the same way as the public tunnel recipes:
-
-```bash
-uv run snulbug mcp lease create \
-  --file leases.json \
-  --task "Holepunch MCP peer session" \
-  --allow-tool safe_read_file \
-  --allow-tool list_project_files \
-  --ttl 30m
+Authorization: Bearer ${SNULBUG_SHARE_TOKEN}
+x-snulbug-lease: YOUR_SHARE_LEASE_TOKEN
 ```
 
 Run doctor from a machine where the client-side bridge is listening:
 
 ```bash
-uv run snulbug tunnel doctor \
-  --provider holepunch \
-  --url http://127.0.0.1:18080/mcp \
-  --config snulbug.toml \
-  --token local-dev-secret
+uv run snulbug mcp share doctor .snulbug/shares/share-...
 ```
 
 For public tunnels, treat `tunnel-safe` as the recommended default. Do not expose

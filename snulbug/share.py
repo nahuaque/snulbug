@@ -117,6 +117,7 @@ def create_mcp_share(
         public_url=tunnel_preview["public_url"],
         token_env=DEFAULT_SHARE_TOKEN_ENV,
         output_dir=share_dir / "tunnel",
+        doctor_command=f"uv run snulbug mcp share doctor {shlex.quote(str(share_dir))}",
         force=force,
     )
 
@@ -304,8 +305,9 @@ def doctor_mcp_share(
     directory: str | Path,
     *,
     timeout: float = 5.0,
+    public_url: str | None = None,
 ) -> dict[str, Any]:
-    """Run tunnel doctor against a generated share session."""
+    """Run exposure checks against a generated share session."""
 
     from .tunnel import doctor_tunnel, parse_tunnel_headers
 
@@ -316,12 +318,14 @@ def doctor_mcp_share(
     files = manifest.get("files") if isinstance(manifest.get("files"), Mapping) else {}
     config = files.get("config")
     provider = session.get("provider") or "generic"
-    url = client.get("url")
+    url = public_url or client.get("url")
     headers = client.get("headers") if isinstance(client.get("headers"), Mapping) else {}
     if not isinstance(url, str) or not url:
         raise ValueError("share manifest does not contain a client URL")
     if not isinstance(config, str) or not config:
         raise ValueError("share manifest does not contain a config path")
+    if public_url:
+        _update_share_client_url(share_dir, str(public_url))
     result = doctor_tunnel(
         provider=str(provider),
         url=url,
@@ -538,16 +542,7 @@ def _command_plan(
     session = share_dir / "traces" / "session.jsonl"
     lease_file = share_dir / "leases.json"
     tunnel_dir = share_dir / "tunnel"
-    doctor_lines = ["uv run snulbug tunnel doctor \\"]
-    if provider != "generic":
-        doctor_lines.append(f"  --provider {provider} \\")
-    doctor_lines.extend(
-        [
-            f"  --url {client_url} \\",
-            f"  --config {shlex.quote(str(config))} \\",
-            f"  --token ${{{DEFAULT_SHARE_TOKEN_ENV}}}",
-        ]
-    )
+    share_doctor = f"uv run snulbug mcp share doctor {shlex.quote(str(share_dir))}"
     return {
         "export_token": f"export {DEFAULT_SHARE_TOKEN_ENV}={shlex.quote(token)}",
         "run": f"uv run snulbug mcp share run {shlex.quote(str(share_dir))}",
@@ -555,8 +550,8 @@ def _command_plan(
         "provider": [
             f"(cd {shlex.quote(str(tunnel_dir))} && {str(command['command'])})" for command in provider_commands
         ],
-        "doctor": "\n".join(doctor_lines),
-        "share_doctor": f"uv run snulbug mcp share doctor {shlex.quote(str(share_dir))}",
+        "doctor": share_doctor,
+        "share_doctor": share_doctor,
         "client": f"uv run snulbug mcp share client {shlex.quote(str(share_dir))}",
         "close": f"uv run snulbug mcp share close {shlex.quote(str(share_dir))} --report --revoke",
         "inspect_session": f"uv run snulbug mcp evidence inspect {shlex.quote(str(session))}",
@@ -755,6 +750,34 @@ def _update_share_manifest(
         manifest["closeout"] = dict(closeout)
     (share_dir / SHARE_MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return manifest
+
+
+def _update_share_client_url(share_dir: Path, url: str) -> None:
+    manifest = load_mcp_share(share_dir)
+    client = manifest.get("client")
+    if isinstance(client, dict):
+        client["url"] = url
+    tunnel = manifest.get("tunnel")
+    if isinstance(tunnel, dict):
+        tunnel["public_url"] = url
+        tunnel_client = tunnel.get("client")
+        if isinstance(tunnel_client, dict):
+            tunnel_client["url"] = url
+    manifest["updated_at"] = _now_iso()
+    (share_dir / SHARE_MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    config_path = client.get("config") if isinstance(client, Mapping) else None
+    if isinstance(config_path, str) and config_path:
+        resolved = _resolve_share_path(share_dir, config_path)
+        if resolved.exists():
+            with resolved.open("r", encoding="utf-8") as file:
+                config = json.load(file)
+            servers = config.get("mcpServers") if isinstance(config, Mapping) else None
+            if isinstance(servers, dict):
+                for server in servers.values():
+                    if isinstance(server, dict):
+                        server["url"] = url
+                resolved.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _resolve_share_path(share_dir: Path, value: Any) -> Path:

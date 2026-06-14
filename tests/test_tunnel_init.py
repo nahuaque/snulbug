@@ -31,8 +31,7 @@ def test_tunnel_init_ngrok_generates_command_doctor_and_policy_snippet(tmp_path,
     )
     assert result["traffic_policy"]["path"] == ".snulbug/configs/ngrok-traffic-policy.yml"
     assert "require Authorization header" in result["traffic_policy"]["checks"]
-    assert result["doctor"]["command"].startswith("snulbug tunnel doctor")
-    assert "--provider ngrok" in result["doctor"]["command"]
+    assert result["doctor"]["command"] == "snulbug mcp share doctor <share-directory>"
     policy_file = next(file for file in result["files"] if file["path"] == "ngrok-traffic-policy.yml")
     assert 'x-snulbug-traffic-policy: "ngrok-mcp-v1"' in policy_file["contents"]
     assert 'req.url.path != \\"/mcp\\"' in policy_file["contents"]
@@ -57,7 +56,7 @@ def test_tunnel_init_ngrok_without_config_writes_default_config_dir(tmp_path, mo
     assert result["commands"][0]["command"] == (
         "ngrok http 8080 --traffic-policy-file .snulbug/configs/ngrok-traffic-policy.yml"
     )
-    assert '  --url "${NGROK_URL}/mcp" \\' in result["doctor"]["command"]
+    assert result["doctor"]["command"] == "snulbug mcp share doctor <share-directory>"
     assert result["written_files"] == [
         ".snulbug/configs/snulbug.toml",
         ".snulbug/configs/policy.snulbug",
@@ -134,7 +133,7 @@ def test_tunnel_init_cloudflare_without_hostname_uses_url_env(tmp_path, monkeypa
     report = format_tunnel_init_report(result)
 
     assert result["public_url"] == "https://YOUR-CLOUDFLARE-TUNNEL-HOSTNAME/mcp"
-    assert '  --url "${CLOUDFLARE_TUNNEL_URL}/mcp" \\' in result["doctor"]["command"]
+    assert result["doctor"]["command"] == "snulbug mcp share doctor <share-directory>"
     assert "Public MCP URL: ${CLOUDFLARE_TUNNEL_URL}/mcp" in report
     assert "export CLOUDFLARE_TUNNEL_URL=https://YOUR-CLOUDFLARE-TUNNEL-HOSTNAME" in report
     assert "URL: `${CLOUDFLARE_TUNNEL_URL}/mcp`" in report
@@ -164,31 +163,13 @@ def test_tunnel_init_refuses_to_overwrite_without_force(tmp_path):
     ]
 
 
-def test_tunnel_init_cli_emits_compact_tailscale_plan(tmp_path, monkeypatch, capsys):
+def test_tunnel_init_cli_surface_is_removed(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
-    status = simulator_main(
-        [
-            "tunnel",
-            "init",
-            "--provider",
-            "tailscale",
-            "--local-url",
-            "http://127.0.0.1:8080/mcp",
-            "--hostname",
-            "dev.tailnet.ts.net",
-            "--compact",
-        ]
-    )
+    with pytest.raises(SystemExit) as exc:
+        simulator_main(["tunnel", "init", "--provider", "tailscale"])
 
-    output = json.loads(capsys.readouterr().out)
-    assert status == 0
-    assert output["provider"] == "tailscale"
-    assert output["public_url"] == "https://dev.tailnet.ts.net/mcp"
-    assert output["commands"][0]["command"] == "sudo tailscale funnel 8080"
-    assert output["client"]["headers"]["Authorization"] == "Bearer ${SNULBUG_TOKEN}"
-    assert output["config"] == ".snulbug/configs/snulbug.toml"
-    assert (tmp_path / ".snulbug/configs/snulbug.toml").is_file()
+    assert exc.value.code == 2
 
 
 def test_tunnel_init_tailscale_readme_includes_bearer_and_lease_defaults(tmp_path):
@@ -227,7 +208,7 @@ def test_tunnel_init_tailscale_without_hostname_uses_url_env(tmp_path, monkeypat
 
     assert result["public_url"] == "https://YOUR-HOST.YOUR-TAILNET.ts.net/mcp"
     assert result["commands"][0]["command"] == "sudo tailscale funnel 8080"
-    assert '  --url "${TAILSCALE_FUNNEL_URL}/mcp" \\' in result["doctor"]["command"]
+    assert result["doctor"]["command"] == "snulbug mcp share doctor <share-directory>"
     assert "Public MCP URL: ${TAILSCALE_FUNNEL_URL}/mcp" in report
     assert "export TAILSCALE_FUNNEL_URL=https://YOUR-HOST.YOUR-TAILNET.ts.net" in report
     assert "URL: `${TAILSCALE_FUNNEL_URL}/mcp`" in report
@@ -242,8 +223,7 @@ def test_tunnel_init_localxpose_generates_command_and_url_env(tmp_path, monkeypa
     assert result["public_url"] == "https://YOUR-LOCALXPOSE-FORWARDING-DOMAIN/mcp"
     assert result["commands"][0]["command"] == "loclx tunnel http"
     assert result["commands"][0]["title"] == "Expose snulbug with LocalXpose"
-    assert "  --provider localxpose \\" in result["doctor"]["command"]
-    assert '  --url "${LOCALXPOSE_URL}/mcp" \\' in result["doctor"]["command"]
+    assert result["doctor"]["command"] == "snulbug mcp share doctor <share-directory>"
     assert "Public MCP URL: ${LOCALXPOSE_URL}/mcp" in report
     assert "export LOCALXPOSE_URL=https://YOUR-LOCALXPOSE-FORWARDING-DOMAIN" in report
     assert "URL: `${LOCALXPOSE_URL}/mcp`" in report
@@ -266,29 +246,6 @@ def test_tunnel_init_localxpose_reserved_domain_uses_hostname(tmp_path):
     assert "loclx tunnel http --reserved-domain mcp-dev.loclx.io" in readme.read_text(encoding="utf-8")
 
 
-def test_tunnel_init_cli_emits_compact_localxpose_plan(tmp_path, monkeypatch, capsys):
-    monkeypatch.chdir(tmp_path)
-
-    status = simulator_main(
-        [
-            "tunnel",
-            "init",
-            "--provider",
-            "localxpose",
-            "--hostname",
-            "mcp-dev.loclx.io",
-            "--compact",
-        ]
-    )
-
-    output = json.loads(capsys.readouterr().out)
-    assert status == 0
-    assert output["provider"] == "localxpose"
-    assert output["public_url"] == "https://mcp-dev.loclx.io/mcp"
-    assert output["commands"][0]["command"] == "loclx tunnel http --reserved-domain mcp-dev.loclx.io"
-    assert output["config"] == ".snulbug/configs/snulbug.toml"
-
-
 def test_tunnel_init_pinggy_generates_ssh_command_and_url_env(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
@@ -298,8 +255,7 @@ def test_tunnel_init_pinggy_generates_ssh_command_and_url_env(tmp_path, monkeypa
     assert result["public_url"] == "https://YOUR-PINGGY-FORWARDING-DOMAIN/mcp"
     assert result["commands"][0]["command"] == "ssh -p 443 -R0:localhost:8080 free.pinggy.io"
     assert result["commands"][0]["title"] == "Expose snulbug with Pinggy"
-    assert "  --provider pinggy \\" in result["doctor"]["command"]
-    assert '  --url "${PINGGY_URL}/mcp" \\' in result["doctor"]["command"]
+    assert result["doctor"]["command"] == "snulbug mcp share doctor <share-directory>"
     assert "Public MCP URL: ${PINGGY_URL}/mcp" in report
     assert "export PINGGY_URL=https://YOUR-PINGGY-FORWARDING-DOMAIN" in report
     assert "URL: `${PINGGY_URL}/mcp`" in report
@@ -318,29 +274,6 @@ def test_tunnel_init_pinggy_uses_local_port_from_url(tmp_path):
     assert result["commands"][0]["command"] == "ssh -p 443 -R0:localhost:8181 free.pinggy.io"
     assert str(readme) in result["written_files"]
     assert "ssh -p 443 -R0:localhost:8181 free.pinggy.io" in readme.read_text(encoding="utf-8")
-
-
-def test_tunnel_init_cli_emits_compact_pinggy_plan(tmp_path, monkeypatch, capsys):
-    monkeypatch.chdir(tmp_path)
-
-    status = simulator_main(
-        [
-            "tunnel",
-            "init",
-            "--provider",
-            "pinggy",
-            "--local-url",
-            "http://127.0.0.1:8181/mcp",
-            "--compact",
-        ]
-    )
-
-    output = json.loads(capsys.readouterr().out)
-    assert status == 0
-    assert output["provider"] == "pinggy"
-    assert output["public_url"] == "https://YOUR-PINGGY-FORWARDING-DOMAIN/mcp"
-    assert output["commands"][0]["command"] == "ssh -p 443 -R0:localhost:8181 free.pinggy.io"
-    assert output["config"] == ".snulbug/configs/snulbug.toml"
 
 
 def test_tunnel_init_holepunch_generates_hypertele_bridge_files(tmp_path):
@@ -394,33 +327,6 @@ def test_tunnel_init_holepunch_generates_hypertele_bridge_files(tmp_path):
     assert "snulbug mcp lease create" in readme_text
 
 
-def test_tunnel_init_cli_emits_compact_holepunch_plan(tmp_path, monkeypatch, capsys):
-    monkeypatch.chdir(tmp_path)
-
-    status = simulator_main(
-        [
-            "tunnel",
-            "init",
-            "--provider",
-            "holepunch",
-            "--local-url",
-            "http://127.0.0.1:8181/mcp",
-            "--url",
-            "http://127.0.0.1:19000/mcp",
-            "--compact",
-        ]
-    )
-
-    output = json.loads(capsys.readouterr().out)
-    assert status == 0
-    assert output["provider"] == "holepunch"
-    assert output["public_url"] == "http://127.0.0.1:19000/mcp"
-    assert output["bridge"]["server_port"] == 8181
-    assert output["bridge"]["client_port"] == 19000
-    assert output["client"]["headers"]["Authorization"] == "Bearer ${SNULBUG_TOKEN}"
-    assert output["config"] == ".snulbug/configs/snulbug.toml"
-
-
 def test_format_tunnel_init_report_includes_commands_and_client(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
@@ -428,7 +334,7 @@ def test_format_tunnel_init_report_includes_commands_and_client(tmp_path, monkey
 
     report = format_tunnel_init_report(result)
 
-    assert "# snulbug tunnel init" in report
+    assert "# snulbug MCP share provider setup" in report
     assert "Configure your tunnel provider" in report
     assert "Public MCP URL: ${TUNNEL_URL}/mcp" in report
     assert "export TUNNEL_URL=https://YOUR-TUNNEL-FORWARDING-DOMAIN" in report
