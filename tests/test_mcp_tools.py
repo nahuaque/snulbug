@@ -148,6 +148,7 @@ def test_tools_only_cli_flow_uses_schema_discovery(tmp_path, capsys):
     status = simulator_main(
         [
             "mcp",
+            "policy",
             "schemas",
             "discover",
             "--method",
@@ -163,6 +164,7 @@ def test_tools_only_cli_flow_uses_schema_discovery(tmp_path, capsys):
     status_current = simulator_main(
         [
             "mcp",
+            "policy",
             "schemas",
             "discover",
             "--method",
@@ -178,6 +180,7 @@ def test_tools_only_cli_flow_uses_schema_discovery(tmp_path, capsys):
     diff_status = simulator_main(
         [
             "mcp",
+            "policy",
             "schemas",
             "diff",
             str(baseline_catalog),

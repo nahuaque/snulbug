@@ -375,7 +375,7 @@ def stable_schema_digest(value: Any) -> str:
 def format_mcp_schema_catalog_report(catalog: Mapping[str, Any]) -> str:
     summary = catalog.get("summary") if isinstance(catalog.get("summary"), Mapping) else {}
     lines = [
-        "# snulbug mcp schemas discover",
+        "# snulbug mcp policy schemas discover",
         "",
         f"Label: {catalog.get('label') or '-'}",
         f"Result: {'ok' if catalog.get('ok') else 'partial'}",
@@ -421,7 +421,7 @@ def format_mcp_schema_catalog_report(catalog: Mapping[str, Any]) -> str:
 def format_mcp_schema_diff_report(diff: Mapping[str, Any]) -> str:
     summary = diff.get("summary") if isinstance(diff.get("summary"), Mapping) else {}
     lines = [
-        "# snulbug mcp schemas diff",
+        "# snulbug mcp policy schemas diff",
         "",
         f"Result: {'ok' if diff.get('ok') else 'changed'}",
         (

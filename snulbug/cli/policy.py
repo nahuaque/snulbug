@@ -14,6 +14,7 @@ from ..cli_helpers import (
     add_validate_arg,
 )
 from .common import read_required_env
+from .schemas import add_mcp_policy_schemas_command, handle_mcp_schemas_command
 
 
 def add_mcp_policy_command(
@@ -77,6 +78,8 @@ def add_mcp_policy_command(
     )
     add_validate_arg(mcp_policy_amend, help="validate the generated policy bundle")
     add_compact_arg(mcp_policy_amend)
+
+    add_mcp_policy_schemas_command(mcp_policy_subparsers)
 
     mcp_policy_lifecycle = mcp_policy_subparsers.add_parser(
         "lifecycle",
@@ -153,7 +156,7 @@ def add_mcp_policy_command(
 def handle_mcp_policy_command(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
-) -> tuple[dict[str, Any], int]:
+) -> tuple[dict[str, Any], int, object | None]:
     from ..presets import McpPolicyOptions, generate_mcp_preset, list_builtin_presets
 
     try:
@@ -169,7 +172,7 @@ def handle_mcp_policy_command(
                 )
             )
             if args.list or (args.preset is None and args.output is None and not customized):
-                return {"presets": list_builtin_presets()}, 0
+                return {"presets": list_builtin_presets()}, 0, None
 
             preset = args.preset or "local-dev-safe"
             output = args.output or Path(f"{preset}.snulbug")
@@ -190,7 +193,7 @@ def handle_mcp_policy_command(
                 f"uv run snulbug bundle validate {output}",
                 f"uv run snulbug bundle test {output}",
             ]
-            return result, 0
+            return result, 0, None
 
         if args.policy_command == "learn":
             from ..learn import learn_mcp_policy
@@ -202,7 +205,7 @@ def handle_mcp_policy_command(
                 force=args.force,
                 validate=args.validate,
             )
-            return result, 0 if result["ok"] else 1
+            return result, 0 if result["ok"] else 1, None
 
         if args.policy_command == "amend":
             from ..learn import amend_mcp_policy
@@ -216,10 +219,14 @@ def handle_mcp_policy_command(
                 validate=args.validate,
                 allow_risky=args.allow_risky,
             )
-            return result, 0 if result["ok"] else 1
+            return result, 0 if result["ok"] else 1, None
+
+        if args.policy_command == "schemas":
+            return handle_mcp_schemas_command(args, parser)
 
         if args.policy_command == "lifecycle":
-            return _handle_mcp_policy_lifecycle_command(args, parser)
+            result, status = _handle_mcp_policy_lifecycle_command(args, parser)
+            return result, status, None
 
         parser.error(f"unknown mcp policy command: {args.policy_command}")
         raise AssertionError("argparse parser.error should exit")
@@ -233,7 +240,7 @@ def handle_mcp_policy_command(
             result["output"] = str(args.out)
         if hasattr(args, "catalog") and args.catalog is not None:
             result["catalog"] = str(args.catalog)
-        return result, 1
+        return result, 1, None
 
 
 def _handle_mcp_policy_lifecycle_command(

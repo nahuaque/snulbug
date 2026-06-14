@@ -15,7 +15,7 @@ reviewed bundles through lifecycle states.
 | `snulbug mcp policy lifecycle` | Inspect, sign, verify, and promote bundle lifecycle state. |
 
 Schema-derived policy generation lives under
-[`snulbug mcp schemas policy`](mcp-schemas.md#generate-a-policy-from-a-catalog)
+[`snulbug mcp policy schemas generate`](mcp-schemas.md#generate-a-policy-from-a-catalog)
 because the schema catalog is the source artifact.
 
 ## Recommended loop
@@ -83,7 +83,7 @@ observed methods, tools, targets, and argument keys, then deny drift.
 Use `amend` when a real workflow was missed. It reads blocked `mcp.learn.*`
 decisions and proposes the smallest expansion in a new bundle.
 
-Use `schemas policy` when the upstream's declared contract should drive the
+Use `policy schemas generate` when the upstream's declared contract should drive the
 starting policy. This is useful before trusting a new upstream or after a
 schema discovery review.
 

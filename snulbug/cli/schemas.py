@@ -11,16 +11,14 @@ from ..cli_helpers import (
     add_token_arg,
     add_token_env_arg,
     add_validate_arg,
-    write_json_output,
     write_report_output,
-    write_result_output,
 )
 
 
-def add_mcp_schemas_command(mcp_subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    mcp_schemas = mcp_subparsers.add_parser(
+def add_mcp_policy_schemas_command(policy_subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    mcp_schemas = policy_subparsers.add_parser(
         "schemas",
-        help="discover and diff MCP capability schemas",
+        help="discover, diff, and generate policies from MCP capability schemas",
     )
     mcp_schemas_subparsers = mcp_schemas.add_subparsers(dest="schemas_command", required=True)
     mcp_schemas_discover = mcp_schemas_subparsers.add_parser(
@@ -78,39 +76,42 @@ def add_mcp_schemas_command(mcp_subparsers: argparse._SubParsersAction[argparse.
     add_report_out_arg(mcp_schemas_diff, help="write a Markdown schema diff report")
     add_compact_arg(mcp_schemas_diff)
 
-    mcp_schemas_policy = mcp_schemas_subparsers.add_parser(
-        "policy",
+    mcp_schemas_generate = mcp_schemas_subparsers.add_parser(
+        "generate",
         help="generate a reviewable policy bundle from an MCP schema catalog",
     )
-    mcp_schemas_policy.add_argument("catalog", type=Path, help="MCP schema catalog JSON")
-    mcp_schemas_policy.add_argument(
+    mcp_schemas_generate.add_argument("catalog", type=Path, help="MCP schema catalog JSON")
+    mcp_schemas_generate.add_argument(
         "--out",
         "--output",
         type=Path,
         required=True,
         help="output policy bundle directory",
     )
-    add_force_arg(mcp_schemas_policy, help="overwrite the output directory")
-    add_token_arg(mcp_schemas_policy, help="bearer token to render into the generated policy")
+    add_force_arg(mcp_schemas_generate, help="overwrite the output directory")
+    add_token_arg(mcp_schemas_generate, help="bearer token to render into the generated policy")
     add_token_env_arg(
-        mcp_schemas_policy,
+        mcp_schemas_generate,
         help="context key used by generated policy for env-derived token lookup",
     )
     add_allow_path_arg(
-        mcp_schemas_policy,
+        mcp_schemas_generate,
         help="allowed project path or prefix for path-like tool arguments; repeat to add multiple",
     )
-    mcp_schemas_policy.add_argument(
+    mcp_schemas_generate.add_argument(
         "--high-risk-action",
         choices=("allow", "confirm", "reject"),
         default="confirm",
         help="action for tools scored high risk from the discovered schema",
     )
-    add_validate_arg(mcp_schemas_policy, help="validate and test the generated policy bundle")
-    add_compact_arg(mcp_schemas_policy)
+    add_validate_arg(mcp_schemas_generate, help="validate and test the generated policy bundle")
+    add_compact_arg(mcp_schemas_generate)
 
 
-def handle_mcp_schemas_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+def handle_mcp_schemas_command(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> tuple[dict, int, object | None]:
     from ..mcp_schema_policy import (
         SchemaPolicyOptions,
         format_mcp_schema_policy_report,
@@ -138,10 +139,7 @@ def handle_mcp_schemas_command(args: argparse.Namespace, parser: argparse.Argume
                 methods=args.method,
                 protocol_version=args.protocol_version,
             )
-            status = 0
-            if not args.compact:
-                write_result_output(result, compact=False, formatter=format_mcp_schema_catalog_report)
-                return status
+            return result, 0, format_mcp_schema_catalog_report
         elif args.schemas_command == "diff":
             result = diff_mcp_schema_catalogs(args.baseline, args.current, fail_on=args.fail_on)
             status = 0 if result["ok"] else 1
@@ -152,10 +150,8 @@ def handle_mcp_schemas_command(args: argparse.Namespace, parser: argparse.Argume
                     result,
                     trailing_newline=True,
                 )
-            if not args.compact:
-                write_result_output(result, compact=False, formatter=format_mcp_schema_diff_report)
-                return status
-        elif args.schemas_command == "policy":
+            return result, status, format_mcp_schema_diff_report
+        elif args.schemas_command == "generate":
             result = generate_mcp_schema_policy(
                 args.catalog,
                 args.out,
@@ -169,12 +165,10 @@ def handle_mcp_schemas_command(args: argparse.Namespace, parser: argparse.Argume
                 validate=args.validate,
             )
             status = 0 if result["ok"] else 1
-            if not args.compact:
-                write_result_output(result, compact=False, formatter=format_mcp_schema_policy_report)
-                return status
+            return result, status, format_mcp_schema_policy_report
         else:
-            parser.error(f"unknown mcp schemas command: {args.schemas_command}")
-            return 2
+            parser.error(f"unknown mcp policy schemas command: {args.schemas_command}")
+            raise AssertionError("argparse parser.error should exit")
     except Exception as exc:
         result = {"ok": False, "error": str(exc)}
         if hasattr(args, "source") and args.source is not None:
@@ -185,5 +179,4 @@ def handle_mcp_schemas_command(args: argparse.Namespace, parser: argparse.Argume
             result["url"] = args.url
         status = 1
 
-    write_json_output(result, compact=args.compact)
-    return status
+    return result, status, None

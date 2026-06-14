@@ -1,6 +1,6 @@
 # MCP schema discovery
 
-`snulbug mcp schemas` discovers and diffs the MCP capability surface an agent is
+`snulbug mcp policy schemas` discovers and diffs the MCP capability surface an agent is
 about to trust. It captures more than `tools/list`: server capabilities from
 `initialize`, tool input/output schemas, resources, resource templates, and
 prompts.
@@ -11,7 +11,7 @@ building a fabric profile from servers you do not directly own.
 ## Discover a live endpoint
 
 ```bash
-uv run snulbug mcp schemas discover \
+uv run snulbug mcp policy schemas discover \
   --url http://127.0.0.1:8080/mcp \
   --token local-dev-secret \
   --label local-gateway \
@@ -34,7 +34,7 @@ HTTP/SSE responses are both accepted.
 For custom auth or tunnel provider headers:
 
 ```bash
-uv run snulbug mcp schemas discover \
+uv run snulbug mcp policy schemas discover \
   --url https://YOUR-TUNNEL.example/mcp \
   --header "Authorization: Bearer ${SNULBUG_TOKEN}" \
   --header "X-Provider-Session: demo" \
@@ -44,7 +44,7 @@ uv run snulbug mcp schemas discover \
 Limit discovery when an upstream does not implement every surface:
 
 ```bash
-uv run snulbug mcp schemas discover \
+uv run snulbug mcp policy schemas discover \
   --url http://127.0.0.1:8080/mcp \
   --method initialize \
   --method tools \
@@ -61,7 +61,7 @@ per-method errors so the partial result is still reviewable.
 Offline discovery is useful for CI, fixtures, and captured lab traffic:
 
 ```bash
-uv run snulbug mcp schemas discover \
+uv run snulbug mcp policy schemas discover \
   --from mcp-method-responses.json \
   --label baseline \
   --out .snulbug/schemas/baseline.json
@@ -87,7 +87,7 @@ surface at a time.
 ## Diff schema catalogs
 
 ```bash
-uv run snulbug mcp schemas diff \
+uv run snulbug mcp policy schemas diff \
   .snulbug/schemas/baseline.json \
   .snulbug/schemas/current.json
 ```
@@ -95,7 +95,7 @@ uv run snulbug mcp schemas diff \
 Add review gates with `--fail-on`:
 
 ```bash
-uv run snulbug mcp schemas diff \
+uv run snulbug mcp policy schemas diff \
   .snulbug/schemas/baseline.json \
   .snulbug/schemas/current.json \
   --fail-on added \
@@ -111,7 +111,7 @@ surface must match exactly.
 Turn a discovered schema catalog into a reviewable policy bundle:
 
 ```bash
-uv run snulbug mcp schemas policy \
+uv run snulbug mcp policy schemas generate \
   .snulbug/schemas/local-gateway.json \
   --out policy.schema.snulbug \
   --token "${SNULBUG_TOKEN}"
@@ -144,7 +144,7 @@ The generated policy:
 Customize the policy guardrails while generating:
 
 ```bash
-uv run snulbug mcp schemas policy \
+uv run snulbug mcp policy schemas generate \
   .snulbug/schemas/local-gateway.json \
   --out policy.schema.snulbug \
   --allow-path README.md \
@@ -170,7 +170,7 @@ contains:
 For focused tool pinning, limit discovery to `tools/list`:
 
 ```bash
-uv run snulbug mcp schemas discover \
+uv run snulbug mcp policy schemas discover \
   --url http://127.0.0.1:8080/mcp \
   --method tools \
   --out .snulbug/schemas/tools-only.json

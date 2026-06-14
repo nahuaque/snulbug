@@ -417,7 +417,7 @@ Configure response controls in `snulbug.toml`; the proxy CLI intentionally keeps
 advanced runtime policy out of flags.
 
 For reviewable snapshots and CI checks outside the live proxy, use
-`snulbug mcp schemas discover --method tools` and `snulbug mcp schemas diff`.
+`snulbug mcp policy schemas discover --method tools` and `snulbug mcp policy schemas diff`.
 See [MCP schema discovery](mcp-schemas.md).
 
 ## Human Confirmation

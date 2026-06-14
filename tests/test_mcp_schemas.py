@@ -100,7 +100,7 @@ def test_discover_mcp_schemas_from_response_collection_writes_catalog_and_report
     assert catalog["server"]["serverInfo"]["name"] == "demo-server"
     assert catalog["surfaces"]["tools"][0]["outputSchema"]["properties"]["text"]["type"] == "string"
     assert saved["surfaces"] == catalog["surfaces"]
-    assert "# snulbug mcp schemas discover" in report_text
+    assert "# snulbug mcp policy schemas discover" in report_text
     assert "- `read_file`" in report_text
 
 
@@ -174,6 +174,7 @@ def test_mcp_schemas_cli_discover_and_diff(tmp_path, capsys):
     status = simulator_main(
         [
             "mcp",
+            "policy",
             "schemas",
             "discover",
             "--from",
@@ -187,6 +188,7 @@ def test_mcp_schemas_cli_discover_and_diff(tmp_path, capsys):
     status_current = simulator_main(
         [
             "mcp",
+            "policy",
             "schemas",
             "discover",
             "--from",
@@ -200,6 +202,7 @@ def test_mcp_schemas_cli_discover_and_diff(tmp_path, capsys):
     diff_status = simulator_main(
         [
             "mcp",
+            "policy",
             "schemas",
             "diff",
             str(baseline_catalog),
@@ -222,7 +225,7 @@ def test_mcp_schemas_cli_discover_and_diff(tmp_path, capsys):
     assert diff_output["summary"]["changed"] == 1
     assert diff_output["changed"][0]["id"] == "read_file"
     assert diff_output["report_out"] == str(diff_report)
-    assert "# snulbug mcp schemas diff" in diff_report.read_text(encoding="utf-8")
+    assert "# snulbug mcp policy schemas diff" in diff_report.read_text(encoding="utf-8")
 
 
 def test_parse_mcp_schema_headers_adds_bearer_when_missing():

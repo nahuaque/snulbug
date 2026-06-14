@@ -87,8 +87,9 @@ def test_mcp_schemas_policy_cli_generates_bundle(tmp_path, capsys):
     status = simulator_main(
         [
             "mcp",
-            "schemas",
             "policy",
+            "schemas",
+            "generate",
             str(catalog_path),
             "--out",
             str(output),
@@ -106,7 +107,7 @@ def test_mcp_schemas_policy_cli_generates_bundle(tmp_path, capsys):
     assert (output / "policy.lua").is_file()
     assert (output / "SCHEMA_POLICY.md").is_file()
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["generated_by"] == "snulbug mcp schemas policy"
+    assert manifest["generated_by"] == "snulbug mcp policy schemas generate"
 
 
 def _schema_responses() -> dict:

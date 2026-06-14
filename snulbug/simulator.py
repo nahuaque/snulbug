@@ -10,10 +10,6 @@ from .cli.common import read_json
 from .cli.evidence import add_mcp_evidence_command, handle_mcp_evidence_command
 from .cli.fabric import add_mcp_fabric_command, handle_mcp_fabric_command
 from .cli.policy import add_mcp_policy_command, handle_mcp_policy_command
-from .cli.schemas import (
-    add_mcp_schemas_command,
-    handle_mcp_schemas_command,
-)
 from .cli.share import add_mcp_share_command, handle_mcp_share_command
 from .cli_helpers import (
     add_compact_arg,
@@ -140,7 +136,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_subparsers = mcp.add_subparsers(
         dest="mcp_command",
         required=True,
-        metavar=("{guide,policy,share,schemas,fabric,evidence}"),
+        metavar=("{guide,policy,share,fabric,evidence}"),
     )
 
     mcp_guide = mcp_subparsers.add_parser("guide", help="print agent-oriented MCP workflow guidance")
@@ -156,7 +152,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     add_mcp_share_command(mcp_subparsers)
 
-    add_mcp_schemas_command(mcp_subparsers)
     add_mcp_fabric_command(mcp_subparsers)
 
     add_mcp_evidence_command(mcp_subparsers)
@@ -229,11 +224,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             write_result_output(result, compact=args.compact, formatter=formatter)
             return status
         elif args.mcp_command == "policy":
-            result, status = handle_mcp_policy_command(args, parser)
+            result, status, formatter = handle_mcp_policy_command(args, parser)
         elif args.mcp_command == "share":
             return handle_mcp_share_command(args, parser)
-        elif args.mcp_command == "schemas":
-            return handle_mcp_schemas_command(args, parser)
         elif args.mcp_command == "fabric":
             return handle_mcp_fabric_command(args, parser)
         elif args.mcp_command == "evidence":
@@ -242,7 +235,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(f"unknown mcp command: {args.mcp_command}")
             return 2
 
-        write_generated_session_output(result, compact=args.compact)
+        write_generated_session_output(result, compact=args.compact, formatter=formatter)
         return status
 
     parser.error(f"unknown command: {args.command}")
