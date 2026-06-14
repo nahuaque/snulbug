@@ -24,6 +24,7 @@ share create -> share run -> share status -> policy amend -> share activate -> s
 ## Sharing, Tunnels, And Remote Dev
 
 - [MCP client setup recipes](mcp-client-recipes.md)
+- [MCP auth interop recipes](mcp-auth-recipes.md)
 - [Codespaces and devcontainers](devcontainers.md)
 
 ## Demos

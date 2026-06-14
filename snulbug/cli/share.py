@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from ..auth_recipes import AUTH_RECIPE_PROVIDERS
 from ..cli_helpers import (
     add_allow_path_arg,
     add_compact_arg,
@@ -137,6 +138,34 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
         help="overwrite the auth lab artifact directory",
     )
     add_compact_arg(share_auth_lab)
+    share_auth_recipe = share_auth_subparsers.add_parser(
+        "recipe",
+        help="generate OAuth/Access provider setup guidance for an MCP share",
+    )
+    share_auth_recipe.add_argument("--provider", choices=AUTH_RECIPE_PROVIDERS, required=True)
+    share_auth_recipe.add_argument(
+        "--url",
+        "--public-url",
+        dest="url",
+        required=True,
+        help="public MCP URL clients connect to",
+    )
+    share_auth_recipe.add_argument("--issuer", help="provider issuer URL override")
+    share_auth_recipe.add_argument("--audience", help="token audience/resource indicator override")
+    share_auth_recipe.add_argument("--client-id", help="provider client/application id")
+    share_auth_recipe.add_argument("--tenant", help="provider tenant id/name")
+    share_auth_recipe.add_argument("--domain", help="provider domain/base URL")
+    share_auth_recipe.add_argument("--realm", help="Keycloak realm")
+    share_auth_recipe.add_argument("--auth-server-id", help="Okta authorization server id")
+    share_auth_recipe.add_argument(
+        "--scope",
+        action="append",
+        default=[],
+        help="MCP OAuth scope to include; repeat for multiple scopes",
+    )
+    share_auth_recipe.add_argument("--output", "--out", type=Path, help="write recipe Markdown to this path")
+    add_force_arg(share_auth_recipe, help="overwrite --output when it exists")
+    add_compact_arg(share_auth_recipe)
 
     share_doctor = share_subparsers.add_parser("doctor", help="verify a generated share session")
     share_doctor.add_argument("directory", type=Path, help="share session directory")
@@ -193,6 +222,7 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
 
 
 def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    from ..auth_recipes import format_mcp_auth_recipe_report, generate_mcp_auth_recipe
     from ..config import write_sample_config
     from ..leases import create_lease, list_leases, revoke_lease
     from ..quickstart import create_mcp_quickstart
@@ -458,6 +488,23 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                 if args.compact:
                     write_generated_session_output(result, compact=True)
                 return status
+            if args.share_auth_command == "recipe":
+                result = generate_mcp_auth_recipe(
+                    args.provider,
+                    public_url=args.url,
+                    issuer=args.issuer,
+                    audience=args.audience,
+                    client_id=args.client_id,
+                    tenant=args.tenant,
+                    domain=args.domain,
+                    realm=args.realm,
+                    auth_server_id=args.auth_server_id,
+                    scopes=args.scope or None,
+                    output=args.output,
+                    force=args.force,
+                )
+                write_result_output(result, compact=args.compact, formatter=format_mcp_auth_recipe_report)
+                return 0
             parser.error(f"unknown mcp share auth command: {args.share_auth_command}")
             return 2
 
