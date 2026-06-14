@@ -52,6 +52,11 @@ proxy behavior strips the caller `Authorization` header before forwarding.
 Use `mcp.proxy.upstream_credential` or per-facade-upstream `auth` references to
 inject credentials intended for each upstream resource.
 
+Run `snulbug mcp share auth doctor` for OAuth shares. It checks discovery
+metadata, issuer/JWKS reachability, public URL and audience alignment, raw-token
+logging safeguards, Cloudflare Access conflicts, and whether scope maps refer to
+actual discovered MCP tools.
+
 It can also reduce risk from a compromised or surprising upstream MCP server by
 redacting likely secrets from results, detecting suspicious instruction-like
 content, and pinning `tools/list` descriptions and schemas. These controls are

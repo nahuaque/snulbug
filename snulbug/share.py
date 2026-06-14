@@ -807,6 +807,287 @@ def doctor_mcp_share(
     return result
 
 
+def doctor_mcp_share_auth(
+    directory: str | Path | None = None,
+    *,
+    config: str | Path | None = None,
+    public_url: str | None = None,
+    headers: Sequence[str] | Mapping[str, str] | None = None,
+    token: str | None = None,
+    timeout: float = 5.0,
+    live_checks: bool = True,
+) -> dict[str, Any]:
+    """Verify OAuth protected-resource auth readiness for a share session or config."""
+
+    from .config import load_mcp_proxy_config
+    from .mcp_auth import OAuthResourceConfig, oauth_resource_metadata_url
+    from .mcp_tools import fetch_mcp_tools_list, parse_mcp_tool_headers
+
+    share_dir = Path(directory) if directory is not None else None
+    manifest: dict[str, Any] = {}
+    session_model: dict[str, Any] = {}
+    if share_dir is not None:
+        manifest_path = share_dir / SHARE_MANIFEST
+        if manifest_path.is_file():
+            manifest = load_mcp_share(share_dir)
+        model_path = share_session_model_path(share_dir)
+        if model_path.is_file():
+            session_model = load_share_session_model(share_dir)
+
+    config_path = _resolve_auth_doctor_config_path(share_dir, manifest, session_model, config)
+    proxy_config = load_mcp_proxy_config(config_path)
+    auth = _mapping(proxy_config.get("auth"))
+    client_headers = _share_auth_client_headers(manifest, session_model)
+    supplied_headers = (
+        parse_mcp_tool_headers(headers, token=token)
+        if not isinstance(headers, Mapping)
+        else parse_mcp_tool_headers([f"{key}: {value}" for key, value in headers.items()], token=token)
+    )
+    probe_headers = {**client_headers, **supplied_headers}
+    url = _resolve_auth_doctor_public_url(
+        manifest=manifest,
+        session_model=session_model,
+        proxy_config=proxy_config,
+        auth=auth,
+        public_url=public_url,
+    )
+    checks: list[dict[str, Any]] = []
+    recommendations: list[str] = []
+    live: dict[str, Any] = {}
+
+    enabled = auth.get("mode") == "oauth-resource"
+    _add_share_doctor_check(
+        checks,
+        "auth.mode",
+        enabled,
+        "OAuth protected-resource mode is enabled" if enabled else "OAuth protected-resource mode is not enabled",
+        component="auth",
+        details={"mode": auth.get("mode")},
+    )
+    if not enabled:
+        recommendations.append('Enable [mcp.auth] mode = "oauth-resource" before using auth doctor.')
+        summary = _share_doctor_summary(checks)
+        return {
+            "ok": False,
+            "share": str(share_dir) if share_dir is not None else None,
+            "config": str(config_path),
+            "url": url,
+            "auth": _auth_doctor_summary(auth),
+            "checks": checks,
+            "summary": summary,
+            "recommendations": _unique_strings(recommendations),
+            "live": live,
+        }
+
+    oauth_config = OAuthResourceConfig(
+        mode=str(auth.get("mode") or "off"),
+        resource=auth.get("resource") if isinstance(auth.get("resource"), str) else None,
+        issuer=auth.get("issuer") if isinstance(auth.get("issuer"), str) else None,
+        authorization_servers=tuple(str(item) for item in _sequence(auth.get("authorization_servers"))),
+        audience=auth.get("audience") if isinstance(auth.get("audience"), str) else None,
+        required_scopes=tuple(str(item) for item in _sequence(auth.get("required_scopes"))),
+        scopes_supported=tuple(str(item) for item in _sequence(auth.get("scopes_supported"))),
+        jwks_path=auth.get("jwks_path") if isinstance(auth.get("jwks_path"), Path) else None,
+        resource_metadata_url=auth.get("resource_metadata_url")
+        if isinstance(auth.get("resource_metadata_url"), str)
+        else None,
+        realm=str(auth.get("realm") or "mcp"),
+        leeway_seconds=float(auth.get("leeway_seconds") or 60.0),
+        strip_authorization_upstream=bool(auth.get("strip_authorization_upstream", True)),
+        scope_map={
+            str(scope): tuple(str(selector) for selector in _sequence(selectors))
+            for scope, selectors in _mapping(auth.get("scope_map")).items()
+        },
+    )
+    metadata_url = oauth_resource_metadata_url(oauth_config)
+
+    _add_auth_url_checks(checks, auth, url, recommendations)
+    _add_auth_safety_checks(checks, proxy_config, auth, manifest, recommendations)
+
+    jwks = _inspect_local_jwks(auth.get("jwks_path"))
+    _add_share_doctor_check(
+        checks,
+        "auth.jwks.local",
+        jwks["ok"],
+        f"local JWKS contains {jwks.get('key_count', 0)} key(s)" if jwks["ok"] else str(jwks["message"]),
+        component="auth",
+        details={key: value for key, value in jwks.items() if key not in {"ok", "message"}},
+    )
+    if not jwks["ok"]:
+        recommendations.append("Configure mcp.auth.jwks_path with a readable JWKS containing at least one key.")
+
+    protected_metadata: Mapping[str, Any] | None = None
+    issuer_metadata: Mapping[str, Any] | None = None
+    issuer_metadata_url: str | None = None
+    if live_checks:
+        metadata_probe = _fetch_auth_json_document(
+            metadata_url,
+            headers=_metadata_probe_headers(probe_headers),
+            timeout=timeout,
+        )
+        live["protected_resource_metadata"] = metadata_probe
+        protected_metadata = _mapping(metadata_probe.get("json"))
+        metadata_ok = metadata_probe.get("ok") is True and bool(protected_metadata)
+        _add_share_doctor_check(
+            checks,
+            "auth.protected_resource_metadata.reachable",
+            metadata_ok,
+            f"protected resource metadata is reachable at {metadata_url}"
+            if metadata_ok
+            else f"protected resource metadata is not reachable at {metadata_url}: {metadata_probe.get('error')}",
+            component="auth",
+            details=_http_probe_details(metadata_probe),
+        )
+        if metadata_ok:
+            resource_match = _urls_match(protected_metadata.get("resource"), auth.get("resource"))
+            _add_share_doctor_check(
+                checks,
+                "auth.protected_resource_metadata.resource",
+                resource_match,
+                "protected resource metadata advertises the configured resource"
+                if resource_match
+                else "protected resource metadata resource does not match mcp.auth.resource",
+                component="auth",
+                details={
+                    "metadata_resource": protected_metadata.get("resource"),
+                    "configured_resource": auth.get("resource"),
+                },
+            )
+            advertised_servers = [str(item) for item in _sequence(protected_metadata.get("authorization_servers"))]
+            expected_servers = _auth_issuer_candidates(auth)
+            server_match = not expected_servers or any(server in advertised_servers for server in expected_servers)
+            _add_share_doctor_check(
+                checks,
+                "auth.protected_resource_metadata.authorization_server",
+                server_match,
+                "protected resource metadata advertises the configured issuer"
+                if server_match
+                else "protected resource metadata does not advertise the configured issuer",
+                component="auth",
+                details={"advertised": advertised_servers, "expected": expected_servers},
+            )
+        else:
+            recommendations.append("Start snulbug and verify GET /.well-known/oauth-protected-resource before sharing.")
+    else:
+        _add_share_doctor_check(
+            checks,
+            "auth.protected_resource_metadata.reachable",
+            None,
+            "protected resource metadata reachability skipped",
+            component="auth",
+            details={"url": metadata_url},
+        )
+
+    issuer_urls = _issuer_metadata_urls(auth)
+    if live_checks and issuer_urls:
+        issuer_probe = _first_successful_auth_json_document(issuer_urls, headers={}, timeout=timeout)
+        live["issuer_metadata"] = issuer_probe
+        issuer_metadata = _mapping(issuer_probe.get("json"))
+        issuer_metadata_url = issuer_probe.get("url") if isinstance(issuer_probe.get("url"), str) else None
+        issuer_ok = issuer_probe.get("ok") is True and bool(issuer_metadata)
+        _add_share_doctor_check(
+            checks,
+            "auth.issuer_metadata.reachable",
+            issuer_ok,
+            f"issuer metadata is reachable at {issuer_metadata_url}"
+            if issuer_ok
+            else f"issuer metadata is not reachable: {issuer_probe.get('error')}",
+            component="auth",
+            details={**_http_probe_details(issuer_probe), "attempted_urls": issuer_urls},
+        )
+        if not issuer_ok:
+            recommendations.append("Expose OAuth authorization-server metadata from the configured issuer.")
+    elif live_checks:
+        _add_share_doctor_check(
+            checks,
+            "auth.issuer_metadata.reachable",
+            False,
+            "issuer metadata cannot be checked because no issuer or authorization server is configured",
+            component="auth",
+        )
+    else:
+        _add_share_doctor_check(
+            checks,
+            "auth.issuer_metadata.reachable",
+            None,
+            "issuer metadata reachability skipped",
+            component="auth",
+            details={"attempted_urls": issuer_urls},
+        )
+
+    _add_jwks_or_introspection_check(
+        checks,
+        issuer_metadata,
+        local_jwks_ok=bool(jwks["ok"]),
+        headers={},
+        timeout=timeout,
+        live_checks=live_checks,
+        live=live,
+        recommendations=recommendations,
+    )
+    _add_scope_map_tool_checks(
+        checks,
+        auth,
+        url,
+        probe_headers=probe_headers,
+        token=token,
+        timeout=timeout,
+        live_checks=live_checks,
+        live=live,
+        recommendations=recommendations,
+        fetch_tools=fetch_mcp_tools_list,
+    )
+
+    summary = _share_doctor_summary(checks)
+    return {
+        "ok": summary["failed"] == 0,
+        "share": str(share_dir) if share_dir is not None else None,
+        "config": str(config_path),
+        "url": url,
+        "auth": _auth_doctor_summary(auth),
+        "checks": checks,
+        "summary": summary,
+        "recommendations": _unique_strings(recommendations),
+        "live": live,
+    }
+
+
+def format_share_auth_doctor_report(result: Mapping[str, Any]) -> str:
+    """Render OAuth protected-resource auth readiness checks as Markdown."""
+
+    summary = _mapping(result.get("summary"))
+    auth = _mapping(result.get("auth"))
+    lines = [
+        "# snulbug mcp share auth doctor",
+        "",
+        f"Share: {result.get('share') or '(none)'}",
+        f"Config: {result.get('config')}",
+        f"Public/client URL: {result.get('url') or '(not configured)'}",
+        f"Mode: {auth.get('mode')}",
+        f"Resource: {auth.get('resource') or '(not configured)'}",
+        f"Issuer: {auth.get('issuer') or '(not configured)'}",
+        f"Result: {'pass' if result.get('ok') else 'fail'}",
+        "",
+        "## Summary",
+        (
+            f"Passed: {summary.get('passed', 0)} | Failed: {summary.get('failed', 0)} | "
+            f"Warnings: {summary.get('warnings', 0)} | Skipped: {summary.get('skipped', 0)}"
+        ),
+        "",
+        "## Checks",
+    ]
+    for check in result.get("checks", []):
+        if isinstance(check, Mapping):
+            lines.append(f"- [{check.get('status')}] {check.get('id')}: {check.get('message')}")
+
+    recommendations = result.get("recommendations", [])
+    if recommendations:
+        lines.extend(["", "## Recommendations"])
+        for recommendation in recommendations:
+            lines.append(f"- {recommendation}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def format_share_doctor_report(result: Mapping[str, Any]) -> str:
     """Render unified share readiness checks as Markdown."""
 
@@ -861,6 +1142,603 @@ def share_client_config(
     if output_format in {"json", "claude-desktop", "cursor"}:
         return {"ok": True, "share": str(share_dir), "format": output_format, "config": config}
     raise ValueError("output_format must be one of: json, claude-desktop, cursor, path")
+
+
+def _resolve_auth_doctor_config_path(
+    share_dir: Path | None,
+    manifest: Mapping[str, Any],
+    session_model: Mapping[str, Any],
+    config: str | Path | None,
+) -> Path:
+    if config is not None:
+        return Path(config)
+    if share_dir is None:
+        raise ValueError("auth doctor requires a share directory or --config")
+    gateway = _mapping(session_model.get("gateway"))
+    paths = _mapping(session_model.get("paths"))
+    files = _mapping(manifest.get("files"))
+    config_value = gateway.get("config") or paths.get("config") or files.get("config")
+    if not isinstance(config_value, str) or not config_value:
+        raise ValueError("share session does not contain a snulbug.toml config path")
+    return _resolve_share_path(share_dir, config_value)
+
+
+def _share_auth_client_headers(
+    manifest: Mapping[str, Any],
+    _session_model: Mapping[str, Any],
+) -> dict[str, str]:
+    client = _mapping(manifest.get("client"))
+    headers = _mapping(client.get("headers"))
+    return {str(name).lower(): str(value) for name, value in headers.items() if value is not None}
+
+
+def _resolve_auth_doctor_public_url(
+    *,
+    manifest: Mapping[str, Any],
+    session_model: Mapping[str, Any],
+    proxy_config: Mapping[str, Any],
+    auth: Mapping[str, Any],
+    public_url: str | None,
+) -> str | None:
+    tunnel_model = _mapping(session_model.get("tunnel"))
+    client_model = _mapping(session_model.get("client"))
+    client = _mapping(manifest.get("client"))
+    tunnel = _mapping(manifest.get("tunnel"))
+    candidates = (
+        public_url,
+        tunnel_model.get("public_url"),
+        tunnel_model.get("client_url"),
+        client_model.get("url"),
+        client.get("url"),
+        tunnel.get("public_url"),
+        proxy_config.get("tunnel_public_url"),
+        auth.get("resource"),
+    )
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return None
+
+
+def _auth_doctor_summary(auth: Mapping[str, Any]) -> dict[str, Any]:
+    jwks_path = auth.get("jwks_path")
+    scope_map = _mapping(auth.get("scope_map"))
+    return {
+        "mode": auth.get("mode"),
+        "resource": auth.get("resource"),
+        "issuer": auth.get("issuer"),
+        "authorization_servers": [str(item) for item in _sequence(auth.get("authorization_servers"))],
+        "audience": auth.get("audience"),
+        "required_scopes": [str(item) for item in _sequence(auth.get("required_scopes"))],
+        "scopes_supported": [str(item) for item in _sequence(auth.get("scopes_supported"))],
+        "jwks_path": str(jwks_path) if jwks_path else None,
+        "resource_metadata_url": auth.get("resource_metadata_url"),
+        "strip_authorization_upstream": auth.get("strip_authorization_upstream"),
+        "scope_map": {
+            str(scope): [str(selector) for selector in _sequence(selectors)] for scope, selectors in scope_map.items()
+        },
+    }
+
+
+def _add_auth_url_checks(
+    checks: list[dict[str, Any]],
+    auth: Mapping[str, Any],
+    url: str | None,
+    recommendations: list[str],
+) -> None:
+    _add_share_doctor_check(
+        checks,
+        "auth.public_url.configured",
+        bool(url),
+        f"public/client URL is {url}" if url else "public/client URL is not configured",
+        component="auth",
+        details={"url": url},
+    )
+    if not url:
+        recommendations.append("Pass --url with the exact public MCP URL before sharing an OAuth-protected endpoint.")
+        return
+
+    https_ok = _auth_url_is_https_or_local(url)
+    _add_share_doctor_check(
+        checks,
+        "auth.https_or_localhost",
+        https_ok,
+        "public/client URL uses HTTPS or localhost HTTP"
+        if https_ok
+        else "public/client URL must use HTTPS except for localhost",
+        component="auth",
+        details={"url": url},
+    )
+    if not https_ok:
+        recommendations.append("Use HTTPS for public MCP OAuth resource URLs; reserve HTTP for localhost only.")
+
+    resource = auth.get("resource")
+    resource_match = _urls_match(resource, url)
+    _add_share_doctor_check(
+        checks,
+        "auth.resource.matches_public_url",
+        resource_match,
+        "mcp.auth.resource matches the public/client URL"
+        if resource_match
+        else "mcp.auth.resource does not match the public/client URL",
+        component="auth",
+        details={"resource": resource, "url": url},
+    )
+    if not resource_match:
+        recommendations.append("Set mcp.auth.resource to the exact public MCP URL clients connect to.")
+
+    audience = auth.get("audience")
+    audience_match = _urls_match(audience, url)
+    _add_share_doctor_check(
+        checks,
+        "auth.audience.matches_public_url",
+        audience_match,
+        "mcp.auth.audience matches the public/client URL"
+        if audience_match
+        else "mcp.auth.audience does not match the public/client URL",
+        component="auth",
+        details={"audience": audience, "url": url},
+    )
+    if not audience_match:
+        recommendations.append("Set mcp.auth.audience to the same public MCP URL as mcp.auth.resource.")
+
+
+def _add_auth_safety_checks(
+    checks: list[dict[str, Any]],
+    proxy_config: Mapping[str, Any],
+    auth: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    recommendations: list[str],
+) -> None:
+    redact_records = proxy_config.get("redact_records") is True
+    unsafe_sinks = _unsafe_auth_event_sinks(proxy_config.get("event_sinks"))
+    token_logging_ok = redact_records and not unsafe_sinks
+    _add_share_doctor_check(
+        checks,
+        "auth.raw_token_logging",
+        token_logging_ok,
+        "recording and event sinks are configured to avoid raw token logging"
+        if token_logging_ok
+        else "raw token logging safeguards are not fully enabled",
+        component="auth",
+        details={"redact_records": redact_records, "unsafe_event_sinks": unsafe_sinks},
+    )
+    if not token_logging_ok:
+        recommendations.append(
+            'Keep mcp.proxy.redact_records = true and webhook redaction = "strict" for OAuth shares.'
+        )
+
+    strip_upstream = auth.get("strip_authorization_upstream") is True
+    _add_share_doctor_check(
+        checks,
+        "auth.anti_passthrough",
+        strip_upstream,
+        "caller Authorization headers are stripped before upstream forwarding"
+        if strip_upstream
+        else "caller Authorization headers may be forwarded upstream",
+        component="auth",
+        details={"strip_authorization_upstream": auth.get("strip_authorization_upstream")},
+    )
+    if not strip_upstream:
+        recommendations.append(
+            "Set mcp.auth.strip_authorization_upstream = true and broker upstream credentials separately."
+        )
+
+    client_headers = _share_auth_client_headers(manifest, {})
+    cloudflare_access = str(proxy_config.get("cloudflare_access") or "off")
+    cf_header_names = sorted(name for name in client_headers if name in _CLOUDFLARE_ACCESS_HEADER_NAMES)
+    cloudflare_ok = cloudflare_access != "enforce" and not cf_header_names
+    if cloudflare_access == "audit" and not cf_header_names:
+        message = "Cloudflare Access audit mode does not block OAuth metadata"
+    elif cloudflare_ok:
+        message = "Cloudflare Access headers do not conflict with OAuth mode"
+    elif cloudflare_access == "enforce":
+        message = "Cloudflare Access enforcement can block OAuth protected-resource discovery"
+    else:
+        message = "Cloudflare Access client headers are embedded in the share client config"
+    _add_share_doctor_check(
+        checks,
+        "auth.cloudflare_access.conflict",
+        cloudflare_ok,
+        message,
+        component="auth",
+        details={"cloudflare_access": cloudflare_access, "cloudflare_header_names": cf_header_names},
+    )
+    if not cloudflare_ok:
+        recommendations.append(
+            "Do not require Cloudflare Access service-token headers for OAuth discovery endpoints; "
+            "use OAuth as the public resource boundary or keep Cloudflare Access in audit mode."
+        )
+
+
+_CLOUDFLARE_ACCESS_HEADER_NAMES = {
+    "cf-access-client-id",
+    "cf-access-client-secret",
+    "cf-access-jwt-assertion",
+}
+
+
+def _unsafe_auth_event_sinks(value: Any) -> list[dict[str, Any]]:
+    unsafe: list[dict[str, Any]] = []
+    for index, sink in enumerate(_sequence(value)):
+        sink_map = _mapping(sink)
+        if sink_map.get("type") != "webhook":
+            continue
+        webhook = sink_map.get("webhook")
+        redaction = getattr(webhook, "redaction", None)
+        body_mode = getattr(webhook, "body_mode", None)
+        name = getattr(webhook, "name", f"webhook-{index + 1}")
+        if redaction == "none":
+            unsafe.append({"index": index, "name": str(name), "redaction": redaction, "body_mode": body_mode})
+    return unsafe
+
+
+def _inspect_local_jwks(path_value: Any) -> dict[str, Any]:
+    if not isinstance(path_value, str | Path):
+        return {"ok": False, "message": "mcp.auth.jwks_path is not configured", "path": None, "key_count": 0}
+    path = Path(path_value)
+    if not path.is_file():
+        return {"ok": False, "message": f"JWKS file is missing: {path}", "path": str(path), "key_count": 0}
+    try:
+        with path.open("r", encoding="utf-8") as file:
+            payload = json.load(file)
+    except Exception as exc:
+        return {"ok": False, "message": f"JWKS file could not be read: {exc}", "path": str(path), "key_count": 0}
+    keys = payload.get("keys") if isinstance(payload, Mapping) else None
+    key_count = len(keys) if isinstance(keys, list) else 0
+    ok = key_count > 0
+    return {
+        "ok": ok,
+        "message": "JWKS is usable" if ok else "JWKS must contain a non-empty keys array",
+        "path": str(path),
+        "key_count": key_count,
+    }
+
+
+def _fetch_auth_json_document(
+    url: str,
+    *,
+    headers: Mapping[str, str],
+    timeout: float,
+) -> dict[str, Any]:
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return {"ok": False, "url": url, "status": None, "error": f"unsupported URL: {url}"}
+    request_headers = {
+        "accept": "application/json",
+        "user-agent": "snulbug-auth-doctor/0.1",
+        **{str(name): str(value) for name, value in headers.items()},
+    }
+    connection_class = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    connection = connection_class(parsed.hostname, parsed.port, timeout=timeout)
+    try:
+        connection.request("GET", _request_target(parsed), headers=request_headers)
+        response = connection.getresponse()
+        body = response.read(1_048_577)
+        status = int(response.status)
+        content_type = response.headers.get("content-type", "")
+        if len(body) > 1_048_576:
+            return {
+                "ok": False,
+                "url": url,
+                "status": status,
+                "content_type": content_type,
+                "error": "response body exceeds 1 MiB",
+            }
+        text = body.decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(text) if text.strip() else None
+        except json.JSONDecodeError as exc:
+            return {
+                "ok": False,
+                "url": url,
+                "status": status,
+                "content_type": content_type,
+                "error": f"response is not JSON: {exc}",
+            }
+        return {
+            "ok": 200 <= status < 300 and isinstance(payload, Mapping),
+            "url": url,
+            "status": status,
+            "content_type": content_type,
+            "json": dict(payload) if isinstance(payload, Mapping) else payload,
+            "error": None if 200 <= status < 300 else f"HTTP {status}",
+        }
+    except Exception as exc:
+        return {"ok": False, "url": url, "status": None, "error": str(exc)}
+    finally:
+        connection.close()
+
+
+def _first_successful_auth_json_document(
+    urls: Sequence[str],
+    *,
+    headers: Mapping[str, str],
+    timeout: float,
+) -> dict[str, Any]:
+    last_probe: dict[str, Any] = {"ok": False, "error": "no URLs attempted", "attempted_urls": list(urls)}
+    for url in urls:
+        probe = _fetch_auth_json_document(url, headers=headers, timeout=timeout)
+        if probe.get("ok") is True:
+            probe["attempted_urls"] = list(urls)
+            return probe
+        last_probe = probe
+    last_probe["attempted_urls"] = list(urls)
+    return last_probe
+
+
+def _metadata_probe_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    return {str(name): str(value) for name, value in headers.items() if str(name).lower() != "authorization"}
+
+
+def _http_probe_details(probe: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: probe.get(key)
+        for key in ("url", "status", "content_type", "error", "attempted_urls")
+        if probe.get(key) is not None
+    }
+
+
+def _auth_issuer_candidates(auth: Mapping[str, Any]) -> list[str]:
+    candidates = []
+    issuer = auth.get("issuer")
+    if isinstance(issuer, str) and issuer:
+        candidates.append(issuer)
+    for server in _sequence(auth.get("authorization_servers")):
+        if isinstance(server, str) and server:
+            candidates.append(server)
+    return _unique_strings(candidates)
+
+
+def _issuer_metadata_urls(auth: Mapping[str, Any]) -> list[str]:
+    urls = []
+    for issuer in _auth_issuer_candidates(auth):
+        base = issuer.rstrip("/")
+        if base.startswith(("http://", "https://")):
+            urls.append(f"{base}/.well-known/oauth-authorization-server")
+            urls.append(f"{base}/.well-known/openid-configuration")
+    return _unique_strings(urls)
+
+
+def _add_jwks_or_introspection_check(
+    checks: list[dict[str, Any]],
+    issuer_metadata: Mapping[str, Any] | None,
+    *,
+    local_jwks_ok: bool,
+    headers: Mapping[str, str],
+    timeout: float,
+    live_checks: bool,
+    live: dict[str, Any],
+    recommendations: list[str],
+) -> None:
+    if not live_checks:
+        _add_share_doctor_check(
+            checks,
+            "auth.jwks_or_introspection",
+            local_jwks_ok,
+            "local JWKS is usable" if local_jwks_ok else "local JWKS is not usable",
+            component="auth",
+        )
+        return
+
+    metadata = _mapping(issuer_metadata)
+    jwks_uri = metadata.get("jwks_uri")
+    if isinstance(jwks_uri, str) and jwks_uri:
+        probe = _fetch_auth_json_document(jwks_uri, headers=headers, timeout=timeout)
+        live["jwks"] = probe
+        jwks_keys = _sequence(_mapping(probe.get("json")).get("keys"))
+        ok = probe.get("ok") is True and bool(jwks_keys)
+        _add_share_doctor_check(
+            checks,
+            "auth.jwks_or_introspection",
+            ok,
+            f"issuer JWKS contains {len(jwks_keys)} key(s)"
+            if ok
+            else f"issuer JWKS is not usable at {jwks_uri}: {probe.get('error')}",
+            component="auth",
+            details=_http_probe_details(probe),
+        )
+        if not ok:
+            recommendations.append("Fix the issuer jwks_uri or configure a reachable JWKS endpoint.")
+        return
+
+    introspection = metadata.get("introspection_endpoint")
+    if isinstance(introspection, str) and introspection:
+        probe = _fetch_auth_json_document(introspection, headers=headers, timeout=timeout)
+        live["introspection"] = probe
+        status = probe.get("status")
+        ok = isinstance(status, int) and 200 <= status < 500
+        _add_share_doctor_check(
+            checks,
+            "auth.jwks_or_introspection",
+            ok,
+            "issuer introspection endpoint responds"
+            if ok
+            else f"issuer introspection endpoint is not reachable: {probe.get('error')}",
+            component="auth",
+            details=_http_probe_details(probe),
+        )
+        return
+
+    _add_share_doctor_check(
+        checks,
+        "auth.jwks_or_introspection",
+        local_jwks_ok,
+        "local JWKS is usable and issuer metadata does not advertise JWKS or introspection"
+        if local_jwks_ok
+        else "no usable JWKS or introspection endpoint is available",
+        component="auth",
+    )
+    if not local_jwks_ok:
+        recommendations.append("Publish issuer JWKS metadata or configure mcp.auth.jwks_path with local keys.")
+
+
+def _add_scope_map_tool_checks(
+    checks: list[dict[str, Any]],
+    auth: Mapping[str, Any],
+    url: str | None,
+    *,
+    probe_headers: Mapping[str, str],
+    token: str | None,
+    timeout: float,
+    live_checks: bool,
+    live: dict[str, Any],
+    recommendations: list[str],
+    fetch_tools: Any,
+) -> None:
+    scope_map = _mapping(auth.get("scope_map"))
+    _add_share_doctor_check(
+        checks,
+        "auth.scope_map.configured",
+        bool(scope_map),
+        "OAuth scopes are mapped to MCP methods/tools" if scope_map else "OAuth scope-to-MCP mapping is not configured",
+        component="auth",
+        severity="warning",
+        details={"scope_count": len(scope_map)},
+    )
+    if not scope_map:
+        recommendations.append("Add [mcp.auth.scope_map] entries so OAuth scopes authorize concrete MCP actions.")
+        return
+
+    tool_patterns = _scope_map_tool_patterns(scope_map)
+    if not tool_patterns:
+        _add_share_doctor_check(
+            checks,
+            "auth.scope_map.tools_discovered",
+            None,
+            "scope map does not contain tool-specific selectors",
+            component="auth",
+            details={"scope_count": len(scope_map)},
+        )
+        return
+    if not live_checks:
+        _add_share_doctor_check(
+            checks,
+            "auth.scope_map.tools_discovered",
+            None,
+            "live tool discovery skipped",
+            component="auth",
+            details={"tool_selectors": tool_patterns},
+        )
+        return
+    if not url:
+        _add_share_doctor_check(
+            checks,
+            "auth.scope_map.tools_discovered",
+            False,
+            "live tool discovery requires a public/client URL",
+            component="auth",
+        )
+        return
+    if not token and not _has_authorization_header(probe_headers):
+        _add_share_doctor_check(
+            checks,
+            "auth.scope_map.tools_discovered",
+            None,
+            "live tool discovery requires --token or an Authorization header",
+            component="auth",
+            details={"tool_selectors": tool_patterns},
+        )
+        recommendations.append(
+            "Pass --token or --header 'Authorization: Bearer ...' to validate scope-map tool selectors."
+        )
+        return
+
+    try:
+        payload, fetch_metadata = fetch_tools(url, headers=probe_headers, token=None, timeout=timeout)
+        tool_names = _tool_names_from_tools_payload(payload)
+        missing = _missing_scope_map_tool_patterns(tool_patterns, tool_names)
+        live["tools_list"] = {
+            "url": fetch_metadata.get("url"),
+            "status": fetch_metadata.get("status"),
+            "content_type": fetch_metadata.get("content_type"),
+            "tool_count": len(tool_names),
+            "tools": sorted(tool_names),
+        }
+        _add_share_doctor_check(
+            checks,
+            "auth.scope_map.tools_discovered",
+            not missing,
+            "scope-map tool selectors match discovered MCP tools"
+            if not missing
+            else "scope-map tool selectors do not match discovered MCP tools",
+            component="auth",
+            details={"missing_selectors": missing, "tool_count": len(tool_names)},
+        )
+        if missing:
+            recommendations.append(
+                "Update [mcp.auth.scope_map] selectors or refresh schema discovery from the live MCP server."
+            )
+    except Exception as exc:
+        _add_share_doctor_check(
+            checks,
+            "auth.scope_map.tools_discovered",
+            False,
+            f"live tools/list discovery failed: {exc}",
+            component="auth",
+            details={"url": url},
+        )
+        recommendations.append("Verify the public MCP URL and token before relying on scope-to-tool checks.")
+
+
+def _scope_map_tool_patterns(scope_map: Mapping[str, Any]) -> list[str]:
+    patterns: list[str] = []
+    for selectors in scope_map.values():
+        for selector in _sequence(selectors):
+            text = str(selector)
+            prefix = "tools/call:"
+            if text.startswith(prefix) and len(text) > len(prefix):
+                patterns.append(text[len(prefix) :])
+    return sorted(set(patterns))
+
+
+def _tool_names_from_tools_payload(payload: Any) -> set[str]:
+    source = payload
+    if isinstance(payload, Mapping) and isinstance(payload.get("result"), Mapping):
+        source = payload["result"]
+    tools = _mapping(source).get("tools")
+    names = set()
+    for tool in _sequence(tools):
+        if isinstance(tool, Mapping) and isinstance(tool.get("name"), str):
+            names.add(tool["name"])
+    return names
+
+
+def _missing_scope_map_tool_patterns(patterns: Sequence[str], tool_names: set[str]) -> list[str]:
+    missing = []
+    for pattern in patterns:
+        if pattern == "*":
+            if not tool_names:
+                missing.append(pattern)
+            continue
+        if pattern.endswith("*"):
+            prefix = pattern[:-1]
+            if not any(name.startswith(prefix) for name in tool_names):
+                missing.append(pattern)
+            continue
+        if pattern not in tool_names:
+            missing.append(pattern)
+    return missing
+
+
+def _has_authorization_header(headers: Mapping[str, str]) -> bool:
+    return any(str(name).lower() == "authorization" and bool(value) for name, value in headers.items())
+
+
+def _auth_url_is_https_or_local(url: str) -> bool:
+    parsed = urlsplit(url)
+    if parsed.scheme == "https":
+        return True
+    if parsed.scheme != "http":
+        return False
+    hostname = parsed.hostname or ""
+    return hostname in {"localhost", "127.0.0.1", "::1"} or hostname.endswith(".localhost")
+
+
+def _urls_match(left: Any, right: Any) -> bool:
+    if not isinstance(left, str) or not isinstance(right, str) or not left or not right:
+        return False
+    return left.rstrip("/") == right.rstrip("/")
 
 
 def _add_share_status_checks(

@@ -141,6 +141,21 @@ uv run snulbug mcp share doctor .snulbug/shares/share-... \
   --url "${PUBLIC_MCP_URL}"
 ```
 
+For OAuth protected-resource shares, run the auth-specific doctor before handing
+the URL to an MCP client:
+
+```bash
+uv run snulbug mcp share auth doctor .snulbug/shares/share-... \
+  --url "${PUBLIC_MCP_URL}" \
+  --token "${ACCESS_TOKEN}"
+```
+
+`share auth doctor` checks protected-resource metadata, issuer metadata, JWKS or
+introspection reachability, HTTPS/public URL alignment, token redaction
+settings, scope-to-tool mappings, and Cloudflare Access conflicts. Use
+`--no-live-checks` while editing local config, or `--config snulbug.toml` before
+a generated share directory exists.
+
 For fabric facade sessions, pass a generated conformance pack when you want the
 share gate to prove config, manifests, policies, and replay logs still agree:
 

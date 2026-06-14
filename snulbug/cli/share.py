@@ -96,6 +96,31 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
     share_activate = share_subparsers.add_parser("activate", help="activate the share policy bundle")
     _add_share_lifecycle_args(share_activate, include_to=False)
 
+    share_auth = share_subparsers.add_parser("auth", help="diagnose share authentication")
+    share_auth_subparsers = share_auth.add_subparsers(dest="share_auth_command", required=True)
+    share_auth_doctor = share_auth_subparsers.add_parser(
+        "doctor",
+        help="verify OAuth protected-resource readiness for a share or config",
+    )
+    share_auth_doctor.add_argument("directory", nargs="?", type=Path, help="share session directory")
+    share_auth_doctor.add_argument("--config", type=Path, help="snulbug.toml config path")
+    share_auth_doctor.add_argument(
+        "--url",
+        "--public-url",
+        dest="url",
+        help="public MCP URL clients connect to",
+    )
+    share_auth_doctor.add_argument("--header", action="append", default=[], help="HTTP header as 'Name: value'")
+    add_token_arg(share_auth_doctor, help="bearer token for live tools/list scope-map validation")
+    share_auth_doctor.add_argument("--timeout", type=float, default=5.0, help="HTTP probe timeout in seconds")
+    share_auth_doctor.add_argument(
+        "--live-checks",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="probe protected-resource metadata, issuer metadata, JWKS, and tools/list",
+    )
+    add_compact_arg(share_auth_doctor)
+
     share_doctor = share_subparsers.add_parser("doctor", help="verify a generated share session")
     share_doctor.add_argument("directory", type=Path, help="share session directory")
     share_doctor.add_argument(
@@ -160,6 +185,8 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
         close_mcp_share,
         create_mcp_share,
         doctor_mcp_share,
+        doctor_mcp_share_auth,
+        format_share_auth_doctor_report,
         format_share_doctor_report,
         format_share_status_report,
         promote_mcp_share_policy,
@@ -388,6 +415,26 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
             status = 0 if result["ok"] else 1
             write_json_output(result, compact=args.compact)
             return status
+
+        if command == "auth":
+            if args.share_auth_command == "doctor":
+                directory = args.directory
+                if directory is None and args.config is None and share_session_model_path(Path.cwd()).is_file():
+                    directory = Path.cwd()
+                result = doctor_mcp_share_auth(
+                    directory,
+                    config=args.config,
+                    public_url=args.url,
+                    headers=args.header,
+                    token=args.token,
+                    timeout=args.timeout,
+                    live_checks=args.live_checks,
+                )
+                status = 0 if result["ok"] else 1
+                write_result_output(result, compact=args.compact, formatter=format_share_auth_doctor_report)
+                return status
+            parser.error(f"unknown mcp share auth command: {args.share_auth_command}")
+            return 2
 
         if command == "doctor":
             result = doctor_mcp_share(

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,7 @@ from snulbug import (
     close_mcp_share,
     create_mcp_share,
     doctor_mcp_share,
+    doctor_mcp_share_auth,
     load_fabric_member_registry,
     load_mcp_proxy_config,
     load_share_session_model,
@@ -613,6 +616,96 @@ def test_mcp_share_doctor_fails_invalid_policy_and_missing_required_conformance(
     assert session_model["health"]["share_doctor"]["ok"] is False
 
 
+def test_mcp_share_auth_doctor_validates_static_oauth_config(tmp_path):
+    resource = "https://mcp.example.test/mcp"
+    config = write_oauth_share_config(tmp_path, resource=resource, issuer="https://issuer.example.test")
+
+    result = doctor_mcp_share_auth(config=config, public_url=resource, live_checks=False)
+    checks = {check["id"]: check for check in result["checks"]}
+
+    assert result["ok"] is True
+    assert checks["auth.mode"]["status"] == "pass"
+    assert checks["auth.resource.matches_public_url"]["status"] == "pass"
+    assert checks["auth.audience.matches_public_url"]["status"] == "pass"
+    assert checks["auth.jwks.local"]["status"] == "pass"
+    assert checks["auth.protected_resource_metadata.reachable"]["status"] == "skip"
+    assert checks["auth.scope_map.tools_discovered"]["status"] == "skip"
+
+
+def test_mcp_share_auth_doctor_flags_unsafe_oauth_config(tmp_path):
+    resource = "https://mcp.example.test/mcp"
+    config = write_oauth_share_config(
+        tmp_path,
+        resource=resource,
+        issuer="https://issuer.example.test",
+        audience="https://wrong.example.test/mcp",
+        redact_records=False,
+        strip_authorization_upstream=False,
+        cloudflare_access="enforce",
+    )
+
+    result = doctor_mcp_share_auth(config=config, public_url=resource, live_checks=False)
+    checks = {check["id"]: check for check in result["checks"]}
+
+    assert result["ok"] is False
+    assert checks["auth.audience.matches_public_url"]["status"] == "fail"
+    assert checks["auth.raw_token_logging"]["status"] == "fail"
+    assert checks["auth.anti_passthrough"]["status"] == "fail"
+    assert checks["auth.cloudflare_access.conflict"]["status"] == "fail"
+
+
+def test_mcp_share_auth_doctor_checks_live_metadata_jwks_and_scope_tools(tmp_path):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), OAuthMcpHandler)
+    origin = f"http://127.0.0.1:{server.server_port}"
+    server.resource = f"{origin}/mcp"  # type: ignore[attr-defined]
+    server.issuer = origin  # type: ignore[attr-defined]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        config = write_oauth_share_config(tmp_path, resource=server.resource, issuer=server.issuer)  # type: ignore[attr-defined]
+
+        result = doctor_mcp_share_auth(config=config, public_url=server.resource, token="demo-token")  # type: ignore[attr-defined]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    checks = {check["id"]: check for check in result["checks"]}
+
+    assert result["ok"] is True
+    assert checks["auth.https_or_localhost"]["status"] == "pass"
+    assert checks["auth.protected_resource_metadata.reachable"]["status"] == "pass"
+    assert checks["auth.issuer_metadata.reachable"]["status"] == "pass"
+    assert checks["auth.jwks_or_introspection"]["status"] == "pass"
+    assert checks["auth.scope_map.tools_discovered"]["status"] == "pass"
+    assert result["live"]["tools_list"]["tools"] == ["safe_read_file"]
+
+
+def test_mcp_share_auth_doctor_cli_accepts_config_without_share_directory(tmp_path, capsys):
+    resource = "https://mcp.example.test/mcp"
+    config = write_oauth_share_config(tmp_path, resource=resource, issuer="https://issuer.example.test")
+
+    status_code = simulator_main(
+        [
+            "mcp",
+            "share",
+            "auth",
+            "doctor",
+            "--config",
+            str(config),
+            "--url",
+            resource,
+            "--no-live-checks",
+            "--compact",
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert status_code == 0
+    assert output["ok"] is True
+    assert output["config"] == str(config)
+
+
 def test_mcp_share_lifecycle_cli_status_doctor_client_run_and_close(tmp_path, capsys, monkeypatch):
     create_mcp_share(
         tmp_path,
@@ -725,6 +818,105 @@ def test_checked_in_container_facade_example_matches_proxy_schema():
     assert "python3" not in remote_dockerfile
     assert "mock_mcp_server.js" in remote_dockerfile
     assert client["mcpServers"]["snulbug-container-facade"]["headers"]["Authorization"] == ("Bearer local-dev-secret")
+
+
+def write_oauth_share_config(
+    tmp_path: Path,
+    *,
+    resource: str,
+    issuer: str,
+    audience: str | None = None,
+    redact_records: bool = True,
+    strip_authorization_upstream: bool = True,
+    cloudflare_access: str = "off",
+) -> Path:
+    (tmp_path / "jwks.json").write_text(
+        json.dumps({"keys": [{"kty": "RSA", "kid": "demo", "n": "AQAB", "e": "AQAB"}]}),
+        encoding="utf-8",
+    )
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        f"""
+[mcp.proxy]
+upstream = "http://127.0.0.1:9000/mcp"
+tunnel_public_url = {json.dumps(resource)}
+redact_records = {str(redact_records).lower()}
+cloudflare_access = {json.dumps(cloudflare_access)}
+
+[mcp.auth]
+mode = "oauth-resource"
+resource = {json.dumps(resource)}
+issuer = {json.dumps(issuer)}
+authorization_servers = [{json.dumps(issuer)}]
+audience = {json.dumps(audience or resource)}
+required_scopes = ["mcp:connect"]
+jwks_path = "jwks.json"
+strip_authorization_upstream = {str(strip_authorization_upstream).lower()}
+
+[mcp.auth.scope_map]
+"mcp:tools.read" = ["tools/list"]
+"mcp:tool.files.read" = ["tools/call:safe_read_file"]
+""".lstrip(),
+        encoding="utf-8",
+    )
+    return config
+
+
+class OAuthMcpHandler(BaseHTTPRequestHandler):
+    def log_message(self, _format, *_args):  # noqa: A002
+        return
+
+    def do_GET(self):
+        if self.path == "/.well-known/oauth-protected-resource":
+            self._write_json(
+                {
+                    "resource": self.server.resource,  # type: ignore[attr-defined]
+                    "authorization_servers": [self.server.issuer],  # type: ignore[attr-defined]
+                    "scopes_supported": ["mcp:connect", "mcp:tools.read", "mcp:tool.files.read"],
+                }
+            )
+            return
+        if self.path == "/.well-known/oauth-authorization-server":
+            issuer = self.server.issuer  # type: ignore[attr-defined]
+            self._write_json({"issuer": issuer, "jwks_uri": f"{issuer}/jwks"})
+            return
+        if self.path == "/jwks":
+            self._write_json({"keys": [{"kty": "RSA", "kid": "demo", "n": "AQAB", "e": "AQAB"}]})
+            return
+        self.send_response(404)
+        self.end_headers()
+
+    def do_POST(self):
+        length = int(self.headers.get("content-length") or "0")
+        body = self.rfile.read(length)
+        request = json.loads(body.decode("utf-8")) if body else {}
+        if self.path == "/mcp" and request.get("method") == "tools/list":
+            self._write_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id"),
+                    "result": {
+                        "tools": [
+                            {
+                                "name": "safe_read_file",
+                                "description": "Read a demo file",
+                                "inputSchema": {"type": "object", "properties": {}},
+                            }
+                        ]
+                    },
+                }
+            )
+            return
+        self.send_response(404)
+        self.end_headers()
+
+    def _write_json(self, payload):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
 
 def write_share_audit_log(tmp_path):

@@ -329,6 +329,20 @@ The JWT verifier uses `PyJWT[crypto]`. This mode does not perform dynamic
 client registration, token introspection, or authorization-code flows; use your
 identity provider or tunnel/access layer for those pieces.
 
+Before sharing an OAuth-protected public MCP URL, run:
+
+```bash
+snulbug mcp share auth doctor \
+  --config snulbug.toml \
+  --url https://mcp.example.com/mcp \
+  --token "${ACCESS_TOKEN}"
+```
+
+The auth doctor verifies protected-resource metadata, issuer metadata, JWKS or
+introspection reachability, resource/audience alignment, HTTPS requirements,
+raw-token logging safeguards, scope-map selectors against live `tools/list`, and
+Cloudflare Access conflicts.
+
 ### Token Anti-Passthrough
 
 OAuth tokens are terminated at snulbug. By default,

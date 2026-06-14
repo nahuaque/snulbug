@@ -136,6 +136,14 @@ uv run snulbug mcp share doctor .snulbug/shares/share-... \
 uv run snulbug mcp share client .snulbug/shares/share-...
 ```
 
+If the share uses OAuth protected-resource mode, run the auth doctor too:
+
+```bash
+uv run snulbug mcp share auth doctor .snulbug/shares/share-... \
+  --url "${PUBLIC_MCP_URL}" \
+  --token "${ACCESS_TOKEN}"
+```
+
 For multi-upstream facade setups, inspect the declared fabric before handing it
 to an agent:
 
