@@ -199,6 +199,7 @@ from .recorder import append_record, load_record_log, record_audit_event, record
 from .redaction import RedactionConfig, append_audit_event, build_audit_event, redact_secrets
 from .response_policy import ResponsePolicyConfig
 from .runtime import LuaDecisionError, LuaDecisionTrace, LuaRuntimeError
+from .scaffolds import ScaffoldFile, ScaffoldPlan, format_scaffold_report, json_scaffold_file, write_scaffold
 from .schema_policy import SchemaPolicyConfig
 from .share import (
     close_mcp_share,
@@ -305,6 +306,8 @@ __all__ = [
     "ResponsePolicyConfig",
     "ReverseProxyApp",
     "SCHEMA_POLICY_HIGH_RISK_ACTIONS",
+    "ScaffoldFile",
+    "ScaffoldPlan",
     "SchemaPolicyConfig",
     "SchemaPolicyOptions",
     "SQLiteStateStore",
@@ -382,6 +385,7 @@ __all__ = [
     "format_mcp_tool_diff_report",
     "format_mcp_tool_snapshot_report",
     "format_event_sinks_toml",
+    "format_scaffold_report",
     "format_tunnel_doctor_report",
     "format_tunnel_init_report",
     "generate_fabric_conformance_pack",
@@ -392,6 +396,7 @@ __all__ = [
     "inspect_bundle_lifecycle",
     "init_tunnel_provider",
     "issue_fabric_control_action",
+    "json_scaffold_file",
     "learn_mcp_policy",
     "learn_fabric_profile",
     "load_fabric_control_state",
@@ -453,6 +458,7 @@ __all__ = [
     "validate_bundle",
     "verify_bundle_lifecycle",
     "verify_upstream_manifest",
+    "write_scaffold",
     "write_manifest",
     "write_sample_config",
 ]

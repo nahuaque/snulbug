@@ -64,6 +64,11 @@ def test_create_mcp_share_writes_ephemeral_holepunch_session(tmp_path):
     )
     assert result["recipes"]["remote_container_upstream"]["client"]["url"] == "http://127.0.0.1:18080/mcp"
     assert result["recipes"]["remote_container_upstream"]["client"]["headers"]["x-snulbug-lease"].startswith("sbl_")
+    assert (
+        str(tmp_path / "containers" / "snulbug.facade.toml")
+        in (result["recipes"]["remote_container_upstream"]["written_files"])
+    )
+    assert result["recipes"]["remote_container_upstream"]["scaffold"]["name"] == "share container recipe"
     assert facade_client_config["mcpServers"]["snulbug-share-facade"]["url"] == "http://127.0.0.1:18080/mcp"
     assert (
         facade_client_config["mcpServers"]["snulbug-share-facade"]["headers"]

@@ -15,6 +15,7 @@ from .inspection import format_mcp_inspection_report, inspect_mcp_log
 from .leases import create_lease
 from .presets import DEFAULT_ALLOWED_PATHS, DEFAULT_ALLOWED_TOOLS, McpPolicyOptions, generate_mcp_preset
 from .quickstart import create_mcp_quickstart
+from .scaffolds import ScaffoldFile, ScaffoldPlan, json_scaffold_file, write_scaffold
 from .tunnel import TUNNEL_PROVIDERS, init_tunnel_provider
 
 DEFAULT_SHARE_PROVIDER = "holepunch"
@@ -832,34 +833,8 @@ def _write_container_upstream_recipe(
         lease_header: lease["token"],
     }
     client_config_path = recipe_dir / "mcp-client.facade.json"
-    _write_json(client_config_path, _client_config(f"{client_name}-facade", client_url, client_headers), force=force)
-
     facade_config_path = recipe_dir / "snulbug.facade.toml"
     local_config_path = recipe_dir / "snulbug.local.toml"
-    _write_text(
-        facade_config_path,
-        _container_facade_config(
-            provider=provider,
-            client_url=client_url,
-            port=port,
-            state=state,
-            lease_required=lease_required,
-            lease_header=lease_header,
-        ),
-        force=force,
-    )
-    _write_text(
-        local_config_path,
-        _container_local_config(
-            provider=provider,
-            client_url=client_url,
-            port=port,
-            state=state,
-            lease_required=lease_required,
-            lease_header=lease_header,
-        ),
-        force=force,
-    )
     files = {
         "compose": recipe_dir / "docker-compose.yml",
         "gateway_dockerfile": recipe_dir / "Dockerfile.gateway",
@@ -871,23 +846,75 @@ def _write_container_upstream_recipe(
         "source": recipe_dir / "snulbug-src",
         "readme": recipe_dir / "README.md",
     }
-    _copy_gateway_source(files["source"], force=force)
-    _write_text(files["compose"], _container_compose(), force=force)
-    _write_text(files["gateway_dockerfile"], _gateway_dockerfile(), force=force)
-    _write_text(files["remote_peer_dockerfile"], _remote_peer_dockerfile(), force=force)
-    _write_text(files["mock_server"], _mock_mcp_server(), force=force)
-    _write_text(files["mock_server_js"], _mock_mcp_server_js(), force=force)
-    _write_text(files["hypertele_server"], _hypertele_server_config(), force=force)
-    _write_text(files["hypertele_client"], _hypertele_client_config(), force=force)
-    _write_text(
-        files["readme"],
-        _container_recipe_readme(
-            client_config_path=client_config_path,
-            facade_config_path=facade_config_path,
-            facade_tools=facade_tools,
+    if files["source"].exists() and not force:
+        raise FileExistsError(f"share output already exists: {files['source']}")
+    scaffold = write_scaffold(
+        ScaffoldPlan(
+            name="share container recipe",
+            root=recipe_dir,
+            files=[
+                json_scaffold_file(
+                    client_config_path.name,
+                    _client_config(f"{client_name}-facade", client_url, client_headers),
+                    kind="client_config",
+                ),
+                ScaffoldFile(
+                    path=facade_config_path.name,
+                    content=_container_facade_config(
+                        provider=provider,
+                        client_url=client_url,
+                        port=port,
+                        state=state,
+                        lease_required=lease_required,
+                        lease_header=lease_header,
+                    ),
+                    kind="config",
+                ),
+                ScaffoldFile(
+                    path=local_config_path.name,
+                    content=_container_local_config(
+                        provider=provider,
+                        client_url=client_url,
+                        port=port,
+                        state=state,
+                        lease_required=lease_required,
+                        lease_header=lease_header,
+                    ),
+                    kind="config",
+                ),
+                ScaffoldFile(path=files["compose"].name, content=_container_compose(), kind="compose"),
+                ScaffoldFile(path=files["gateway_dockerfile"].name, content=_gateway_dockerfile(), kind="dockerfile"),
+                ScaffoldFile(
+                    path=files["remote_peer_dockerfile"].name,
+                    content=_remote_peer_dockerfile(),
+                    kind="dockerfile",
+                ),
+                ScaffoldFile(path=files["mock_server"].name, content=_mock_mcp_server(), kind="server"),
+                ScaffoldFile(path=files["mock_server_js"].name, content=_mock_mcp_server_js(), kind="server"),
+                ScaffoldFile(
+                    path=files["hypertele_server"].name,
+                    content=_hypertele_server_config(),
+                    kind="bridge_config",
+                ),
+                ScaffoldFile(
+                    path=files["hypertele_client"].name,
+                    content=_hypertele_client_config(),
+                    kind="bridge_config",
+                ),
+                ScaffoldFile(
+                    path=files["readme"].name,
+                    content=_container_recipe_readme(
+                        client_config_path=client_config_path,
+                        facade_config_path=facade_config_path,
+                        facade_tools=facade_tools,
+                    ),
+                    kind="docs",
+                ),
+            ],
         ),
         force=force,
     )
+    _copy_gateway_source(files["source"], force=force)
     return {
         "ok": True,
         "directory": str(recipe_dir),
@@ -906,6 +933,8 @@ def _write_container_upstream_recipe(
         "readme": str(files["readme"]),
         "allowed_tools": facade_tools,
         "files": {name: str(path) for name, path in files.items()},
+        "scaffold": scaffold,
+        "written_files": scaffold["written_files"],
     }
 
 
@@ -1445,11 +1474,22 @@ def _ok_summary(value: Any) -> Any:
 
 
 def _write_json(path: Path, value: Any, *, force: bool) -> None:
-    _write_text(path, json.dumps(value, indent=2, sort_keys=True) + "\n", force=force)
+    write_scaffold(
+        ScaffoldPlan(
+            name="share",
+            root=path.parent,
+            files=[json_scaffold_file(path.name, value)],
+        ),
+        force=force,
+    )
 
 
 def _write_text(path: Path, value: str, *, force: bool) -> None:
-    if path.exists() and not force:
-        raise FileExistsError(f"share output already exists: {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(value, encoding="utf-8")
+    write_scaffold(
+        ScaffoldPlan(
+            name="share",
+            root=path.parent,
+            files=[ScaffoldFile(path=path.name, content=value)],
+        ),
+        force=force,
+    )

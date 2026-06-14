@@ -17,6 +17,7 @@ from .presets import (
     McpPolicyOptions,
     generate_mcp_preset,
 )
+from .scaffolds import ScaffoldFile, ScaffoldPlan, write_scaffold
 
 
 def create_mcp_quickstart(
@@ -71,7 +72,14 @@ def create_mcp_quickstart(
     traces_path = _resolve_output(root, traces_dir)
     _preflight_quickstart(policy_dir, config_path, traces_path, force=force)
 
-    root.mkdir(parents=True, exist_ok=True)
+    write_scaffold(
+        ScaffoldPlan(
+            name="mcp quickstart",
+            root=root,
+            directories=[Path("."), _scaffold_child_path(root, traces_path)],
+        ),
+        force=force,
+    )
     policy_result = generate_mcp_preset(
         preset,
         policy_dir,
@@ -85,7 +93,6 @@ def create_mcp_quickstart(
         ),
         force=force,
     )
-    traces_path.mkdir(parents=True, exist_ok=True)
     audit_event_out = traces_path / "audit.jsonl"
 
     effective_token = token or DEFAULT_TOKEN
@@ -236,6 +243,24 @@ def _write_mcp_proxy_config(
 ) -> None:
     if path.exists() and not force:
         raise FileExistsError(f"config file already exists: {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
     template = GatewayTemplate(proxy=values, event_sinks=event_sinks)
-    path.write_text(render_gateway_toml(template), encoding="utf-8")
+    write_scaffold(
+        ScaffoldPlan(
+            name="mcp quickstart config",
+            root=path.parent,
+            files=[
+                ScaffoldFile(
+                    path=path.name,
+                    content=render_gateway_toml(template),
+                    kind="config",
+                )
+            ],
+        ),
+        force=force,
+    )
+
+
+def _scaffold_child_path(root: Path, path: Path) -> Path | str:
+    if path.is_absolute():
+        return path
+    return _config_path(path, root)

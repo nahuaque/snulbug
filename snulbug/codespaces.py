@@ -13,6 +13,7 @@ from urllib.parse import SplitResult, urlsplit
 
 from .config import default_event_sink_configs
 from .gateway_templates import GatewayTemplate, render_gateway_toml
+from .scaffolds import ScaffoldFile, ScaffoldPlan, write_scaffold
 
 DEFAULT_CODESPACE_ATTACH_DIR = Path(".snulbug/codespace-local")
 DEFAULT_CODESPACE_DISCOVERY_ENV = "SNULBUG_DISCOVERY_UPSTREAMS"
@@ -87,24 +88,28 @@ def prepare_codespace_attach(
     traces = root / "traces"
     record_out = traces / "session.jsonl"
     audit_out = traces / "audit.jsonl"
-    if not force:
-        existing = [path for path in (policy, config) if path.exists()]
-        if existing:
-            raise FileExistsError(f"codespace attach file already exists: {existing[0]}")
-
     upstream = {"name": name, "url": upstream_url, "tool_prefix": tool_prefix}
     discovery_value = json.dumps([upstream], separators=(",", ":"))
-    root.mkdir(parents=True, exist_ok=True)
-    traces.mkdir(parents=True, exist_ok=True)
-    policy.write_text(_ALLOW_POLICY, encoding="utf-8")
-    config.write_text(
-        _codespace_attach_toml(
-            discovery_env=discovery_env,
-            host=host,
-            port=port,
-            state=state,
+    scaffold = write_scaffold(
+        ScaffoldPlan(
+            name="codespace attach",
+            root=root,
+            directories=[Path("."), "traces"],
+            files=[
+                ScaffoldFile(path=policy.name, content=_ALLOW_POLICY, kind="policy"),
+                ScaffoldFile(
+                    path=config.name,
+                    content=_codespace_attach_toml(
+                        discovery_env=discovery_env,
+                        host=host,
+                        port=port,
+                        state=state,
+                    ),
+                    kind="config",
+                ),
+            ],
         ),
-        encoding="utf-8",
+        force=force,
     )
 
     gateway_url = f"http://{host}:{port}/mcp"
@@ -118,6 +123,7 @@ def prepare_codespace_attach(
         "upstream": upstream,
         "env": {"name": discovery_env, "value": discovery_value},
         "logs": {"record_out": str(record_out), "audit_events": str(audit_out)},
+        "scaffold": scaffold,
         "commands": {
             "proxy": f"uv run snulbug mcp proxy --config {config}",
             "inspect_audit": f"uv run snulbug mcp evidence inspect {audit_out} --kind audit",
