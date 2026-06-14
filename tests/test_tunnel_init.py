@@ -73,7 +73,7 @@ def test_tunnel_init_ngrok_without_config_writes_default_config_dir(tmp_path, mo
     assert "export NGROK_URL=https://YOUR-NGROK-FORWARDING-DOMAIN" in report
     assert "ngrok-free.dev" in report
     assert "--traffic-policy-file .snulbug/configs/ngrok-traffic-policy.yml" in report
-    assert "snulbug mcp proxy --config .snulbug/configs/snulbug.toml" in result["next_steps"][1]
+    assert "snulbug mcp share run --config .snulbug/configs/snulbug.toml" in result["next_steps"][1]
 
 
 def test_tunnel_init_ngrok_writes_readme_and_traffic_policy(tmp_path):
@@ -195,7 +195,7 @@ def test_tunnel_init_tailscale_readme_includes_bearer_and_lease_defaults(tmp_pat
     assert 'lease_file = "leases.json"' in text
     assert "lease_required = false" in text
     assert 'lease_header = "x-snulbug-lease"' in text
-    assert "snulbug mcp lease create" in text
+    assert "snulbug mcp share lease create" in text
     assert "x-snulbug-lease: <lease token>" in text
     assert "lease_required = true" in text
 
@@ -324,7 +324,7 @@ def test_tunnel_init_holepunch_generates_hypertele_bridge_files(tmp_path):
     assert "Holepunch peer bridge" in readme_text
     assert "Authorization: Bearer ${SNULBUG_TOKEN}" in readme_text
     assert 'tunnel_provider = "holepunch"' in readme_text
-    assert "snulbug mcp lease create" in readme_text
+    assert "snulbug mcp share lease create" in readme_text
 
 
 def test_format_tunnel_init_report_includes_commands_and_client(tmp_path, monkeypatch):

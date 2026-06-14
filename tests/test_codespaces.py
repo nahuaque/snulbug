@@ -38,7 +38,7 @@ def test_prepare_codespace_attach_writes_loadable_env_discovery_config(tmp_path,
     assert result["generated_session"]["file_map"]["config"] == result["config"]
     assert result["generated_session"]["env_map"][result["env"]["name"]] == result["env"]["value"]
     assert result["commands"] == result["generated_session"]["command_map"]
-    assert result["commands"]["proxy"] == f"uv run snulbug mcp proxy --config {tmp_path / 'snulbug.toml'}"
+    assert result["commands"]["proxy"] == f"uv run snulbug mcp share run --config {tmp_path / 'snulbug.toml'}"
     assert (tmp_path / "policy.lua").read_text(encoding="utf-8").count("codespace.attach.allow") == 1
     assert proxy["policy"] == tmp_path / "policy.lua"
     assert proxy["record_out"] == tmp_path / "traces/session.jsonl"

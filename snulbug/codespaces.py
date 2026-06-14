@@ -135,7 +135,7 @@ def prepare_codespace_attach(
                 GeneratedArtifact("traces", traces, "directory"),
             ],
             commands=[
-                GeneratedCommand("proxy", f"uv run snulbug mcp proxy --config {config}"),
+                GeneratedCommand("proxy", f"uv run snulbug mcp share run --config {config}"),
                 GeneratedCommand(
                     "inspect_audit",
                     f"uv run snulbug mcp evidence inspect {audit_out} --kind audit",
@@ -149,7 +149,7 @@ def prepare_codespace_attach(
             next_steps=[
                 f"Point the MCP client at {gateway_url}",
                 f"export {discovery_env}='{discovery_value}'",
-                f"uv run snulbug mcp proxy --config {config}",
+                f"uv run snulbug mcp share run --config {config}",
                 f"uv run snulbug mcp evidence inspect {audit_out} --kind audit",
             ],
             scaffolds=[scaffold],

@@ -182,7 +182,7 @@ uv run snulbug mcp fabric discover \
 Start the local gateway:
 
 ```bash
-uv run snulbug mcp proxy \
+uv run snulbug mcp share run \
   --config examples/codespace_local_gateway/snulbug.local-gateway.toml
 ```
 

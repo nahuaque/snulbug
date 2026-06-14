@@ -36,13 +36,13 @@ uv run snulbug mcp policy preset tunnel-safe \
 Write a starter config:
 
 ```bash
-uv run snulbug mcp config init
+uv run snulbug mcp share config init
 ```
 
 Run the proxy:
 
 ```bash
-uv run snulbug mcp proxy --config snulbug.toml
+uv run snulbug mcp share run --config snulbug.toml
 ```
 
 For concrete MCP client configuration patterns, see
@@ -132,7 +132,7 @@ format = "text" # or "json"
 Then run:
 
 ```bash
-snulbug mcp proxy --config snulbug.toml
+snulbug mcp share run --config snulbug.toml
 ```
 
 The text console is optimized for watching local tunnel traffic. The JSON format
@@ -164,14 +164,14 @@ The proxy CLI accepts a small bootstrap override surface for host, port,
 upstream, facade upstreams, policy, and replay record output:
 
 ```bash
-snulbug mcp proxy --config snulbug.toml --port 8181
+snulbug mcp share run --config snulbug.toml --port 8181
 ```
 
 For facade mode, the proxy can hot-reload upstream routes from the declarative
 fabric config while it is running:
 
 ```bash
-snulbug mcp proxy \
+snulbug mcp share run \
   --config snulbug.toml \
   --reload-fabric \
   --fabric-reload-interval 2
@@ -321,7 +321,7 @@ token is shown once when the lease is created.
 Create a lease:
 
 ```bash
-snulbug mcp lease create \
+snulbug mcp share lease create \
   --file leases.json \
   --task "Read README before editing docs" \
   --allow-tool safe_read_file \
@@ -346,8 +346,8 @@ lease_header = "x-snulbug-lease"
 Useful operations:
 
 ```bash
-snulbug mcp lease list --file leases.json
-snulbug mcp lease revoke lease_abc123 --file leases.json
+snulbug mcp share lease list --file leases.json
+snulbug mcp share lease revoke lease_abc123 --file leases.json
 ```
 
 Preview whether a lease covers captured traffic before requiring it:
@@ -427,7 +427,7 @@ always allowed or always blocked. The proxy fails closed unless confirmation is
 explicitly enabled:
 
 ```bash
-snulbug mcp proxy --config snulbug.toml
+snulbug mcp share run --config snulbug.toml
 ```
 
 with:
@@ -527,7 +527,7 @@ types.
 You can also start facade mode directly from the CLI:
 
 ```bash
-snulbug mcp proxy \
+snulbug mcp share run \
   --policy policy.snulbug/policy.lua \
   --facade-upstream files=http://127.0.0.1:9001/mcp \
   --facade-upstream git=http://127.0.0.1:9002/mcp \
@@ -715,7 +715,7 @@ use `rate_limit`.
 Use SQLite-backed local state:
 
 ```bash
-snulbug mcp proxy --config snulbug.toml
+snulbug mcp share run --config snulbug.toml
 ```
 
 with:
@@ -728,7 +728,7 @@ state = "sqlite:policy-state.sqlite3"
 Disable state:
 
 ```bash
-snulbug mcp proxy --config snulbug.toml
+snulbug mcp share run --config snulbug.toml
 ```
 
 with:

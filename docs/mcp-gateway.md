@@ -62,7 +62,7 @@ uv run snulbug mcp evidence replay traces/session.jsonl
 Run the policy as a reverse proxy for a non-ASGI MCP server:
 
 ```bash
-uv run snulbug mcp config init
-uv run snulbug mcp proxy \
+uv run snulbug mcp share config init
+uv run snulbug mcp share run \
   --config snulbug.toml
 ```

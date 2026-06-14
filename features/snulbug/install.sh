@@ -133,11 +133,11 @@ if [ "${WRITE_CONFIG}" != "true" ]; then
 fi
 
 if [ "${POLICY_PROFILE}" != "none" ] && [ ! -e "policy.snulbug" ]; then
-  snulbug mcp init "${POLICY_PROFILE}" --output policy.snulbug
+  snulbug mcp policy preset "${POLICY_PROFILE}" --output policy.snulbug
 fi
 
 if [ ! -f "snulbug.toml" ]; then
-  snulbug mcp config init --output snulbug.toml
+  snulbug mcp share config init --output snulbug.toml
   python3 - "$UPSTREAM" "$GATEWAY_PORT" <<'PY'
 from pathlib import Path
 import sys
@@ -241,7 +241,7 @@ run_agent() {
       --unregister-on-exit
   fi
   if [ "${MODE}" = "gateway" ]; then
-    exec snulbug mcp proxy --config snulbug.toml
+    exec snulbug mcp share run --config snulbug.toml
   fi
   echo "snulbug devcontainer mode is '${MODE}'; no background agent started."
 }

@@ -60,7 +60,7 @@ the public Codespaces forwarded URL for port `9001`.
 The helper mode is controlled by the Feature `mode` option:
 
 - `cli`: install snulbug only; the agent helper is a no-op.
-- `gateway`: run `snulbug mcp proxy --config snulbug.toml`.
+- `gateway`: run `snulbug mcp share run --config snulbug.toml`.
 - `member-agent`: run `snulbug mcp fabric member agent` with the configured
   registry and upstream.
 

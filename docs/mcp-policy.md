@@ -33,7 +33,7 @@ uv run snulbug mcp policy preset tunnel-safe \
 Run the proxy and capture evidence:
 
 ```bash
-uv run snulbug mcp proxy --config snulbug.toml
+uv run snulbug mcp share run --config snulbug.toml
 ```
 
 Learn a least-privilege bundle from the captured session:

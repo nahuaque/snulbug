@@ -251,7 +251,7 @@ def _workflows() -> dict[str, dict[str, Any]]:
                     "title": "Create a short-lived lease",
                     "command": "\n".join(
                         [
-                            "snulbug mcp lease create \\",
+                            "snulbug mcp share lease create \\",
                             "  --file leases.json \\",
                             '  --task "Read project docs only" \\',
                             "  --allow-tool safe_read_file \\",
@@ -262,7 +262,7 @@ def _workflows() -> dict[str, dict[str, Any]]:
                     ),
                     "requires": ['proxy configured with lease_file = "leases.json"'],
                     "produces": ["lease token for the `x-snulbug-lease` header"],
-                    "success_signals": ["lease appears in `snulbug mcp lease list --active-only`"],
+                    "success_signals": ["lease appears in `snulbug mcp share lease list --active-only`"],
                     "next": "Send the lease token with MCP tools/call requests.",
                 },
                 {
@@ -277,7 +277,7 @@ def _workflows() -> dict[str, dict[str, Any]]:
                 {
                     "id": "revoke-lease",
                     "title": "Revoke a lease",
-                    "command": "snulbug mcp lease revoke LEASE_ID --file leases.json",
+                    "command": "snulbug mcp share lease revoke LEASE_ID --file leases.json",
                     "requires": ["lease id from create or list output"],
                     "produces": ["updated leases.json"],
                     "success_signals": ["lease no longer appears as active"],
@@ -306,8 +306,8 @@ def _workflows() -> dict[str, dict[str, Any]]:
                     "title": "Run a two-upstream facade",
                     "command": "\n".join(
                         [
-                            "snulbug mcp config init --output snulbug.toml",
-                            "snulbug mcp proxy --config snulbug.toml",
+                            "snulbug mcp share config init --output snulbug.toml",
+                            "snulbug mcp share run --config snulbug.toml",
                         ]
                     ),
                     "requires": ["files MCP server on port 9001", "git MCP server on port 9002", "policy bundle"],

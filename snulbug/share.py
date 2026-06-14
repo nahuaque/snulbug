@@ -589,7 +589,7 @@ def _command_plan(
     return {
         "export_token": f"export {DEFAULT_SHARE_TOKEN_ENV}={shlex.quote(token)}",
         "run": f"uv run snulbug mcp share run {shlex.quote(str(share_dir))}",
-        "proxy": f"uv run snulbug mcp proxy --config {shlex.quote(str(config))}",
+        "proxy": f"uv run snulbug mcp share run --config {shlex.quote(str(config))}",
         "provider": [
             f"(cd {shlex.quote(str(tunnel_dir))} && {str(command['command'])})" for command in provider_commands
         ],
@@ -603,7 +603,7 @@ def _command_plan(
             f"--kind audit --report-out {shlex.quote(str(share_dir / 'session-report.md'))}"
         ),
         "revoke_lease": (
-            f"uv run snulbug mcp lease revoke {shlex.quote(lease_id)} --file {shlex.quote(str(lease_file))}"
+            f"uv run snulbug mcp share lease revoke {shlex.quote(lease_id)} --file {shlex.quote(str(lease_file))}"
         ),
     }
 

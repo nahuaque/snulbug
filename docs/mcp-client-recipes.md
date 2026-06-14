@@ -59,7 +59,7 @@ uv run snulbug mcp policy preset local-dev-safe \
   --allow-tool safe_read_file \
   --allow-tool list_project_files
 
-uv run snulbug mcp config init
+uv run snulbug mcp share config init
 ```
 
 Edit `snulbug.toml` so `upstream` points at the local MCP server:
@@ -95,7 +95,7 @@ format = "text"
 Run the proxy:
 
 ```bash
-uv run snulbug mcp proxy --config snulbug.toml
+uv run snulbug mcp share run --config snulbug.toml
 ```
 
 Point the client at:
@@ -341,7 +341,7 @@ Run the proxy. If the config includes a `console` event sink, it prints live
 decisions:
 
 ```bash
-uv run snulbug mcp proxy --config snulbug.toml
+uv run snulbug mcp share run --config snulbug.toml
 ```
 
 The console prints one redacted decision per request, including the MCP method,
@@ -461,7 +461,7 @@ tool_prefix = "devbox."
 Run the proxy:
 
 ```bash
-uv run snulbug mcp proxy --config snulbug.toml
+uv run snulbug mcp share run --config snulbug.toml
 ```
 
 Point the client at the single facade endpoint:

@@ -597,10 +597,10 @@ def test_write_sample_config_refuses_to_overwrite(tmp_path):
         raise AssertionError("expected FileExistsError")
 
 
-def test_mcp_config_init_cli_writes_config(tmp_path, capsys):
+def test_mcp_share_config_init_cli_writes_config(tmp_path, capsys):
     config = tmp_path / "snulbug.toml"
 
-    status = simulator_main(["mcp", "config", "init", "--output", str(config), "--compact"])
+    status = simulator_main(["mcp", "share", "config", "init", "--output", str(config), "--compact"])
 
     output = json.loads(capsys.readouterr().out)
     assert status == 0
@@ -610,15 +610,15 @@ def test_mcp_config_init_cli_writes_config(tmp_path, capsys):
     assert load_mcp_proxy_config(config)["redact_records"] is True
 
 
-def test_mcp_proxy_cli_requires_policy_and_upstream_without_config(capsys):
-    status = simulator_main(["mcp", "proxy", "--port", "9001"])
+def test_mcp_share_run_cli_requires_policy_and_upstream_without_config(capsys):
+    status = simulator_main(["mcp", "share", "run", "--port", "9001"])
 
     captured = capsys.readouterr()
     assert status == 1
     assert "--policy and either --upstream or --facade-upstream are required" in captured.err
 
 
-def test_mcp_proxy_cli_loads_config_before_running(monkeypatch, tmp_path):
+def test_mcp_share_run_cli_loads_config_before_running(monkeypatch, tmp_path):
     config = write_config(tmp_path)
     calls = []
 
@@ -627,7 +627,7 @@ def test_mcp_proxy_cli_loads_config_before_running(monkeypatch, tmp_path):
 
     monkeypatch.setattr("snulbug.proxy.run_proxy", fake_run_proxy)
 
-    status = simulator_main(["mcp", "proxy", "--config", str(config), "--port", "8181"])
+    status = simulator_main(["mcp", "share", "run", "--config", str(config), "--port", "8181"])
 
     assert status == 0
     assert calls[0]["upstream"] == "http://127.0.0.1:9000"
@@ -676,7 +676,7 @@ def test_mcp_proxy_cli_loads_config_before_running(monkeypatch, tmp_path):
     ]
 
 
-def test_mcp_proxy_cli_passes_facade_upstreams_without_config(monkeypatch, tmp_path):
+def test_mcp_share_run_cli_passes_facade_upstreams_without_config(monkeypatch, tmp_path):
     policy = tmp_path / "policy.lua"
     policy.write_text('return function() return { action = "continue" } end', encoding="utf-8")
     calls = []
@@ -689,7 +689,8 @@ def test_mcp_proxy_cli_passes_facade_upstreams_without_config(monkeypatch, tmp_p
     status = simulator_main(
         [
             "mcp",
-            "proxy",
+            "share",
+            "run",
             "--policy",
             str(policy),
             "--facade-upstream",
@@ -722,7 +723,7 @@ def test_mcp_proxy_cli_passes_facade_upstreams_without_config(monkeypatch, tmp_p
     assert calls[0]["facade_health_exclude_unhealthy"] is True
 
 
-def test_mcp_proxy_cli_can_enable_fabric_reload(monkeypatch, tmp_path):
+def test_mcp_share_run_cli_can_enable_fabric_reload(monkeypatch, tmp_path):
     config = write_config(tmp_path)
     calls = []
 
@@ -734,7 +735,8 @@ def test_mcp_proxy_cli_can_enable_fabric_reload(monkeypatch, tmp_path):
     status = simulator_main(
         [
             "mcp",
-            "proxy",
+            "share",
+            "run",
             "--config",
             str(config),
             "--reload-fabric",
@@ -749,14 +751,15 @@ def test_mcp_proxy_cli_can_enable_fabric_reload(monkeypatch, tmp_path):
     assert calls[0]["fabric_reload_overrides"] == {}
 
 
-def test_mcp_proxy_cli_rejects_fabric_reload_without_config(tmp_path, capsys):
+def test_mcp_share_run_cli_rejects_fabric_reload_without_config(tmp_path, capsys):
     policy = tmp_path / "policy.lua"
     policy.write_text('return function() return { action = "continue" } end', encoding="utf-8")
 
     status = simulator_main(
         [
             "mcp",
-            "proxy",
+            "share",
+            "run",
             "--policy",
             str(policy),
             "--facade-upstream",

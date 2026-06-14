@@ -17,8 +17,8 @@ uv run snulbug mcp evidence record policy.snulbug/policy.lua request.json --out 
 Record live traffic while proxying:
 
 ```bash
-uv run snulbug mcp config init
-uv run snulbug mcp proxy \
+uv run snulbug mcp share config init
+uv run snulbug mcp share run \
   --config snulbug.toml
 ```
 
@@ -100,7 +100,7 @@ excluded from the allowlist and summarized in the report.
 Switch the proxy to the learned policy after review:
 
 ```bash
-uv run snulbug mcp proxy \
+uv run snulbug mcp share run \
   --config snulbug.toml \
   --policy learned-policy.snulbug/policy.lua
 ```

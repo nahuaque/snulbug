@@ -32,7 +32,7 @@ def test_write_scaffold_preflights_and_writes_files_and_dirs(tmp_path):
                 ScaffoldFile(path="policy.lua", content="return function() end\n", kind="policy"),
                 json_scaffold_file("client.json", {"mcpServers": {"demo": {"url": "http://127.0.0.1"}}}),
             ],
-            commands={"run": "uv run snulbug mcp proxy --config snulbug.toml"},
+            commands={"run": "uv run snulbug mcp share run --config snulbug.toml"},
         )
     )
 
@@ -72,7 +72,7 @@ def test_format_scaffold_report_lists_files_and_commands(tmp_path):
             name="demo scaffold",
             root=tmp_path,
             files=[ScaffoldFile(path="snulbug.toml", content="[mcp.proxy]\n", kind="config")],
-            commands={"run": "uv run snulbug mcp proxy --config snulbug.toml"},
+            commands={"run": "uv run snulbug mcp share run --config snulbug.toml"},
         )
     )
 
@@ -80,7 +80,7 @@ def test_format_scaffold_report_lists_files_and_commands(tmp_path):
 
     assert "# demo scaffold" in report
     assert str(tmp_path / "snulbug.toml") in report
-    assert "uv run snulbug mcp proxy" in report
+    assert "uv run snulbug mcp share run" in report
 
 
 def test_session_result_normalizes_generated_session_metadata(tmp_path):
@@ -90,16 +90,16 @@ def test_session_result_normalizes_generated_session_metadata(tmp_path):
             root=tmp_path,
             generated_by="snulbug demo",
             artifacts=[GeneratedArtifact("config", tmp_path / "snulbug.toml", "config")],
-            commands=[GeneratedCommand("run", "uv run snulbug mcp proxy --config snulbug.toml")],
+            commands=[GeneratedCommand("run", "uv run snulbug mcp share run --config snulbug.toml")],
             clients=[GeneratedClient("default", "http://127.0.0.1:8080/mcp", {"Authorization": "Bearer test"})],
             env=[GeneratedEnv("SNULBUG_TOKEN", "test")],
             logs=[GeneratedLog("audit", tmp_path / "traces/audit.jsonl", "audit_jsonl")],
-            next_steps=["uv run snulbug mcp proxy --config snulbug.toml"],
+            next_steps=["uv run snulbug mcp share run --config snulbug.toml"],
         )
     )
 
     assert result["file_map"]["config"] == str(tmp_path / "snulbug.toml")
-    assert result["command_map"]["run"] == "uv run snulbug mcp proxy --config snulbug.toml"
+    assert result["command_map"]["run"] == "uv run snulbug mcp share run --config snulbug.toml"
     assert result["primary_client"]["url"] == "http://127.0.0.1:8080/mcp"
     assert result["env_map"]["SNULBUG_TOKEN"] == "test"
     assert result["log_map"]["audit"] == str(tmp_path / "traces/audit.jsonl")

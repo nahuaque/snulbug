@@ -20,7 +20,7 @@ uv run snulbug mcp policy preset --output policy.snulbug
 Create the full local proxy starter instead:
 
 ```bash
-uv run snulbug mcp quickstart
+uv run snulbug mcp share quickstart
 ```
 
 Copy a specific preset:
@@ -68,8 +68,8 @@ uv run snulbug mcp evidence replay traces/session.jsonl
 Run the copied policy as a local reverse proxy:
 
 ```bash
-uv run snulbug mcp config init
-uv run snulbug mcp proxy \
+uv run snulbug mcp share config init
+uv run snulbug mcp share run \
   --config snulbug.toml
 ```
 
@@ -138,7 +138,7 @@ exposure. It requires bearer auth, rejects JSON-RPC batch requests, allows only
 configured safe tools, and rate-limits traffic.
 
 ```bash
-uv run snulbug mcp quickstart \
+uv run snulbug mcp share quickstart \
   --preset tunnel-safe \
   --upstream http://127.0.0.1:9000 \
   --token local-dev-secret

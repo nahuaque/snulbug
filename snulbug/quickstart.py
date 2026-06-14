@@ -84,7 +84,7 @@ def create_mcp_quickstart(
 
     write_scaffold(
         ScaffoldPlan(
-            name="mcp quickstart",
+            name="mcp share quickstart",
             root=root,
             directories=[Path("."), _scaffold_child_path(root, traces_path)],
         ),
@@ -158,9 +158,9 @@ def create_mcp_quickstart(
     lease_path = _resolve_output(root, lease_file)
     client_headers = {"Authorization": f"Bearer {effective_token}"}
     next_steps = [
-        f"uv run snulbug mcp proxy --config {config_path}",
+        f"uv run snulbug mcp share run --config {config_path}",
         (
-            "uv run snulbug mcp lease create "
+            "uv run snulbug mcp share lease create "
             f"--file {lease_path} "
             "--task 'Inspect docs' --allow-tool safe_read_file --ttl 30m"
         ),
@@ -174,9 +174,9 @@ def create_mcp_quickstart(
         next_steps.insert(0, f"uv run snulbug bundle validate {policy_dir}")
     generated_session = session_result(
         GeneratedSession(
-            name="mcp quickstart",
+            name="mcp share quickstart",
             root=root,
-            generated_by="snulbug mcp quickstart",
+            generated_by="snulbug mcp share quickstart",
             artifacts=[
                 GeneratedArtifact("policy", policy_dir, "policy_bundle"),
                 GeneratedArtifact("policy_file", policy_file, "policy"),
@@ -189,7 +189,7 @@ def create_mcp_quickstart(
                 GeneratedCommand(
                     "lease_create",
                     (
-                        "uv run snulbug mcp lease create "
+                        "uv run snulbug mcp share lease create "
                         f"--file {lease_path} "
                         "--task 'Inspect docs' --allow-tool safe_read_file --ttl 30m"
                     ),
@@ -301,7 +301,7 @@ def _write_mcp_proxy_config(
     template = GatewayTemplate(proxy=values, event_sinks=event_sinks)
     write_scaffold(
         ScaffoldPlan(
-            name="mcp quickstart config",
+            name="mcp share quickstart config",
             root=path.parent,
             files=[
                 ScaffoldFile(

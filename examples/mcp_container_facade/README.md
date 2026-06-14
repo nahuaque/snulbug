@@ -15,7 +15,7 @@ share session.
 
 ## Services
 
-- `snulbug-gateway`: runs `snulbug mcp proxy` with facade upstreams.
+- `snulbug-gateway`: runs `snulbug mcp share run` with facade upstreams.
 - `local-mcp`: runs a small HTTP MCP demo server on the Docker network.
 - `remote-by-peer-mcp`: runs a Node demo server behind `hypertele-server`.
 

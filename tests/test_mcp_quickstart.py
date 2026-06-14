@@ -30,7 +30,7 @@ def test_create_mcp_quickstart_writes_policy_config_and_trace_dir(tmp_path):
     assert result["generated_session"]["file_map"]["config"] == str(config)
     assert result["generated_session"]["primary_client"]["url"] == result["client"]["url"]
     assert result["generated_session"]["log_map"]["audit_events"] == str(tmp_path / "traces/audit.jsonl")
-    assert result["generated_session"]["command_map"]["proxy"] == f"uv run snulbug mcp proxy --config {config}"
+    assert result["generated_session"]["command_map"]["proxy"] == f"uv run snulbug mcp share run --config {config}"
     assert result["next_steps"] == result["generated_session"]["next_steps"]
     assert policy.is_dir()
     assert config.is_file()
@@ -67,10 +67,11 @@ def test_create_mcp_quickstart_writes_policy_config_and_trace_dir(tmp_path):
     assert '"read_repo",' in (policy / "policy.lua").read_text(encoding="utf-8")
 
 
-def test_mcp_quickstart_cli_writes_compact_result(tmp_path, capsys):
+def test_mcp_share_quickstart_cli_writes_compact_result(tmp_path, capsys):
     status = simulator_main(
         [
             "mcp",
+            "share",
             "quickstart",
             "--directory",
             str(tmp_path),
@@ -89,22 +90,23 @@ def test_mcp_quickstart_cli_writes_compact_result(tmp_path, capsys):
     output = json.loads(capsys.readouterr().out)
     assert status == 0
     assert output["ok"] is True
-    assert output["name"] == "mcp quickstart"
+    assert output["name"] == "mcp share quickstart"
     assert output["files"]["policy"] == str(tmp_path / "policy.snulbug")
     assert output["files"]["config"] == str(tmp_path / "snulbug.toml")
     assert output["client"]["url"] == "http://127.0.0.1:8181/mcp"
     assert output["client"]["headers"]["Authorization"] == "Bearer dev-secret"
-    assert output["commands"]["proxy"] == f"uv run snulbug mcp proxy --config {tmp_path / 'snulbug.toml'}"
+    assert output["commands"]["proxy"] == f"uv run snulbug mcp share run --config {tmp_path / 'snulbug.toml'}"
     assert output["metadata"]["preset"] == "local-dev-safe"
     assert output["legacy"]["proxy"]["cloudflare_access"] == "off"
     assert output["legacy"]["validation"]["ok"] is True
     assert output["legacy"]["tests"]["ok"] is True
 
 
-def test_mcp_quickstart_cli_can_generate_path_profile(tmp_path, capsys):
+def test_mcp_share_quickstart_cli_can_generate_path_profile(tmp_path, capsys):
     status = simulator_main(
         [
             "mcp",
+            "share",
             "quickstart",
             "--directory",
             str(tmp_path),
@@ -129,12 +131,12 @@ def test_mcp_quickstart_cli_can_generate_path_profile(tmp_path, capsys):
     assert '"src/",' in policy
 
 
-def test_mcp_quickstart_cli_refuses_to_overwrite_without_force(tmp_path, capsys):
-    status = simulator_main(["mcp", "quickstart", "--directory", str(tmp_path), "--compact"])
+def test_mcp_share_quickstart_cli_refuses_to_overwrite_without_force(tmp_path, capsys):
+    status = simulator_main(["mcp", "share", "quickstart", "--directory", str(tmp_path), "--compact"])
     assert status == 0
     capsys.readouterr()
 
-    status = simulator_main(["mcp", "quickstart", "--directory", str(tmp_path), "--compact"])
+    status = simulator_main(["mcp", "share", "quickstart", "--directory", str(tmp_path), "--compact"])
 
     output = json.loads(capsys.readouterr().out)
     assert status == 1
@@ -142,8 +144,8 @@ def test_mcp_quickstart_cli_refuses_to_overwrite_without_force(tmp_path, capsys)
     assert "already exists" in output["error"]
 
 
-def test_mcp_quickstart_cli_can_skip_validation(tmp_path, capsys):
-    status = simulator_main(["mcp", "quickstart", "--directory", str(tmp_path), "--no-validate", "--compact"])
+def test_mcp_share_quickstart_cli_can_skip_validation(tmp_path, capsys):
+    status = simulator_main(["mcp", "share", "quickstart", "--directory", str(tmp_path), "--no-validate", "--compact"])
 
     output = json.loads(capsys.readouterr().out)
     assert status == 0

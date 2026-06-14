@@ -16,7 +16,7 @@ least-privilege policy bundle. It is designed for the local-dev loop:
 Capture a session:
 
 ```bash
-uv run snulbug mcp proxy --config snulbug.toml
+uv run snulbug mcp share run --config snulbug.toml
 ```
 
 Generate a policy bundle:
@@ -51,7 +51,7 @@ uv run snulbug mcp evidence impact \
 Run the proxy with the learned policy:
 
 ```bash
-uv run snulbug mcp proxy \
+uv run snulbug mcp share run \
   --config snulbug.toml \
   --policy learned-policy.snulbug/policy.lua
 ```

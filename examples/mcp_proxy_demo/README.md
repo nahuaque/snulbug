@@ -59,7 +59,7 @@ uv run python examples/mcp_proxy_demo/upstream.py --host 127.0.0.1 --port 9000
 Terminal 2: create policy/config and run the proxy:
 
 ```bash
-uv run snulbug mcp quickstart \
+uv run snulbug mcp share quickstart \
   --directory examples/mcp_proxy_demo/.run \
   --upstream http://127.0.0.1:9000 \
   --token local-dev-secret \
@@ -67,7 +67,7 @@ uv run snulbug mcp quickstart \
   --allow-tool list_project_files \
   --force
 
-uv run snulbug mcp proxy --config examples/mcp_proxy_demo/.run/snulbug.toml
+uv run snulbug mcp share run --config examples/mcp_proxy_demo/.run/snulbug.toml
 ```
 
 Send an allowed tool call:

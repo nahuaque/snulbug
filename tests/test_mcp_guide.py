@@ -33,7 +33,7 @@ def test_mcp_guide_cli_emits_human_workflow(capsys):
     output = capsys.readouterr().out
     assert status == 0
     assert "## Task-Scoped Capability Lease" in output
-    assert "snulbug mcp lease create \\" in output
+    assert "snulbug mcp share lease create \\" in output
     assert "snulbug mcp evidence impact traces/session.jsonl --lease leases.json" in output
 
 

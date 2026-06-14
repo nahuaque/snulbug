@@ -31,7 +31,7 @@ class WrittenMcpPolicyBundle:
         return [
             f"uv run snulbug bundle validate {self.root}",
             f"uv run snulbug bundle test {self.root}",
-            f"uv run snulbug mcp proxy --policy {self.policy} --upstream http://127.0.0.1:9000",
+            f"uv run snulbug mcp share run --policy {self.policy} --upstream http://127.0.0.1:9000",
         ]
 
 

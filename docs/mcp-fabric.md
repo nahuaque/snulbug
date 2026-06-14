@@ -451,7 +451,7 @@ table by itself; pair it with proxy fabric reload when you want the running data
 plane to consume those changes:
 
 ```bash
-snulbug mcp proxy \
+snulbug mcp share run \
   --config snulbug.toml \
   --reload-fabric \
   --fabric-reload-interval 2
@@ -467,7 +467,7 @@ snapshot that served it.
 
 `fabric run` starts the controller and the live-reloading data plane together.
 Use it when you want snulbug to act as one local MCP fabric process instead of
-running `fabric controller` and `mcp proxy --reload-fabric` separately.
+running `fabric controller` and `mcp share run --reload-fabric` separately.
 
 ```bash
 snulbug mcp fabric run \
@@ -567,7 +567,7 @@ snulbug mcp fabric run \
 
 `fabric run` requires facade upstreams from `[[mcp.proxy.upstreams]]` or
 discovery providers. For a single upstream reverse proxy, use
-`snulbug mcp proxy --config snulbug.toml`.
+`snulbug mcp share run --config snulbug.toml`.
 
 ## Upstream Credentials
 

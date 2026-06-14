@@ -178,14 +178,14 @@ Watch decisions while proxying. The generated config includes a console event
 sink by default:
 
 ```bash
-uv run snulbug mcp proxy --config snulbug.toml
+uv run snulbug mcp share run --config snulbug.toml
 ```
 
 Create a task-scoped lease when you want an MCP client or agent to do one
 bounded job:
 
 ```bash
-uv run snulbug mcp lease create \
+uv run snulbug mcp share lease create \
   --file leases.json \
   --task "Read project docs only" \
   --allow-tool safe_read_file \

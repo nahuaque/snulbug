@@ -73,7 +73,7 @@ Generate the policy bundle, proxy config, trace directory, and first-run
 instructions:
 
 ```bash
-uv run snulbug mcp quickstart \
+uv run snulbug mcp share quickstart \
   --upstream http://127.0.0.1:9000 \
   --preset tunnel-safe \
   --token local-dev-secret \
@@ -126,7 +126,7 @@ The quickstart writes `snulbug.toml`. To create only the starter config
 manually:
 
 ```bash
-uv run snulbug mcp config init
+uv run snulbug mcp share config init
 ```
 
 Edit `snulbug.toml` so `upstream` points at your local HTTP MCP server:
@@ -183,7 +183,7 @@ state = "sqlite:policy-state.sqlite3"
 Start your MCP server on the configured upstream port, then run:
 
 ```bash
-uv run snulbug mcp proxy --config snulbug.toml
+uv run snulbug mcp share run --config snulbug.toml
 ```
 
 Point the MCP client at:
@@ -282,7 +282,7 @@ Task-scoped leases are configured but optional by default. Create one when you
 want to hand an agent a temporary, narrow capability:
 
 ```bash
-uv run snulbug mcp lease create \
+uv run snulbug mcp share lease create \
   --file leases.json \
   --task "Read README only" \
   --allow-tool safe_read_file \

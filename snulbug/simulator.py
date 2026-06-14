@@ -17,12 +17,7 @@ from .cli.schemas import (
 )
 from .cli.share import add_mcp_share_command, handle_mcp_share_command
 from .cli_helpers import (
-    add_allow_path_arg,
     add_compact_arg,
-    add_force_arg,
-    add_token_arg,
-    add_token_env_arg,
-    add_validate_arg,
     write_generated_session_output,
     write_json_output,
     write_result_output,
@@ -146,7 +141,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mcp_subparsers = mcp.add_subparsers(
         dest="mcp_command",
         required=True,
-        metavar=("{guide,policy,quickstart,codespace,share,config,schemas,fabric,lease,evidence,lab,proxy}"),
+        metavar=("{guide,policy,codespace,share,schemas,fabric,evidence,lab}"),
     )
 
     mcp_guide = mcp_subparsers.add_parser("guide", help="print agent-oriented MCP workflow guidance")
@@ -159,135 +154,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     add_compact_arg(mcp_guide)
 
     add_mcp_policy_command(mcp_subparsers, bundle_states=bundle_states)
-
-    mcp_quickstart = mcp_subparsers.add_parser("quickstart", help="create a local MCP policy proxy starter")
-    mcp_quickstart.add_argument("--directory", "--dir", type=Path, default=Path("."), help="starter output directory")
-    mcp_quickstart.add_argument("--preset", default="local-dev-safe", help="MCP preset to generate")
-    mcp_quickstart.add_argument("--policy-output", type=Path, default=Path("policy.snulbug"), help="policy bundle path")
-    mcp_quickstart.add_argument("--config-output", type=Path, default=Path("snulbug.toml"), help="config file path")
-    mcp_quickstart.add_argument("--traces-dir", type=Path, default=Path("traces"), help="trace directory path")
-    mcp_quickstart.add_argument("--upstream", default="http://127.0.0.1:9000", help="upstream MCP HTTP server URL")
-    add_token_arg(mcp_quickstart, help="bearer token to render into generated policy")
-    add_token_env_arg(mcp_quickstart, help="context key used by generated policy for env-derived token lookup")
-    mcp_quickstart.add_argument("--allow-tool", action="append", default=[], help="allowed MCP tool name")
-    add_allow_path_arg(mcp_quickstart, help="allowed project path or prefix")
-    mcp_quickstart.add_argument("--rate-limit", type=int, help="fixed-window request limit")
-    mcp_quickstart.add_argument("--rate-window", type=int, help="fixed-window duration in seconds")
-    mcp_quickstart.add_argument("--host", default="127.0.0.1", help="proxy bind host")
-    mcp_quickstart.add_argument("--port", type=int, default=8080, help="proxy bind port")
-    mcp_quickstart.add_argument(
-        "--state", default="memory", help="'memory', 'none', or 'sqlite:/path/to/state.sqlite3'"
-    )
-    mcp_quickstart.add_argument("--record-out", type=Path, default=Path("traces/session.jsonl"))
-    mcp_quickstart.add_argument(
-        "--redact-records",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="redact secrets in live replay records",
-    )
-    mcp_quickstart.add_argument(
-        "--confirm",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="prompt before executing Lua confirm decisions",
-    )
-    mcp_quickstart.add_argument("--max-body-bytes", type=int, default=65536)
-    mcp_quickstart.add_argument("--response-max-bytes", type=int, default=262144)
-    mcp_quickstart.add_argument(
-        "--response-redact-secrets",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="redact likely secrets from MCP tool/resource/prompt responses",
-    )
-    mcp_quickstart.add_argument(
-        "--response-block-instructions",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="block MCP responses containing instruction-like text",
-    )
-    mcp_quickstart.add_argument(
-        "--tool-pinning",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="pin tools/list descriptions and schemas on first sight",
-    )
-    mcp_quickstart.add_argument(
-        "--tool-pinning-action",
-        choices=("warn", "block"),
-        default="block",
-        help="what to do when a pinned tool description or schema changes",
-    )
-    mcp_quickstart.add_argument(
-        "--schema-validation",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="validate tools/call arguments against cached MCP inputSchema definitions",
-    )
-    mcp_quickstart.add_argument(
-        "--schema-validation-action",
-        choices=("warn", "block"),
-        default="block",
-        help="what to do when tools/call arguments violate the cached inputSchema",
-    )
-    mcp_quickstart.add_argument("--lease-file", type=Path, default=Path("leases.json"), help="task lease JSON file")
-    mcp_quickstart.add_argument(
-        "--lease-required",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="require a valid task lease for MCP tools/call requests",
-    )
-    mcp_quickstart.add_argument(
-        "--lease-header",
-        default="x-snulbug-lease",
-        help="HTTP header carrying the task lease token",
-    )
-    mcp_quickstart.add_argument(
-        "--tunnel-provider",
-        choices=("auto", "generic", "ngrok", "cloudflare", "tailscale", "localxpose", "pinggy", "holepunch"),
-        default="auto",
-        help="provider label for tunnel-aware audit fields",
-    )
-    mcp_quickstart.add_argument("--tunnel-public-url", help="public tunnel URL to include in audit fields")
-    mcp_quickstart.add_argument(
-        "--cloudflare-access",
-        choices=("off", "audit", "enforce"),
-        default="off",
-        help="origin-side Cloudflare Access header mode",
-    )
-    mcp_quickstart.add_argument(
-        "--cloudflare-access-require-jwt",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="require CF-Access-Jwt-Assertion when Cloudflare Access enforcement is enabled",
-    )
-    mcp_quickstart.add_argument(
-        "--cloudflare-access-require-email",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="require CF-Access-Authenticated-User-Email when Cloudflare Access enforcement is enabled",
-    )
-    mcp_quickstart.add_argument(
-        "--cloudflare-access-require-cf-ray",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="require a CF-Ray header when Cloudflare Access enforcement is enabled",
-    )
-    mcp_quickstart.add_argument(
-        "--cloudflare-access-allow-email",
-        action="append",
-        default=[],
-        help="allowed Cloudflare Access authenticated user email; repeat for multiple emails",
-    )
-    mcp_quickstart.add_argument(
-        "--cloudflare-access-allow-domain",
-        action="append",
-        default=[],
-        help="allowed Cloudflare Access authenticated email domain; repeat for multiple domains",
-    )
-    mcp_quickstart.add_argument("--timeout", type=float, default=30.0, help="upstream timeout in seconds")
-    add_force_arg(mcp_quickstart, help="overwrite generated policy and config")
-    add_validate_arg(mcp_quickstart, help="validate and test the generated policy bundle")
-    add_compact_arg(mcp_quickstart)
 
     mcp_codespace = mcp_subparsers.add_parser("codespace", help="attach GitHub Codespace MCP upstreams")
     mcp_codespace_subparsers = mcp_codespace.add_subparsers(dest="codespace_command", required=True)
@@ -361,39 +227,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     add_mcp_share_command(mcp_subparsers)
 
-    mcp_config = mcp_subparsers.add_parser("config", help="work with MCP TOML config files")
-    mcp_config_subparsers = mcp_config.add_subparsers(dest="config_command", required=True)
-    mcp_config_init = mcp_config_subparsers.add_parser("init", help="write a starter snulbug.toml config")
-    mcp_config_init.add_argument("--output", type=Path, default=Path("snulbug.toml"), help="config file path")
-    add_force_arg(mcp_config_init, help="overwrite the config file when it exists")
-    add_compact_arg(mcp_config_init)
-
     add_mcp_schemas_command(mcp_subparsers)
     add_mcp_fabric_command(mcp_subparsers)
-
-    mcp_lease = mcp_subparsers.add_parser("lease", help="create and manage task-scoped MCP capability leases")
-    mcp_lease_subparsers = mcp_lease.add_subparsers(dest="lease_command", required=True)
-
-    mcp_lease_create = mcp_lease_subparsers.add_parser("create", help="create a task-scoped MCP capability lease")
-    mcp_lease_create.add_argument("--file", type=Path, default=Path("leases.json"), help="lease JSON file")
-    mcp_lease_create.add_argument("--task", required=True, help="human-readable task this lease grants")
-    mcp_lease_create.add_argument("--allow-tool", action="append", required=True, help="allowed MCP tool name")
-    add_allow_path_arg(mcp_lease_create, help="allowed path or path prefix")
-    mcp_lease_create.add_argument("--allow-host", action="append", default=[], help="allowed URL host")
-    mcp_lease_create.add_argument("--allow-command", action="append", default=[], help="allowed command name")
-    mcp_lease_create.add_argument("--ttl", default="1h", help="lease TTL, such as 30m, 2h, or 1d")
-    mcp_lease_create.add_argument("--max-calls", type=int, help="maximum number of allowed tools/call uses")
-    add_compact_arg(mcp_lease_create)
-
-    mcp_lease_list = mcp_lease_subparsers.add_parser("list", help="list task-scoped MCP capability leases")
-    mcp_lease_list.add_argument("--file", type=Path, default=Path("leases.json"), help="lease JSON file")
-    mcp_lease_list.add_argument("--active-only", action="store_true", help="show only active leases")
-    add_compact_arg(mcp_lease_list)
-
-    mcp_lease_revoke = mcp_lease_subparsers.add_parser("revoke", help="revoke a task-scoped MCP capability lease")
-    mcp_lease_revoke.add_argument("lease_id", help="lease id to revoke")
-    mcp_lease_revoke.add_argument("--file", type=Path, default=Path("leases.json"), help="lease JSON file")
-    add_compact_arg(mcp_lease_revoke)
 
     add_mcp_evidence_command(mcp_subparsers)
 
@@ -406,32 +241,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="overwrite the lab artifact directory",
     )
     add_compact_arg(mcp_lab)
-
-    mcp_proxy = mcp_subparsers.add_parser("proxy", help="run a local-dev MCP reverse proxy")
-    mcp_proxy.add_argument("--config", type=Path, help="TOML config file")
-    mcp_proxy.add_argument("--upstream", help="upstream MCP HTTP server URL")
-    mcp_proxy.add_argument(
-        "--facade-upstream",
-        action="append",
-        metavar="NAME=URL",
-        help="add an MCP facade upstream; tools are exposed as NAME.tool_name",
-    )
-    mcp_proxy.add_argument("--policy", type=Path, help="path to a Lua policy file")
-    mcp_proxy.add_argument("--host", help="bind host")
-    mcp_proxy.add_argument("--port", type=int, help="bind port")
-    mcp_proxy.add_argument("--record-out", type=Path, help="optional live replay JSONL path to append to")
-    mcp_proxy.add_argument(
-        "--reload-fabric",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="hot-reload facade upstream routes from --config while the proxy runs",
-    )
-    mcp_proxy.add_argument(
-        "--fabric-reload-interval",
-        type=float,
-        default=None,
-        help="fabric hot-reload polling interval in seconds",
-    )
 
     args = parser.parse_args(argv)
     if args.command == "simulate":
@@ -490,12 +299,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         from .config import (
             load_mcp_fabric_config,
             load_mcp_proxy_config,
-            merge_mcp_proxy_config,
-            normalize_mcp_fabric_config,
-            normalize_mcp_proxy_config,
-            write_sample_config,
         )
-        from .leases import create_lease, list_leases, revoke_lease
 
         if args.mcp_command == "guide":
             from .guide import build_mcp_guide, format_mcp_guide
@@ -514,56 +318,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             result, status = handle_mcp_policy_command(args, parser)
         elif args.mcp_command == "share":
             return handle_mcp_share_command(args, parser)
-        elif args.mcp_command == "quickstart":
-            from .quickstart import create_mcp_quickstart
-
-            try:
-                result = create_mcp_quickstart(
-                    args.directory,
-                    preset=args.preset,
-                    policy_output=args.policy_output,
-                    config_output=args.config_output,
-                    traces_dir=args.traces_dir,
-                    upstream=args.upstream,
-                    token=args.token,
-                    token_env=args.token_env,
-                    allowed_tools=args.allow_tool or None,
-                    allowed_paths=args.allow_path or None,
-                    rate_limit=args.rate_limit,
-                    rate_window=args.rate_window,
-                    host=args.host,
-                    port=args.port,
-                    state=args.state,
-                    record_out=args.record_out,
-                    redact_records=args.redact_records,
-                    confirm=args.confirm,
-                    max_body_bytes=args.max_body_bytes,
-                    response_max_bytes=args.response_max_bytes,
-                    response_redact_secrets=args.response_redact_secrets,
-                    response_block_instructions=args.response_block_instructions,
-                    tool_pinning=args.tool_pinning,
-                    tool_pinning_action=args.tool_pinning_action,
-                    schema_validation=args.schema_validation,
-                    schema_validation_action=args.schema_validation_action,
-                    lease_file=args.lease_file,
-                    lease_required=args.lease_required,
-                    lease_header=args.lease_header,
-                    tunnel_provider=args.tunnel_provider,
-                    tunnel_public_url=args.tunnel_public_url,
-                    cloudflare_access=args.cloudflare_access,
-                    cloudflare_access_require_jwt=args.cloudflare_access_require_jwt,
-                    cloudflare_access_require_email=args.cloudflare_access_require_email,
-                    cloudflare_access_require_cf_ray=args.cloudflare_access_require_cf_ray,
-                    cloudflare_access_allowed_emails=args.cloudflare_access_allow_email,
-                    cloudflare_access_allowed_domains=args.cloudflare_access_allow_domain,
-                    timeout=args.timeout,
-                    force=args.force,
-                    validate=args.validate,
-                )
-                status = 0 if result["ok"] else 1
-            except Exception as exc:
-                result = {"ok": False, "directory": str(args.directory), "error": str(exc)}
-                status = 1
         elif args.mcp_command == "codespace":
             from .codespaces import (
                 format_codespace_attach_report,
@@ -671,49 +425,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     return 1
             parser.error(f"unknown mcp codespace command: {args.codespace_command}")
             return 2
-        elif args.mcp_command == "config":
-            if args.config_command == "init":
-                try:
-                    result = write_sample_config(args.output, force=args.force)
-                    result["next_steps"] = [
-                        "uv run snulbug mcp policy preset local-dev-safe --output policy.snulbug",
-                        f"uv run snulbug mcp proxy --config {args.output}",
-                    ]
-                    status = 0
-                except Exception as exc:
-                    result = {"ok": False, "config": str(args.output), "error": str(exc)}
-                    status = 1
-            else:
-                parser.error(f"unknown mcp config command: {args.config_command}")
-                return 2
         elif args.mcp_command == "schemas":
             return handle_mcp_schemas_command(args, parser)
         elif args.mcp_command == "fabric":
             return handle_mcp_fabric_command(args, parser)
-        elif args.mcp_command == "lease":
-            try:
-                if args.lease_command == "create":
-                    result = create_lease(
-                        args.file,
-                        task=args.task,
-                        allow_tools=args.allow_tool,
-                        allow_paths=args.allow_path,
-                        allow_hosts=args.allow_host,
-                        allow_commands=args.allow_command,
-                        ttl=args.ttl,
-                        max_calls=args.max_calls,
-                    )
-                elif args.lease_command == "list":
-                    result = list_leases(args.file, include_inactive=not args.active_only)
-                elif args.lease_command == "revoke":
-                    result = revoke_lease(args.file, args.lease_id)
-                else:
-                    parser.error(f"unknown mcp lease command: {args.lease_command}")
-                    return 2
-                status = 0 if result["ok"] else 1
-            except Exception as exc:
-                result = {"ok": False, "file": str(args.file), "error": str(exc)}
-                status = 1
         elif args.mcp_command == "evidence":
             return handle_mcp_evidence_command(args, parser)
         elif args.mcp_command == "lab":
@@ -727,47 +442,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 status = 1
             if not args.compact:
                 return status
-        elif args.mcp_command == "proxy":
-            from .proxy import run_mcp_proxy_config, run_proxy
-
-            try:
-                overrides = {
-                    "upstream": args.upstream,
-                    "upstreams": _parse_facade_upstreams(args.facade_upstream),
-                    "policy": args.policy,
-                    "host": args.host,
-                    "port": args.port,
-                    "record_out": args.record_out,
-                }
-                overrides = {key: value for key, value in overrides.items() if value is not None}
-                if args.reload_fabric and args.config is None:
-                    sys.stderr.write("snulbug proxy failed: --reload-fabric requires --config\n")
-                    return 1
-                if args.config is not None:
-                    proxy_config = merge_mcp_proxy_config(load_mcp_proxy_config(args.config), overrides)
-                    fabric_config = load_mcp_fabric_config(args.config)
-                    fabric_config["proxy"] = proxy_config
-                else:
-                    if args.policy is None or (args.upstream is None and not args.facade_upstream):
-                        sys.stderr.write(
-                            "snulbug proxy failed: --policy and either --upstream or "
-                            "--facade-upstream are required without --config\n"
-                        )
-                        return 1
-                    proxy_config = normalize_mcp_proxy_config(overrides)
-                    fabric_config = normalize_mcp_fabric_config({}, proxy_config=proxy_config)
-                run_mcp_proxy_config(
-                    proxy_config,
-                    fabric_config,
-                    runner=run_proxy,
-                    fabric_reload_config=args.config if args.reload_fabric else None,
-                    fabric_reload_interval=args.fabric_reload_interval or 2.0,
-                    fabric_reload_overrides=overrides if args.reload_fabric else None,
-                )
-            except Exception as exc:
-                sys.stderr.write(f"snulbug proxy failed: {exc}\n")
-                return 1
-            return 0
         else:
             parser.error(f"unknown mcp command: {args.mcp_command}")
             return 2
@@ -781,18 +455,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _read_json(path: Path) -> Any:
     return read_json(path)
-
-
-def _parse_facade_upstreams(values: Sequence[str] | None) -> list[dict[str, Any]] | None:
-    if not values:
-        return None
-    upstreams = []
-    for value in values:
-        name, separator, url = value.partition("=")
-        if not separator or not name or not url:
-            raise ValueError("--facade-upstream must use NAME=URL")
-        upstreams.append({"name": name, "url": url, "tool_prefix": f"{name}."})
-    return upstreams
 
 
 def _normalize_headers(headers: Any) -> dict[str, str | list[str]]:

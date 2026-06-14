@@ -41,7 +41,7 @@ def test_devcontainer_feature_install_script_is_executable_and_installs_helpers(
     assert "snulbug-devcontainer-init" in script
     assert "snulbug-devcontainer-agent" in script
     assert "snulbug mcp fabric member agent" in script
-    assert "snulbug mcp proxy --config snulbug.toml" in script
+    assert "snulbug mcp share run --config snulbug.toml" in script
     assert "git+https://github.com/lbruhacs/snulbug" in script
     assert 'if [ -z "${SNULBUG_DEVCONTAINER_REGISTRY+x}" ]' in script
     assert "resolve_member_upstream" in script

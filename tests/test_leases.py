@@ -45,12 +45,13 @@ def test_revoke_lease_marks_it_inactive(tmp_path):
     assert revoked["lease"]["revoked_at"] is not None
 
 
-def test_mcp_lease_cli_create_list_and_revoke(tmp_path, capsys):
+def test_mcp_share_lease_cli_create_list_and_revoke(tmp_path, capsys):
     lease_file = tmp_path / "leases.json"
 
     status = simulator_main(
         [
             "mcp",
+            "share",
             "lease",
             "create",
             "--file",
@@ -71,13 +72,13 @@ def test_mcp_lease_cli_create_list_and_revoke(tmp_path, capsys):
     assert created["ok"] is True
     assert created["headers"]["x-snulbug-lease"].startswith("sbl_")
 
-    status = simulator_main(["mcp", "lease", "list", "--file", str(lease_file), "--compact"])
+    status = simulator_main(["mcp", "share", "lease", "list", "--file", str(lease_file), "--compact"])
     listed = json.loads(capsys.readouterr().out)
     assert status == 0
     assert listed["leases"][0]["task"] == "Docs edit"
 
     status = simulator_main(
-        ["mcp", "lease", "revoke", listed["leases"][0]["id"], "--file", str(lease_file), "--compact"]
+        ["mcp", "share", "lease", "revoke", listed["leases"][0]["id"], "--file", str(lease_file), "--compact"]
     )
     revoked = json.loads(capsys.readouterr().out)
     assert status == 0
