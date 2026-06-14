@@ -64,6 +64,12 @@ Before sharing `mcp-client.json`, verify the session:
 uv run snulbug mcp share doctor .snulbug/shares/share-...
 ```
 
+`share doctor` is the pre-share readiness gate. It loads the generated config,
+validates the policy bundle or Lua entrypoint, runs static fabric checks,
+optionally runs a generated fabric conformance pack, checks the current share
+status, and runs the tunnel/public URL doctor. The command exits non-zero when
+any required check fails.
+
 If the provider prints a random public URL after startup, pass the exact MCP URL
 to doctor. This updates `share.json` and `mcp-client.json` before probing:
 It also updates `.snulbug/share/session.json`, so later `status` and report
@@ -72,6 +78,16 @@ commands see the resolved public endpoint.
 ```bash
 uv run snulbug mcp share doctor .snulbug/shares/share-... \
   --url "${PUBLIC_MCP_URL}"
+```
+
+For fabric facade sessions, pass a generated conformance pack when you want the
+share gate to prove config, manifests, policies, and replay logs still agree:
+
+```bash
+uv run snulbug mcp share doctor .snulbug/shares/share-... \
+  --url "${PUBLIC_MCP_URL}" \
+  --conformance-pack .snulbug/fabric-conformance \
+  --require-conformance
 ```
 
 Inspect the generated client config without opening files by hand:

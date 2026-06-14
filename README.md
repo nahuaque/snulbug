@@ -147,7 +147,9 @@ curl -sS "${NGROK_URL}/mcp" \
   -d '{"jsonrpc":"2.0","id":"tools-list","method":"tools/list","params":{}}'
 ```
 
-Before sharing the client config, run the share doctor:
+Before sharing the client config, run the share doctor. It is the single
+pre-share gate for generated config, policy bundle validity, fabric checks,
+current status, and public tunnel safety:
 
 ```bash
 uv run snulbug mcp share doctor .snulbug/shares/share-... \

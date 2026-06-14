@@ -94,6 +94,19 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
         help="public or client bridge MCP URL override printed by the provider",
     )
     share_doctor.add_argument("--timeout", type=float, default=5.0, help="HTTP probe timeout in seconds")
+    share_doctor.add_argument(
+        "--live-checks",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="probe the local gateway and configured upstreams",
+    )
+    share_doctor.add_argument("--conformance-pack", type=Path, help="generated fabric conformance pack to run")
+    share_doctor.add_argument(
+        "--require-conformance",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="fail when --conformance-pack is missing or does not pass",
+    )
     add_compact_arg(share_doctor)
 
     share_client = share_subparsers.add_parser("client", help="print generated MCP client config")
@@ -134,13 +147,13 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
         close_mcp_share,
         create_mcp_share,
         doctor_mcp_share,
+        format_share_doctor_report,
         format_share_status_report,
         run_mcp_share,
         share_client_config,
         share_report,
         share_status,
     )
-    from ..tunnel import format_tunnel_doctor_report
 
     try:
         command = args.share_command
@@ -303,9 +316,16 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
             return status
 
         if command == "doctor":
-            result = doctor_mcp_share(args.directory, timeout=args.timeout, public_url=args.url)
+            result = doctor_mcp_share(
+                args.directory,
+                timeout=args.timeout,
+                public_url=args.url,
+                live_checks=args.live_checks,
+                conformance_pack=args.conformance_pack,
+                require_conformance=args.require_conformance,
+            )
             status = 0 if result["ok"] else 1
-            write_result_output(result, compact=args.compact, formatter=format_tunnel_doctor_report)
+            write_result_output(result, compact=args.compact, formatter=format_share_doctor_report)
             return status
 
         if command == "client":

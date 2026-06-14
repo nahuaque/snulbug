@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import SplitResult, urlsplit
 
+from .bundle import validate_bundle
 from .config import default_event_sink_configs
 from .gateway_templates import GatewayTemplate, render_gateway_toml
 from .inspection import format_mcp_inspection_report, inspect_mcp_log
@@ -451,9 +452,14 @@ def doctor_mcp_share(
     *,
     timeout: float = 5.0,
     public_url: str | None = None,
+    live_checks: bool = True,
+    conformance_pack: str | Path | None = None,
+    require_conformance: bool = False,
 ) -> dict[str, Any]:
-    """Run exposure checks against a generated share session."""
+    """Run a unified readiness gate against a generated share session."""
 
+    from .config import load_mcp_fabric_config, load_mcp_proxy_config
+    from .fabric import doctor_fabric
     from .tunnel import doctor_tunnel, parse_tunnel_headers
 
     share_dir = Path(directory)
@@ -471,31 +477,176 @@ def doctor_mcp_share(
         raise ValueError("share manifest does not contain a config path")
     if public_url:
         _update_share_client_url(share_dir, str(public_url))
-    result = doctor_tunnel(
+        manifest = load_mcp_share(share_dir)
+        client = _mapping(manifest.get("client"))
+        url = public_url or client.get("url")
+    config_path = _resolve_share_path(share_dir, config)
+    doctor_headers = parse_tunnel_headers([f"{key}: {value}" for key, value in headers.items()])
+    checks: list[dict[str, Any]] = []
+    recommendations: list[str] = []
+
+    status = share_status(share_dir, timeout=timeout, live_checks=live_checks)
+    _add_share_status_checks(checks, status, live_checks=live_checks)
+
+    proxy_config: dict[str, Any] | None = None
+    fabric_config: dict[str, Any] | None = None
+    try:
+        proxy_config = load_mcp_proxy_config(config_path)
+        _add_share_doctor_check(
+            checks,
+            "config.proxy_loaded",
+            True,
+            f"loaded proxy config {config_path}",
+            component="config",
+            details={"config": str(config_path)},
+        )
+    except Exception as exc:
+        _add_share_doctor_check(
+            checks,
+            "config.proxy_loaded",
+            False,
+            f"failed to load proxy config: {exc}",
+            component="config",
+            details={"config": str(config_path)},
+        )
+        recommendations.append("Fix the generated snulbug.toml before sharing this MCP endpoint.")
+    try:
+        fabric_config = load_mcp_fabric_config(config_path)
+        _add_share_doctor_check(
+            checks,
+            "config.fabric_loaded",
+            True,
+            f"loaded fabric config {config_path}",
+            component="config",
+            details={"config": str(config_path)},
+        )
+    except Exception as exc:
+        _add_share_doctor_check(
+            checks,
+            "config.fabric_loaded",
+            False,
+            f"failed to load fabric config: {exc}",
+            component="config",
+            details={"config": str(config_path)},
+        )
+
+    policy = _share_policy_doctor_checks(share_dir, proxy_config, status)
+    checks.extend(policy["checks"])
+    recommendations.extend(policy["recommendations"])
+
+    fabric = None
+    if fabric_config is not None:
+        fabric = doctor_fabric(
+            config_path,
+            headers=doctor_headers,
+            timeout=timeout,
+            probe_gateway=False,
+            probe_upstreams=False,
+        )
+        _extend_component_checks(checks, fabric.get("checks", []), component="fabric", prefix="fabric")
+        recommendations.extend(str(item) for item in _sequence(fabric.get("recommendations")))
+    else:
+        _add_share_doctor_check(
+            checks,
+            "fabric.doctor",
+            None,
+            "fabric doctor skipped because fabric config did not load",
+            component="fabric",
+        )
+
+    conformance = _run_share_conformance_doctor(
+        conformance_pack,
+        headers=doctor_headers,
+        timeout=timeout,
+        require_conformance=require_conformance,
+    )
+    checks.extend(conformance["checks"])
+    recommendations.extend(conformance["recommendations"])
+
+    tunnel = doctor_tunnel(
         provider=str(provider),
         url=url,
-        config=_resolve_share_path(share_dir, config),
-        headers=parse_tunnel_headers([f"{key}: {value}" for key, value in headers.items()]),
+        config=config_path,
+        headers=doctor_headers,
         timeout=timeout,
     )
+    _extend_component_checks(checks, tunnel.get("checks", []), component="tunnel", prefix="tunnel")
+    recommendations.extend(str(item) for item in _sequence(tunnel.get("recommendations")))
+
+    summary = _share_doctor_summary(checks)
+    result = {
+        "ok": summary["failed"] == 0,
+        "share": str(share_dir),
+        "provider": provider,
+        "url": tunnel.get("url"),
+        "local_url": tunnel.get("local_url"),
+        "config": str(config_path),
+        "checks": checks,
+        "summary": summary,
+        "recommendations": _unique_strings(recommendations),
+        "status": status,
+        "policy": policy["result"],
+        "fabric": fabric,
+        "conformance": conformance["result"],
+        "tunnel": tunnel,
+        "tunnel_doctor": tunnel,
+    }
     _update_share_manifest(
         share_dir,
         state="verified" if result.get("ok") else "doctor_failed",
         health={
             "last_checked_at": _now_iso(),
             "last_summary": result.get("summary"),
-            "tunnel_doctor": {
+            "share_doctor": {
                 "ok": result.get("ok"),
-                "provider": result.get("provider"),
+                "summary": result.get("summary"),
                 "url": result.get("url"),
                 "local_url": result.get("local_url"),
-                "summary": result.get("summary"),
-                "recommendations": result.get("recommendations", []),
+            },
+            "tunnel_doctor": {
+                "ok": tunnel.get("ok"),
+                "provider": tunnel.get("provider"),
+                "url": tunnel.get("url"),
+                "local_url": tunnel.get("local_url"),
+                "summary": tunnel.get("summary"),
+                "recommendations": tunnel.get("recommendations", []),
             },
         },
     )
-    result["share"] = str(share_dir)
     return result
+
+
+def format_share_doctor_report(result: Mapping[str, Any]) -> str:
+    """Render unified share readiness checks as Markdown."""
+
+    summary = _mapping(result.get("summary"))
+    lines = [
+        "# snulbug mcp share doctor",
+        "",
+        f"Share: {result.get('share')}",
+        f"Provider: {result.get('provider')}",
+        f"Local URL: {result.get('local_url') or '(not checked)'}",
+        f"Public/client URL: {result.get('url') or '(not checked)'}",
+        f"Result: {'pass' if result.get('ok') else 'fail'}",
+        "",
+        "## Summary",
+        (
+            f"Passed: {summary.get('passed', 0)} | Failed: {summary.get('failed', 0)} | "
+            f"Warnings: {summary.get('warnings', 0)} | Skipped: {summary.get('skipped', 0)}"
+        ),
+        "",
+        "## Checks",
+    ]
+    for check in result.get("checks", []):
+        if isinstance(check, Mapping):
+            lines.append(f"- [{check.get('status')}] {check.get('id')}: {check.get('message')}")
+
+    recommendations = result.get("recommendations", [])
+    if recommendations:
+        lines.extend(["", "## Recommendations"])
+        for recommendation in recommendations:
+            lines.append(f"- {recommendation}")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def share_client_config(
@@ -519,6 +670,325 @@ def share_client_config(
     if output_format in {"json", "claude-desktop", "cursor"}:
         return {"ok": True, "share": str(share_dir), "format": output_format, "config": config}
     raise ValueError("output_format must be one of: json, claude-desktop, cursor, path")
+
+
+def _add_share_status_checks(
+    checks: list[dict[str, Any]],
+    status: Mapping[str, Any],
+    *,
+    live_checks: bool,
+) -> None:
+    gateway = _mapping(status.get("gateway"))
+    if live_checks and gateway.get("checked"):
+        _add_share_doctor_check(
+            checks,
+            "status.gateway_reachable",
+            gateway.get("reachable") is True,
+            "gateway is reachable" if gateway.get("reachable") is True else "gateway is not reachable",
+            component="status",
+            details={"url": gateway.get("url"), "error": gateway.get("error"), "status": gateway.get("status")},
+        )
+    else:
+        _add_share_doctor_check(
+            checks,
+            "status.gateway_reachable",
+            None,
+            "gateway reachability check skipped",
+            component="status",
+        )
+
+    for upstream in _sequence(status.get("upstreams")):
+        if not isinstance(upstream, Mapping):
+            continue
+        name = str(upstream.get("name") or upstream.get("url") or "upstream")
+        check_id = f"status.upstream.{_check_slug(name)}.reachable"
+        if live_checks and upstream.get("checked"):
+            _add_share_doctor_check(
+                checks,
+                check_id,
+                upstream.get("reachable") is True,
+                f"upstream {name} is reachable"
+                if upstream.get("reachable") is True
+                else f"upstream {name} is not reachable",
+                component="status",
+                details={
+                    "url": upstream.get("url"),
+                    "transport": upstream.get("transport"),
+                    "error": upstream.get("error"),
+                    "status": upstream.get("status"),
+                },
+            )
+        else:
+            _add_share_doctor_check(
+                checks,
+                check_id,
+                None,
+                f"upstream {name} reachability check skipped",
+                component="status",
+                details={"url": upstream.get("url"), "transport": upstream.get("transport")},
+            )
+
+    lease = _mapping(status.get("lease"))
+    session_model = _mapping(status.get("session_model"))
+    lease_model = _mapping(session_model.get("lease"))
+    if lease_model.get("required") is True:
+        _add_share_doctor_check(
+            checks,
+            "status.lease_active",
+            lease.get("active") is True,
+            "current share lease is active" if lease.get("active") is True else "current share lease is not active",
+            component="status",
+            details={"lease_file": lease.get("file"), "lease_id": lease.get("id")},
+        )
+    else:
+        _add_share_doctor_check(
+            checks,
+            "status.lease_active",
+            None,
+            "share lease is not required",
+            component="status",
+        )
+
+
+def _share_policy_doctor_checks(
+    share_dir: Path,
+    proxy_config: Mapping[str, Any] | None,
+    status: Mapping[str, Any],
+) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+    recommendations: list[str] = []
+    session_model = _mapping(status.get("session_model"))
+    policy_model = _mapping(session_model.get("policy"))
+    policy_path = proxy_config.get("policy") if isinstance(proxy_config, Mapping) else policy_model.get("active_policy")
+    active_policy = Path(policy_path) if isinstance(policy_path, str | Path) else None
+    bundle_value = policy_model.get("bundle")
+    bundle_path = _resolve_share_path(share_dir, bundle_value) if isinstance(bundle_value, str) else None
+
+    if active_policy is None:
+        _add_share_doctor_check(
+            checks,
+            "policy.configured",
+            False,
+            "no active policy is configured",
+            component="policy",
+        )
+        recommendations.append("Configure mcp.proxy.policy before sharing.")
+        return {
+            "result": {"ok": False, "policy": None, "bundle": str(bundle_path) if bundle_path else None},
+            "checks": checks,
+            "recommendations": recommendations,
+        }
+
+    if active_policy.is_file():
+        entrypoint_message = f"active policy exists at {active_policy}"
+    else:
+        entrypoint_message = f"active policy is missing: {active_policy}"
+    _add_share_doctor_check(
+        checks,
+        "policy.entrypoint_present",
+        active_policy.is_file(),
+        entrypoint_message,
+        component="policy",
+        details={"policy": str(active_policy)},
+    )
+
+    validation: dict[str, Any] | None = None
+    if bundle_path is not None and (bundle_path / "manifest.json").is_file():
+        validation = validate_bundle(bundle_path)
+        _add_share_doctor_check(
+            checks,
+            "policy.bundle_valid",
+            bool(validation.get("ok")),
+            "policy bundle validates" if validation.get("ok") else "policy bundle validation failed",
+            component="policy",
+            details={"bundle": str(bundle_path), "errors": validation.get("errors", [])},
+        )
+    elif active_policy.is_file():
+        try:
+            from .runtime import compile_lua_file
+
+            compile_lua_file(active_policy)
+            _add_share_doctor_check(
+                checks,
+                "policy.entrypoint_compiles",
+                True,
+                "active policy compiles",
+                component="policy",
+                details={"policy": str(active_policy)},
+            )
+        except Exception as exc:
+            _add_share_doctor_check(
+                checks,
+                "policy.entrypoint_compiles",
+                False,
+                f"active policy does not compile: {exc}",
+                component="policy",
+                details={"policy": str(active_policy)},
+            )
+
+    lifecycle_state = policy_model.get("lifecycle_state")
+    lifecycle_message = (
+        "policy lifecycle is active"
+        if lifecycle_state == "active"
+        else f"policy lifecycle is {lifecycle_state or 'unspecified'}"
+    )
+    _add_share_doctor_check(
+        checks,
+        "policy.lifecycle_active",
+        lifecycle_state in {None, "active"},
+        lifecycle_message,
+        component="policy",
+        severity="warning",
+        details={"state": lifecycle_state},
+    )
+    _add_share_doctor_check(
+        checks,
+        "policy.lifecycle_signed",
+        policy_model.get("lifecycle_signed") is True,
+        "policy lifecycle is signed"
+        if policy_model.get("lifecycle_signed") is True
+        else "policy lifecycle is not signed",
+        component="policy",
+        severity="warning",
+    )
+    if any(check.get("status") == "fail" for check in checks):
+        recommendations.append("Regenerate or repair the policy bundle before sharing this endpoint.")
+    return {
+        "result": {
+            "ok": not any(check.get("status") == "fail" for check in checks),
+            "policy": str(active_policy),
+            "bundle": str(bundle_path) if bundle_path else None,
+            "validation": validation,
+            "lifecycle_state": lifecycle_state,
+            "lifecycle_signed": policy_model.get("lifecycle_signed"),
+        },
+        "checks": checks,
+        "recommendations": recommendations,
+    }
+
+
+def _run_share_conformance_doctor(
+    pack: str | Path | None,
+    *,
+    headers: Mapping[str, str],
+    timeout: float,
+    require_conformance: bool,
+) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+    recommendations: list[str] = []
+    if pack is None:
+        _add_share_doctor_check(
+            checks,
+            "conformance.pack_configured",
+            False if require_conformance else None,
+            "conformance pack is required but was not provided"
+            if require_conformance
+            else "no fabric conformance pack was provided",
+            component="conformance",
+        )
+        if require_conformance:
+            recommendations.append("Pass --conformance-pack with a generated fabric conformance pack.")
+        return {
+            "result": {"ok": not require_conformance, "status": "not_configured", "required": require_conformance},
+            "checks": checks,
+            "recommendations": recommendations,
+        }
+
+    from .fabric import run_fabric_conformance_pack
+
+    result = run_fabric_conformance_pack(
+        pack,
+        headers=headers,
+        timeout=timeout,
+        probe_gateway=False,
+        probe_upstreams=False,
+    )
+    _extend_component_checks(checks, result.get("checks", []), component="conformance", prefix="conformance")
+    _add_share_doctor_check(
+        checks,
+        "conformance.pack_passed",
+        result.get("ok") is True,
+        "fabric conformance pack passed" if result.get("ok") is True else "fabric conformance pack failed",
+        component="conformance",
+        details={"pack": str(pack)},
+    )
+    if result.get("ok") is not True:
+        recommendations.extend(str(item) for item in _sequence(result.get("recommendations")))
+    result = {**result, "required": require_conformance}
+    return {"result": result, "checks": checks, "recommendations": recommendations}
+
+
+def _extend_component_checks(
+    target: list[dict[str, Any]],
+    checks: Any,
+    *,
+    component: str,
+    prefix: str,
+) -> None:
+    for check in _sequence(checks):
+        if not isinstance(check, Mapping):
+            continue
+        item = dict(check)
+        check_id = str(item.get("id", "check"))
+        if not check_id.startswith(f"{prefix}."):
+            item["id"] = f"{prefix}.{check_id}"
+        item["component"] = component
+        target.append(item)
+
+
+def _add_share_doctor_check(
+    checks: list[dict[str, Any]],
+    check_id: str,
+    ok: bool | None,
+    message: str,
+    *,
+    component: str,
+    severity: str = "error",
+    details: Mapping[str, Any] | None = None,
+) -> None:
+    if ok is True:
+        status = "pass"
+    elif ok is None:
+        status = "skip"
+    elif severity == "warning":
+        status = "warn"
+    else:
+        status = "fail"
+    check: dict[str, Any] = {
+        "id": check_id,
+        "status": status,
+        "message": message,
+        "component": component,
+    }
+    if details:
+        check["details"] = dict(details)
+    checks.append(check)
+
+
+def _share_doctor_summary(checks: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    return {
+        "passed": sum(1 for check in checks if check.get("status") == "pass"),
+        "failed": sum(1 for check in checks if check.get("status") == "fail"),
+        "warnings": sum(1 for check in checks if check.get("status") == "warn"),
+        "skipped": sum(1 for check in checks if check.get("status") == "skip"),
+    }
+
+
+def _unique_strings(values: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def _check_slug(value: str) -> str:
+    result = []
+    for char in value.lower():
+        result.append(char if char.isalnum() else "_")
+    return "".join(result).strip("_") or "item"
 
 
 def _share_gateway_status(

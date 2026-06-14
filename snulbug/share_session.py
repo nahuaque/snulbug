@@ -106,6 +106,7 @@ def build_share_session_model(
         "health": {
             "last_summary": health.get("last_summary"),
             "last_checked_at": health.get("last_checked_at"),
+            "share_doctor": health.get("share_doctor"),
             "tunnel_doctor": health.get("tunnel_doctor"),
         },
         "amendments": {

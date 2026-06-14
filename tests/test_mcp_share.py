@@ -311,22 +311,53 @@ def test_mcp_share_doctor_url_override_updates_manifest_and_client(tmp_path, mon
 
     monkeypatch.setattr("snulbug.tunnel.doctor_tunnel", fake_doctor_tunnel)
 
-    result = doctor_mcp_share(tmp_path, public_url="https://actual.example/mcp")
+    result = doctor_mcp_share(tmp_path, public_url="https://actual.example/mcp", live_checks=False)
     manifest = json.loads((tmp_path / "share.json").read_text(encoding="utf-8"))
     session_model = load_share_session_model(tmp_path)
     client_config = json.loads((tmp_path / "mcp-client.json").read_text(encoding="utf-8"))
 
     assert result["ok"] is True
+    assert result["tunnel"]["ok"] is True
+    assert result["summary"]["failed"] == 0
     assert calls[0]["url"] == "https://actual.example/mcp"
     assert manifest["client"]["url"] == "https://actual.example/mcp"
     assert session_model["status"]["state"] == "verified"
     assert session_model["tunnel"]["public_url"] == "https://actual.example/mcp"
     assert session_model["health"]["tunnel_doctor"]["ok"] is True
+    assert session_model["health"]["share_doctor"]["ok"] is True
     assert manifest["tunnel"]["public_url"] == "https://actual.example/mcp"
     assert client_config["mcpServers"]["snulbug-share"]["url"] == "https://actual.example/mcp"
 
 
-def test_mcp_share_lifecycle_cli_status_client_run_and_close(tmp_path, capsys):
+def test_mcp_share_doctor_fails_invalid_policy_and_missing_required_conformance(tmp_path, monkeypatch):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    (tmp_path / "policy.snulbug" / "policy.lua").write_text("function broken(", encoding="utf-8")
+
+    def fake_doctor_tunnel(**_kwargs):
+        return {"ok": True, "checks": [], "summary": {"passed": 1, "failed": 0, "warnings": 0, "skipped": 0}}
+
+    monkeypatch.setattr("snulbug.tunnel.doctor_tunnel", fake_doctor_tunnel)
+
+    result = doctor_mcp_share(tmp_path, live_checks=False, require_conformance=True)
+    manifest = json.loads((tmp_path / "share.json").read_text(encoding="utf-8"))
+    session_model = load_share_session_model(tmp_path)
+    checks = {check["id"]: check for check in result["checks"]}
+
+    assert result["ok"] is False
+    assert checks["policy.bundle_valid"]["status"] == "fail"
+    assert checks["conformance.pack_configured"]["status"] == "fail"
+    assert manifest["state"] == "doctor_failed"
+    assert session_model["health"]["share_doctor"]["ok"] is False
+
+
+def test_mcp_share_lifecycle_cli_status_doctor_client_run_and_close(tmp_path, capsys, monkeypatch):
     create_mcp_share(
         tmp_path,
         provider="generic",
@@ -346,6 +377,16 @@ def test_mcp_share_lifecycle_cli_status_client_run_and_close(tmp_path, capsys):
     report_output = json.loads(capsys.readouterr().out)
     assert report_code == 0
     assert "snulbug MCP share report" in report_output["report"]
+
+    def fake_doctor_tunnel(**_kwargs):
+        return {"ok": True, "checks": [], "summary": {"passed": 1, "failed": 0, "warnings": 0, "skipped": 0}}
+
+    monkeypatch.setattr("snulbug.tunnel.doctor_tunnel", fake_doctor_tunnel)
+    doctor_code = simulator_main(["mcp", "share", "doctor", str(tmp_path), "--no-live-checks", "--compact"])
+    doctor_output = json.loads(capsys.readouterr().out)
+    assert doctor_code == 0
+    assert doctor_output["ok"] is True
+    assert doctor_output["policy"]["ok"] is True
 
     client_code = simulator_main(["mcp", "share", "client", str(tmp_path), "--compact"])
     client_output = json.loads(capsys.readouterr().out)
