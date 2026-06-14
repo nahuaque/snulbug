@@ -7,9 +7,11 @@ import pytest
 
 from snulbug import (
     activate_mcp_share_policy,
+    attach_mcp_share_member,
     close_mcp_share,
     create_mcp_share,
     doctor_mcp_share,
+    load_fabric_member_registry,
     load_mcp_proxy_config,
     load_share_session_model,
     promote_mcp_share_policy,
@@ -412,6 +414,106 @@ def test_mcp_share_lifecycle_cli_promote_and_activate_from_cwd(tmp_path, capsys,
     assert active_code == 0
     assert active["state"] == "active"
     assert load_share_session_model(tmp_path)["policy"]["last_lifecycle"]["action"] == "activate"
+
+
+def test_mcp_share_attach_consumes_member_metadata_and_updates_config_session(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    metadata_file = tmp_path / "codespace-member.json"
+    metadata_file.write_text(
+        json.dumps(
+            {
+                "member_id": "codespace-a",
+                "kind": "codespaces",
+                "labels": {"codespace": "demo"},
+                "metadata": {"repo": "demo/repo"},
+                "upstreams": [{"name": "files", "url": "https://codespace.example.dev/mcp"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = attach_mcp_share_member(tmp_path, metadata_file=metadata_file, ttl_seconds=120)
+    registry_path = tmp_path / ".snulbug" / "fabric-members.json"
+    registry = load_fabric_member_registry(registry_path)
+    config_text = (tmp_path / "snulbug.toml").read_text(encoding="utf-8")
+    proxy_config = load_mcp_proxy_config(tmp_path / "snulbug.toml")
+    manifest = json.loads((tmp_path / "share.json").read_text(encoding="utf-8"))
+    session_model = load_share_session_model(tmp_path)
+    status = share_status(tmp_path, live_checks=False)
+    report = share_report(tmp_path, live_checks=False)
+
+    assert result["ok"] is True
+    assert result["member_id"] == "codespace-a"
+    assert registry["members"]["codespace-a"]["metadata"]["kind"] == "codespaces"
+    assert registry["members"]["codespace-a"]["labels"]["codespace"] == "demo"
+    assert 'type = "members"' in config_text
+    assert 'path = ".snulbug/fabric-members.json"' in config_text
+    assert proxy_config["upstreams"][0]["name"] == "codespace-a-files"
+    assert proxy_config["upstreams"][0]["fabric_member_id"] == "codespace-a"
+    assert proxy_config["upstreams"][0]["url"] == "https://codespace.example.dev/mcp"
+    assert manifest["files"]["member_registry"] == str(registry_path)
+    assert manifest["members"]["attachments"][0]["member_id"] == "codespace-a"
+    assert session_model["members"]["attachments"][0]["kind"] == "codespaces"
+    assert session_model["paths"]["member_registry"] == str(registry_path)
+    assert status["members"]["attachments"][0]["member_id"] == "codespace-a"
+    assert "codespace-a" in report["report"]
+
+
+def test_mcp_share_attach_cli_registers_container_member(tmp_path, capsys):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    status_code = simulator_main(
+        [
+            "mcp",
+            "share",
+            "attach",
+            str(tmp_path),
+            "--member-id",
+            "remote-container",
+            "--kind",
+            "container",
+            "--upstream",
+            "git=http://127.0.0.1:9010/mcp",
+            "--label",
+            "runtime=docker",
+            "--metadata",
+            "image=demo-mcp",
+            "--metadata-output",
+            "remote-container-member.json",
+            "--ttl-seconds",
+            "120",
+            "--compact",
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+    registry = load_fabric_member_registry(tmp_path / ".snulbug" / "fabric-members.json")
+    session_model = load_share_session_model(tmp_path)
+    metadata_output = json.loads((tmp_path / "remote-container-member.json").read_text(encoding="utf-8"))
+
+    assert status_code == 0
+    assert output["ok"] is True
+    assert output["member_id"] == "remote-container"
+    assert output["metadata_output"] == str(tmp_path / "remote-container-member.json")
+    assert metadata_output["member_id"] == "remote-container"
+    assert metadata_output["upstreams"][0]["url"] == "http://127.0.0.1:9010/mcp"
+    assert registry["members"]["remote-container"]["upstreams"][0]["name"] == "git"
+    assert registry["members"]["remote-container"]["labels"]["runtime"] == "docker"
+    assert registry["members"]["remote-container"]["metadata"]["image"] == "demo-mcp"
+    assert session_model["members"]["attachments"][0]["member_id"] == "remote-container"
 
 
 def test_mcp_share_status_and_report_summarize_session_evidence(tmp_path):

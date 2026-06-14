@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import secrets
 import shlex
 import shutil
@@ -14,6 +15,7 @@ from urllib.parse import SplitResult, urlsplit
 
 from .bundle import validate_bundle
 from .config import default_event_sink_configs
+from .fabric_members import DEFAULT_FABRIC_MEMBER_REGISTRY_KEY, register_fabric_member
 from .gateway_templates import GatewayTemplate, render_gateway_toml
 from .inspection import format_mcp_inspection_report, inspect_mcp_log
 from .leases import create_lease
@@ -53,6 +55,9 @@ DEFAULT_CONTAINER_RECIPE_DIR = "containers"
 SHARE_MANIFEST = "share.json"
 CONTAINER_BIND_HOST = ".".join(("0", "0", "0", "0"))
 CONTAINER_REMOTE_BRIDGE_PORT = 19100
+DEFAULT_SHARE_MEMBER_REGISTRY = Path(".snulbug") / "fabric-members.json"
+DEFAULT_SHARE_MEMBER_DISCOVERY_PROVIDER = "share-members"
+SHARE_MEMBER_KINDS = ("codespaces", "devcontainer", "holepunch", "container", "generic")
 
 
 def create_mcp_share(
@@ -377,6 +382,7 @@ def share_status(
     traffic = _share_traffic_summary(share_dir, session_model)
     recordings = _share_recordings_status(share_dir, session_model)
     policy = _mapping(session_model.get("policy"))
+    members = _mapping(session_model.get("members"))
     amendments = _share_amendment_status(session_model)
     tunnel = _share_tunnel_status(manifest, session_model)
     findings = _share_findings(gateway=gateway, upstreams=upstreams, traffic=traffic, tunnel=tunnel, policy=policy)
@@ -396,6 +402,7 @@ def share_status(
         "upstreams": upstreams,
         "tunnel_doctor": tunnel,
         "policy": policy,
+        "members": members,
         "amendments": amendments,
         "traffic": traffic,
         "recordings": recordings,
@@ -513,6 +520,105 @@ def activate_mcp_share_policy(
     )
     result["activation"] = result.get("promotion")
     return result
+
+
+def attach_mcp_share_member(
+    directory: str | Path = ".",
+    *,
+    member_id: str | None = None,
+    kind: str = "container",
+    upstreams: Sequence[Mapping[str, Any]] = (),
+    metadata_file: str | Path | None = None,
+    registry: str | Path | None = None,
+    registry_key: str = DEFAULT_FABRIC_MEMBER_REGISTRY_KEY,
+    role: str = "data_plane",
+    status: str = "active",
+    ttl_seconds: float = 60.0,
+    labels: Mapping[str, str] | None = None,
+    metadata: Mapping[str, Any] | None = None,
+    metadata_output: str | Path | None = None,
+    discovery_name: str = DEFAULT_SHARE_MEMBER_DISCOVERY_PROVIDER,
+    update_config: bool = True,
+) -> dict[str, Any]:
+    """Attach a remote data-plane member to a share session."""
+
+    share_dir, manifest, session_model = _load_share_model_context(directory)
+    config_path = _share_config_path(share_dir, manifest, session_model)
+    document = _load_share_member_metadata(metadata_file) if metadata_file is not None else {}
+    payload = _share_member_attach_payload(
+        document,
+        member_id=member_id,
+        kind=kind,
+        upstreams=upstreams,
+        role=role,
+        status=status,
+        ttl_seconds=ttl_seconds,
+        labels=labels,
+        metadata=metadata,
+    )
+    metadata_document = _share_member_metadata_document(payload)
+    metadata_output_path = None
+    if metadata_output is not None:
+        metadata_output_path = _resolve_share_path(share_dir, metadata_output)
+        _write_json(metadata_output_path, metadata_document, force=False)
+    registry_spec = _share_member_registry(share_dir, registry)
+    registered = register_fabric_member(
+        registry_spec,
+        key=registry_key,
+        member_id=payload["member_id"],
+        role=payload["role"],
+        upstreams=payload["upstreams"],
+        ttl_seconds=payload["ttl_seconds"],
+        status=payload["status"],
+        labels=payload["labels"],
+        metadata=payload["metadata"],
+    )
+    discovery = _ensure_share_member_discovery_provider(
+        config_path,
+        registry=registry_spec,
+        registry_key=registry_key,
+        discovery_name=discovery_name,
+        enabled=update_config,
+    )
+    attachment = _share_member_attachment(
+        payload=payload,
+        registered=registered,
+        registry=registry_spec,
+        registry_key=registry_key,
+        discovery_name=discovery_name,
+        config_path=config_path,
+        discovery=discovery,
+    )
+    updated_model = _record_share_member_attachment(
+        share_dir,
+        manifest,
+        session_model,
+        attachment=attachment,
+        registry=registry_spec,
+        registry_key=registry_key,
+        discovery_name=discovery_name,
+    )
+    return {
+        "ok": bool(registered.get("ok")),
+        "share": str(share_dir),
+        "member_id": registered.get("member", {}).get("id", payload["member_id"]),
+        "kind": payload["kind"],
+        "registry": str(registry_spec),
+        "registry_key": registry_key,
+        "config": str(config_path),
+        "discovery": discovery,
+        "member": registered.get("member"),
+        "summary": registered.get("summary"),
+        "attachment": attachment,
+        "metadata_document": metadata_document,
+        "metadata_output": str(metadata_output_path) if metadata_output_path is not None else None,
+        "session_model": str(share_session_model_path(share_dir)),
+        "members": _mapping(updated_model.get("members")),
+        "next_steps": [
+            f"uv run snulbug mcp share status {shlex.quote(str(share_dir))}",
+            f"uv run snulbug mcp share run {shlex.quote(str(share_dir))}",
+        ],
+    }
 
 
 def format_share_status_report(result: Mapping[str, Any]) -> str:
@@ -1348,6 +1454,7 @@ def _share_report_lines(result: Mapping[str, Any], *, title: str) -> list[str]:
     gateway = _mapping(result.get("gateway"))
     tunnel = _mapping(result.get("tunnel_doctor"))
     policy = _mapping(result.get("policy"))
+    members = _mapping(result.get("members"))
     amendments = _mapping(result.get("amendments"))
     traffic = _mapping(result.get("traffic"))
     recordings = _mapping(result.get("recordings"))
@@ -1377,6 +1484,20 @@ def _share_report_lines(result: Mapping[str, Any], *, title: str) -> list[str]:
                 )
     else:
         lines.append("- None configured")
+    lines.extend(["", "## Members", ""])
+    attachments = [item for item in _sequence(members.get("attachments")) if isinstance(item, Mapping)]
+    if attachments:
+        lines.append(f"- Registry: `{members.get('registry') or '-'}`")
+        lines.append(f"- Discovery provider: `{members.get('discovery_provider') or '-'}`")
+        for attachment in attachments:
+            lines.append(
+                "- "
+                f"`{attachment.get('member_id')}` kind=`{attachment.get('kind') or '-'}` "
+                f"status=`{attachment.get('status') or '-'}` "
+                f"upstreams=`{len(_sequence(attachment.get('upstreams')))}`"
+            )
+    else:
+        lines.append("- None attached")
     lines.extend(
         [
             "",
@@ -1771,6 +1892,293 @@ def _record_share_policy_lifecycle(
     return model
 
 
+def _share_config_path(
+    share_dir: Path,
+    manifest: Mapping[str, Any] | None,
+    session_model: Mapping[str, Any],
+) -> Path:
+    files = _mapping(manifest.get("files")) if manifest is not None else {}
+    gateway = _mapping(session_model.get("gateway"))
+    paths = _mapping(session_model.get("paths"))
+    value = gateway.get("config") or paths.get("config") or paths.get("fabric_config") or files.get("config")
+    if not isinstance(value, str) or not value:
+        raise ValueError("share session does not contain an active config path")
+    config = _resolve_share_path(share_dir, value)
+    if not config.is_file():
+        raise FileNotFoundError(f"share config not found: {config}")
+    return config
+
+
+def _load_share_member_metadata(path: str | Path) -> dict[str, Any]:
+    metadata_path = Path(path)
+    with metadata_path.open("r", encoding="utf-8") as file:
+        loaded = json.load(file)
+    if not isinstance(loaded, Mapping):
+        raise ValueError(f"share member metadata must contain a JSON object: {metadata_path}")
+    return dict(loaded)
+
+
+def _share_member_attach_payload(
+    document: Mapping[str, Any],
+    *,
+    member_id: str | None,
+    kind: str,
+    upstreams: Sequence[Mapping[str, Any]],
+    role: str,
+    status: str,
+    ttl_seconds: float,
+    labels: Mapping[str, str] | None,
+    metadata: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    resolved_kind = str(document.get("kind") or kind).replace("_", "-")
+    if resolved_kind not in SHARE_MEMBER_KINDS:
+        raise ValueError(f"share member kind must be one of: {', '.join(SHARE_MEMBER_KINDS)}")
+    resolved_member_id = member_id or document.get("member_id") or document.get("id")
+    if not isinstance(resolved_member_id, str) or not resolved_member_id.strip():
+        raise ValueError("share attach requires --member-id or metadata member_id")
+    resolved_role = str(document.get("role") or role).replace("-", "_")
+    resolved_status = str(document.get("status") or status).replace("-", "_")
+    resolved_ttl = float(document.get("ttl_seconds") or ttl_seconds)
+    resolved_upstreams = _normalize_share_member_upstreams(upstreams or _sequence(document.get("upstreams")))
+    resolved_labels = {
+        **_string_mapping(_mapping(document.get("labels"))),
+        **_string_mapping(labels or {}),
+        "snulbug.member.kind": resolved_kind,
+    }
+    resolved_metadata = {
+        **dict(_mapping(document.get("metadata"))),
+        **dict(metadata or {}),
+        "kind": resolved_kind,
+        "attached_by": "snulbug mcp share attach",
+        "attached_at": _now_iso(),
+    }
+    for field in ("codespace", "devcontainer", "container", "holepunch"):
+        if field in document and field not in resolved_metadata:
+            resolved_metadata[field] = document[field]
+    return {
+        "member_id": resolved_member_id,
+        "kind": resolved_kind,
+        "role": resolved_role,
+        "status": resolved_status,
+        "ttl_seconds": resolved_ttl,
+        "upstreams": resolved_upstreams,
+        "labels": resolved_labels,
+        "metadata": resolved_metadata,
+    }
+
+
+def _normalize_share_member_upstreams(values: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    upstreams = []
+    for index, value in enumerate(values):
+        if not isinstance(value, Mapping):
+            raise ValueError(f"share member upstreams[{index}] must be a table")
+        item = {str(key): _jsonish_copy(item_value) for key, item_value in value.items() if item_value is not None}
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"share member upstreams[{index}].name must be a non-empty string")
+        if not any(key in item for key in ("url", "command", "local_port", "peer", "bridge_config")):
+            raise ValueError(
+                f"share member upstreams[{index}] must define url, command, local_port, peer, or bridge_config"
+            )
+        item.setdefault("tool_prefix", f"{name}.")
+        upstreams.append(item)
+    return upstreams
+
+
+def _share_member_metadata_document(payload: Mapping[str, Any]) -> dict[str, Any]:
+    return _drop_empty_json(
+        {
+            "member_id": payload.get("member_id"),
+            "kind": payload.get("kind"),
+            "role": payload.get("role"),
+            "status": payload.get("status"),
+            "ttl_seconds": payload.get("ttl_seconds"),
+            "labels": payload.get("labels"),
+            "metadata": payload.get("metadata"),
+            "upstreams": payload.get("upstreams"),
+        }
+    )
+
+
+def _share_member_registry(share_dir: Path, registry: str | Path | None) -> str | Path:
+    if registry is None:
+        return share_dir / DEFAULT_SHARE_MEMBER_REGISTRY
+    if _looks_like_state_registry(registry):
+        return str(registry)
+    return _resolve_share_path(share_dir, registry)
+
+
+def _ensure_share_member_discovery_provider(
+    config_path: Path,
+    *,
+    registry: str | Path,
+    registry_key: str,
+    discovery_name: str,
+    enabled: bool,
+) -> dict[str, Any]:
+    if not enabled:
+        return {"ok": True, "updated": False, "reason": "config_update_disabled", "provider": discovery_name}
+    text = config_path.read_text(encoding="utf-8")
+    if _toml_provider_name_exists(text, discovery_name):
+        return {"ok": True, "updated": False, "reason": "provider_exists", "provider": discovery_name}
+    block = _share_member_discovery_provider_toml(
+        config_path,
+        registry=registry,
+        registry_key=registry_key,
+        discovery_name=discovery_name,
+        include_table="[mcp.fabric.discovery]" not in text,
+    )
+    suffix = "" if text.endswith("\n") else "\n"
+    config_path.write_text(text + suffix + block, encoding="utf-8")
+    return {
+        "ok": True,
+        "updated": True,
+        "provider": discovery_name,
+        "config": str(config_path),
+        "registry": str(registry),
+        "registry_key": registry_key,
+    }
+
+
+def _share_member_discovery_provider_toml(
+    config_path: Path,
+    *,
+    registry: str | Path,
+    registry_key: str,
+    discovery_name: str,
+    include_table: bool,
+) -> str:
+    registry_field, registry_value, key_field = _share_member_registry_provider_fields(
+        config_path.parent,
+        registry,
+    )
+    lines = ["# Remote members attached by `snulbug mcp share attach`."]
+    if include_table:
+        lines.extend(["[mcp.fabric.discovery]", "enabled = true", ""])
+    lines.extend(
+        [
+            "[[mcp.fabric.discovery.providers]]",
+            f"name = {_toml_string(discovery_name)}",
+            'type = "members"',
+            "enabled = true",
+            f"{registry_field} = {_toml_string(registry_value)}",
+            f"{key_field} = {_toml_string(registry_key)}",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _share_member_registry_provider_fields(config_dir: Path, registry: str | Path) -> tuple[str, str, str]:
+    if _looks_like_state_registry(registry):
+        return "state", str(registry), "state_key"
+    path = Path(registry)
+    return "path", _display_path_relative_to(config_dir, path), "registry_key"
+
+
+def _share_member_attachment(
+    *,
+    payload: Mapping[str, Any],
+    registered: Mapping[str, Any],
+    registry: str | Path,
+    registry_key: str,
+    discovery_name: str,
+    config_path: Path,
+    discovery: Mapping[str, Any],
+) -> dict[str, Any]:
+    member = _mapping(registered.get("member"))
+    return _drop_empty_json(
+        {
+            "member_id": member.get("id") or payload.get("member_id"),
+            "kind": payload.get("kind"),
+            "role": member.get("role") or payload.get("role"),
+            "status": member.get("status") or payload.get("status"),
+            "registry": str(registry),
+            "registry_key": registry_key,
+            "discovery_provider": discovery_name,
+            "config": str(config_path),
+            "config_updated": discovery.get("updated"),
+            "attached_at": _now_iso(),
+            "labels": payload.get("labels"),
+            "metadata": payload.get("metadata"),
+            "upstreams": member.get("upstreams") or payload.get("upstreams"),
+            "expires_at": member.get("expires_at"),
+        }
+    )
+
+
+def _record_share_member_attachment(
+    share_dir: Path,
+    manifest: Mapping[str, Any] | None,
+    session_model: Mapping[str, Any],
+    *,
+    attachment: Mapping[str, Any],
+    registry: str | Path,
+    registry_key: str,
+    discovery_name: str,
+) -> dict[str, Any]:
+    if manifest is not None:
+        updated_manifest = json.loads(json.dumps(dict(manifest), default=str))
+        files = dict(_mapping(updated_manifest.get("files")))
+        if not _looks_like_state_registry(registry):
+            files["member_registry"] = str(registry)
+        updated_manifest["files"] = files
+        updated_manifest["members"] = _updated_share_members(
+            _mapping(updated_manifest.get("members")),
+            attachment=attachment,
+            registry=registry,
+            registry_key=registry_key,
+            discovery_name=discovery_name,
+        )
+        updated_manifest["updated_at"] = _now_iso()
+        (share_dir / SHARE_MANIFEST).write_text(
+            json.dumps(updated_manifest, indent=2, sort_keys=True, default=str) + "\n",
+            encoding="utf-8",
+        )
+        return update_share_session_model(share_dir, manifest=updated_manifest)
+
+    model = json.loads(json.dumps(dict(session_model), default=str))
+    status = dict(_mapping(model.get("status")))
+    status["updated_at"] = _now_iso()
+    model["status"] = status
+    paths = dict(_mapping(model.get("paths")))
+    if not _looks_like_state_registry(registry):
+        paths["member_registry"] = str(registry)
+    model["paths"] = paths
+    model["members"] = _updated_share_members(
+        _mapping(model.get("members")),
+        attachment=attachment,
+        registry=registry,
+        registry_key=registry_key,
+        discovery_name=discovery_name,
+    )
+    write_share_session_model(share_dir, model, force=True)
+    return model
+
+
+def _updated_share_members(
+    current: Mapping[str, Any],
+    *,
+    attachment: Mapping[str, Any],
+    registry: str | Path,
+    registry_key: str,
+    discovery_name: str,
+) -> dict[str, Any]:
+    member_id = str(attachment.get("member_id"))
+    attachments = [
+        dict(item)
+        for item in _sequence(current.get("attachments"))
+        if isinstance(item, Mapping) and str(item.get("member_id")) != member_id
+    ]
+    attachments.append(dict(attachment))
+    return {
+        "registry": str(registry),
+        "registry_key": registry_key,
+        "discovery_provider": discovery_name,
+        "attachments": sorted(attachments, key=lambda item: str(item.get("member_id", ""))),
+    }
+
+
 def _share_run_resolved_paths(
     share_dir: Path,
     session_model: Mapping[str, Any],
@@ -2150,6 +2558,31 @@ def _resolve_share_path(share_dir: Path, value: Any) -> Path:
     return path if path.is_absolute() else share_dir / path
 
 
+def _display_path_relative_to(base: Path, path: Path) -> str:
+    if not path.is_absolute():
+        return str(path)
+    try:
+        return os.path.relpath(path, base)
+    except ValueError:
+        return str(path)
+
+
+def _looks_like_state_registry(value: str | Path) -> bool:
+    if isinstance(value, Path):
+        return False
+    text = str(value)
+    return text == "memory" or text.startswith(("sqlite:", "redis:", "redis://", "rediss://"))
+
+
+def _toml_provider_name_exists(text: str, name: str) -> bool:
+    quoted = _toml_string(name)
+    return f"name = {quoted}" in text and 'type = "members"' in text
+
+
+def _toml_string(value: Any) -> str:
+    return json.dumps(str(value))
+
+
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
@@ -2158,6 +2591,28 @@ def _sequence(value: Any) -> list[Any]:
     if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
         return list(value)
     return []
+
+
+def _string_mapping(value: Mapping[str, Any] | None) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {str(key): str(item) for key, item in value.items() if item is not None}
+
+
+def _jsonish_copy(value: Any) -> Any:
+    try:
+        return json.loads(json.dumps(value, default=str))
+    except TypeError:
+        return str(value)
+
+
+def _drop_empty_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        result = {str(key): _drop_empty_json(item) for key, item in value.items()}
+        return {key: item for key, item in result.items() if item not in ({}, [], None)}
+    if isinstance(value, list):
+        return [_drop_empty_json(item) for item in value]
+    return value
 
 
 def _now_iso() -> str:

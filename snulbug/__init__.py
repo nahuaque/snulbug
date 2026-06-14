@@ -218,6 +218,7 @@ from .scaffolds import (
 from .schema_policy import SchemaPolicyConfig
 from .share import (
     activate_mcp_share_policy,
+    attach_mcp_share_member,
     close_mcp_share,
     create_mcp_share,
     doctor_mcp_share,
@@ -362,6 +363,7 @@ __all__ = [
     "analyze_mcp_impact",
     "annotate_topology_audit",
     "activate_mcp_share_policy",
+    "attach_mcp_share_member",
     "build_audit_event",
     "build_event_dispatcher",
     "build_fabric_audit_metadata",

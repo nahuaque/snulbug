@@ -37,6 +37,7 @@ def build_share_session_model(
     closeout = _mapping(manifest.get("closeout"))
     recipes = _mapping(manifest.get("recipes"))
     health = _mapping(manifest.get("health"))
+    members = _mapping(manifest.get("members"))
     policy_metadata = _mapping(manifest.get("policy"))
 
     policy_bundle = files.get("policy")
@@ -120,6 +121,12 @@ def build_share_session_model(
             "started_at": runtime.get("started_at"),
             "config": runtime.get("config"),
         },
+        "members": {
+            "registry": members.get("registry"),
+            "registry_key": members.get("registry_key"),
+            "discovery_provider": members.get("discovery_provider"),
+            "attachments": list(_sequence(members.get("attachments"))),
+        },
         "paths": {
             "legacy_manifest": files.get("manifest"),
             "session_model": str(share_session_model_path(share_dir)),
@@ -128,6 +135,7 @@ def build_share_session_model(
             "policy_bundle": policy_bundle,
             "active_policy": policy_file,
             "lease_file": files.get("lease_file") or lease.get("file"),
+            "member_registry": files.get("member_registry") or members.get("registry"),
             "record_log": files.get("session_log"),
             "audit_log": files.get("audit_log"),
             "share_report": files.get("report"),

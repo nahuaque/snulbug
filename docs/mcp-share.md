@@ -129,6 +129,49 @@ and replay logs. It lists what was exposed, observed clients and source IPs,
 tools observed, allowed/blocked/confirmed counts, redaction and risk findings,
 upstream health, policy state, and exact next commands.
 
+## Remote member attach
+
+Use `share attach` when a Codespace, devcontainer, Holepunch peer, or another
+container should become a managed upstream for an existing share session:
+
+```bash
+uv run snulbug mcp share attach .snulbug/shares/share-... \
+  --member-id codespace-files \
+  --kind codespaces \
+  --upstream files=https://NAME-9001.app.github.dev/mcp \
+  --metadata-output codespace-member.json
+```
+
+The command registers the member in the share's fabric member registry, appends
+a `members` discovery provider to `snulbug.toml` when needed, and records the
+attachment in both `share.json` and `.snulbug/share/session.json`. Subsequent
+`share run`, `share status`, `share report`, and `share doctor` commands use
+the attached member through normal fabric discovery. `--metadata-output` writes
+the normalized, re-consumable member descriptor inside the share directory.
+
+Remote environments can also emit JSON metadata and let the laptop consume it:
+
+```json
+{
+  "member_id": "devcontainer-a",
+  "kind": "devcontainer",
+  "upstreams": [
+    {"name": "files", "url": "http://127.0.0.1:9001/mcp"}
+  ],
+  "labels": {"runtime": "docker"}
+}
+```
+
+```bash
+uv run snulbug mcp share attach .snulbug/shares/share-... \
+  --metadata-file devcontainer-member.json
+```
+
+By default the registry is `.snulbug/fabric-members.json` inside the share
+directory. Use `--registry sqlite:/path/to/fabric-members.sqlite3` or
+`--registry redis://... --registry-key snulbug:fabric:members` when remote
+members need to update a shared registry directly.
+
 ## Policy lifecycle shortcuts
 
 The share command wraps the normal policy bundle lifecycle flow and keeps the

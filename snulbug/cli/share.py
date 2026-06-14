@@ -21,6 +21,7 @@ from .common import read_required_env
 
 PROVIDERS = ("generic", "ngrok", "cloudflare", "tailscale", "localxpose", "pinggy", "holepunch")
 QUICKSTART_TUNNEL_PROVIDERS = ("auto", *PROVIDERS)
+ATTACH_MEMBER_KINDS = ("codespaces", "devcontainer", "holepunch", "container", "generic")
 
 
 def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -48,6 +49,9 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
 
     share_lease = share_subparsers.add_parser("lease", help="create and manage task-scoped MCP capability leases")
     _add_share_lease_args(share_lease)
+
+    share_attach = share_subparsers.add_parser("attach", help="attach a remote fabric member to a share session")
+    _add_share_attach_args(share_attach)
 
     share_codespace = share_subparsers.add_parser("codespace", help="attach GitHub Codespace MCP upstreams")
     _add_share_codespace_args(share_codespace)
@@ -152,6 +156,7 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
     from ..quickstart import create_mcp_quickstart
     from ..share import (
         activate_mcp_share_policy,
+        attach_mcp_share_member,
         close_mcp_share,
         create_mcp_share,
         doctor_mcp_share,
@@ -296,6 +301,29 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                 return 2
             status = 0 if result["ok"] else 1
             write_generated_session_output(result, compact=args.compact)
+            return status
+
+        if command == "attach":
+            directory = _share_directory_arg(args)
+            result = attach_mcp_share_member(
+                directory,
+                member_id=args.member_id,
+                kind=args.kind,
+                upstreams=_parse_facade_upstreams(args.upstream, option="--upstream") or [],
+                metadata_file=args.metadata_file,
+                registry=args.registry,
+                registry_key=args.registry_key,
+                role=args.role,
+                status=args.status,
+                ttl_seconds=args.ttl_seconds,
+                labels=_parse_key_values(args.label),
+                metadata=_parse_key_values(args.metadata),
+                metadata_output=args.metadata_output,
+                discovery_name=args.discovery_name,
+                update_config=args.config_update,
+            )
+            status = 0 if result["ok"] else 1
+            write_json_output(result, compact=args.compact)
             return status
 
         if command == "codespace":
@@ -661,6 +689,67 @@ def _add_share_lease_args(parser: argparse.ArgumentParser) -> None:
     add_compact_arg(lease_revoke)
 
 
+def _add_share_attach_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "directory",
+        nargs="?",
+        type=Path,
+        help="share session directory; defaults to cwd when .snulbug/share/session.json exists",
+    )
+    parser.add_argument("--member-id", "--id", dest="member_id", help="remote fabric member id")
+    parser.add_argument(
+        "--kind",
+        choices=ATTACH_MEMBER_KINDS,
+        default="container",
+        help="remote member environment kind",
+    )
+    parser.add_argument(
+        "--metadata-file",
+        type=Path,
+        help="JSON member metadata to consume instead of, or in addition to, CLI fields",
+    )
+    parser.add_argument(
+        "--metadata-output",
+        type=Path,
+        help="write the normalized member metadata JSON inside the share directory",
+    )
+    parser.add_argument(
+        "--upstream",
+        action="append",
+        default=[],
+        metavar="NAME=URL",
+        help="MCP upstream served by the member; repeat for multiple upstreams",
+    )
+    parser.add_argument(
+        "--registry",
+        help="fabric member registry path or shared state store such as sqlite:/path/to/members.sqlite3",
+    )
+    parser.add_argument("--registry-key", default="snulbug:fabric:members", help="state-backed registry key")
+    parser.add_argument(
+        "--role",
+        choices=("data-plane", "data_plane", "control-plane", "control_plane", "observer"),
+        default="data-plane",
+        help="fabric member role",
+    )
+    parser.add_argument(
+        "--status",
+        choices=("active", "draining"),
+        default="active",
+        help="initial fabric member status",
+    )
+    parser.add_argument("--ttl-seconds", type=float, default=60.0, help="member heartbeat TTL")
+    parser.add_argument("--label", action="append", default=[], metavar="KEY=VALUE", help="member label")
+    parser.add_argument("--metadata", action="append", default=[], metavar="KEY=VALUE", help="member metadata")
+    parser.add_argument("--discovery-name", default="share-members", help="fabric discovery provider name")
+    parser.add_argument(
+        "--config-update",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="append the members discovery provider to the share config",
+    )
+    add_compact_arg(parser)
+
+
 def _add_share_codespace_args(parser: argparse.ArgumentParser) -> None:
     codespace_subparsers = parser.add_subparsers(dest="share_codespace_command", required=True)
     codespace_attach = codespace_subparsers.add_parser(
@@ -898,13 +987,27 @@ def _run_proxy_from_share_args(args: argparse.Namespace) -> int:
     return 0
 
 
-def _parse_facade_upstreams(values: Sequence[str] | None) -> list[dict[str, Any]] | None:
+def _parse_facade_upstreams(
+    values: Sequence[str] | None,
+    *,
+    option: str = "--facade-upstream",
+) -> list[dict[str, Any]] | None:
     if not values:
         return None
     upstreams = []
     for value in values:
         name, separator, url = value.partition("=")
         if not separator or not name or not url:
-            raise ValueError("--facade-upstream must use NAME=URL")
+            raise ValueError(f"{option} must use NAME=URL")
         upstreams.append({"name": name, "url": url, "tool_prefix": f"{name}."})
     return upstreams
+
+
+def _parse_key_values(values: Sequence[str] | None) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for value in values or []:
+        key, separator, item = value.partition("=")
+        if not separator or not key:
+            raise ValueError("metadata and label values must use KEY=VALUE")
+        parsed[key] = item
+    return parsed
