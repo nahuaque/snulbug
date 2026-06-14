@@ -1,0 +1,20 @@
+[mcp.proxy]
+tunnel_public_url = "http://127.0.0.1:18081/mcp"
+lease_required = true
+
+[mcp.auth]
+mode = "oauth-resource"
+resource = "http://127.0.0.1:18081/mcp"
+issuer = "http://localhost:8080/realms/snulbug-demo"
+authorization_servers = ["http://localhost:8080/realms/snulbug-demo"]
+audience = "http://127.0.0.1:18081/mcp"
+required_scopes = ["mcp:connect"]
+scopes_supported = ["mcp:connect", "mcp:tools.read", "mcp:tool.files.read", "mcp:tool.git.status"]
+issuer_discovery = true
+token_validation = "jwt"
+strip_authorization_upstream = true
+
+[mcp.auth.scope_map]
+"mcp:tools.read" = ["tools/list", "resources/list"]
+"mcp:tool.files.read" = ["tools/call:filesystem.read_file"]
+"mcp:tool.git.status" = ["tools/call:git.status"]

@@ -1,0 +1,6 @@
+{
+  "doctor": "uv run snulbug mcp share auth doctor --config snulbug.toml --url http://127.0.0.1:18081/mcp --token $ACCESS_TOKEN",
+  "review": "less examples/keycloak_oauth_demo/auth/keycloak/README.md",
+  "run": "uv run snulbug mcp share run --config snulbug.toml",
+  "show_config": "cat examples/keycloak_oauth_demo/auth/keycloak/snulbug.auth.toml"
+}

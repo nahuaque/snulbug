@@ -31,6 +31,7 @@ share create -> share run -> share status -> policy amend -> share activate -> s
 
 - [One-command MCP policy lab](quickstart.md#2-run-the-policy-lab)
 - [End-to-end MCP policy proxy demo](../examples/mcp_proxy_demo/README.md)
+- [Keycloak OAuth compose demo](../examples/keycloak_oauth_demo/README.md)
 
 ## Detailed References
 

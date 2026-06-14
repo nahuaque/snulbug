@@ -1,0 +1,13 @@
+{
+  "jsonrpc": "2.0",
+  "id": "blocked-write-file",
+  "method": "tools/call",
+  "params": {
+    "name": "keycloak_demo.write_file",
+    "arguments": {
+      "path": "README.md",
+      "content": "blocked"
+    }
+  }
+}
+

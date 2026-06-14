@@ -1,0 +1,50 @@
+{
+  "commands": {
+    "doctor": "uv run snulbug mcp share auth doctor --config snulbug.toml --url http://127.0.0.1:18081/mcp --token $ACCESS_TOKEN",
+    "review": "less examples/keycloak_oauth_demo/auth/keycloak/README.md",
+    "run": "uv run snulbug mcp share run --config snulbug.toml",
+    "show_config": "cat examples/keycloak_oauth_demo/auth/keycloak/snulbug.auth.toml"
+  },
+  "directory": "examples/keycloak_oauth_demo/auth/keycloak",
+  "files": {
+    "client_request": "examples/keycloak_oauth_demo/auth/keycloak/client-token-request.json",
+    "commands": "examples/keycloak_oauth_demo/auth/keycloak/commands.json",
+    "config": "examples/keycloak_oauth_demo/auth/keycloak/snulbug.auth.toml",
+    "metadata": "examples/keycloak_oauth_demo/auth/keycloak/auth-init.json",
+    "readme": "examples/keycloak_oauth_demo/auth/keycloak/README.md"
+  },
+  "kind": "snulbug.auth.init",
+  "next_steps": [
+    "Review `examples/keycloak_oauth_demo/auth/keycloak/README.md` and complete the provider setup.",
+    "Merge `examples/keycloak_oauth_demo/auth/keycloak/snulbug.auth.toml` into the share's `snulbug.toml`.",
+    "uv run snulbug mcp share run --config snulbug.toml",
+    "uv run snulbug mcp share auth doctor --config snulbug.toml --url http://127.0.0.1:18081/mcp --token $ACCESS_TOKEN"
+  ],
+  "ok": true,
+  "provider": "keycloak",
+  "public_url": "http://127.0.0.1:18081/mcp",
+  "recipe": {
+    "audience": "http://127.0.0.1:18081/mcp",
+    "client_id": "snulbug-agent",
+    "docs": [
+      "https://www.keycloak.org/docs/latest/server_admin/#_clients"
+    ],
+    "issuer": "http://localhost:8080/realms/snulbug-demo",
+    "kind": "snulbug.auth.recipe",
+    "provider": "keycloak",
+    "scopes": [
+      "mcp:connect",
+      "mcp:tools.read",
+      "mcp:tool.files.read",
+      "mcp:tool.git.status"
+    ],
+    "title": "Keycloak"
+  },
+  "written_files": [
+    "examples/keycloak_oauth_demo/auth/keycloak/README.md",
+    "examples/keycloak_oauth_demo/auth/keycloak/snulbug.auth.toml",
+    "examples/keycloak_oauth_demo/auth/keycloak/client-token-request.json",
+    "examples/keycloak_oauth_demo/auth/keycloak/auth-init.json",
+    "examples/keycloak_oauth_demo/auth/keycloak/commands.json"
+  ]
+}

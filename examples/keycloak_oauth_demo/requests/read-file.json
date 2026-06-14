@@ -1,0 +1,12 @@
+{
+  "jsonrpc": "2.0",
+  "id": "read-file",
+  "method": "tools/call",
+  "params": {
+    "name": "keycloak_demo.safe_read_file",
+    "arguments": {
+      "path": "README.md"
+    }
+  }
+}
+

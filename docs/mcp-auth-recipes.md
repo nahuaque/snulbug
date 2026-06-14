@@ -117,3 +117,11 @@ succeeds.
 GitHub OIDC should be treated as workload identity, not user OAuth. Require
 `lease_required = true` and add Lua checks for the exact workflow subject when
 the share is sensitive.
+
+## Keycloak Compose Demo
+
+For a runnable Keycloak setup, see
+[`examples/keycloak_oauth_demo`](../examples/keycloak_oauth_demo/README.md).
+The demo checks in the output of `snulbug mcp share auth init --provider
+keycloak`, imports a matching Keycloak realm with client scopes and an audience
+mapper, then runs snulbug as an OAuth protected MCP resource in Docker Compose.

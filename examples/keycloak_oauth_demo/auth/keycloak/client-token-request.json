@@ -1,0 +1,11 @@
+{
+  "audience": "http://127.0.0.1:18081/mcp",
+  "client_id": "snulbug-agent",
+  "issuer": "http://localhost:8080/realms/snulbug-demo",
+  "scopes": [
+    "mcp:connect",
+    "mcp:tools.read",
+    "mcp:tool.files.read",
+    "mcp:tool.git.status"
+  ]
+}

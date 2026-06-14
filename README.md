@@ -202,6 +202,12 @@ uv run snulbug mcp share auth lab
 It writes a mock issuer, JWKS, demo tokens, lease file, proxy config, requests,
 session/audit logs, and `AUTH_LAB.md` under `.snulbug-auth-lab/`.
 
+For a real provider, the [Keycloak OAuth compose demo](examples/keycloak_oauth_demo/README.md)
+runs Keycloak, snulbug, and a demo MCP upstream together. It uses generated
+`share auth init --provider keycloak` setup, validates JWTs through issuer
+discovery, maps Keycloak scopes to MCP tools, and proves caller OAuth tokens are
+not forwarded upstream.
+
 For Codespaces, start the bundled mock MCP server in the Codespace terminal:
 
 ```bash
@@ -348,6 +354,7 @@ Reference docs:
 - [Policy bundles](docs/bundles.md)
 - [MCP gateway example](docs/mcp-gateway.md)
 - [End-to-end MCP policy proxy demo](examples/mcp_proxy_demo/README.md)
+- [Keycloak OAuth compose demo](examples/keycloak_oauth_demo/README.md)
 - [Release process](docs/release.md)
 
 `snulbug` is currently alpha software. Until 1.0, action schemas and trace

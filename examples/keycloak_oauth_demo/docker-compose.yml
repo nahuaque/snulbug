@@ -1,0 +1,56 @@
+name: snulbug-keycloak-oauth-demo
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.1
+    platform: ${SNULBUG_KEYCLOAK_DEMO_PLATFORM:-linux/amd64}
+    command:
+      - start-dev
+      - --import-realm
+      - --hostname=http://localhost:8080
+      - --hostname-strict=false
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8080:8080"
+      - "18081:8081"
+    volumes:
+      - ./keycloak/snulbug-demo-realm.json:/opt/keycloak/data/import/snulbug-demo-realm.json:ro
+
+  mcp-upstream:
+    image: python:3.13-slim
+    platform: ${SNULBUG_KEYCLOAK_DEMO_PLATFORM:-linux/amd64}
+    working_dir: /app
+    volumes:
+      - ./mock_mcp_server.py:/app/mock_mcp_server.py:ro
+    command:
+      - python
+      - /app/mock_mcp_server.py
+      - --host
+      - 0.0.0.0
+      - --port
+      - "9000"
+
+  snulbug-gateway:
+    build:
+      context: ../..
+      dockerfile: examples/keycloak_oauth_demo/Dockerfile.gateway
+    platform: ${SNULBUG_KEYCLOAK_DEMO_PLATFORM:-linux/amd64}
+    network_mode: service:keycloak
+    volumes:
+      - .:/demo
+    depends_on:
+      keycloak:
+        condition: service_started
+      mcp-upstream:
+        condition: service_started
+    command:
+      - snulbug
+      - mcp
+      - share
+      - run
+      - --config
+      - /demo/snulbug.toml
