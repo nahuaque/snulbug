@@ -110,7 +110,7 @@ def _workflows() -> dict[str, dict[str, Any]]:
                     "title": "Create the ephemeral share",
                     "command": "\n".join(
                         [
-                            "snulbug mcp share \\",
+                            "snulbug mcp share create \\",
                             "  --provider holepunch \\",
                             "  --upstream http://127.0.0.1:9000 \\",
                             "  --allow-tool safe_read_file \\",
@@ -121,40 +121,41 @@ def _workflows() -> dict[str, dict[str, Any]]:
                     "requires": ["local MCP upstream planned at http://127.0.0.1:9000"],
                     "produces": [
                         ".snulbug/shares/share-*/snulbug.toml",
+                        ".snulbug/shares/share-*/share.json",
                         ".snulbug/shares/share-*/mcp-client.json",
                         ".snulbug/shares/share-*/SHARE.md",
                     ],
                     "success_signals": ["generated policy validates", "lease is active", "client config is written"],
-                    "next": "Open SHARE.md and run the generated proxy, provider, and doctor commands.",
+                    "next": "Run share run, provider bridge if needed, share doctor, then share client.",
                 },
                 {
                     "id": "start-share",
-                    "title": "Start the generated proxy and provider bridge",
+                    "title": "Start and verify the share",
                     "command": "\n".join(
                         [
                             "export SNULBUG_SHARE_TOKEN=...",
-                            "uv run snulbug mcp proxy --config .snulbug/shares/share-*/snulbug.toml --decision-console",
+                            "uv run snulbug mcp share run .snulbug/shares/share-*",
+                            "uv run snulbug mcp share doctor .snulbug/shares/share-*",
+                            "uv run snulbug mcp share client .snulbug/shares/share-*",
                             "(cd .snulbug/shares/share-*/tunnel && \\",
                             "  hypertele-server -l 8080 --address 127.0.0.1 -c hypertele-server.json --private)",
                         ]
                     ),
                     "requires": ["generated share directory", "local MCP upstream is listening"],
-                    "produces": ["live decision console", "redacted replay log", "redacted audit log"],
-                    "success_signals": ["proxy listens locally", "provider bridge is ready"],
-                    "next": "Run the generated tunnel doctor command before sharing mcp-client.json.",
+                    "produces": ["live decision console", "redacted replay log", "redacted audit log", "client config"],
+                    "success_signals": ["proxy listens locally", "share doctor passes"],
+                    "next": "Share mcp-client.json only after share doctor passes.",
                 },
                 {
                     "id": "close-share",
-                    "title": "Inspect and revoke when done",
+                    "title": "Close and report when done",
                     "command": "\n".join(
                         [
-                            "uv run snulbug mcp evidence inspect .snulbug/shares/share-*/traces/audit.jsonl \\",
-                            "  --kind audit \\",
-                            "  --report-out .snulbug/shares/share-*/session-report.md",
-                            "uv run snulbug mcp lease revoke LEASE_ID --file .snulbug/shares/share-*/leases.json",
+                            "uv run snulbug mcp share close .snulbug/shares/share-* --report --revoke",
+                            "uv run snulbug mcp share status .snulbug/shares/share-*",
                         ]
                     ),
-                    "requires": ["share session traffic", "lease id from share output"],
+                    "requires": ["share session traffic"],
                     "produces": ["session report", "revoked lease"],
                     "success_signals": ["lease is no longer active", "session report exists"],
                     "next": (

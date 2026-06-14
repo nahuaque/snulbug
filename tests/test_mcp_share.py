@@ -3,7 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from snulbug import create_mcp_share, load_mcp_proxy_config
+from snulbug import (
+    close_mcp_share,
+    create_mcp_share,
+    load_mcp_proxy_config,
+    run_mcp_share,
+    share_client_config,
+    share_status,
+)
 from snulbug.simulator import main as simulator_main
 
 
@@ -94,9 +101,17 @@ def test_create_mcp_share_writes_ephemeral_holepunch_session(tmp_path):
     assert "mock_mcp_server.js" in remote_dockerfile
     assert (tmp_path / "tunnel" / "hypertele-server.json").is_file()
     assert (tmp_path / "tunnel" / "hypertele-client.json").is_file()
+    assert (tmp_path / "share.json").is_file()
+    manifest = json.loads((tmp_path / "share.json").read_text(encoding="utf-8"))
+    assert manifest["type"] == "snulbug.share"
+    assert manifest["state"] == "created"
+    assert manifest["commands"]["run"] == f"uv run snulbug mcp share run {tmp_path}"
+    assert manifest["commands"]["share_doctor"] == f"uv run snulbug mcp share doctor {tmp_path}"
+    assert manifest["client"]["headers"]["Authorization"] == "Bearer share-secret"
+    assert manifest["lease"]["id"] == result["lease"]["lease"]["id"]
     assert "snulbug MCP share session" in report
-    assert "uv run snulbug tunnel doctor" in report
-    assert "uv run snulbug mcp lease revoke" in report
+    assert "uv run snulbug mcp share doctor" in report
+    assert "uv run snulbug mcp share close" in report
     assert "Remote container as upstream" in report
 
 
@@ -135,7 +150,113 @@ def test_mcp_share_cli_emits_compact_session_plan(tmp_path, capsys):
     assert output["tunnel"]["written_files"] == [str(tmp_path / "tunnel" / "README.md")]
     assert "fixture_count" not in json.dumps(output["tunnel"])
     assert (tmp_path / "mcp-client.json").is_file()
+    assert (tmp_path / "share.json").is_file()
     assert (tmp_path / "SHARE.md").is_file()
+
+
+def test_mcp_share_create_subcommand_emits_compact_session_plan(tmp_path, capsys):
+    status = simulator_main(
+        [
+            "mcp",
+            "share",
+            "create",
+            "--directory",
+            str(tmp_path),
+            "--provider",
+            "generic",
+            "--url",
+            "https://mcp.example.test/mcp",
+            "--token",
+            "share-secret",
+            "--allow-tool",
+            "read_repo",
+            "--no-validate",
+            "--compact",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+
+    assert status == 0
+    assert output["ok"] is True
+    assert output["files"]["manifest"] == str(tmp_path / "share.json")
+    assert (tmp_path / "share.json").is_file()
+
+
+def test_mcp_share_lifecycle_helpers_read_manifest(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    status = share_status(tmp_path)
+    client = share_client_config(tmp_path)
+    run_plan = run_mcp_share(tmp_path, dry_run=True)
+
+    assert status["ok"] is True
+    assert status["state"] == "created"
+    assert status["lease"]["active"] is True
+    assert client["config"]["mcpServers"]["snulbug-share"]["headers"]["Authorization"] == "Bearer share-secret"
+    assert run_plan is not None
+    assert run_plan["commands"]["run"] == f"uv run snulbug mcp share run {tmp_path}"
+
+
+def test_mcp_share_lifecycle_cli_status_client_run_and_close(tmp_path, capsys):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    status_code = simulator_main(["mcp", "share", "status", str(tmp_path), "--compact"])
+    status_output = json.loads(capsys.readouterr().out)
+    assert status_code == 0
+    assert status_output["state"] == "created"
+
+    client_code = simulator_main(["mcp", "share", "client", str(tmp_path), "--compact"])
+    client_output = json.loads(capsys.readouterr().out)
+    assert client_code == 0
+    assert client_output["config"]["mcpServers"]["snulbug-share"]["url"] == "https://mcp.example.test/mcp"
+
+    run_code = simulator_main(["mcp", "share", "run", str(tmp_path), "--dry-run", "--compact"])
+    run_output = json.loads(capsys.readouterr().out)
+    assert run_code == 0
+    assert run_output["commands"]["client"] == f"uv run snulbug mcp share client {tmp_path}"
+
+    close_code = simulator_main(["mcp", "share", "close", str(tmp_path), "--compact"])
+    close_output = json.loads(capsys.readouterr().out)
+    manifest = json.loads((tmp_path / "share.json").read_text(encoding="utf-8"))
+    assert close_code == 0
+    assert close_output["state"] == "closed"
+    assert close_output["revoked"]["ok"] is True
+    assert (tmp_path / "session-report.md").is_file()
+    assert manifest["state"] == "closed"
+
+
+def test_close_mcp_share_revokes_lease_and_writes_report(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    result = close_mcp_share(tmp_path)
+    status = share_status(tmp_path)
+
+    assert result["ok"] is True
+    assert result["revoked"]["lease"]["active"] is False
+    assert status["state"] == "closed"
+    assert status["lease"]["active"] is False
 
 
 def test_mcp_share_refuses_to_overwrite_without_force(tmp_path):

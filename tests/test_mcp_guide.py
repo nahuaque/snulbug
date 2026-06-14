@@ -44,7 +44,9 @@ def test_mcp_guide_cli_emits_share_workflow(capsys):
     output = capsys.readouterr().out
     assert status == 0
     assert "## Ephemeral MCP Share Session" in output
-    assert "snulbug mcp share \\" in output
+    assert "snulbug mcp share create \\" in output
+    assert "uv run snulbug mcp share run .snulbug/shares/share-*" in output
+    assert "uv run snulbug mcp share close .snulbug/shares/share-* --report --revoke" in output
     assert "--provider holepunch" in output
     assert "Do not share mcp-client.json until tunnel doctor passes." in output
 

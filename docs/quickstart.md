@@ -38,7 +38,7 @@ For a temporary share session, let snulbug generate the policy, random bearer
 token, task lease, provider setup, client config, and close-out commands:
 
 ```bash
-uv run snulbug mcp share \
+uv run snulbug mcp share create \
   --provider holepunch \
   --upstream http://127.0.0.1:9000 \
   --allow-tool safe_read_file \
@@ -46,9 +46,15 @@ uv run snulbug mcp share \
   --ttl 30m
 ```
 
-The command writes a self-contained directory under `.snulbug/shares/`. Open the
-generated `SHARE.md`, run the proxy and provider commands, run doctor, and then
-share the generated `mcp-client.json`.
+The command writes a self-contained directory under `.snulbug/shares/`. Run the
+session lifecycle from that directory:
+
+```bash
+uv run snulbug mcp share run .snulbug/shares/share-...
+uv run snulbug mcp share doctor .snulbug/shares/share-...
+uv run snulbug mcp share client .snulbug/shares/share-...
+uv run snulbug mcp share close .snulbug/shares/share-... --report --revoke
+```
 
 ## 2. Run the policy lab
 

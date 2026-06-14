@@ -178,7 +178,15 @@ from .redaction import RedactionConfig, append_audit_event, build_audit_event, r
 from .response_policy import ResponsePolicyConfig
 from .runtime import LuaDecisionError, LuaDecisionTrace, LuaRuntimeError
 from .schema_policy import SchemaPolicyConfig
-from .share import create_mcp_share
+from .share import (
+    close_mcp_share,
+    create_mcp_share,
+    doctor_mcp_share,
+    load_mcp_share,
+    run_mcp_share,
+    share_client_config,
+    share_status,
+)
 from .simulator import simulate_policy
 from .state import (
     BoundedPolicyState,
@@ -293,6 +301,7 @@ __all__ = [
     "bundle_lifecycle_digest",
     "clear_fabric_control_actions",
     "clear_fabric_runtime_status",
+    "close_mcp_share",
     "compare_decisions",
     "copy_builtin_preset",
     "codespace_forwarded_url",
@@ -311,6 +320,7 @@ __all__ = [
     "display_tunnel_public_endpoint",
     "doctor_tunnel",
     "doctor_fabric",
+    "doctor_mcp_share",
     "evaluate_cloudflare_access",
     "fabric_status",
     "fetch_mcp_jsonrpc",
@@ -354,6 +364,7 @@ __all__ = [
     "load_fabric_runtime_status",
     "load_mcp_proxy_config",
     "load_mcp_fabric_config",
+    "load_mcp_share",
     "load_manifest",
     "load_record_log",
     "manifest_digest",
@@ -384,8 +395,11 @@ __all__ = [
     "run_fabric_controller",
     "run_fabric_conformance_pack",
     "run_fabric_data_plane",
+    "run_mcp_share",
     "run_proxy",
     "score_mcp_schema_catalog",
+    "share_client_config",
+    "share_status",
     "simulate_policy",
     "smoke_check_codespace_upstream",
     "snapshot_mcp_tools",

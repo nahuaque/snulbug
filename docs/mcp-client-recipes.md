@@ -20,7 +20,7 @@ Use this when you want one bounded session with generated bearer auth, a
 task-scoped lease, provider setup, client config, and close-out commands:
 
 ```bash
-uv run snulbug mcp share \
+uv run snulbug mcp share create \
   --provider holepunch \
   --upstream http://127.0.0.1:9000 \
   --allow-tool safe_read_file \
@@ -28,8 +28,16 @@ uv run snulbug mcp share \
   --ttl 30m
 ```
 
-Open the generated `SHARE.md`, run the proxy/provider/doctor commands, then
-copy the generated `mcp-client.json` into the MCP client. It contains both:
+Run the generated share, verify it, then print or copy the generated client
+config:
+
+```bash
+uv run snulbug mcp share run .snulbug/shares/share-...
+uv run snulbug mcp share doctor .snulbug/shares/share-...
+uv run snulbug mcp share client .snulbug/shares/share-...
+```
+
+The client config contains both:
 
 ```text
 Authorization: Bearer <generated token>

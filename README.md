@@ -99,7 +99,7 @@ For a temporary share session with generated bearer auth, a task lease, provider
 setup, client config, and close-out report commands:
 
 ```bash
-uv run snulbug mcp share \
+uv run snulbug mcp share create \
   --provider holepunch \
   --upstream http://127.0.0.1:9000 \
   --allow-tool safe_read_file \

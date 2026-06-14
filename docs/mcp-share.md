@@ -1,14 +1,14 @@
 # MCP share sessions
 
-`snulbug mcp share` creates a bounded, ready-to-run local MCP share session.
-It composes the existing quickstart, lease, tunnel-init, client-config, and
-reporting pieces into one generated directory.
+`snulbug mcp share` creates and manages a bounded local MCP share session. It
+composes policy creation, lease creation, tunnel setup, client config, live
+proxying, verification, and closeout reporting into one generated directory.
 
 Use it when you want to give an agent or collaborator temporary access to a
 local MCP server without hand-wiring every control.
 
 ```bash
-uv run snulbug mcp share \
+uv run snulbug mcp share create \
   --provider holepunch \
   --upstream http://127.0.0.1:9000 \
   --allow-tool safe_read_file \
@@ -19,6 +19,7 @@ uv run snulbug mcp share \
 By default, the command writes under `.snulbug/shares/share-*` and creates:
 
 ```text
+share.json
 policy.snulbug/
 snulbug.toml
 leases.json
@@ -34,26 +35,37 @@ The generated config sets `lease_required = true`, so every MCP `tools/call`
 must carry the generated `x-snulbug-lease` token. The lease expires after the
 configured `--ttl`.
 
-## Generated workflow
+## Session lifecycle
 
-Open the generated `SHARE.md`. It contains the exact commands for the session:
+Run the generated share:
 
 ```bash
 export SNULBUG_SHARE_TOKEN=...
-uv run snulbug mcp proxy --config .snulbug/shares/share-*/snulbug.toml --decision-console
+uv run snulbug mcp share run .snulbug/shares/share-...
 ```
 
-Run the generated provider command in another shell. For the default Holepunch
-peer bridge, that is a Hypertele command from the generated `tunnel/` directory.
+`share run` starts the snulbug proxy from the session manifest and streams the
+decision console. The generated `SHARE.md` still includes the lower-level
+provider command when the selected tunnel or peer bridge needs a second process.
+For the default Holepunch peer bridge, that provider command is a Hypertele
+command from the generated `tunnel/` directory.
 
-Before sharing `mcp-client.json`, run the generated doctor command:
+Before sharing `mcp-client.json`, verify the session:
 
 ```bash
-uv run snulbug tunnel doctor \
-  --provider holepunch \
-  --url http://127.0.0.1:18080/mcp \
-  --config .snulbug/shares/share-*/snulbug.toml \
-  --token ${SNULBUG_SHARE_TOKEN}
+uv run snulbug mcp share doctor .snulbug/shares/share-...
+```
+
+Inspect the generated client config without opening files by hand:
+
+```bash
+uv run snulbug mcp share client .snulbug/shares/share-...
+```
+
+Check state later:
+
+```bash
+uv run snulbug mcp share status .snulbug/shares/share-...
 ```
 
 ## Client config
@@ -131,7 +143,7 @@ Point clients at `mcp-client.facade.json` for this facade recipe.
 The share command also works with existing tunnel providers:
 
 ```bash
-uv run snulbug mcp share \
+uv run snulbug mcp share create \
   --provider ngrok \
   --upstream http://127.0.0.1:9000 \
   --allow-tool safe_read_file \
@@ -148,12 +160,15 @@ the exact forwarding URL printed by the tunnel provider.
 When the task is complete:
 
 ```bash
-uv run snulbug mcp evidence inspect .snulbug/shares/share-*/traces/audit.jsonl \
-  --kind audit \
-  --report-out .snulbug/shares/share-*/session-report.md
+uv run snulbug mcp share close .snulbug/shares/share-... --report --revoke
+```
 
-uv run snulbug mcp lease revoke LEASE_ID \
-  --file .snulbug/shares/share-*/leases.json
+Closeout revokes the session lease, writes `session-report.md` when possible,
+and marks `share.json` closed. Add `--learn` to generate a learned policy bundle
+from the share replay log during closeout:
+
+```bash
+uv run snulbug mcp share close .snulbug/shares/share-... --learn --force
 ```
 
 Then stop the proxy and provider process. Delete the share directory when you no

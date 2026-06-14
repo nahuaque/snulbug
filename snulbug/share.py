@@ -4,11 +4,12 @@ import json
 import secrets
 import shlex
 import shutil
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .inspection import format_mcp_inspection_report, inspect_mcp_log
 from .leases import create_lease
 from .presets import DEFAULT_ALLOWED_PATHS, DEFAULT_ALLOWED_TOOLS, McpPolicyOptions, generate_mcp_preset
 from .quickstart import create_mcp_quickstart
@@ -21,6 +22,7 @@ DEFAULT_SHARE_DIR = Path(".snulbug") / "shares"
 DEFAULT_SHARE_CLIENT_NAME = "snulbug-share"
 DEFAULT_SHARE_TOKEN_ENV = "SNULBUG_SHARE_TOKEN"
 DEFAULT_CONTAINER_RECIPE_DIR = "containers"
+SHARE_MANIFEST = "share.json"
 CONTAINER_BIND_HOST = ".".join(("0", "0", "0", "0"))
 CONTAINER_REMOTE_BRIDGE_PORT = 19100
 
@@ -171,6 +173,27 @@ def create_mcp_share(
         command_plan=command_plan,
     )
     _write_text(report_path, report, force=force)
+    manifest = _share_manifest(
+        session_id=session_id,
+        share_dir=share_dir,
+        provider=provider,
+        preset=preset,
+        ttl=ttl,
+        task=task,
+        upstream=upstream,
+        host=host,
+        port=port,
+        state=state,
+        lease_required=lease_required,
+        lease_header=lease_header,
+        quickstart=quickstart,
+        tunnel=tunnel,
+        lease=lease,
+        client_config_path=client_config_path,
+        container_recipe=container_recipe,
+        command_plan=command_plan,
+    )
+    _write_share_manifest(share_dir, manifest, force=force)
 
     return {
         "ok": bool(quickstart["ok"]) and bool(tunnel["ok"]) and bool(lease["ok"]),
@@ -202,6 +225,7 @@ def create_mcp_share(
         },
         "commands": command_plan,
         "files": {
+            "manifest": str(share_dir / SHARE_MANIFEST),
             "config": quickstart["config"],
             "policy": quickstart["policy"],
             "lease_file": lease["file"],
@@ -220,6 +244,246 @@ def create_mcp_share(
     }
 
 
+def load_mcp_share(directory: str | Path) -> dict[str, Any]:
+    """Load a generated MCP share session manifest."""
+
+    share_dir = Path(directory)
+    manifest_path = share_dir / SHARE_MANIFEST
+    with manifest_path.open("r", encoding="utf-8") as file:
+        manifest = json.load(file)
+    if not isinstance(manifest, Mapping):
+        raise ValueError(f"share manifest must contain a JSON object: {manifest_path}")
+    return dict(manifest)
+
+
+def share_status(directory: str | Path) -> dict[str, Any]:
+    """Summarize a generated MCP share session without starting processes."""
+
+    share_dir = Path(directory)
+    manifest = load_mcp_share(share_dir)
+    files = manifest.get("files") if isinstance(manifest.get("files"), Mapping) else {}
+    lease = manifest.get("lease") if isinstance(manifest.get("lease"), Mapping) else {}
+    lease_file = files.get("lease_file") or lease.get("file")
+    lease_status: dict[str, Any] = {"ok": False, "file": lease_file}
+    if isinstance(lease_file, str) and lease_file:
+        from .leases import list_leases
+
+        listed = list_leases(_resolve_share_path(share_dir, lease_file))
+        lease_id = lease.get("id")
+        leases = listed.get("leases", [])
+        matched = next(
+            (item for item in leases if isinstance(item, Mapping) and item.get("id") == lease_id),
+            None,
+        )
+        lease_status = {
+            "ok": True,
+            "file": lease_file,
+            "id": lease_id,
+            "active": bool(matched.get("active")) if isinstance(matched, Mapping) else False,
+            "matched": matched,
+        }
+
+    file_status = {
+        key: _resolve_share_path(share_dir, value).exists()
+        for key, value in files.items()
+        if isinstance(value, str) and key != "manifest"
+    }
+    return {
+        "ok": True,
+        "session": manifest.get("session", {}),
+        "state": manifest.get("state", "unknown"),
+        "directory": str(share_dir),
+        "client": manifest.get("client", {}),
+        "lease": lease_status,
+        "files": file_status,
+        "commands": manifest.get("commands", {}),
+    }
+
+
+def doctor_mcp_share(
+    directory: str | Path,
+    *,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
+    """Run tunnel doctor against a generated share session."""
+
+    from .tunnel import doctor_tunnel, parse_tunnel_headers
+
+    share_dir = Path(directory)
+    manifest = load_mcp_share(share_dir)
+    session = manifest.get("session") if isinstance(manifest.get("session"), Mapping) else {}
+    client = manifest.get("client") if isinstance(manifest.get("client"), Mapping) else {}
+    files = manifest.get("files") if isinstance(manifest.get("files"), Mapping) else {}
+    config = files.get("config")
+    provider = session.get("provider") or "generic"
+    url = client.get("url")
+    headers = client.get("headers") if isinstance(client.get("headers"), Mapping) else {}
+    if not isinstance(url, str) or not url:
+        raise ValueError("share manifest does not contain a client URL")
+    if not isinstance(config, str) or not config:
+        raise ValueError("share manifest does not contain a config path")
+    result = doctor_tunnel(
+        provider=str(provider),
+        url=url,
+        config=_resolve_share_path(share_dir, config),
+        headers=parse_tunnel_headers([f"{key}: {value}" for key, value in headers.items()]),
+        timeout=timeout,
+    )
+    _update_share_manifest(share_dir, state="verified" if result.get("ok") else "doctor_failed")
+    result["share"] = str(share_dir)
+    return result
+
+
+def share_client_config(
+    directory: str | Path,
+    *,
+    output_format: str = "json",
+) -> dict[str, Any]:
+    """Return the generated MCP client config for a share session."""
+
+    share_dir = Path(directory)
+    manifest = load_mcp_share(share_dir)
+    client = manifest.get("client") if isinstance(manifest.get("client"), Mapping) else {}
+    config_path = client.get("config")
+    if not isinstance(config_path, str) or not config_path:
+        raise ValueError("share manifest does not contain a client config path")
+    resolved = _resolve_share_path(share_dir, config_path)
+    with resolved.open("r", encoding="utf-8") as file:
+        config = json.load(file)
+    if output_format == "path":
+        return {"ok": True, "share": str(share_dir), "format": output_format, "path": str(resolved)}
+    if output_format in {"json", "claude-desktop", "cursor"}:
+        return {"ok": True, "share": str(share_dir), "format": output_format, "config": config}
+    raise ValueError("output_format must be one of: json, claude-desktop, cursor, path")
+
+
+def close_mcp_share(
+    directory: str | Path,
+    *,
+    revoke: bool = True,
+    report: bool = True,
+    learn: bool = False,
+    learn_out: str | Path | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Close a generated share by revoking its lease and writing a report."""
+
+    from .leases import revoke_lease
+
+    share_dir = Path(directory)
+    manifest = load_mcp_share(share_dir)
+    files = manifest.get("files") if isinstance(manifest.get("files"), Mapping) else {}
+    lease = manifest.get("lease") if isinstance(manifest.get("lease"), Mapping) else {}
+    result: dict[str, Any] = {
+        "ok": True,
+        "share": str(share_dir),
+        "state": "closed",
+        "revoked": None,
+        "report": None,
+        "learned_policy": None,
+    }
+    if revoke:
+        lease_file = files.get("lease_file") or lease.get("file")
+        lease_id = lease.get("id")
+        if isinstance(lease_file, str) and isinstance(lease_id, str):
+            result["revoked"] = revoke_lease(_resolve_share_path(share_dir, lease_file), lease_id)
+            result["ok"] = bool(result["revoked"]["ok"])
+        else:
+            result["revoked"] = {"ok": False, "error": "share manifest does not contain lease file/id"}
+            result["ok"] = False
+
+    audit_path = _resolve_share_path(share_dir, files.get("audit_log", "traces/audit.jsonl"))
+    inspection: dict[str, Any] | None = None
+    if audit_path.exists():
+        inspection = inspect_mcp_log(audit_path, kind="audit")
+
+    if report:
+        report_path = share_dir / "session-report.md"
+        if inspection is not None:
+            report_text = format_mcp_inspection_report(inspection)
+        else:
+            report_text = "# snulbug MCP share closeout\n\nNo audit log was found for this share session.\n"
+        _write_text(report_path, report_text, force=force)
+        result["report"] = str(report_path)
+
+    if learn:
+        session_path = _resolve_share_path(share_dir, files.get("session_log", "traces/session.jsonl"))
+        if not session_path.exists():
+            result["learned_policy"] = {"ok": False, "error": f"session log not found: {session_path}"}
+            result["ok"] = False
+        else:
+            from .learn import learn_mcp_policy
+
+            output = Path(learn_out) if learn_out is not None else share_dir / "learned-policy.snulbug"
+            learned = learn_mcp_policy(session_path, output, force=force)
+            result["learned_policy"] = learned
+            result["ok"] = bool(result["ok"] and learned["ok"])
+
+    _update_share_manifest(
+        share_dir,
+        state="closed" if result["ok"] else "close_failed",
+        closeout={
+            "closed_at": _now_iso(),
+            "revoked": result["revoked"],
+            "report": result["report"],
+            "learned_policy": result["learned_policy"],
+        },
+    )
+    return result
+
+
+def run_mcp_share(
+    directory: str | Path,
+    *,
+    dry_run: bool = False,
+    decision_console: bool | None = None,
+) -> dict[str, Any] | None:
+    """Run the proxy for a generated MCP share session."""
+
+    share_dir = Path(directory)
+    manifest = load_mcp_share(share_dir)
+    commands = manifest.get("commands") if isinstance(manifest.get("commands"), Mapping) else {}
+    files = manifest.get("files") if isinstance(manifest.get("files"), Mapping) else {}
+    config = files.get("config")
+    if not isinstance(config, str) or not config:
+        raise ValueError("share manifest does not contain a config path")
+    if dry_run:
+        return {
+            "ok": True,
+            "share": str(share_dir),
+            "state": manifest.get("state", "created"),
+            "commands": commands,
+        }
+
+    from .config import load_mcp_fabric_config, load_mcp_proxy_config, merge_mcp_proxy_config
+    from .fabric import build_fabric_audit_metadata
+    from .proxy import run_proxy
+
+    config_path = _resolve_share_path(share_dir, config)
+    overrides = {}
+    if decision_console is not None:
+        overrides["decision_console"] = decision_console
+    proxy_config = merge_mcp_proxy_config(load_mcp_proxy_config(config_path), overrides)
+    fabric_config = load_mcp_fabric_config(config_path)
+    fabric_config["proxy"] = proxy_config
+    _update_share_manifest(
+        share_dir,
+        state="running",
+        runtime={
+            "started_at": _now_iso(),
+            "config": str(config_path),
+            "decision_console": proxy_config["decision_console"],
+        },
+    )
+    _run_proxy_config(
+        proxy_config,
+        fabric_config,
+        build_fabric_audit_metadata=build_fabric_audit_metadata,
+        run_proxy=run_proxy,
+    )
+    return None
+
+
 def _share_directory(directory: str | Path | None) -> Path:
     if directory is not None:
         return Path(directory)
@@ -235,6 +499,7 @@ def _preflight_share(directory: Path, *, force: bool) -> None:
         "snulbug.toml",
         "leases.json",
         "mcp-client.json",
+        SHARE_MANIFEST,
         "SHARE.md",
         "tunnel",
         DEFAULT_CONTAINER_RECIPE_DIR,
@@ -285,11 +550,15 @@ def _command_plan(
     )
     return {
         "export_token": f"export {DEFAULT_SHARE_TOKEN_ENV}={shlex.quote(token)}",
+        "run": f"uv run snulbug mcp share run {shlex.quote(str(share_dir))}",
         "proxy": f"uv run snulbug mcp proxy --config {shlex.quote(str(config))} --decision-console",
         "provider": [
             f"(cd {shlex.quote(str(tunnel_dir))} && {str(command['command'])})" for command in provider_commands
         ],
         "doctor": "\n".join(doctor_lines),
+        "share_doctor": f"uv run snulbug mcp share doctor {shlex.quote(str(share_dir))}",
+        "client": f"uv run snulbug mcp share client {shlex.quote(str(share_dir))}",
+        "close": f"uv run snulbug mcp share close {shlex.quote(str(share_dir))} --report --revoke",
         "inspect_session": f"uv run snulbug mcp evidence inspect {shlex.quote(str(session))}",
         "inspect_audit": (
             f"uv run snulbug mcp evidence inspect {shlex.quote(str(audit))} "
@@ -330,6 +599,10 @@ def _share_report(
         "## Start the share\n\n"
         "```bash\n"
         f"{command_plan['export_token']}\n"
+        f"{command_plan['run']}\n"
+        "```\n\n"
+        "The lower-level proxy command remains available if you need it:\n\n"
+        "```bash\n"
         f"{command_plan['proxy']}\n"
         "```\n\n"
         "In another shell, run the provider bridge/tunnel command:\n\n"
@@ -338,7 +611,7 @@ def _share_report(
         "```\n\n"
         "## Verify\n\n"
         "```bash\n"
-        f"{command_plan['doctor']}\n"
+        f"{command_plan['share_doctor']}\n"
         "```\n\n"
         "## Remote container as upstream\n\n"
         f"Optional Docker Compose recipe: `{container_recipe['readme']}`\n\n"
@@ -348,8 +621,7 @@ def _share_report(
         "contains a lease scoped to prefixed facade tools.\n\n"
         "## Close out\n\n"
         "```bash\n"
-        f"{command_plan['inspect_audit']}\n"
-        f"{command_plan['revoke_lease']}\n"
+        f"{command_plan['close']}\n"
         "```\n\n"
         "The bearer token is embedded in the generated policy. Stop the proxy and delete this share "
         "directory when the session is over.\n\n"
@@ -358,6 +630,189 @@ def _share_report(
         f"- Policy: `{quickstart['policy']}`\n"
         f"- Lease file: `{lease['file']}`\n"
         f"- Tunnel setup: `{Path(tunnel['written_files'][0]).parent if tunnel.get('written_files') else ''}`\n"
+    )
+
+
+def _share_manifest(
+    *,
+    session_id: str,
+    share_dir: Path,
+    provider: str,
+    preset: str,
+    ttl: str,
+    task: str,
+    upstream: str,
+    host: str,
+    port: int,
+    state: str,
+    lease_required: bool,
+    lease_header: str,
+    quickstart: dict[str, Any],
+    tunnel: dict[str, Any],
+    lease: dict[str, Any],
+    client_config_path: Path,
+    container_recipe: dict[str, Any],
+    command_plan: dict[str, Any],
+) -> dict[str, Any]:
+    audit_log = share_dir / "traces" / "audit.jsonl"
+    session_log = share_dir / "traces" / "session.jsonl"
+    client_headers = {
+        "Authorization": f"Bearer {quickstart.get('token', '')}",
+        lease_header: lease["token"],
+    }
+    # quickstart does not expose the bearer token in older result shapes; the
+    # client config is the source of truth for secret-bearing headers.
+    try:
+        with client_config_path.open("r", encoding="utf-8") as file:
+            client_config = json.load(file)
+        server_config = next(iter(client_config.get("mcpServers", {}).values()))
+        headers = server_config.get("headers")
+        if isinstance(headers, Mapping):
+            client_headers = {str(key): str(value) for key, value in headers.items()}
+    except Exception:
+        pass
+
+    return {
+        "type": "snulbug.share",
+        "version": 1,
+        "state": "created",
+        "created_at": _now_iso(),
+        "updated_at": _now_iso(),
+        "session": {
+            "id": session_id,
+            "directory": str(share_dir),
+            "provider": provider,
+            "preset": preset,
+            "ttl": ttl,
+            "task": task,
+            "upstream": upstream,
+            "host": host,
+            "port": port,
+            "state": state,
+            "lease_required": lease_required,
+            "lease_header": lease_header,
+        },
+        "client": {
+            "name": next(iter(_client_config_names(client_config_path)), DEFAULT_SHARE_CLIENT_NAME),
+            "url": tunnel["client"]["url"],
+            "headers": client_headers,
+            "config": str(client_config_path),
+        },
+        "lease": {
+            "file": lease["file"],
+            "id": lease["lease"]["id"],
+            "expires_at": lease["lease"]["expires_at"],
+            "header": lease_header,
+        },
+        "files": {
+            "manifest": str(share_dir / SHARE_MANIFEST),
+            "config": quickstart["config"],
+            "policy": quickstart["policy"],
+            "policy_file": quickstart["policy_file"],
+            "lease_file": lease["file"],
+            "client_config": str(client_config_path),
+            "report": str(share_dir / "SHARE.md"),
+            "session_log": str(session_log),
+            "audit_log": str(audit_log),
+            "tunnel_dir": str(share_dir / "tunnel"),
+            "container_recipes": container_recipe["directory"],
+        },
+        "tunnel": _tunnel_summary(tunnel),
+        "recipes": {
+            "remote_container_upstream": container_recipe,
+        },
+        "commands": command_plan,
+    }
+
+
+def _client_config_names(path: Path) -> list[str]:
+    with path.open("r", encoding="utf-8") as file:
+        config = json.load(file)
+    servers = config.get("mcpServers") if isinstance(config, Mapping) else None
+    if not isinstance(servers, Mapping):
+        return []
+    return [str(name) for name in servers]
+
+
+def _write_share_manifest(share_dir: Path, manifest: Mapping[str, Any], *, force: bool) -> None:
+    _write_json(share_dir / SHARE_MANIFEST, dict(manifest), force=force)
+
+
+def _update_share_manifest(
+    share_dir: Path,
+    *,
+    state: str | None = None,
+    runtime: Mapping[str, Any] | None = None,
+    closeout: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    manifest = load_mcp_share(share_dir)
+    if state is not None:
+        manifest["state"] = state
+    manifest["updated_at"] = _now_iso()
+    if runtime is not None:
+        manifest["runtime"] = dict(runtime)
+    if closeout is not None:
+        manifest["closeout"] = dict(closeout)
+    (share_dir / SHARE_MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return manifest
+
+
+def _resolve_share_path(share_dir: Path, value: Any) -> Path:
+    path = Path(str(value))
+    return path if path.is_absolute() else share_dir / path
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _run_proxy_config(
+    proxy_config: Mapping[str, Any],
+    fabric_config: Mapping[str, Any],
+    *,
+    build_fabric_audit_metadata: Any,
+    run_proxy: Any,
+) -> None:
+    topology_audit = build_fabric_audit_metadata(fabric_config)
+    run_proxy(
+        upstream=proxy_config["upstream"],
+        upstreams=proxy_config["upstreams"],
+        policy=proxy_config["policy"],
+        host=proxy_config["host"],
+        port=proxy_config["port"],
+        state=proxy_config["state"],
+        trace=proxy_config["trace"],
+        max_body_bytes=proxy_config["max_body_bytes"],
+        timeout=proxy_config["timeout"],
+        record_out=proxy_config["record_out"],
+        audit_out=proxy_config["audit_out"],
+        redact_records=proxy_config["redact_records"],
+        decision_console=proxy_config["decision_console"],
+        decision_console_format=proxy_config["decision_console_format"],
+        confirm=proxy_config["confirm"],
+        response_max_bytes=proxy_config["response_max_bytes"],
+        response_redact_secrets=proxy_config["response_redact_secrets"],
+        response_block_instructions=proxy_config["response_block_instructions"],
+        tool_pinning=proxy_config["tool_pinning"],
+        tool_pinning_action=proxy_config["tool_pinning_action"],
+        schema_validation=proxy_config["schema_validation"],
+        schema_validation_action=proxy_config["schema_validation_action"],
+        facade_health_routing=proxy_config["facade_health_routing"],
+        facade_health_failure_threshold=proxy_config["facade_health_failure_threshold"],
+        facade_health_cooldown_seconds=proxy_config["facade_health_cooldown_seconds"],
+        facade_health_exclude_unhealthy=proxy_config["facade_health_exclude_unhealthy"],
+        lease_file=proxy_config["lease_file"],
+        lease_required=proxy_config["lease_required"],
+        lease_header=proxy_config["lease_header"],
+        tunnel_provider=proxy_config["tunnel_provider"],
+        tunnel_public_url=proxy_config["tunnel_public_url"],
+        cloudflare_access=proxy_config["cloudflare_access"],
+        cloudflare_access_require_jwt=proxy_config["cloudflare_access_require_jwt"],
+        cloudflare_access_require_email=proxy_config["cloudflare_access_require_email"],
+        cloudflare_access_require_cf_ray=proxy_config["cloudflare_access_require_cf_ray"],
+        cloudflare_access_allowed_emails=proxy_config["cloudflare_access_allowed_emails"],
+        cloudflare_access_allowed_domains=proxy_config["cloudflare_access_allowed_domains"],
+        topology_audit=topology_audit,
     )
 
 
