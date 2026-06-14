@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
 import os
@@ -58,6 +59,8 @@ CONTAINER_REMOTE_BRIDGE_PORT = 19100
 DEFAULT_SHARE_MEMBER_REGISTRY = Path(".snulbug") / "fabric-members.json"
 DEFAULT_SHARE_MEMBER_DISCOVERY_PROVIDER = "share-members"
 SHARE_MEMBER_KINDS = ("codespaces", "devcontainer", "holepunch", "container", "generic")
+AUTH_CONFORMANCE_SCHEMA = "snulbug.auth-conformance-pack.v1"
+AUTH_CONFORMANCE_VERSION = 1
 
 
 def create_mcp_share(
@@ -1098,6 +1101,337 @@ def doctor_mcp_share_auth(
     }
 
 
+def generate_auth_conformance_pack(
+    directory: str | Path | None = None,
+    *,
+    config: str | Path | None = None,
+    public_url: str | None = None,
+    schema_catalogs: Sequence[str | Path] = (),
+    logs: Sequence[str | Path] = (),
+    kind: str = "auto",
+    token_envs: Sequence[str] = (),
+    denied_token_envs: Sequence[str] = (),
+    output: str | Path = ".snulbug/auth-conformance",
+    force: bool = False,
+) -> dict[str, Any]:
+    """Generate a secret-safe auth conformance pack for an MCP share."""
+
+    if kind not in {"auto", "record", "audit"}:
+        raise ValueError("kind must be 'auto', 'record', or 'audit'")
+    if not schema_catalogs:
+        raise ValueError("at least one discovered schema catalog is required")
+    if not logs:
+        raise ValueError("at least one replay or audit log is required")
+    token_refs = [
+        *(_parse_auth_conformance_token_ref(value, expected_allowed=True) for value in token_envs),
+        *(_parse_auth_conformance_token_ref(value, expected_allowed=False) for value in denied_token_envs),
+    ]
+    if not token_refs:
+        raise ValueError("at least one --token-env reference is required")
+
+    from .config import load_mcp_proxy_config
+
+    share_dir = Path(directory) if directory is not None else None
+    manifest: dict[str, Any] = {}
+    session_model: dict[str, Any] = {}
+    if share_dir is not None:
+        manifest_path = share_dir / SHARE_MANIFEST
+        if manifest_path.is_file():
+            manifest = load_mcp_share(share_dir)
+        model_path = share_session_model_path(share_dir)
+        if model_path.is_file():
+            session_model = load_share_session_model(share_dir)
+
+    config_path = _resolve_auth_doctor_config_path(share_dir, manifest, session_model, config)
+    proxy_config = load_mcp_proxy_config(config_path)
+    auth = _mapping(proxy_config.get("auth"))
+    public_url_candidates = _auth_public_url_candidates(
+        manifest=manifest,
+        session_model=session_model,
+        proxy_config=proxy_config,
+        public_url=public_url,
+    )
+    url = _resolve_auth_doctor_public_url(public_url_candidates=public_url_candidates, auth=auth)
+
+    output_path = Path(output)
+    if output_path.exists() and any(output_path.iterdir()) and not force:
+        raise FileExistsError(f"auth conformance output already exists: {output_path}")
+    output_path.mkdir(parents=True, exist_ok=True)
+    schema_dir = output_path / "schemas"
+    log_dir = output_path / "logs"
+    schema_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    schema_entries = []
+    for index, catalog in enumerate(schema_catalogs, start=1):
+        catalog_path = Path(catalog)
+        profile = _auth_schema_catalog_profile(catalog_path)
+        profile_path = schema_dir / f"{index:02d}-{_safe_artifact_name(catalog_path.stem or 'schema')}.json"
+        profile_path.write_text(json.dumps(profile, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        schema_entries.append(
+            {
+                "path": _relative_pack_path(catalog_path, output_path),
+                "sha256": _file_sha256(catalog_path),
+                "profile": _relative_pack_path(profile_path, output_path),
+                "hash": profile.get("hash"),
+                "summary": profile.get("summary", {}),
+            }
+        )
+
+    log_entries = []
+    for index, log in enumerate(logs, start=1):
+        log_path = Path(log)
+        profile = _auth_log_profile(log_path, kind=kind)
+        profile_path = log_dir / f"{index:02d}-{_safe_artifact_name(log_path.stem or 'log')}.json"
+        profile_path.write_text(json.dumps(profile, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        log_entries.append(
+            {
+                "path": _relative_pack_path(log_path, output_path),
+                "sha256": _file_sha256(log_path),
+                "kind": kind,
+                "profile": _relative_pack_path(profile_path, output_path),
+                "event_count": profile.get("event_count", 0),
+                "auth_event_count": profile.get("auth_event_count", 0),
+                "scope_map_event_count": profile.get("scope_map_event_count", 0),
+                "claim_policy_event_count": profile.get("claim_policy_event_count", 0),
+            }
+        )
+
+    manifest_path = output_path / "manifest.json"
+    report_path = output_path / "AUTH_CONFORMANCE.md"
+    pack_manifest = {
+        "schema": AUTH_CONFORMANCE_SCHEMA,
+        "version": AUTH_CONFORMANCE_VERSION,
+        "generated_by": "snulbug mcp share auth conformance generate",
+        "generated_at": _now_iso(),
+        "share": str(share_dir) if share_dir is not None else None,
+        "public_url": url,
+        "config": {"path": _relative_pack_path(config_path, output_path), "sha256": _file_sha256(config_path)},
+        "auth": _auth_conformance_expected(auth),
+        "schemas": schema_entries,
+        "tokens": token_refs,
+        "logs": log_entries,
+    }
+    manifest_path.write_text(json.dumps(pack_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    report_path.write_text(_format_auth_conformance_pack_report(pack_manifest), encoding="utf-8")
+    return {
+        "ok": True,
+        "output": str(output_path),
+        "manifest": str(manifest_path),
+        "report": str(report_path),
+        "config": str(config_path),
+        "url": url,
+        "schema_catalogs": [str(path) for path in schema_catalogs],
+        "logs": [str(path) for path in logs],
+        "tokens": [
+            {"label": token["label"], "env": token["env"], "expected_allowed": token["expected_allowed"]}
+            for token in token_refs
+        ],
+        "next_steps": [
+            f"review {report_path}",
+            f"uv run snulbug mcp share auth conformance run {output_path}",
+        ],
+    }
+
+
+def run_auth_conformance_pack(
+    pack: str | Path,
+    *,
+    token_envs: Sequence[str] = (),
+    public_url: str | None = None,
+    headers: Sequence[str] | Mapping[str, str] | None = None,
+    timeout: float = 5.0,
+    live_checks: bool = True,
+) -> dict[str, Any]:
+    """Run a generated auth conformance pack."""
+
+    from .config import load_mcp_proxy_config
+    from .mcp_schemas import parse_mcp_schema_headers
+    from .proxy import _oauth_resource_config
+
+    pack_path = Path(pack)
+    manifest_path = pack_path / "manifest.json"
+    checks: list[dict[str, Any]] = []
+    recommendations: list[str] = []
+    manifest: Mapping[str, Any] | None = None
+
+    try:
+        manifest_value = _read_json(manifest_path)
+        if not isinstance(manifest_value, Mapping):
+            raise ValueError("auth conformance manifest must be a JSON object")
+        if manifest_value.get("schema") != AUTH_CONFORMANCE_SCHEMA:
+            raise ValueError(f"unsupported auth conformance schema: {manifest_value.get('schema')!r}")
+        if manifest_value.get("version") != AUTH_CONFORMANCE_VERSION:
+            raise ValueError(f"unsupported auth conformance version: {manifest_value.get('version')!r}")
+        manifest = manifest_value
+    except Exception as exc:
+        _add_share_doctor_check(
+            checks,
+            "pack.manifest_loaded",
+            False,
+            f"failed to load auth conformance manifest: {exc}",
+            component="auth-conformance",
+        )
+        return _auth_conformance_result(pack_path, manifest, checks, recommendations=recommendations)
+
+    _add_share_doctor_check(
+        checks,
+        "pack.manifest_loaded",
+        True,
+        f"loaded auth conformance manifest {manifest_path}",
+        component="auth-conformance",
+    )
+    config_ref = _mapping(manifest.get("config"))
+    config_path = _resolve_pack_path(pack_path, config_ref.get("path"))
+    proxy_config: Mapping[str, Any] = {}
+    auth: Mapping[str, Any] = {}
+    try:
+        proxy_config = load_mcp_proxy_config(config_path)
+        auth = _mapping(proxy_config.get("auth"))
+        _add_share_doctor_check(
+            checks,
+            "config.loaded",
+            True,
+            f"loaded proxy config {config_path}",
+            component="auth-conformance",
+        )
+    except Exception as exc:
+        _add_share_doctor_check(
+            checks,
+            "config.loaded",
+            False,
+            f"failed to load proxy config: {exc}",
+            component="auth-conformance",
+        )
+        return _auth_conformance_result(
+            pack_path,
+            manifest,
+            checks,
+            config=config_path,
+            recommendations=recommendations,
+        )
+
+    if config_ref.get("sha256"):
+        actual_config_hash = _file_sha256(config_path)
+        _add_share_doctor_check(
+            checks,
+            "config.fingerprint",
+            actual_config_hash == config_ref.get("sha256"),
+            "config file matches generated auth conformance fingerprint"
+            if actual_config_hash == config_ref.get("sha256")
+            else "config file changed since auth conformance pack generation",
+            component="auth-conformance",
+            details={"expected": config_ref.get("sha256"), "actual": actual_config_hash},
+        )
+    _run_auth_expected_checks(checks, auth, _mapping(manifest.get("auth")))
+
+    token_refs = _merge_auth_token_refs(_sequence(manifest.get("tokens")), token_envs)
+    token_results = _run_auth_token_checks(checks, token_refs, oauth_config=_oauth_resource_config(auth))
+    doctor_token = next(
+        (
+            result.get("token")
+            for result in token_results
+            if result.get("expected_allowed") is True and result.get("token")
+        ),
+        None,
+    )
+    doctor_url = public_url or manifest.get("public_url")
+    doctor_headers = (
+        parse_mcp_schema_headers(headers, token=None)
+        if not isinstance(headers, Mapping)
+        else {str(name).lower(): str(value) for name, value in headers.items()}
+    )
+    doctor = doctor_mcp_share_auth(
+        config=config_path,
+        public_url=str(doctor_url) if isinstance(doctor_url, str) and doctor_url else None,
+        headers=doctor_headers,
+        token=str(doctor_token) if doctor_token else None,
+        timeout=timeout,
+        live_checks=live_checks,
+    )
+    _append_prefixed_checks(checks, doctor.get("checks"), prefix="doctor", component="auth-doctor")
+    if not doctor.get("ok"):
+        recommendations.extend(str(item) for item in _sequence(doctor.get("recommendations")))
+
+    schema_profiles = []
+    for index, schema_ref in enumerate(_sequence(manifest.get("schemas")), start=1):
+        profile = _run_auth_schema_artifact_checks(checks, pack_path, _mapping(schema_ref), index=index)
+        if profile:
+            schema_profiles.append(profile)
+    if not schema_profiles:
+        _add_share_doctor_check(
+            checks,
+            "schemas.configured",
+            False,
+            "auth conformance pack does not include schema catalogs",
+            component="schemas",
+        )
+    else:
+        _run_auth_schema_policy_checks(checks, auth, schema_profiles)
+
+    log_profiles = []
+    for index, log_ref in enumerate(_sequence(manifest.get("logs")), start=1):
+        profile = _run_auth_log_artifact_checks(checks, pack_path, _mapping(log_ref), index=index)
+        if profile:
+            log_profiles.append(profile)
+    if not log_profiles:
+        _add_share_doctor_check(
+            checks,
+            "logs.configured",
+            False,
+            "auth conformance pack does not include replay or audit logs",
+            component="logs",
+        )
+    else:
+        _run_auth_log_evidence_checks(checks, auth, log_profiles)
+
+    return _auth_conformance_result(
+        pack_path,
+        manifest,
+        checks,
+        config=config_path,
+        doctor=doctor,
+        recommendations=recommendations,
+    )
+
+
+def format_share_auth_conformance_report(result: Mapping[str, Any]) -> str:
+    """Render auth conformance pack run results as Markdown."""
+
+    summary = _mapping(result.get("summary"))
+    lines = [
+        "# snulbug mcp share auth conformance",
+        "",
+        f"Pack: {result.get('pack')}",
+        f"Config: {result.get('config') or '-'}",
+        f"Result: {'pass' if result.get('ok') else 'fail'}",
+        "",
+        "## Checks",
+    ]
+    checks = result.get("checks", [])
+    if not checks:
+        lines.append("- none")
+    for check in checks:
+        if isinstance(check, Mapping):
+            lines.append(f"- [{check.get('status')}] {check.get('id')}: {check.get('message')}")
+    lines.extend(
+        [
+            "",
+            "## Summary",
+            (
+                f"Passed: {summary.get('passed', 0)} | Failed: {summary.get('failed', 0)} | "
+                f"Warnings: {summary.get('warnings', 0)} | Skipped: {summary.get('skipped', 0)}"
+            ),
+        ]
+    )
+    recommendations = result.get("recommendations", [])
+    if recommendations:
+        lines.extend(["", "## Recommendations"])
+        for recommendation in recommendations:
+            lines.append(f"- {recommendation}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def format_share_auth_doctor_report(result: Mapping[str, Any]) -> str:
     """Render OAuth protected-resource auth readiness checks as Markdown."""
 
@@ -1188,6 +1522,595 @@ def share_client_config(
     if output_format in {"json", "claude-desktop", "cursor"}:
         return {"ok": True, "share": str(share_dir), "format": output_format, "config": config}
     raise ValueError("output_format must be one of: json, claude-desktop, cursor, path")
+
+
+def _parse_auth_conformance_token_ref(value: str, *, expected_allowed: bool) -> dict[str, Any]:
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("token env reference must not be empty")
+    label, separator, env = raw.partition("=")
+    if not separator:
+        env = label
+        label = label.lower()
+    label = _safe_artifact_name(label.strip())
+    env = env.strip()
+    if not label or not env:
+        raise ValueError("token env references must use ENV or label=ENV")
+    return {"label": label, "env": env, "expected_allowed": expected_allowed}
+
+
+def _auth_schema_catalog_profile(path: Path) -> dict[str, Any]:
+    from .mcp_schemas import normalize_mcp_schema_catalog
+
+    catalog = normalize_mcp_schema_catalog(_read_json(path))
+    surfaces = _mapping(catalog.get("surfaces"))
+    tools = [
+        str(item.get("name"))
+        for item in _auth_schema_surface_items(surfaces.get("tools"))
+        if isinstance(item, Mapping) and item.get("name")
+    ]
+    resources = [
+        str(item.get("uri"))
+        for item in _auth_schema_surface_items(surfaces.get("resources"))
+        if isinstance(item, Mapping) and item.get("uri")
+    ]
+    prompts = [
+        str(item.get("name"))
+        for item in _auth_schema_surface_items(surfaces.get("prompts"))
+        if isinstance(item, Mapping) and item.get("name")
+    ]
+    return {
+        "ok": bool(catalog.get("ok")),
+        "hash": catalog.get("hash"),
+        "label": catalog.get("label"),
+        "methods": [str(method) for method in _sequence(catalog.get("methods"))],
+        "summary": _jsonish_copy(catalog.get("summary") or {}),
+        "tools": sorted(tools),
+        "resources": sorted(resources),
+        "prompts": sorted(prompts),
+        "errors": _jsonish_copy(catalog.get("errors") or []),
+    }
+
+
+def _auth_log_profile(path: Path, *, kind: str) -> dict[str, Any]:
+    from .inspection import _load_events
+
+    events = _load_events(path, kind=kind)
+    reason_codes: Counter[str] = Counter()
+    subjects: Counter[str] = Counter()
+    issuers: Counter[str] = Counter()
+    profiles: Counter[str] = Counter()
+    scope_denials: Counter[str] = Counter()
+    auth_event_count = 0
+    allowed = 0
+    denied = 0
+    scope_map_event_count = 0
+    claim_policy_event_count = 0
+    runtime_event_count = 0
+    for event in events:
+        auth = _event_auth_metadata(event)
+        if not auth:
+            continue
+        auth_event_count += 1
+        if auth.get("allowed") is False:
+            denied += 1
+        else:
+            allowed += 1
+        if auth.get("reason_code"):
+            reason_codes[str(auth["reason_code"])] += 1
+        if auth.get("subject"):
+            subjects[str(auth["subject"])] += 1
+        if auth.get("issuer"):
+            issuers[str(auth["issuer"])] += 1
+        if auth.get("profile_id"):
+            profiles[str(auth["profile_id"])] += 1
+        if isinstance(auth.get("runtime"), Mapping):
+            runtime_event_count += 1
+        scope_map = auth.get("scope_map") if isinstance(auth.get("scope_map"), Mapping) else auth.get("scope_match")
+        if isinstance(scope_map, Mapping):
+            scope_map_event_count += 1
+            if scope_map.get("allowed") is False:
+                target = _mapping(scope_map.get("target"))
+                tool = target.get("tool")
+                if tool:
+                    scope_denials[f"tools/call:{tool}"] += 1
+                elif scope_map.get("reason_code"):
+                    scope_denials[str(scope_map["reason_code"])] += 1
+        if isinstance(auth.get("claim_policy"), Mapping):
+            claim_policy_event_count += 1
+    return {
+        "ok": bool(events),
+        "event_count": len(events),
+        "auth_event_count": auth_event_count,
+        "allowed": allowed,
+        "denied": denied,
+        "scope_map_event_count": scope_map_event_count,
+        "claim_policy_event_count": claim_policy_event_count,
+        "runtime_event_count": runtime_event_count,
+        "reason_codes": _top_counter(reason_codes),
+        "subjects": _top_counter(subjects),
+        "issuers": _top_counter(issuers),
+        "profiles": _top_counter(profiles),
+        "scope_denials": _top_counter(scope_denials),
+    }
+
+
+def _auth_schema_surface_items(value: Any) -> list[Any]:
+    if isinstance(value, Mapping):
+        return list(value.values())
+    return _sequence(value)
+
+
+def _event_auth_metadata(event: Mapping[str, Any]) -> Mapping[str, Any]:
+    auth = event.get("auth")
+    if isinstance(auth, Mapping):
+        return auth
+    metadata_auth = _mapping(_mapping(event.get("metadata")).get("auth"))
+    return metadata_auth
+
+
+def _top_counter(counter: Counter[str]) -> list[dict[str, Any]]:
+    return [{"value": value, "count": count} for value, count in counter.most_common()]
+
+
+def _auth_conformance_expected(auth: Mapping[str, Any]) -> dict[str, Any]:
+    return _jsonish_copy(_auth_doctor_summary(auth))
+
+
+def _format_auth_conformance_pack_report(manifest: Mapping[str, Any]) -> str:
+    lines = [
+        "# snulbug auth conformance pack",
+        "",
+        f"Config: `{_mapping(manifest.get('config')).get('path')}`",
+        f"Public/client URL: `{manifest.get('public_url') or '-'}`",
+        "",
+        "## Artifacts",
+        f"- schema catalogs: {len(_sequence(manifest.get('schemas')))}",
+        f"- replay/audit logs: {len(_sequence(manifest.get('logs')))}",
+        f"- sample token refs: {len(_sequence(manifest.get('tokens')))}",
+        "",
+        "## Token Refs",
+    ]
+    for token in _sequence(manifest.get("tokens")):
+        if isinstance(token, Mapping):
+            expected = "allowed" if token.get("expected_allowed") else "denied"
+            lines.append(f"- `{token.get('label')}` via `${token.get('env')}` expected `{expected}`")
+    lines.extend(
+        [
+            "",
+            "## Next Steps",
+            "- Set the referenced token environment variables in your shell.",
+            "- Run `uv run snulbug mcp share auth conformance run <pack-dir>` before sharing the MCP URL.",
+        ]
+    )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _run_auth_expected_checks(
+    checks: list[dict[str, Any]],
+    auth: Mapping[str, Any],
+    expected: Mapping[str, Any],
+) -> None:
+    actual = _auth_conformance_expected(auth)
+    _add_share_doctor_check(
+        checks,
+        "auth.snapshot",
+        actual == dict(expected),
+        "auth config matches generated conformance snapshot"
+        if actual == dict(expected)
+        else "auth config changed since conformance pack generation",
+        component="auth-conformance",
+        details={"expected": expected, "actual": actual},
+    )
+    _add_share_doctor_check(
+        checks,
+        "auth.mode",
+        auth.get("mode") == "oauth-resource",
+        "OAuth protected-resource mode is enabled"
+        if auth.get("mode") == "oauth-resource"
+        else "OAuth protected-resource mode is not enabled",
+        component="auth-conformance",
+        details={"mode": auth.get("mode")},
+    )
+
+
+def _merge_auth_token_refs(stored: Sequence[Any], overrides: Sequence[str]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for item in stored:
+        if not isinstance(item, Mapping):
+            continue
+        label = str(item.get("label") or "").strip()
+        env = str(item.get("env") or "").strip()
+        if label and env:
+            merged[label] = {
+                "label": label,
+                "env": env,
+                "expected_allowed": item.get("expected_allowed") is not False,
+            }
+    for value in overrides:
+        parsed = _parse_auth_conformance_token_ref(value, expected_allowed=True)
+        if parsed["label"] in merged:
+            parsed["expected_allowed"] = merged[parsed["label"]]["expected_allowed"]
+        merged[parsed["label"]] = parsed
+    return [merged[key] for key in sorted(merged)]
+
+
+def _run_auth_token_checks(
+    checks: list[dict[str, Any]],
+    token_refs: Sequence[Mapping[str, Any]],
+    *,
+    oauth_config: Any,
+) -> list[dict[str, Any]]:
+    from .mcp_auth import evaluate_oauth_request
+
+    results = []
+    if not token_refs:
+        _add_share_doctor_check(
+            checks,
+            "tokens.configured",
+            False,
+            "auth conformance pack does not include sample token references",
+            component="tokens",
+        )
+        return results
+    for item in token_refs:
+        label = str(item.get("label") or "token")
+        env = str(item.get("env") or "")
+        expected_allowed = item.get("expected_allowed") is not False
+        token = os.environ.get(env) if env else None
+        check_id = f"tokens.{_safe_artifact_name(label)}"
+        if not token:
+            _add_share_doctor_check(
+                checks,
+                check_id,
+                False,
+                f"sample token environment variable {env!r} is not set",
+                component="tokens",
+                details={"label": label, "env": env, "expected_allowed": expected_allowed},
+            )
+            results.append({"label": label, "env": env, "expected_allowed": expected_allowed, "token": None})
+            continue
+        decision = evaluate_oauth_request(
+            {"type": "http", "headers": [(b"authorization", f"Bearer {token}".encode("latin-1"))]},
+            config=oauth_config,
+            body=_auth_conformance_initialize_body(),
+        )
+        ok = decision.allowed is expected_allowed
+        _add_share_doctor_check(
+            checks,
+            check_id,
+            ok,
+            f"sample token {label!r} matched expected auth decision"
+            if ok
+            else f"sample token {label!r} did not match expected auth decision",
+            component="tokens",
+            details={
+                "label": label,
+                "env": env,
+                "expected_allowed": expected_allowed,
+                "allowed": decision.allowed,
+                "reason_code": decision.metadata.get("reason_code"),
+                "subject": decision.metadata.get("subject"),
+                "issuer": decision.metadata.get("issuer"),
+                "profile_id": decision.metadata.get("profile_id"),
+                "scopes": decision.metadata.get("scopes"),
+            },
+        )
+        results.append({"label": label, "env": env, "expected_allowed": expected_allowed, "token": token})
+    return results
+
+
+def _auth_conformance_initialize_body() -> bytes:
+    return json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": "snulbug-auth-conformance",
+            "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "snulbug"}},
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _run_auth_schema_artifact_checks(
+    checks: list[dict[str, Any]],
+    pack_path: Path,
+    schema_ref: Mapping[str, Any],
+    *,
+    index: int,
+) -> dict[str, Any] | None:
+    catalog_path = _resolve_pack_path(pack_path, schema_ref.get("path"))
+    check_prefix = f"schemas.{index:02d}"
+    try:
+        actual_hash = _file_sha256(catalog_path)
+        _add_share_doctor_check(
+            checks,
+            f"{check_prefix}.fingerprint",
+            actual_hash == schema_ref.get("sha256"),
+            "schema catalog fingerprint matches generated conformance pack"
+            if actual_hash == schema_ref.get("sha256")
+            else "schema catalog changed since conformance pack generation",
+            component="schemas",
+            details={"path": str(catalog_path), "expected": schema_ref.get("sha256"), "actual": actual_hash},
+        )
+        profile = _auth_schema_catalog_profile(catalog_path)
+        _add_share_doctor_check(
+            checks,
+            f"{check_prefix}.loaded",
+            profile.get("ok") is True,
+            "schema catalog loaded without discovery errors"
+            if profile.get("ok") is True
+            else "schema catalog contains discovery errors",
+            component="schemas",
+            details={"path": str(catalog_path), "summary": profile.get("summary"), "errors": profile.get("errors")},
+        )
+        return profile
+    except Exception as exc:
+        _add_share_doctor_check(
+            checks,
+            f"{check_prefix}.loaded",
+            False,
+            f"failed to load schema catalog: {exc}",
+            component="schemas",
+            details={"path": str(catalog_path)},
+        )
+        return None
+
+
+def _run_auth_schema_policy_checks(
+    checks: list[dict[str, Any]],
+    auth: Mapping[str, Any],
+    schema_profiles: Sequence[Mapping[str, Any]],
+) -> None:
+    tools = sorted({str(tool) for profile in schema_profiles for tool in _sequence(profile.get("tools"))})
+    methods = {str(method) for profile in schema_profiles for method in _sequence(profile.get("methods"))}
+    scope_missing = _missing_auth_scope_selector_targets(auth, tools=tools, methods=methods)
+    _add_share_doctor_check(
+        checks,
+        "schemas.scope_map_targets",
+        not scope_missing,
+        "scope-map selectors resolve against discovered schemas"
+        if not scope_missing
+        else "scope-map selectors reference tools or methods missing from discovered schemas",
+        component="schemas",
+        details={"missing": scope_missing, "tool_count": len(tools), "methods": sorted(methods)},
+    )
+    claim_missing = _missing_auth_claim_policy_targets(auth, tools=tools)
+    if _auth_has_claim_policy(auth):
+        _add_share_doctor_check(
+            checks,
+            "schemas.claim_policy_targets",
+            not claim_missing,
+            "claim-policy tool entries resolve against discovered schemas"
+            if not claim_missing
+            else "claim-policy entries reference tools missing from discovered schemas",
+            component="schemas",
+            details={"missing": claim_missing, "tool_count": len(tools)},
+        )
+    else:
+        _add_share_doctor_check(
+            checks,
+            "schemas.claim_policy_targets",
+            None,
+            "claim-policy schema target check skipped because claim policy is disabled",
+            component="schemas",
+        )
+
+
+def _run_auth_log_artifact_checks(
+    checks: list[dict[str, Any]],
+    pack_path: Path,
+    log_ref: Mapping[str, Any],
+    *,
+    index: int,
+) -> dict[str, Any] | None:
+    log_path = _resolve_pack_path(pack_path, log_ref.get("path"))
+    kind = str(log_ref.get("kind") or "auto")
+    check_prefix = f"logs.{index:02d}"
+    try:
+        actual_hash = _file_sha256(log_path)
+        _add_share_doctor_check(
+            checks,
+            f"{check_prefix}.fingerprint",
+            actual_hash == log_ref.get("sha256"),
+            "replay/audit log fingerprint matches generated conformance pack"
+            if actual_hash == log_ref.get("sha256")
+            else "replay/audit log changed since conformance pack generation",
+            component="logs",
+            details={"path": str(log_path), "expected": log_ref.get("sha256"), "actual": actual_hash},
+        )
+        profile = _auth_log_profile(log_path, kind=kind)
+        _add_share_doctor_check(
+            checks,
+            f"{check_prefix}.loaded",
+            profile.get("event_count", 0) > 0,
+            "replay/audit log contains events" if profile.get("event_count", 0) > 0 else "replay/audit log is empty",
+            component="logs",
+            details={"path": str(log_path), "profile": profile},
+        )
+        return profile
+    except Exception as exc:
+        _add_share_doctor_check(
+            checks,
+            f"{check_prefix}.loaded",
+            False,
+            f"failed to load replay/audit log: {exc}",
+            component="logs",
+            details={"path": str(log_path)},
+        )
+        return None
+
+
+def _run_auth_log_evidence_checks(
+    checks: list[dict[str, Any]],
+    auth: Mapping[str, Any],
+    log_profiles: Sequence[Mapping[str, Any]],
+) -> None:
+    auth_events = sum(int(profile.get("auth_event_count", 0) or 0) for profile in log_profiles)
+    scope_events = sum(int(profile.get("scope_map_event_count", 0) or 0) for profile in log_profiles)
+    claim_events = sum(int(profile.get("claim_policy_event_count", 0) or 0) for profile in log_profiles)
+    runtime_events = sum(int(profile.get("runtime_event_count", 0) or 0) for profile in log_profiles)
+    _add_share_doctor_check(
+        checks,
+        "logs.auth_evidence",
+        auth_events > 0,
+        "replay/audit logs contain OAuth auth metadata"
+        if auth_events > 0
+        else "replay/audit logs do not contain OAuth auth metadata",
+        component="logs",
+        details={"auth_event_count": auth_events},
+    )
+    if _auth_has_scope_map(auth):
+        _add_share_doctor_check(
+            checks,
+            "logs.scope_map_evidence",
+            scope_events > 0,
+            "replay/audit logs contain scope-map decisions"
+            if scope_events > 0
+            else "replay/audit logs do not contain scope-map decisions",
+            component="logs",
+            details={"scope_map_event_count": scope_events},
+        )
+    if _auth_has_claim_policy(auth):
+        _add_share_doctor_check(
+            checks,
+            "logs.claim_policy_evidence",
+            claim_events > 0,
+            "replay/audit logs contain claim-policy decisions"
+            if claim_events > 0
+            else "replay/audit logs do not contain claim-policy decisions",
+            component="logs",
+            details={"claim_policy_event_count": claim_events},
+        )
+    _add_share_doctor_check(
+        checks,
+        "logs.runtime_observability",
+        runtime_events > 0,
+        "replay/audit logs contain auth runtime observability metadata"
+        if runtime_events > 0
+        else "replay/audit logs do not contain auth runtime observability metadata",
+        component="logs",
+        severity="warning",
+        details={"runtime_event_count": runtime_events},
+    )
+
+
+def _auth_conformance_result(
+    pack_path: Path,
+    manifest: Mapping[str, Any] | None,
+    checks: Sequence[Mapping[str, Any]],
+    *,
+    config: Path | None = None,
+    doctor: Mapping[str, Any] | None = None,
+    recommendations: Sequence[str] = (),
+) -> dict[str, Any]:
+    summary = _share_doctor_summary(checks)
+    generated_recommendations = list(recommendations)
+    if summary["failed"]:
+        generated_recommendations.append("Fix failing auth conformance checks before sharing the public MCP URL.")
+    return {
+        "ok": summary["failed"] == 0,
+        "pack": str(pack_path),
+        "config": str(config) if config is not None else None,
+        "manifest": _jsonish_copy(manifest or {}),
+        "checks": [dict(check) for check in checks],
+        "summary": summary,
+        "doctor": _jsonish_copy(doctor or {}),
+        "recommendations": _unique_strings(generated_recommendations),
+    }
+
+
+def _missing_auth_scope_selector_targets(
+    auth: Mapping[str, Any],
+    *,
+    tools: Sequence[str],
+    methods: set[str],
+) -> list[dict[str, Any]]:
+    missing = []
+    tool_set = set(tools)
+    for profile in _auth_policy_profiles(auth):
+        scope_map = _mapping(profile.get("scope_map"))
+        for scope, selectors in scope_map.items():
+            for selector in _sequence(selectors):
+                selector = str(selector)
+                if selector == "tools/call":
+                    if not tool_set:
+                        missing.append({"profile": profile.get("id"), "scope": scope, "selector": selector})
+                    continue
+                if selector.startswith("tools/call:"):
+                    pattern = selector.removeprefix("tools/call:")
+                    if _missing_scope_map_tool_patterns([pattern], tool_set):
+                        missing.append(
+                            {"profile": profile.get("id"), "scope": scope, "selector": selector, "pattern": pattern}
+                        )
+                    continue
+                if "/" in selector and selector not in methods:
+                    missing.append({"profile": profile.get("id"), "scope": scope, "selector": selector})
+    return missing
+
+
+def _missing_auth_claim_policy_targets(auth: Mapping[str, Any], *, tools: Sequence[str]) -> list[dict[str, Any]]:
+    missing = []
+    tool_set = set(tools)
+    for profile in _auth_policy_profiles(auth):
+        policy = _mapping(profile.get("claim_policy"))
+        if policy.get("enabled") is not True:
+            continue
+        for rule in _sequence(policy.get("rules")):
+            if not isinstance(rule, Mapping):
+                continue
+            patterns = [
+                *map(str, _sequence(rule.get("allow_tools"))),
+                *(f"{prefix}*" for prefix in _sequence(rule.get("allow_tool_prefixes"))),
+            ]
+            for pattern in _missing_scope_map_tool_patterns(patterns, tool_set):
+                missing.append({"profile": profile.get("id"), "rule": rule.get("id"), "pattern": pattern})
+    return missing
+
+
+def _auth_policy_profiles(auth: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    profiles: list[Mapping[str, Any]] = [{"id": auth.get("profile_id") or "default", **dict(auth)}]
+    for issuer in _sequence(auth.get("issuers")):
+        if isinstance(issuer, Mapping):
+            profiles.append({"id": issuer.get("id") or issuer.get("issuer") or "issuer", **dict(issuer)})
+    return profiles
+
+
+def _auth_has_scope_map(auth: Mapping[str, Any]) -> bool:
+    return any(bool(_mapping(profile.get("scope_map"))) for profile in _auth_policy_profiles(auth))
+
+
+def _auth_has_claim_policy(auth: Mapping[str, Any]) -> bool:
+    return any(_mapping(profile.get("claim_policy")).get("enabled") is True for profile in _auth_policy_profiles(auth))
+
+
+def _read_json(path: Path) -> Any:
+    with path.open("r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def _file_sha256(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _relative_pack_path(path: Path, base_dir: Path) -> str:
+    try:
+        return os.path.relpath(path.resolve(), base_dir.resolve())
+    except OSError:
+        return str(path)
+
+
+def _resolve_pack_path(pack_path: Path, value: Any) -> Path:
+    if not isinstance(value, str) or not value:
+        raise ValueError("pack path reference must be a non-empty string")
+    path = Path(value)
+    if path.is_absolute():
+        return path.resolve()
+    return (pack_path / path).resolve()
+
+
+def _safe_artifact_name(value: str) -> str:
+    return _check_slug(value).strip("-") or "artifact"
 
 
 def _resolve_auth_doctor_config_path(
@@ -2651,6 +3574,24 @@ def _add_share_doctor_check(
     if details:
         check["details"] = dict(details)
     checks.append(check)
+
+
+def _append_prefixed_checks(
+    target: list[dict[str, Any]],
+    checks: Any,
+    *,
+    prefix: str,
+    component: str,
+) -> None:
+    for check in _sequence(checks):
+        if not isinstance(check, Mapping):
+            continue
+        item = dict(check)
+        check_id = str(item.get("id", "check"))
+        if not check_id.startswith(f"{prefix}."):
+            item["id"] = f"{prefix}.{check_id}"
+        item["component"] = component
+        target.append(item)
 
 
 def _share_doctor_summary(checks: Sequence[Mapping[str, Any]]) -> dict[str, int]:

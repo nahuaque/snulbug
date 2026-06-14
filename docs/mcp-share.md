@@ -156,6 +156,31 @@ settings, scope-to-tool mappings, and Cloudflare Access conflicts. Use
 `--no-live-checks` while editing local config, or `--config snulbug.toml` before
 a generated share directory exists.
 
+When you want a reviewable auth gate before sharing, generate an auth
+conformance pack from the current config, discovered schemas, sample token
+references, and replay/audit evidence:
+
+```bash
+uv run snulbug mcp share auth conformance generate .snulbug/shares/share-... \
+  --url "${PUBLIC_MCP_URL}" \
+  --schema-catalog traces/schemas.json \
+  --log traces/audit.jsonl \
+  --kind audit \
+  --token-env valid=ACCESS_TOKEN \
+  --output-dir .snulbug/auth-conformance
+```
+
+The pack records file fingerprints and token environment-variable names, not raw
+token values. Run it after setting the referenced token env vars:
+
+```bash
+uv run snulbug mcp share auth conformance run .snulbug/auth-conformance
+```
+
+The run step reloads the config, re-runs auth doctor, validates sample tokens,
+checks scope/claim mappings against schema catalogs, and verifies the replay or
+audit logs contain auth decision evidence.
+
 The auth doctor also checks resource/audience drift. `mcp.auth.resource` and
 `mcp.auth.audience` should exactly match the public MCP URL. If a tunnel URL
 changes, rerun the doctor with `--url` and update stale share/client/config

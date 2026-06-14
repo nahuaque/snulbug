@@ -154,6 +154,98 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
         help="probe protected-resource metadata, issuer metadata, JWKS, and tools/list",
     )
     add_compact_arg(share_auth_doctor)
+    share_auth_conformance = share_auth_subparsers.add_parser(
+        "conformance",
+        help="generate or run OAuth auth conformance packs",
+    )
+    share_auth_conformance_subparsers = share_auth_conformance.add_subparsers(
+        dest="auth_conformance_command",
+        required=True,
+    )
+    share_auth_conformance_generate = share_auth_conformance_subparsers.add_parser(
+        "generate",
+        help="generate a secret-safe auth conformance pack",
+    )
+    share_auth_conformance_generate.add_argument("directory", nargs="?", type=Path, help="share session directory")
+    share_auth_conformance_generate.add_argument("--config", type=Path, help="snulbug.toml config path")
+    share_auth_conformance_generate.add_argument(
+        "--url",
+        "--public-url",
+        dest="url",
+        help="public MCP URL clients connect to",
+    )
+    share_auth_conformance_generate.add_argument(
+        "--schema-catalog",
+        action="append",
+        required=True,
+        type=Path,
+        help="discovered MCP schema catalog JSON; repeat for multiple catalogs",
+    )
+    share_auth_conformance_generate.add_argument(
+        "--log",
+        action="append",
+        required=True,
+        type=Path,
+        help="replay or audit JSONL log with OAuth auth evidence; repeat for multiple logs",
+    )
+    share_auth_conformance_generate.add_argument(
+        "--kind",
+        choices=("auto", "record", "audit"),
+        default="auto",
+        help="log kind for generated log profiles",
+    )
+    share_auth_conformance_generate.add_argument(
+        "--token-env",
+        action="append",
+        required=True,
+        help="expected-valid sample token env reference, as ENV or label=ENV",
+    )
+    share_auth_conformance_generate.add_argument(
+        "--denied-token-env",
+        action="append",
+        default=[],
+        help="expected-denied sample token env reference, as ENV or label=ENV",
+    )
+    share_auth_conformance_generate.add_argument(
+        "--output-dir",
+        "--out",
+        type=Path,
+        default=Path(".snulbug/auth-conformance"),
+        help="output conformance pack directory",
+    )
+    add_force_arg(share_auth_conformance_generate, help="overwrite generated auth conformance files")
+    add_compact_arg(share_auth_conformance_generate)
+    share_auth_conformance_run = share_auth_conformance_subparsers.add_parser(
+        "run",
+        help="run a generated auth conformance pack",
+    )
+    share_auth_conformance_run.add_argument("pack", type=Path, help="auth conformance pack directory")
+    share_auth_conformance_run.add_argument(
+        "--token-env",
+        action="append",
+        default=[],
+        help="override or add token env reference, as ENV or label=ENV",
+    )
+    share_auth_conformance_run.add_argument(
+        "--url",
+        "--public-url",
+        dest="url",
+        help="public MCP URL override",
+    )
+    share_auth_conformance_run.add_argument(
+        "--header",
+        action="append",
+        default=[],
+        help="HTTP header as 'Name: value'",
+    )
+    share_auth_conformance_run.add_argument("--timeout", type=float, default=5.0, help="HTTP probe timeout in seconds")
+    share_auth_conformance_run.add_argument(
+        "--live-checks",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="run auth doctor live metadata and tools/list checks",
+    )
+    add_compact_arg(share_auth_conformance_run)
     share_auth_lab = share_auth_subparsers.add_parser(
         "lab",
         help="run a local OAuth scope + task lease auth lab",
@@ -271,10 +363,13 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
         create_mcp_share,
         doctor_mcp_share,
         doctor_mcp_share_auth,
+        format_share_auth_conformance_report,
         format_share_auth_doctor_report,
         format_share_doctor_report,
         format_share_status_report,
+        generate_auth_conformance_pack,
         promote_mcp_share_policy,
+        run_auth_conformance_pack,
         run_mcp_share,
         share_client_config,
         share_report,
@@ -535,6 +630,39 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                 status = 0 if result["ok"] else 1
                 write_result_output(result, compact=args.compact, formatter=format_share_auth_doctor_report)
                 return status
+            if args.share_auth_command == "conformance":
+                if args.auth_conformance_command == "generate":
+                    directory = args.directory
+                    if directory is None and args.config is None and share_session_model_path(Path.cwd()).is_file():
+                        directory = Path.cwd()
+                    result = generate_auth_conformance_pack(
+                        directory,
+                        config=args.config,
+                        public_url=args.url,
+                        schema_catalogs=args.schema_catalog or [],
+                        logs=args.log or [],
+                        kind=args.kind,
+                        token_envs=args.token_env or [],
+                        denied_token_envs=args.denied_token_env or [],
+                        output=args.output_dir,
+                        force=args.force,
+                    )
+                    write_generated_session_output(result, compact=args.compact)
+                    return 0
+                if args.auth_conformance_command == "run":
+                    result = run_auth_conformance_pack(
+                        args.pack,
+                        token_envs=args.token_env or [],
+                        public_url=args.url,
+                        headers=args.header,
+                        timeout=args.timeout,
+                        live_checks=args.live_checks,
+                    )
+                    status = 0 if result["ok"] else 1
+                    write_result_output(result, compact=args.compact, formatter=format_share_auth_conformance_report)
+                    return status
+                parser.error(f"unknown mcp share auth conformance command: {args.auth_conformance_command}")
+                return 2
             if args.share_auth_command == "lab":
                 from ..lab import run_mcp_auth_lab
 

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import base64
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs
 
+import jwt
 import pytest
 
 from snulbug import (
@@ -15,10 +17,12 @@ from snulbug import (
     create_mcp_share,
     doctor_mcp_share,
     doctor_mcp_share_auth,
+    generate_auth_conformance_pack,
     load_fabric_member_registry,
     load_mcp_proxy_config,
     load_share_session_model,
     promote_mcp_share_policy,
+    run_auth_conformance_pack,
     run_mcp_share,
     share_client_config,
     share_report,
@@ -26,6 +30,7 @@ from snulbug import (
     share_status,
     write_share_session_model,
 )
+from snulbug.mcp_schemas import build_mcp_schema_catalog
 from snulbug.simulator import main as simulator_main
 
 
@@ -636,6 +641,72 @@ def test_mcp_share_auth_doctor_validates_static_oauth_config(tmp_path):
     assert checks["auth.scope_map.tools_discovered"]["status"] == "skip"
 
 
+def test_mcp_share_auth_conformance_pack_proves_config_schema_token_and_logs(tmp_path, monkeypatch):
+    resource = "https://mcp.example.test/mcp"
+    issuer = "https://issuer.example.test"
+    secret = "auth-conformance-secret-32-bytes"
+    config = write_hs256_oauth_share_config(tmp_path, resource=resource, issuer=issuer, secret=secret)
+    catalog = write_auth_schema_catalog(tmp_path)
+    audit_log = write_auth_audit_log(tmp_path, issuer=issuer)
+    token = make_hs256_oauth_token(secret, issuer=issuer, audience=resource, scopes=["mcp:connect", "mcp:tools.read"])
+    monkeypatch.setenv("SNULBUG_AUTH_CONFORMANCE_TOKEN", token)
+    pack = tmp_path / "auth-conformance"
+
+    generated = generate_auth_conformance_pack(
+        config=config,
+        public_url=resource,
+        schema_catalogs=[catalog],
+        logs=[audit_log],
+        kind="audit",
+        token_envs=["valid=SNULBUG_AUTH_CONFORMANCE_TOKEN"],
+        output=pack,
+    )
+    result = run_auth_conformance_pack(pack, live_checks=False)
+    checks = {check["id"]: check for check in result["checks"]}
+
+    assert generated["ok"] is True
+    assert (pack / "manifest.json").is_file()
+    assert result["ok"] is True
+    assert checks["config.fingerprint"]["status"] == "pass"
+    assert checks["tokens.valid"]["status"] == "pass"
+    assert checks["schemas.scope_map_targets"]["status"] == "pass"
+    assert checks["logs.auth_evidence"]["status"] == "pass"
+    assert checks["logs.scope_map_evidence"]["status"] == "pass"
+    assert checks["logs.runtime_observability"]["status"] == "pass"
+    assert token not in json.dumps(result)
+
+
+def test_mcp_share_auth_conformance_pack_fails_when_schema_catalog_drifts(tmp_path, monkeypatch):
+    resource = "https://mcp.example.test/mcp"
+    issuer = "https://issuer.example.test"
+    secret = "auth-conformance-secret-32-bytes"
+    config = write_hs256_oauth_share_config(tmp_path, resource=resource, issuer=issuer, secret=secret)
+    catalog = write_auth_schema_catalog(tmp_path)
+    audit_log = write_auth_audit_log(tmp_path, issuer=issuer)
+    token = make_hs256_oauth_token(secret, issuer=issuer, audience=resource, scopes=["mcp:connect", "mcp:tools.read"])
+    monkeypatch.setenv("SNULBUG_AUTH_CONFORMANCE_TOKEN", token)
+    pack = tmp_path / "auth-conformance"
+    generate_auth_conformance_pack(
+        config=config,
+        public_url=resource,
+        schema_catalogs=[catalog],
+        logs=[audit_log],
+        kind="audit",
+        token_envs=["valid=SNULBUG_AUTH_CONFORMANCE_TOKEN"],
+        output=pack,
+    )
+    catalog.write_text(
+        json.dumps(build_mcp_schema_catalog({"tools/list": {"result": {"tools": []}}})), encoding="utf-8"
+    )
+
+    result = run_auth_conformance_pack(pack, live_checks=False)
+    checks = {check["id"]: check for check in result["checks"]}
+
+    assert result["ok"] is False
+    assert checks["schemas.01.fingerprint"]["status"] == "fail"
+    assert checks["schemas.scope_map_targets"]["status"] == "fail"
+
+
 def test_mcp_share_auth_doctor_flags_public_url_drift_and_resource_audience_mismatch(tmp_path):
     configured = "https://old-tunnel.example.test/mcp"
     actual = "https://actual-tunnel.example.test/mcp"
@@ -1094,6 +1165,129 @@ strip_authorization_upstream = {str(strip_authorization_upstream).lower()}
         encoding="utf-8",
     )
     return config
+
+
+def write_hs256_oauth_share_config(
+    tmp_path: Path,
+    *,
+    resource: str,
+    issuer: str,
+    secret: str,
+) -> Path:
+    (tmp_path / "jwks.json").write_text(
+        json.dumps({"keys": [hs256_jwk(secret)]}),
+        encoding="utf-8",
+    )
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        f"""
+[mcp.proxy]
+upstream = "http://127.0.0.1:9000/mcp"
+tunnel_public_url = {json.dumps(resource)}
+redact_records = true
+
+[mcp.auth]
+mode = "oauth-resource"
+resource = {json.dumps(resource)}
+issuer = {json.dumps(issuer)}
+authorization_servers = [{json.dumps(issuer)}]
+audience = {json.dumps(resource)}
+required_scopes = ["mcp:connect"]
+jwks_path = "jwks.json"
+strip_authorization_upstream = true
+
+[mcp.auth.scope_map]
+"mcp:tools.read" = ["tools/list"]
+"mcp:tool.files.read" = ["tools/call:safe_read_file"]
+""".lstrip(),
+        encoding="utf-8",
+    )
+    return config
+
+
+def hs256_jwk(secret: str) -> dict[str, str]:
+    encoded = base64.urlsafe_b64encode(secret.encode("utf-8")).decode("ascii").rstrip("=")
+    return {"kty": "oct", "kid": "demo", "alg": "HS256", "k": encoded}
+
+
+def make_hs256_oauth_token(
+    secret: str,
+    *,
+    issuer: str,
+    audience: str,
+    scopes: list[str],
+) -> str:
+    return jwt.encode(
+        {
+            "iss": issuer,
+            "sub": "user-1",
+            "aud": audience,
+            "scope": " ".join(scopes),
+            "client_id": "agent-client",
+        },
+        secret,
+        algorithm="HS256",
+        headers={"kid": "demo"},
+    )
+
+
+def write_auth_schema_catalog(tmp_path: Path) -> Path:
+    catalog = build_mcp_schema_catalog(
+        {
+            "tools/list": {
+                "result": {
+                    "tools": [
+                        {
+                            "name": "safe_read_file",
+                            "description": "Read a demo file",
+                            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+                        }
+                    ]
+                }
+            }
+        },
+        methods=("tools/list",),
+        label="auth-conformance",
+    )
+    path = tmp_path / "schemas.json"
+    path.write_text(json.dumps(catalog, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def write_auth_audit_log(tmp_path: Path, *, issuer: str) -> Path:
+    traces = tmp_path / "traces"
+    traces.mkdir(exist_ok=True)
+    event = {
+        "type": "snulbug.audit",
+        "version": 1,
+        "time": "2026-06-14T00:00:00+00:00",
+        "request": {"method": "POST", "path": "/mcp", "headers": {"authorization": "[REDACTED]"}},
+        "mcp": {"method": "tools/list"},
+        "decision": {"action": "continue", "allowed": True, "reason_code": "test.allowed"},
+        "response": {"status": 200},
+        "auth": {
+            "allowed": True,
+            "reason_code": "oauth.allowed",
+            "subject": "user-1",
+            "issuer": issuer,
+            "scopes": ["mcp:connect", "mcp:tools.read"],
+            "scope_map": {
+                "enabled": True,
+                "allowed": True,
+                "reason_code": "oauth.scope_map_allowed",
+                "matched_scope": "mcp:tools.read",
+                "matched_selector": "tools/list",
+                "target": {"method": "tools/list", "selectors": ["tools/list"]},
+            },
+            "runtime": {
+                "caches": {"jwks": {"entries": 1, "hits": 0, "misses": 1, "fetches": 1}},
+                "decisions": {"total": 1, "allowed": 1, "reason_codes": {"oauth.allowed": 1}},
+            },
+        },
+    }
+    path = traces / "auth-audit.jsonl"
+    path.write_text(json.dumps(event, sort_keys=True) + "\n", encoding="utf-8")
+    return path
 
 
 class OAuthMcpHandler(BaseHTTPRequestHandler):
