@@ -5,7 +5,7 @@ import json
 import os
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -21,6 +21,7 @@ from .scaffolds import (
     GeneratedSession,
     ScaffoldFile,
     ScaffoldPlan,
+    format_session_report,
     session_result,
     write_scaffold,
 )
@@ -146,6 +147,7 @@ def prepare_codespace_attach(
                 GeneratedLog("audit_events", audit_out, "audit_jsonl"),
             ],
             next_steps=[
+                f"Point the MCP client at {gateway_url}",
                 f"export {discovery_env}='{discovery_value}'",
                 f"uv run snulbug mcp proxy --config {config}",
                 f"uv run snulbug mcp evidence inspect {audit_out} --kind audit",
@@ -387,61 +389,44 @@ def smoke_check_codespace_upstream(upstream_url: str, *, timeout: float = 5.0) -
 def format_codespace_attach_report(result: Mapping[str, Any]) -> str:
     """Render a short operator report for the guided Codespaces attach command."""
 
-    gateway = _mapping(result.get("gateway"))
-    upstream = _mapping(result.get("upstream"))
-    logs = _mapping(result.get("logs"))
-    env = _mapping(result.get("env"))
+    session = _mapping(result.get("generated_session"))
     smoke = _mapping(result.get("smoke_check"))
-    commands = _mapping(result.get("commands"))
-    lines = [
-        "# snulbug codespace attach",
-        "",
-        f"Gateway: `{gateway.get('url')}`",
-        f"Upstream: `{upstream.get('url')}`",
-        f"Tool prefix: `{upstream.get('tool_prefix')}`",
-        f"Config: `{result.get('config')}`",
-        f"Policy: `{result.get('policy')}`",
-        "",
-        "## Environment",
-        "",
-        f"- {env.get('name')}: `{env.get('value')}`",
-        "",
-        "## Logs",
-        "",
-        f"- Replay: `{logs.get('record_out')}`",
-        f"- Audit events: `{logs.get('audit_events')}`",
-    ]
+    extra_sections: list[tuple[str, str | Sequence[str]]] = []
     if smoke:
         ok = "ok" if smoke.get("ok") else "failed"
-        lines.extend(
-            [
-                "",
-                "## Smoke Check",
-                "",
-                f"- Status: {ok}",
-                f"- HTTP: `{smoke.get('status')}`",
-                f"- tools/list tools: `{smoke.get('tool_count')}`",
-            ]
-        )
+        smoke_lines = [
+            f"- Status: `{ok}`",
+            f"- HTTP: `{smoke.get('status')}`",
+            f"- tools/list tools: `{smoke.get('tool_count')}`",
+        ]
         tools = smoke.get("tools")
         if isinstance(tools, list) and tools:
-            lines.append(f"- Tool names: `{', '.join(str(tool) for tool in tools)}`")
+            smoke_lines.append(f"- Tool names: `{', '.join(str(tool) for tool in tools)}`")
         if smoke.get("error"):
-            lines.append(f"- Error: `{smoke.get('error')}`")
-    lines.extend(
-        [
-            "",
-            "## Next",
-            "",
-            f"- Point the MCP client at `{gateway.get('url')}`.",
-            f"- Inspect audit logs with `{commands.get('inspect_audit')}`.",
-        ]
-    )
+            smoke_lines.append(f"- Error: `{smoke.get('error')}`")
+        extra_sections.append(("Smoke Check", smoke_lines))
     if result.get("starting_proxy"):
-        lines.extend(["- Starting the local proxy now. Press Ctrl-C to stop it."])
-    else:
-        lines.extend([f"- Start later with `{commands.get('proxy')}`."])
-    return "\n".join(lines)
+        extra_sections.append(("Status", "Starting the local proxy now. Press Ctrl-C to stop it."))
+    if not session:
+        session = {
+            "name": "codespace attach",
+            "generated_by": result.get("generated_by"),
+            "root": result.get("directory"),
+            "artifacts": [
+                {"name": "config", "path": result.get("config")},
+                {"name": "policy", "path": result.get("policy")},
+            ],
+            "env": [result.get("env")],
+            "logs": [{"name": key, "path": value} for key, value in _mapping(result.get("logs")).items()],
+            "commands": [{"name": key, "command": value} for key, value in _mapping(result.get("commands")).items()],
+            "metadata": {"gateway": result.get("gateway"), "upstream": result.get("upstream")},
+        }
+    return format_session_report(
+        session,
+        title="snulbug codespace attach",
+        sections=("overview", "metadata", "files", "env", "logs", "commands", "next_steps"),
+        extra_sections=extra_sections,
+    )
 
 
 def _codespace_attach_toml(

@@ -10,6 +10,7 @@ import snulbug.simulator as simulator
 from snulbug import (
     codespace_forwarded_url,
     create_codespace_demo_server,
+    format_codespace_attach_report,
     load_mcp_fabric_config,
     load_mcp_proxy_config,
     prepare_codespace_attach,
@@ -48,6 +49,12 @@ def test_prepare_codespace_attach_writes_loadable_env_discovery_config(tmp_path,
     assert proxy["upstreams"][0]["url"] == "https://example-9001.app.github.dev/mcp"
     assert proxy["upstreams"][0]["tool_prefix"] == "codespace.files."
     assert fabric["gateway_url"] == "http://127.0.0.1:8181/mcp"
+
+    report = format_codespace_attach_report(result)
+    assert "# snulbug codespace attach" in report
+    assert "## Files" in report
+    assert "## Environment" in report
+    assert "https://example-9001.app.github.dev/mcp" in report
 
 
 def test_prepare_codespace_demo_infers_forwarded_url():

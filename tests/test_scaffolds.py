@@ -17,6 +17,7 @@ from snulbug import (
     format_session_report,
     json_scaffold_file,
     session_result,
+    session_summary,
     write_scaffold,
 )
 
@@ -107,3 +108,38 @@ def test_session_result_normalizes_generated_session_metadata(tmp_path):
     assert "# demo session" in report
     assert "http://127.0.0.1:8080/mcp" in report
     assert "traces/audit.jsonl" in report
+    assert "Bearer test" not in report
+    assert "Bearer <redacted>" in report
+    assert "`SNULBUG_TOKEN`: `<redacted>`" in report
+
+    summary = session_summary(result)
+    assert summary["client"]["headers"]["Authorization"] == "Bearer <redacted>"
+    assert summary["env"]["SNULBUG_TOKEN"] == "<redacted>"
+    unredacted = session_summary(result, redact=False)
+    assert unredacted["client"]["headers"]["Authorization"] == "Bearer test"
+    assert unredacted["env"]["SNULBUG_TOKEN"] == "test"
+
+
+def test_format_session_report_supports_sections_and_extra_sections(tmp_path):
+    result = session_result(
+        GeneratedSession(
+            name="demo session",
+            root=tmp_path,
+            artifacts=[GeneratedArtifact("config", tmp_path / "snulbug.toml", "config")],
+            commands=[GeneratedCommand("run", ["export SNULBUG_TOKEN=secret", "uv run snulbug"])],
+        )
+    )
+
+    report = format_session_report(
+        result,
+        title="custom report",
+        sections=("overview", "commands"),
+        extra_sections=[("Notes", "Use the generated config.")],
+    )
+
+    assert "# custom report" in report
+    assert "## Commands" in report
+    assert "SNULBUG_TOKEN=<redacted>" in report
+    assert "## Notes" in report
+    assert "Use the generated config." in report
+    assert "## Files" not in report

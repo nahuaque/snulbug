@@ -212,6 +212,7 @@ from .scaffolds import (
     format_session_report,
     json_scaffold_file,
     session_result,
+    session_summary,
     write_scaffold,
 )
 from .schema_policy import SchemaPolicyConfig
@@ -463,6 +464,7 @@ __all__ = [
     "share_client_config",
     "share_status",
     "session_result",
+    "session_summary",
     "simulate_policy",
     "smoke_check_codespace_upstream",
     "snapshot_mcp_tools",

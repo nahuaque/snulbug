@@ -123,6 +123,10 @@ def test_create_mcp_share_writes_ephemeral_holepunch_session(tmp_path):
     assert manifest["client"]["headers"]["Authorization"] == "Bearer share-secret"
     assert manifest["lease"]["id"] == result["lease"]["lease"]["id"]
     assert "snulbug MCP share session" in report
+    assert "## Client" in report
+    assert "## Files" in report
+    assert "Bearer share-secret" not in report
+    assert "SNULBUG_SHARE_TOKEN=<redacted>" in report
     assert "uv run snulbug mcp share doctor" in report
     assert "uv run snulbug mcp share close" in report
     assert "Remote container as upstream" in report

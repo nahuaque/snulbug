@@ -23,6 +23,7 @@ from .scaffolds import (
     GeneratedSession,
     ScaffoldFile,
     ScaffoldPlan,
+    format_session_report,
     json_scaffold_file,
     session_result,
     write_scaffold,
@@ -174,41 +175,6 @@ def create_mcp_share(
         lease_id=lease["lease"]["id"],
     )
     report_path = share_dir / "SHARE.md"
-    report = _share_report(
-        session_id=session_id,
-        provider=provider,
-        preset=preset,
-        ttl=ttl,
-        task=task,
-        quickstart=quickstart,
-        tunnel=tunnel,
-        lease=lease,
-        client_config_path=client_config_path,
-        container_recipe=container_recipe,
-        command_plan=command_plan,
-    )
-    _write_text(report_path, report, force=force)
-    manifest = _share_manifest(
-        session_id=session_id,
-        share_dir=share_dir,
-        provider=provider,
-        preset=preset,
-        ttl=ttl,
-        task=task,
-        upstream=upstream,
-        host=host,
-        port=port,
-        state=state,
-        lease_required=lease_required,
-        lease_header=lease_header,
-        quickstart=quickstart,
-        tunnel=tunnel,
-        lease=lease,
-        client_config_path=client_config_path,
-        container_recipe=container_recipe,
-        command_plan=command_plan,
-    )
-    _write_share_manifest(share_dir, manifest, force=force)
     ok = bool(quickstart["ok"]) and bool(tunnel["ok"]) and bool(lease["ok"])
     generated_session = session_result(
         GeneratedSession(
@@ -249,10 +215,43 @@ def create_mcp_share(
                 "ttl": ttl,
                 "task": task,
                 "upstream": upstream,
+                "lease": {
+                    "id": lease["lease"]["id"],
+                    "expires_at": lease["lease"]["expires_at"],
+                    "header": lease_header,
+                },
             },
         ),
         ok=ok,
     )
+    report = _share_report(
+        generated_session=generated_session,
+        lease=lease,
+        container_recipe=container_recipe,
+        client_config_path=client_config_path,
+    )
+    _write_text(report_path, report, force=force)
+    manifest = _share_manifest(
+        session_id=session_id,
+        share_dir=share_dir,
+        provider=provider,
+        preset=preset,
+        ttl=ttl,
+        task=task,
+        upstream=upstream,
+        host=host,
+        port=port,
+        state=state,
+        lease_required=lease_required,
+        lease_header=lease_header,
+        quickstart=quickstart,
+        tunnel=tunnel,
+        lease=lease,
+        client_config_path=client_config_path,
+        container_recipe=container_recipe,
+        command_plan=command_plan,
+    )
+    _write_share_manifest(share_dir, manifest, force=force)
     primary_client = generated_session["primary_client"] or {}
     file_map = generated_session["file_map"]
 
@@ -611,64 +610,42 @@ def _command_plan(
 
 def _share_report(
     *,
-    session_id: str,
-    provider: str,
-    preset: str,
-    ttl: str,
-    task: str,
-    quickstart: dict[str, Any],
-    tunnel: dict[str, Any],
+    generated_session: Mapping[str, Any],
     lease: dict[str, Any],
-    client_config_path: Path,
     container_recipe: dict[str, Any],
-    command_plan: dict[str, Any],
+    client_config_path: Path,
 ) -> str:
-    provider_commands = "\n".join(command_plan["provider"])
-    return (
-        "# snulbug MCP share session\n\n"
-        f"Session: `{session_id}`\n\n"
-        f"Provider: `{provider}`\n\n"
-        f"Preset: `{preset}`\n\n"
-        f"Task: `{task}`\n\n"
-        f"TTL: `{ttl}`\n\n"
-        f"Client URL: `{tunnel['client']['url']}`\n\n"
-        f"Lease: `{lease['lease']['id']}` expires at `{lease['lease']['expires_at']}`\n\n"
-        "## MCP client config\n\n"
-        f"Use `{client_config_path}`. It contains the bearer token and task lease token for this session.\n\n"
-        "## Start the share\n\n"
-        "```bash\n"
-        f"{command_plan['export_token']}\n"
-        f"{command_plan['run']}\n"
-        "```\n\n"
-        "The lower-level proxy command remains available if you need it:\n\n"
-        "```bash\n"
-        f"{command_plan['proxy']}\n"
-        "```\n\n"
-        "In another shell, run the provider bridge/tunnel command:\n\n"
-        "```bash\n"
-        f"{provider_commands}\n"
-        "```\n\n"
-        "## Verify\n\n"
-        "```bash\n"
-        f"{command_plan['share_doctor']}\n"
-        "```\n\n"
-        "## Remote container as upstream\n\n"
-        f"Optional Docker Compose recipe: `{container_recipe['readme']}`\n\n"
-        "This recipe runs a snulbug facade gateway, a local MCP container, and a "
-        "remote-by-peer MCP container reached through a managed Hypertele bridge. "
-        f"Use `{container_recipe['client_config']}` for this facade recipe because it "
-        "contains a lease scoped to prefixed facade tools.\n\n"
-        "## Close out\n\n"
-        "```bash\n"
-        f"{command_plan['close']}\n"
-        "```\n\n"
-        "The bearer token is embedded in the generated policy. Stop the proxy and delete this share "
-        "directory when the session is over.\n\n"
-        "## Artifacts\n\n"
-        f"- Config: `{quickstart['config']}`\n"
-        f"- Policy: `{quickstart['policy']}`\n"
-        f"- Lease file: `{lease['file']}`\n"
-        f"- Tunnel setup: `{Path(tunnel['written_files'][0]).parent if tunnel.get('written_files') else ''}`\n"
+    command_map = (
+        generated_session.get("command_map") if isinstance(generated_session.get("command_map"), Mapping) else {}
+    )
+    return format_session_report(
+        generated_session,
+        title="snulbug MCP share session",
+        sections=("overview", "metadata", "client", "files", "logs", "commands", "next_steps"),
+        extra_sections=[
+            (
+                "MCP client config",
+                f"Use `{client_config_path}`. It contains the bearer token and task lease token for this session.",
+            ),
+            (
+                "Remote container as upstream",
+                (
+                    f"Optional Docker Compose recipe: `{container_recipe['readme']}`\n\n"
+                    "This recipe runs a snulbug facade gateway, a local MCP container, and a "
+                    "remote-by-peer MCP container reached through a managed Hypertele bridge. "
+                    f"Use `{container_recipe['client_config']}` for this facade recipe because it "
+                    "contains a lease scoped to prefixed facade tools."
+                ),
+            ),
+            (
+                "Close out",
+                [
+                    f"- `{command_map.get('close')}`",
+                    "- Stop the proxy and delete this share directory when the session is over.",
+                    f"- Lease `{lease['lease']['id']}` expires at `{lease['lease']['expires_at']}`.",
+                ],
+            ),
+        ],
     )
 
 
