@@ -102,6 +102,9 @@ def build_audit_event(record: Mapping[str, Any], *, redact: bool = True) -> dict
         topology = _mapping(metadata.get("topology"))
         if topology:
             event["topology"] = topology
+        share = _mapping(metadata.get("share"))
+        if share:
+            event["share"] = share
         facade = _facade_summary(metadata)
         if facade:
             event["facade"] = facade

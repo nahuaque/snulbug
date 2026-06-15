@@ -34,6 +34,7 @@ def build_share_session_model(
     client = _mapping(manifest.get("client"))
     lease = _mapping(manifest.get("lease"))
     runtime = _mapping(manifest.get("runtime"))
+    contracts = _mapping(manifest.get("contracts"))
     closeout = _mapping(manifest.get("closeout"))
     recipes = _mapping(manifest.get("recipes"))
     health = _mapping(manifest.get("health"))
@@ -120,6 +121,10 @@ def build_share_session_model(
         "runtime": {
             "started_at": runtime.get("started_at"),
             "config": runtime.get("config"),
+            "contract": runtime.get("contract"),
+        },
+        "contracts": {
+            "last": contracts.get("last"),
         },
         "members": {
             "registry": members.get("registry"),

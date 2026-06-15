@@ -105,6 +105,55 @@ def test_reverse_proxy_forwards_allowed_request_to_upstream(tmp_path):
     assert audit["decision"]["reason_code"] == "test.allowed"
 
 
+def test_reverse_proxy_exposes_share_contract_and_records_digest_metadata(tmp_path):
+    server, _seen = start_upstream()
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+    contract = {
+        "schema": "snulbug.share-contract.v1",
+        "version": 1,
+        "binding_digest": "sha256:binding",
+        "digest": "sha256:document",
+        "snulbug_signature": {
+            "algorithm": "hmac-sha256",
+            "key_id": "dev-key",
+            "digest": "sha256:document",
+            "value": "signature",
+        },
+    }
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/api",
+        policy,
+        record_out=record_log,
+        event_sinks=audit_event_sinks(audit_log),
+        share_contract=contract,
+    )
+
+    try:
+        metadata = run_asgi(app, method="GET", path="/.well-known/snulbug/share-contract")
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[(b"content-type", b"application/json")],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    served = json.loads(metadata[1]["body"])
+    records = load_record_log(record_log)
+    audit_events = [json.loads(line) for line in audit_log.read_text(encoding="utf-8").splitlines()]
+    assert metadata[0]["status"] == 200
+    assert served == contract
+    assert sent[0]["status"] == 200
+    assert records[1]["metadata"]["share"]["contract_digest"] == "sha256:binding"
+    assert records[1]["metadata"]["share"]["contract_document_digest"] == "sha256:document"
+    assert records[1]["metadata"]["share"]["contract_key_id"] == "dev-key"
+    assert audit_events[1]["share"]["contract_digest"] == "sha256:binding"
+
+
 def test_reverse_proxy_event_dispatcher_fans_out_same_event(tmp_path):
     server, _seen = start_upstream()
     policy = write_policy(tmp_path, "reject")

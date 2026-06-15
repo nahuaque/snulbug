@@ -166,6 +166,19 @@ uv run snulbug mcp share contract .snulbug/shares/share-... \
   --force
 ```
 
+Bind the live proxy to the approved contract when starting the share:
+
+```bash
+uv run snulbug mcp share run .snulbug/shares/share-... \
+  --require-contract .snulbug/shares/share-.../share-contract.signed.json
+```
+
+While running, the proxy exposes the approved JSON contract at
+`GET /.well-known/snulbug/share-contract` and records the stable contract
+binding digest in audit metadata as `metadata.share.contract_digest`. `share
+status` and `share doctor` compare the required binding digest against the
+current share shape and flag drift before you hand the URL to a client.
+
 For OAuth protected-resource shares, run the auth-specific doctor before handing
 the URL to an MCP client:
 

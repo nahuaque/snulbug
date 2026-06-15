@@ -61,6 +61,7 @@ HOP_BY_HOP_HEADERS = {
     b"transfer-encoding",
     b"upgrade",
 }
+SHARE_CONTRACT_WELL_KNOWN_PATH = "/.well-known/snulbug/share-contract"
 
 
 @dataclass(frozen=True)
@@ -1609,6 +1610,49 @@ class ProxyRecorderMiddleware:
         return self.record_out is not None or self.event_dispatcher is not None
 
 
+class ShareContractMiddleware:
+    """Expose the approved share contract and attach its digest to runtime metadata."""
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        contract: Mapping[str, Any],
+        metadata: Mapping[str, Any] | None = None,
+        path: str = SHARE_CONTRACT_WELL_KNOWN_PATH,
+    ) -> None:
+        self.app = app
+        self.contract = dict(contract)
+        self.metadata = dict(metadata or _share_contract_metadata(contract))
+        self.path = path
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        _set_proxy_metadata(scope, {"share": self.metadata})
+        if self._is_contract_request(scope):
+            response = _json_response(self.contract)
+            if str(scope.get("method", "GET")).upper() == "HEAD":
+                response["body"] = b""
+                response["headers"] = _merge_headers(response["headers"], [(b"content-length", b"0")])
+            await _send_response(
+                send,
+                status=response["status"],
+                headers=response["headers"],
+                body=response["body"],
+            )
+            return
+        await self.app(scope, receive, send)
+
+    def _is_contract_request(self, scope: Scope) -> bool:
+        method = str(scope.get("method", "GET")).upper()
+        if method not in {"GET", "HEAD"}:
+            return False
+        return str(scope.get("path", "/")).rstrip("/") == self.path.rstrip("/")
+
+
 class CloudflareAccessMiddleware:
     """Require Cloudflare Access origin headers before Lua policy and upstream calls."""
 
@@ -2003,6 +2047,7 @@ def create_proxy_application(
     cloudflare_access_leeway_seconds: float = 60.0,
     auth_config: Mapping[str, Any] | OAuthResourceConfig | None = None,
     topology_audit: Mapping[str, Any] | None = None,
+    share_contract: Mapping[str, Any] | None = None,
     event_sinks: Sequence[Mapping[str, Any]] | None = None,
     event_dispatcher: Any = None,
     fabric_reload_config: str | Path | None = None,
@@ -2103,6 +2148,8 @@ def create_proxy_application(
             config=cloudflare_access_config,
             context_scope_key=lua_config.context_scope_key,
         )
+    if share_contract is not None:
+        app = ShareContractMiddleware(app, contract=share_contract)
     if record_out is not None or event_dispatcher is not None:
         app = ProxyRecorderMiddleware(
             app,
@@ -2174,6 +2221,7 @@ def run_proxy(
     cloudflare_access_leeway_seconds: float = 60.0,
     auth_config: Mapping[str, Any] | OAuthResourceConfig | None = None,
     topology_audit: Mapping[str, Any] | None = None,
+    share_contract: Mapping[str, Any] | None = None,
     event_sinks: Sequence[Mapping[str, Any]] | None = None,
     fabric_reload_config: str | Path | None = None,
     fabric_reload_interval: float = 2.0,
@@ -2231,6 +2279,7 @@ def run_proxy(
         cloudflare_access_leeway_seconds=cloudflare_access_leeway_seconds,
         auth_config=auth_config,
         topology_audit=topology_audit,
+        share_contract=share_contract,
         event_sinks=event_sinks,
         fabric_reload_config=fabric_reload_config,
         fabric_reload_interval=fabric_reload_interval,
@@ -2246,6 +2295,7 @@ def proxy_config_run_kwargs(
     fabric_config: Mapping[str, Any] | None = None,
     *,
     topology_audit: Mapping[str, Any] | None = None,
+    share_contract: Mapping[str, Any] | None = None,
     fabric_reload_config: str | Path | None = None,
     fabric_reload_interval: float = 2.0,
     fabric_reload_overrides: Mapping[str, Any] | None = None,
@@ -2302,6 +2352,7 @@ def proxy_config_run_kwargs(
         "cloudflare_access_leeway_seconds": proxy_config["cloudflare_access_leeway_seconds"],
         "auth_config": proxy_config.get("auth", {}),
         "topology_audit": effective_topology_audit,
+        "share_contract": share_contract,
         "event_sinks": proxy_config["event_sinks"],
         "fabric_reload_config": fabric_reload_config,
         "fabric_reload_interval": fabric_reload_interval,
@@ -2316,6 +2367,7 @@ def run_mcp_proxy_config(
     *,
     runner: Any = None,
     topology_audit: Mapping[str, Any] | None = None,
+    share_contract: Mapping[str, Any] | None = None,
     fabric_reload_config: str | Path | None = None,
     fabric_reload_interval: float = 2.0,
     fabric_reload_overrides: Mapping[str, Any] | None = None,
@@ -2329,6 +2381,7 @@ def run_mcp_proxy_config(
             proxy_config,
             fabric_config,
             topology_audit=topology_audit,
+            share_contract=share_contract,
             fabric_reload_config=fabric_reload_config,
             fabric_reload_interval=fabric_reload_interval,
             fabric_reload_overrides=fabric_reload_overrides,
@@ -3128,6 +3181,23 @@ def _anti_passthrough_metadata(scope: Scope, config: OAuthResourceConfig) -> dic
         "client_authorization": disposition,
         "reason_code": reason_code,
     }
+
+
+def _share_contract_metadata(contract: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not contract:
+        return {}
+    signature = _mapping(contract.get("snulbug_signature"))
+    return _drop_empty(
+        {
+            "contract_digest": contract.get("binding_digest") or contract.get("digest"),
+            "contract_binding_digest": contract.get("binding_digest"),
+            "contract_document_digest": contract.get("digest"),
+            "contract_key_id": signature.get("key_id"),
+            "contract_signed": bool(signature),
+            "contract_verified": True,
+            "contract_required": True,
+        }
+    )
 
 
 def _is_oauth_resource_metadata_request(scope: Scope, config: OAuthResourceConfig) -> bool:

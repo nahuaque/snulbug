@@ -522,6 +522,7 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
             result = run_mcp_share(
                 directory,
                 dry_run=args.dry_run,
+                require_contract=args.require_contract,
             )
             if result is not None:
                 write_json_output(result, compact=args.compact)
@@ -1045,6 +1046,11 @@ def _add_share_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--port", type=int, help="bind port")
     parser.add_argument("--record-out", type=Path, help="optional live replay JSONL path to append to")
     parser.add_argument(
+        "--require-contract",
+        type=Path,
+        help="require and expose an approved share contract JSON while proxying",
+    )
+    parser.add_argument(
         "--reload-fabric",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -1371,6 +1377,7 @@ def _run_proxy_from_share_args(args: argparse.Namespace) -> int:
         normalize_mcp_proxy_config,
     )
     from ..proxy import run_mcp_proxy_config, run_proxy
+    from ..share import load_share_contract
 
     try:
         overrides = {
@@ -1401,10 +1408,12 @@ def _run_proxy_from_share_args(args: argparse.Namespace) -> int:
                 return 1
             proxy_config = normalize_mcp_proxy_config(overrides)
             fabric_config = normalize_mcp_fabric_config({}, proxy_config=proxy_config)
+        share_contract = load_share_contract(args.require_contract) if args.require_contract is not None else None
         run_mcp_proxy_config(
             proxy_config,
             fabric_config,
             runner=run_proxy,
+            share_contract=share_contract,
             fabric_reload_config=args.config if args.reload_fabric else None,
             fabric_reload_interval=args.fabric_reload_interval or 2.0,
             fabric_reload_overrides=overrides if args.reload_fabric else None,

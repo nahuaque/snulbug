@@ -155,8 +155,18 @@ PUBLIC_MCP_URL=https://YOUR-FORWARDING-DOMAIN/mcp
 uv run snulbug mcp share doctor .snulbug/shares/share-... \
   --url "${PUBLIC_MCP_URL}"
 uv run snulbug mcp share client .snulbug/shares/share-...
+export SNULBUG_SHARE_CONTRACT_SECRET=...
 uv run snulbug mcp share contract .snulbug/shares/share-... \
+  --sign \
+  --key-id local-review \
   --output .snulbug/shares/share-.../share-contract.json
+```
+
+To bind the live gateway to that approved contract, run with:
+
+```bash
+uv run snulbug mcp share run .snulbug/shares/share-... \
+  --require-contract .snulbug/shares/share-.../share-contract.json
 ```
 
 If the share uses OAuth protected-resource mode, run the auth doctor too:

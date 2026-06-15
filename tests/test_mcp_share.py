@@ -20,6 +20,7 @@ from snulbug import (
     generate_auth_conformance_pack,
     load_fabric_member_registry,
     load_mcp_proxy_config,
+    load_share_contract,
     load_share_session_model,
     promote_mcp_share_policy,
     run_auth_conformance_pack,
@@ -339,8 +340,8 @@ def test_mcp_share_run_applies_session_model_paths_before_starting_gateway(tmp_p
     write_share_session_model(tmp_path, session_model, force=True)
     calls = []
 
-    def fake_run_mcp_proxy_config(proxy_config, fabric_config):
-        calls.append((proxy_config, fabric_config))
+    def fake_run_mcp_proxy_config(proxy_config, fabric_config, **kwargs):
+        calls.append((proxy_config, fabric_config, kwargs))
 
     monkeypatch.setattr("snulbug.proxy.run_mcp_proxy_config", fake_run_mcp_proxy_config)
 
@@ -349,9 +350,10 @@ def test_mcp_share_run_applies_session_model_paths_before_starting_gateway(tmp_p
 
     assert result is None
     assert len(calls) == 1
-    proxy_config, fabric_config = calls[0]
+    proxy_config, fabric_config, kwargs = calls[0]
     assert proxy_config["policy"] == active_policy
     assert proxy_config["lease_file"] == lease_file
+    assert kwargs["share_contract"] is None
     assert proxy_config["record_out"] == replay_log
     assert any(
         sink.get("type") == "audit_jsonl" and sink.get("path") == audit_log for sink in proxy_config["event_sinks"]
@@ -571,14 +573,19 @@ def test_mcp_share_contract_redacts_tokens_and_can_sign(tmp_path):
     )
     write_share_audit_log(tmp_path)
 
-    result = share_contract(tmp_path, sign=True, secret="contract-secret", key_id="dev-key")
+    output_path = tmp_path / "share-contract.json"
+    result = share_contract(tmp_path, output=output_path, sign=True, secret="contract-secret", key_id="dev-key")
     contract = result["contract"]
+    loaded = load_share_contract(output_path)
+    status = share_status(tmp_path, live_checks=False)
     encoded = json.dumps(contract, sort_keys=True)
 
     assert result["ok"] is True
     assert result["signed"] is True
     assert contract["schema"] == "snulbug.share-contract.v1"
+    assert contract["binding_digest"].startswith("sha256:")
     assert contract["digest"].startswith("sha256:")
+    assert loaded["binding_digest"] == contract["binding_digest"]
     assert contract["snulbug_signature"]["algorithm"] == "hmac-sha256"
     assert contract["snulbug_signature"]["key_id"] == "dev-key"
     assert contract["snulbug_signature"]["digest"] == contract["digest"]
@@ -588,6 +595,9 @@ def test_mcp_share_contract_redacts_tokens_and_can_sign(tmp_path):
     assert contract["evidence"]["traffic"]["event_count"] == 3
     assert contract["evidence"]["traffic"]["blocked"] == 1
     assert contract["upstream_auth"]["strip_client_authorization"] is True
+    assert status["contract"]["required"] is False
+    assert status["contract"]["binding_digest"] == contract["binding_digest"]
+    assert status["contract"]["drifted"] is False
     assert "share-secret" not in encoded
     assert "sbl_" not in encoded
 
@@ -627,6 +637,34 @@ def test_mcp_share_contract_cli_writes_contract_file(tmp_path, capsys, monkeypat
     assert output["digest"] == written["digest"]
     assert written["snulbug_signature"]["key_id"] == "dev-key"
     assert written["client"]["headers"]["Authorization"] == "[REDACTED]"
+
+
+def test_mcp_share_run_dry_run_validates_required_contract(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    contract_path = tmp_path / "share-contract.json"
+    contract_result = share_contract(
+        tmp_path,
+        output=contract_path,
+        sign=True,
+        secret="contract-secret",
+        key_id="dev-key",
+    )
+
+    result = run_mcp_share(tmp_path, dry_run=True, require_contract=contract_path)
+
+    assert result is not None
+    assert result["ok"] is True
+    assert result["contract"]["contract_required"] is True
+    assert result["contract"]["contract_signed"] is True
+    assert result["contract"]["contract_key_id"] == "dev-key"
+    assert result["contract"]["contract_digest"] == contract_result["contract"]["binding_digest"]
 
 
 def test_mcp_share_doctor_url_override_updates_manifest_and_client(tmp_path, monkeypatch):

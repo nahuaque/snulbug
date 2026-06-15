@@ -348,6 +348,7 @@ def share_status(
     *,
     timeout: float = 1.0,
     live_checks: bool = True,
+    include_contract: bool = True,
 ) -> dict[str, Any]:
     """Summarize a generated MCP share session without starting processes."""
 
@@ -394,7 +395,15 @@ def share_status(
     members = _mapping(session_model.get("members"))
     amendments = _share_amendment_status(session_model)
     tunnel = _share_tunnel_status(manifest, session_model)
-    findings = _share_findings(gateway=gateway, upstreams=upstreams, traffic=traffic, tunnel=tunnel, policy=policy)
+    contract = _share_contract_status(share_dir, manifest, session_model) if include_contract else {}
+    findings = _share_findings(
+        gateway=gateway,
+        upstreams=upstreams,
+        traffic=traffic,
+        tunnel=tunnel,
+        policy=policy,
+        contract=contract,
+    )
     return {
         "ok": True,
         "session": manifest.get("session", {}),
@@ -413,6 +422,7 @@ def share_status(
         "policy": policy,
         "members": members,
         "amendments": amendments,
+        "contract": contract,
         "traffic": traffic,
         "recordings": recordings,
         "findings": findings,
@@ -478,7 +488,7 @@ def share_contract(
         _update_share_client_url(share_dir, public_url)
 
     manifest = load_mcp_share(share_dir)
-    status = share_status(share_dir, timeout=timeout, live_checks=live_checks)
+    status = share_status(share_dir, timeout=timeout, live_checks=live_checks, include_contract=False)
     proxy_summary = _share_contract_proxy_summary(share_dir, manifest)
     contract = _finalize_share_contract(
         _share_contract_payload(
@@ -499,6 +509,8 @@ def share_contract(
             raise FileExistsError(f"share contract already exists: {output_path}")
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(contract, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        if (share_dir / SHARE_MANIFEST).is_file():
+            _record_share_contract(share_dir, contract, path=output_path, required=False)
 
     ok = bool(status.get("ok", False)) and (doctor is None or bool(doctor.get("ok", False)))
     return {
@@ -509,6 +521,56 @@ def share_contract(
         "signed": SHARE_CONTRACT_SIGNATURE_FIELD in contract,
         "contract": contract,
     }
+
+
+def load_share_contract(path: str | Path) -> dict[str, Any]:
+    """Load and validate a generated share contract JSON file."""
+
+    contract_path = Path(path)
+    with contract_path.open("r", encoding="utf-8") as file:
+        value = json.load(file)
+    if not isinstance(value, Mapping):
+        raise ValueError(f"share contract must contain a JSON object: {contract_path}")
+    contract = dict(value)
+    if contract.get("schema") != SHARE_CONTRACT_SCHEMA:
+        raise ValueError(f"unsupported share contract schema: {contract.get('schema')!r}")
+    expected_binding_digest = _share_contract_binding_digest(contract)
+    binding_digest = contract.get("binding_digest")
+    if binding_digest is None:
+        contract["binding_digest"] = expected_binding_digest
+    elif binding_digest != expected_binding_digest:
+        raise ValueError(
+            f"share contract binding digest mismatch: expected {expected_binding_digest}, found {binding_digest}"
+        )
+    expected_digest = _share_contract_digest(contract)
+    digest = contract.get("digest")
+    if digest != expected_digest:
+        raise ValueError(f"share contract digest mismatch: expected {expected_digest}, found {digest}")
+    return contract
+
+
+def share_contract_runtime_metadata(
+    contract: Mapping[str, Any],
+    *,
+    path: str | Path | None = None,
+    required: bool = True,
+    verified: bool = True,
+) -> dict[str, Any]:
+    """Return audit/status-safe metadata for a contract-bound runtime."""
+
+    signature = _mapping(contract.get(SHARE_CONTRACT_SIGNATURE_FIELD))
+    return _drop_empty_json(
+        {
+            "contract_digest": contract.get("binding_digest") or contract.get("digest"),
+            "contract_binding_digest": contract.get("binding_digest"),
+            "contract_document_digest": contract.get("digest"),
+            "contract_key_id": signature.get("key_id"),
+            "contract_signed": bool(signature),
+            "contract_verified": verified,
+            "contract_required": required,
+            "contract_path": str(path) if path is not None else None,
+        }
+    )
 
 
 def promote_mcp_share_policy(
@@ -3431,6 +3493,45 @@ def _add_share_status_checks(
             component="status",
         )
 
+    contract = _mapping(status.get("contract"))
+    if contract.get("required") is True:
+        ok = (
+            contract.get("exists") is not False
+            and contract.get("file_valid") is not False
+            and contract.get("drifted") is not True
+        )
+        if contract.get("drifted") is True:
+            message = "required share contract has drifted from current share state"
+        elif contract.get("file_valid") is False:
+            message = "required share contract is invalid"
+        elif contract.get("exists") is False:
+            message = "required share contract file is missing"
+        else:
+            message = "required share contract matches current share state"
+        _add_share_doctor_check(
+            checks,
+            "status.share_contract_bound",
+            ok,
+            message,
+            component="status",
+            details={
+                "path": contract.get("path"),
+                "digest": contract.get("digest"),
+                "binding_digest": contract.get("binding_digest"),
+                "current_binding_digest": contract.get("current_binding_digest"),
+                "signed": contract.get("signed"),
+                "key_id": contract.get("key_id"),
+            },
+        )
+    else:
+        _add_share_doctor_check(
+            checks,
+            "status.share_contract_bound",
+            None,
+            "share contract binding is not required",
+            component="status",
+        )
+
 
 def _share_policy_doctor_checks(
     share_dir: Path,
@@ -3877,6 +3978,53 @@ def _share_recordings_status(share_dir: Path, session_model: Mapping[str, Any]) 
     return result
 
 
+def _share_contract_status(
+    share_dir: Path,
+    manifest: Mapping[str, Any],
+    session_model: Mapping[str, Any],
+) -> dict[str, Any]:
+    runtime_contract = _mapping(_mapping(manifest.get("runtime")).get("contract")) or _mapping(
+        _mapping(session_model.get("runtime")).get("contract")
+    )
+    generated_contract = _mapping(_mapping(manifest.get("contracts")).get("last"))
+    source = runtime_contract or generated_contract
+    if not source:
+        return {"required": False, "configured": False}
+    result: dict[str, Any] = {
+        "configured": True,
+        "required": bool(source.get("contract_required", runtime_contract is not None)),
+        "path": source.get("contract_path"),
+        "digest": source.get("contract_digest"),
+        "binding_digest": source.get("contract_binding_digest"),
+        "document_digest": source.get("contract_document_digest"),
+        "key_id": source.get("contract_key_id"),
+        "signed": source.get("contract_signed"),
+        "verified": source.get("contract_verified"),
+        "drifted": None,
+    }
+    path = source.get("contract_path")
+    if isinstance(path, str) and path:
+        resolved = _resolve_share_path(share_dir, path)
+        result["path"] = str(resolved)
+        result["exists"] = resolved.is_file()
+        if resolved.is_file():
+            try:
+                loaded = load_share_contract(resolved)
+                result["file_valid"] = True
+                result["file_binding_digest"] = loaded.get("binding_digest")
+            except Exception as exc:
+                result["file_valid"] = False
+                result["error"] = str(exc)
+    if source.get("contract_binding_digest"):
+        try:
+            current = share_contract(share_dir, live_checks=False, include_doctor=False)["contract"]
+            result["current_binding_digest"] = current.get("binding_digest")
+            result["drifted"] = current.get("binding_digest") != source.get("contract_binding_digest")
+        except Exception as exc:
+            result["current_error"] = str(exc)
+    return _drop_empty_json(result)
+
+
 def _share_contract_payload(
     *,
     share_dir: Path,
@@ -4285,6 +4433,7 @@ def _finalize_share_contract(
     key_id: str,
 ) -> dict[str, Any]:
     contract = dict(_drop_empty_json(payload))
+    contract["binding_digest"] = _share_contract_binding_digest(contract)
     contract["digest"] = _share_contract_digest(contract)
     if sign:
         if not secret:
@@ -4296,6 +4445,54 @@ def _finalize_share_contract(
             "value": _share_contract_signature_value(contract, secret),
         }
     return contract
+
+
+def _share_contract_binding_digest(contract: Mapping[str, Any]) -> str:
+    encoded = _share_contract_canonical_json(_share_contract_binding_payload(contract))
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _share_contract_binding_payload(contract: Mapping[str, Any]) -> dict[str, Any]:
+    payload = _share_contract_payload_only(contract)
+    payload.pop("generated_at", None)
+    payload.pop("health", None)
+    payload.pop("evidence", None)
+    payload.pop("commands", None)
+    payload.pop("files", None)
+    payload.pop("config", None)
+    share = dict(_mapping(payload.get("share")))
+    for key in ("state", "directory", "created_at", "updated_at"):
+        share.pop(key, None)
+    if share:
+        payload["share"] = share
+    else:
+        payload.pop("share", None)
+    gateway = dict(_mapping(payload.get("gateway")))
+    for key in ("checked", "reachable", "status", "error", "mcp_ok"):
+        gateway.pop(key, None)
+    if gateway:
+        payload["gateway"] = gateway
+    else:
+        payload.pop("gateway", None)
+    tunnel = dict(_mapping(payload.get("tunnel")))
+    for key in ("checked", "last_checked_at", "ok", "summary", "recommendations"):
+        tunnel.pop(key, None)
+    if tunnel:
+        payload["tunnel"] = tunnel
+    else:
+        payload.pop("tunnel", None)
+    upstreams = []
+    for item in _sequence(payload.get("upstreams")):
+        upstream = dict(_mapping(item))
+        for key in ("checked", "reachable", "status", "health", "error", "mcp_ok"):
+            upstream.pop(key, None)
+        if upstream:
+            upstreams.append(upstream)
+    if upstreams:
+        payload["upstreams"] = upstreams
+    else:
+        payload.pop("upstreams", None)
+    return _drop_empty_json(payload)
 
 
 def _share_contract_digest(contract: Mapping[str, Any]) -> str:
@@ -4314,7 +4511,11 @@ def _share_contract_signature_value(contract: Mapping[str, Any], secret: str) ->
 
 
 def _share_contract_payload_only(contract: Mapping[str, Any]) -> dict[str, Any]:
-    return {str(key): value for key, value in contract.items() if key not in {SHARE_CONTRACT_SIGNATURE_FIELD, "digest"}}
+    return {
+        str(key): value
+        for key, value in contract.items()
+        if key not in {SHARE_CONTRACT_SIGNATURE_FIELD, "digest", "binding_digest"}
+    }
 
 
 def _share_contract_canonical_json(value: Mapping[str, Any]) -> bytes:
@@ -4348,6 +4549,7 @@ def _share_findings(
     traffic: Mapping[str, Any],
     tunnel: Mapping[str, Any],
     policy: Mapping[str, Any],
+    contract: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     if gateway.get("checked") and gateway.get("reachable") is not True:
@@ -4395,6 +4597,14 @@ def _share_findings(
                 "message": f"policy lifecycle state is {policy.get('lifecycle_state')}",
             }
         )
+    if contract.get("drifted") is True:
+        findings.append(
+            {
+                "severity": "error",
+                "type": "share_contract_drift",
+                "message": "required share contract binding digest differs from current share state",
+            }
+        )
     inspection = _mapping(traffic.get("inspection"))
     for finding in _sequence(inspection.get("findings")):
         if isinstance(finding, Mapping):
@@ -4412,6 +4622,7 @@ def _share_report_lines(result: Mapping[str, Any], *, title: str) -> list[str]:
     traffic = _mapping(result.get("traffic"))
     recordings = _mapping(result.get("recordings"))
     leases = _mapping(result.get("leases"))
+    contract = _mapping(result.get("contract"))
     lines = [
         title,
         "",
@@ -4467,6 +4678,15 @@ def _share_report_lines(result: Mapping[str, Any], *, title: str) -> list[str]:
             f"- Lifecycle: `{policy.get('lifecycle_state') or 'observed'}`",
             f"- Signed: `{_yes_no_unknown(policy.get('lifecycle_signed'))}`",
             f"- Last lifecycle action: `{_share_last_lifecycle_label(policy)}`",
+            "",
+            "## Share Contract",
+            "",
+            f"- Required: `{_yes_no_unknown(contract.get('required'))}`",
+            f"- Signed: `{_yes_no_unknown(contract.get('signed'))}`",
+            f"- Key id: `{contract.get('key_id') or '-'}`",
+            f"- Binding digest: `{contract.get('binding_digest') or contract.get('digest') or '-'}`",
+            f"- Drifted: `{_yes_no_unknown(contract.get('drifted'))}`",
+            f"- Path: `{contract.get('path') or '-'}`",
             "",
             "## Policy Amendments",
             "",
@@ -4707,6 +4927,7 @@ def run_mcp_share(
     directory: str | Path = ".",
     *,
     dry_run: bool = False,
+    require_contract: str | Path | None = None,
 ) -> dict[str, Any] | None:
     """Run the proxy for a generated MCP share session."""
 
@@ -4721,6 +4942,12 @@ def run_mcp_share(
         raise ValueError("share session does not contain an active config path")
     if not config_path.is_file():
         raise FileNotFoundError(f"share config not found: {config_path}")
+    contract: dict[str, Any] | None = None
+    contract_metadata: dict[str, Any] | None = None
+    contract_path = _resolve_optional_share_path(share_dir, require_contract)
+    if contract_path is not None:
+        contract = load_share_contract(contract_path)
+        contract_metadata = share_contract_runtime_metadata(contract, path=contract_path, required=True, verified=True)
     if dry_run:
         return {
             "ok": True,
@@ -4729,6 +4956,7 @@ def run_mcp_share(
             "source": context["source"],
             "session_model_path": str(context["session_model_path"]),
             "resolved_paths": {key: str(value) for key, value in resolved_paths.items() if isinstance(value, Path)},
+            "contract": contract_metadata or {},
             "commands": commands,
         }
 
@@ -4745,12 +4973,14 @@ def run_mcp_share(
         "source": context["source"],
         "resolved_paths": {key: str(value) for key, value in resolved_paths.items() if isinstance(value, Path)},
     }
+    if contract_metadata is not None:
+        runtime["contract"] = contract_metadata
     if manifest is not None:
         _update_share_manifest(share_dir, state="running", runtime=runtime)
         _update_share_session_runtime(share_dir, session_model, runtime=runtime)
     else:
         _update_share_session_runtime(share_dir, session_model, runtime=runtime)
-    run_mcp_proxy_config(proxy_config, fabric_config)
+    run_mcp_proxy_config(proxy_config, fabric_config, share_contract=contract)
     return None
 
 
@@ -5475,6 +5705,24 @@ def _update_share_manifest(
     (share_dir / SHARE_MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     update_share_session_model(share_dir, manifest=manifest)
     return manifest
+
+
+def _record_share_contract(
+    share_dir: Path,
+    contract: Mapping[str, Any],
+    *,
+    path: str | Path,
+    required: bool,
+) -> dict[str, Any]:
+    manifest = load_mcp_share(share_dir)
+    metadata = share_contract_runtime_metadata(contract, path=path, required=required, verified=True)
+    contracts = dict(_mapping(manifest.get("contracts")))
+    contracts["last"] = dict(metadata)
+    manifest["contracts"] = contracts
+    manifest["updated_at"] = _now_iso()
+    (share_dir / SHARE_MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    update_share_session_model(share_dir, manifest=manifest)
+    return metadata
 
 
 def _update_share_client_url(share_dir: Path, url: str) -> None:
