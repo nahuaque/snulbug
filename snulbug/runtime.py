@@ -625,6 +625,7 @@ return function(source, source_name, instruction_limit)
 
   local current_auth = {}
   local current_lease = {}
+  local current_share = {}
   local current_upstream = {}
 
   local function merge_context(defaults, context)
@@ -671,6 +672,19 @@ return function(source, source_name, instruction_limit)
       lease_required = current_lease.required,
       lease_expires_at = current_lease.expires_at,
     }
+  end
+
+  local function share_context(details)
+    return merge_context({
+      contract_digest = current_share.contract_digest,
+      contract_binding_digest = current_share.contract_binding_digest,
+      contract_document_digest = current_share.contract_document_digest,
+      contract_key_id = current_share.contract_key_id,
+      contract_required = current_share.contract_required,
+      contract_signed = current_share.contract_signed,
+      contract_verified = current_share.contract_verified,
+      contract_runtime_status = current_share.contract_runtime_status,
+    }, details)
   end
 
   local function upstream_context(details)
@@ -764,6 +778,25 @@ return function(source, source_name, instruction_limit)
       body = "task lease expired",
       reason_code = "lease.expired",
       context = lease_context(),
+    }, options)
+  end
+
+  function access.contract_required(options)
+    return access_reject({
+      body = "approved share contract required",
+      reason_code = "share.contract_required",
+      context = share_context(),
+    }, options)
+  end
+
+  function access.contract_mismatch(details, options)
+    if type(details) ~= "table" then
+      details = { required_contract_digest = details }
+    end
+    return access_reject({
+      body = "share contract mismatch",
+      reason_code = "share.contract_mismatch",
+      context = share_context(details),
     }, options)
   end
 
@@ -1184,6 +1217,88 @@ return function(source, source_name, instruction_limit)
   end
 
   safe_env.upstream = upstream
+
+  local function set_share_context(context)
+    if type(context) == "table" and type(context.share) == "table" then
+      current_share = context.share
+    else
+      current_share = {}
+    end
+  end
+
+  local share = {}
+
+  function share.info()
+    return current_share
+  end
+
+  function share.bound()
+    return current_share.contract_runtime_status == "bound"
+      and current_share.contract_digest ~= nil
+      and current_share.contract_digest ~= ""
+  end
+
+  function share.required()
+    return current_share.contract_required == true
+  end
+
+  function share.signed()
+    return current_share.contract_signed == true
+  end
+
+  function share.verified()
+    return current_share.contract_verified == true
+  end
+
+  function share.runtime_status()
+    return current_share.contract_runtime_status
+  end
+
+  function share.contract_digest()
+    return current_share.contract_digest
+  end
+
+  function share.binding_digest()
+    return current_share.contract_binding_digest or current_share.contract_digest
+  end
+
+  function share.document_digest()
+    return current_share.contract_document_digest
+  end
+
+  function share.key_id()
+    return current_share.contract_key_id
+  end
+
+  function share.require_contract_bound(options)
+    if share.bound() then
+      return nil
+    end
+    return access.contract_required(options)
+  end
+
+  function share.require_contract_digest(digest, options)
+    if value_matches(share.contract_digest(), digest) or value_matches(share.binding_digest(), digest) then
+      return nil
+    end
+    return access.contract_mismatch({
+      required_contract_digest = digest,
+      actual_contract_digest = share.contract_digest(),
+      actual_contract_binding_digest = share.binding_digest(),
+    }, options)
+  end
+
+  function share.require_contract_key_id(key_id, options)
+    if value_matches(share.key_id(), key_id) then
+      return nil
+    end
+    return access.contract_mismatch({
+      required_contract_key_id = key_id,
+      actual_contract_key_id = share.key_id(),
+    }, options)
+  end
+
+  safe_env.share = share
 
   local function set_lease_context(context)
     if type(context) == "table" and type(context.lease) == "table" then
@@ -1660,10 +1775,12 @@ return function(source, source_name, instruction_limit)
 
     set_auth_context(context)
     set_lease_context(context)
+    set_share_context(context)
     set_upstream_context(context)
     local ok, result = pcall(handler, request, context, state or {})
     set_auth_context({})
     set_lease_context({})
+    set_share_context({})
     set_upstream_context({})
 
     if debug and debug.sethook then

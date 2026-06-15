@@ -178,6 +178,9 @@ While running, the proxy exposes the approved JSON contract at
 binding digest in audit metadata as `metadata.share.contract_digest`. `share
 status` and `share doctor` compare the required binding digest against the
 current share shape and flag drift before you hand the URL to a client.
+Lua policies can also enforce the same binding directly with helpers such as
+`share.require_contract_bound()`, `share.require_contract_digest(...)`, and
+`share.require_contract_key_id(...)`.
 
 For humans and MCP clients that do not run snulbug locally, the same bound
 runtime exposes a zero-install verification surface:

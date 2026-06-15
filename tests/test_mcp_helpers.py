@@ -413,6 +413,175 @@ def test_access_expired_lease_builder_returns_standard_lease_context():
     }
 
 
+def test_share_helpers_expose_contract_binding_context():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return decision.allow("test.share_context", {
+            bound = share.bound(),
+            required = share.required(),
+            signed = share.signed(),
+            verified = share.verified(),
+            runtime_status = share.runtime_status(),
+            digest = share.contract_digest(),
+            binding_digest = share.binding_digest(),
+            document_digest = share.document_digest(),
+            key_id = share.key_id()
+          })
+        end
+        """
+    )
+
+    decision = script.decide(
+        {"body": "{}"},
+        {
+            "share": {
+                "contract_digest": "sha256:binding",
+                "contract_binding_digest": "sha256:binding",
+                "contract_document_digest": "sha256:document",
+                "contract_key_id": "local-review",
+                "contract_required": True,
+                "contract_signed": True,
+                "contract_verified": True,
+                "contract_runtime_status": "bound",
+            }
+        },
+    )
+
+    assert decision == {
+        "action": "continue",
+        "reason_code": "test.share_context",
+        "context": {
+            "bound": True,
+            "required": True,
+            "signed": True,
+            "verified": True,
+            "runtime_status": "bound",
+            "digest": "sha256:binding",
+            "binding_digest": "sha256:binding",
+            "document_digest": "sha256:document",
+            "key_id": "local-review",
+        },
+    }
+
+
+def test_share_require_contract_bound_returns_standard_rejection_when_missing():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return share.require_contract_bound()
+            or decision.allow("test.share_bound", {
+              digest = share.contract_digest()
+            })
+        end
+        """
+    )
+
+    missing = script.decide({"body": "{}"})
+    bound = script.decide(
+        {"body": "{}"},
+        {
+            "share": {
+                "contract_digest": "sha256:binding",
+                "contract_runtime_status": "bound",
+            }
+        },
+    )
+
+    assert missing == {
+        "action": "reject",
+        "status": 403,
+        "body": "approved share contract required",
+        "reason": "approved share contract required",
+        "reason_code": "share.contract_required",
+        "context": {},
+    }
+    assert bound == {
+        "action": "continue",
+        "reason_code": "test.share_bound",
+        "context": {"digest": "sha256:binding"},
+    }
+
+
+def test_share_contract_digest_and_key_id_guards_return_standard_mismatches():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return share.require_contract_digest("sha256:expected")
+            or share.require_contract_key_id("local-review")
+            or decision.allow("test.share_contract_allowed")
+        end
+        """
+    )
+
+    wrong_digest = script.decide(
+        {"body": "{}"},
+        {
+            "share": {
+                "contract_digest": "sha256:actual",
+                "contract_binding_digest": "sha256:actual",
+                "contract_key_id": "local-review",
+                "contract_runtime_status": "bound",
+            }
+        },
+    )
+    wrong_key = script.decide(
+        {"body": "{}"},
+        {
+            "share": {
+                "contract_digest": "sha256:expected",
+                "contract_binding_digest": "sha256:expected",
+                "contract_key_id": "other-key",
+                "contract_runtime_status": "bound",
+            }
+        },
+    )
+    allowed = script.decide(
+        {"body": "{}"},
+        {
+            "share": {
+                "contract_digest": "sha256:expected",
+                "contract_binding_digest": "sha256:expected",
+                "contract_key_id": "local-review",
+                "contract_runtime_status": "bound",
+            }
+        },
+    )
+
+    assert wrong_digest == {
+        "action": "reject",
+        "status": 403,
+        "body": "share contract mismatch",
+        "reason": "share contract mismatch",
+        "reason_code": "share.contract_mismatch",
+        "context": {
+            "contract_digest": "sha256:actual",
+            "contract_binding_digest": "sha256:actual",
+            "contract_key_id": "local-review",
+            "contract_runtime_status": "bound",
+            "required_contract_digest": "sha256:expected",
+            "actual_contract_digest": "sha256:actual",
+            "actual_contract_binding_digest": "sha256:actual",
+        },
+    }
+    assert wrong_key == {
+        "action": "reject",
+        "status": 403,
+        "body": "share contract mismatch",
+        "reason": "share contract mismatch",
+        "reason_code": "share.contract_mismatch",
+        "context": {
+            "contract_digest": "sha256:expected",
+            "contract_binding_digest": "sha256:expected",
+            "contract_key_id": "other-key",
+            "contract_runtime_status": "bound",
+            "required_contract_key_id": "local-review",
+            "actual_contract_key_id": "other-key",
+        },
+    }
+    assert allowed == {"action": "continue", "reason_code": "test.share_contract_allowed"}
+
+
 def test_access_route_mismatch_builder_returns_standard_access_reason():
     script = compile_lua_script(
         """

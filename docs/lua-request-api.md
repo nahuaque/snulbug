@@ -128,6 +128,12 @@ Available builders:
   reason code, or `lease.required` when no more specific lease reason exists.
 - `access.expired_lease(options)`: `decision.reject` with
   `reason_code = "lease.expired"`.
+- `access.contract_required(options)`: `decision.reject` with
+  `reason_code = "share.contract_required"` when a policy requires a bound
+  share contract.
+- `access.contract_mismatch(details, options)`: `decision.reject` with
+  `reason_code = "share.contract_mismatch"` when a policy requires a specific
+  contract digest or signer key id.
 - `access.route_mismatch(details, options)`: `decision.reject` with
   `reason_code = "access.route_mismatch"` for tenant/upstream/facade route
   fences.
@@ -137,6 +143,50 @@ Available builders:
 builders by default. `options.context` is merged into the standard context, and
 `options.body`, `options.reason`, and `options.reason_code` can still override
 the emitted decision when a policy needs a local code.
+
+## Share Contract Helpers
+
+When `snulbug mcp share run` starts with `--require-contract`, the proxy binds
+the approved share contract, exposes it at the snulbug well-known endpoints,
+and passes safe contract metadata into Lua as `context.share`. The sandbox also
+includes a `share` helper table for policies that want to enforce that runtime
+binding:
+
+```lua
+return function(request, context)
+  return share.require_contract_bound()
+    or share.require_contract_key_id("local-review")
+    or decision.allow("share.contract_bound", {
+      contract_digest = share.contract_digest()
+    })
+end
+```
+
+Available helpers:
+
+- `share.info()`: return the sanitized `context.share` table.
+- `share.bound()`: true when a runtime contract is bound and has a digest.
+- `share.required()`: true when the share was started with a required contract.
+- `share.signed()`: true when the bound contract includes a snulbug signature.
+- `share.verified()`: true when snulbug verified the runtime contract before
+  binding it.
+- `share.runtime_status()`: runtime binding status, such as `bound`.
+- `share.contract_digest()`: stable binding digest used in audit metadata.
+- `share.binding_digest()`: binding digest, falling back to
+  `share.contract_digest()`.
+- `share.document_digest()`: document digest for the approved contract JSON.
+- `share.key_id()`: signer key id from the approved contract.
+- `share.require_contract_bound(options)`: return `nil` when bound, otherwise
+  `access.contract_required`.
+- `share.require_contract_digest(digest_or_digests, options)`: return `nil`
+  when the runtime digest matches, otherwise `access.contract_mismatch`.
+- `share.require_contract_key_id(key_or_keys, options)`: return `nil` when the
+  signer key id matches, otherwise `access.contract_mismatch`.
+
+These helpers do not expose the raw contract document, bearer tokens, lease
+tokens, or upstream credentials. They are intended for policies that need to
+fail closed unless a human-reviewed contract is the exact one currently
+running.
 
 ## Upstream Route Helpers
 
