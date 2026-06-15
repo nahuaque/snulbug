@@ -1084,7 +1084,7 @@ def test_mcp_share_doctor_url_override_updates_manifest_and_client(tmp_path, mon
     assert client_config["mcpServers"]["snulbug-share"]["url"] == "https://actual.example/mcp"
 
 
-def test_mcp_share_doctor_fails_invalid_policy_and_missing_required_conformance(tmp_path, monkeypatch):
+def test_mcp_share_doctor_fails_invalid_policy_and_missing_required_conformance(tmp_path, capsys, monkeypatch):
     create_mcp_share(
         tmp_path,
         provider="generic",
@@ -1110,6 +1110,34 @@ def test_mcp_share_doctor_fails_invalid_policy_and_missing_required_conformance(
     assert checks["conformance.pack_configured"]["status"] == "fail"
     assert manifest["state"] == "doctor_failed"
     assert session_model["health"]["share_doctor"]["ok"] is False
+
+    sarif = tmp_path / "share-doctor.sarif"
+    status_code = simulator_main(
+        [
+            "mcp",
+            "share",
+            "doctor",
+            str(tmp_path),
+            "--no-live-checks",
+            "--require-conformance",
+            "--sarif-out",
+            str(sarif),
+            "--compact",
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+    sarif_payload = json.loads(sarif.read_text(encoding="utf-8"))
+
+    assert status_code == 1
+    assert output["sarif_out"] == str(sarif)
+    assert sarif_payload["runs"][0]["results"][0]["ruleId"] == "snulbug.share.doctor_failed_check"
+    failed_results = [
+        result
+        for result in sarif_payload["runs"][0]["results"]
+        if result["ruleId"] == "snulbug.share.doctor_failed_check"
+    ]
+    assert failed_results
+    assert {result["level"] for result in failed_results} == {"error"}
 
 
 def test_mcp_share_auth_doctor_validates_static_oauth_config(tmp_path):

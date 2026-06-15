@@ -222,6 +222,7 @@ from .recorder import append_record, load_record_log, record_audit_event, record
 from .redaction import RedactionConfig, append_audit_event, build_audit_event, redact_secrets
 from .response_policy import ResponsePolicyConfig
 from .runtime import LuaDecisionError, LuaDecisionTrace, LuaRuntimeError
+from .sarif import sarif_for_policy_diff, sarif_for_schema_diff, sarif_for_share_doctor
 from .scaffolds import (
     GeneratedArtifact,
     GeneratedClient,
@@ -538,6 +539,9 @@ __all__ = [
     "run_mcp_proxy_config",
     "run_mcp_share",
     "run_proxy",
+    "sarif_for_policy_diff",
+    "sarif_for_schema_diff",
+    "sarif_for_share_doctor",
     "score_mcp_schema_catalog",
     "share_client_config",
     "share_contract",

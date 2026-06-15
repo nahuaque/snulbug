@@ -3,7 +3,14 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from ..cli_helpers import add_compact_arg, add_report_out_arg, write_json_output, write_report_output
+from ..cli_helpers import (
+    add_compact_arg,
+    add_report_out_arg,
+    add_sarif_out_arg,
+    write_json_output,
+    write_report_output,
+    write_sarif_output,
+)
 from .common import read_json
 
 
@@ -118,6 +125,7 @@ def add_mcp_evidence_command(mcp_subparsers: argparse._SubParsersAction[argparse
         help="return exit code 0 even when regressions are found",
     )
     add_report_out_arg(mcp_evidence_diff, help="optional Markdown policy diff report path")
+    add_sarif_out_arg(mcp_evidence_diff, help="optional SARIF policy gate output path")
     mcp_evidence_diff.add_argument(
         "--report-format",
         choices=("markdown",),
@@ -234,6 +242,10 @@ def handle_mcp_evidence_command(args: argparse.Namespace, parser: argparse.Argum
                     result,
                     report_format=args.report_format,
                 )
+            if args.sarif_out is not None:
+                from ..sarif import sarif_for_policy_diff
+
+                write_sarif_output(args.sarif_out, sarif_for_policy_diff(result), result)
             status = 0 if args.no_fail or result["safe_to_promote"] else 1
             if not args.compact:
                 from .rich_reports import write_evidence_diff_rich

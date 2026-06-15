@@ -54,6 +54,10 @@ def add_report_out_arg(parser: argparse.ArgumentParser, *, help: str) -> None:
     parser.add_argument("--report-out", type=Path, help=help)
 
 
+def add_sarif_out_arg(parser: argparse.ArgumentParser, *, help: str) -> None:
+    parser.add_argument("--sarif-out", type=Path, help=help)
+
+
 def format_json_output(payload: Any, *, compact: bool) -> str:
     if compact:
         return json.dumps(payload, separators=(",", ":"), sort_keys=True)
@@ -130,3 +134,14 @@ def write_report_output(
     result["report_out"] = str(path)
     if report_format is not None:
         result["report_format"] = report_format
+
+
+def write_sarif_output(
+    sarif_out: str | Path,
+    sarif: Mapping[str, Any],
+    result: dict[str, Any],
+) -> None:
+    path = Path(sarif_out)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(sarif, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    result["sarif_out"] = str(path)

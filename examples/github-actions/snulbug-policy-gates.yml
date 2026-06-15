@@ -1,0 +1,83 @@
+name: snulbug MCP policy gates
+
+on:
+  pull_request:
+    paths:
+      - "policy.snulbug/**"
+      - "fixtures/**"
+      - ".snulbug/schemas/**"
+      - ".snulbug/shares/**"
+      - ".github/workflows/snulbug-policy-gates.yml"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  policy-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install snulbug
+        run: uv sync --all-extras --dev
+
+      - name: Policy evidence diff
+        run: |
+          uv run snulbug mcp evidence diff \
+            policy.snulbug/policy.lua \
+            policy.snulbug.candidate/policy.lua \
+            fixtures \
+            --report-out .snulbug/ci/policy-diff.md \
+            --sarif-out .snulbug/ci/policy-diff.sarif
+
+      - name: MCP schema diff
+        if: always()
+        run: |
+          uv run snulbug mcp policy schemas diff \
+            .snulbug/schemas/baseline.json \
+            .snulbug/schemas/current.json \
+            --fail-on changed \
+            --fail-on removed \
+            --report-out .snulbug/ci/schema-diff.md \
+            --sarif-out .snulbug/ci/schema-diff.sarif
+
+      - name: Share readiness doctor
+        if: always()
+        run: |
+          uv run snulbug mcp share doctor .snulbug/shares/review \
+            --no-live-checks \
+            --require-conformance \
+            --conformance-pack .snulbug/fabric-conformance \
+            --sarif-out .snulbug/ci/share-doctor.sarif
+
+      - name: Upload policy diff SARIF
+        if: always() && hashFiles('.snulbug/ci/policy-diff.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: .snulbug/ci/policy-diff.sarif
+          category: snulbug-policy-diff
+
+      - name: Upload schema diff SARIF
+        if: always() && hashFiles('.snulbug/ci/schema-diff.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: .snulbug/ci/schema-diff.sarif
+          category: snulbug-schema-diff
+
+      - name: Upload share doctor SARIF
+        if: always() && hashFiles('.snulbug/ci/share-doctor.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: .snulbug/ci/share-doctor.sarif
+          category: snulbug-share-doctor
+
+      - name: Upload review reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snulbug-policy-gate-reports
+          path: .snulbug/ci/*.md
+          if-no-files-found: ignore

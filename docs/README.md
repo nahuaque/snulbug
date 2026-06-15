@@ -18,6 +18,7 @@ share create -> share run -> share status -> policy amend -> share activate -> s
 - [Policy bundles](bundles.md)
 - [Schema workflow: discover, diff, generate policy](mcp-schemas.md)
 - [Evidence workflow: record, replay, inspect, impact, diff](mcp-evidence.md)
+- [CI policy gates and SARIF output](ci-policy-gates.md)
 - [Reverse proxy and live recording](mcp-proxy.md)
 - [Fabric control plane and facade routing](mcp-fabric.md)
 

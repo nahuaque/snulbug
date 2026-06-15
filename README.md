@@ -342,6 +342,7 @@ Workflow:
 - redacted replay logs for deterministic policy testing
 - audit JSONL with MCP-aware fields
 - policy evidence diffs that summarize newly allowed tools, MCP path patterns, and argument shapes
+- SARIF output for CI gates on policy diffs, schema drift, and share readiness failures
 - share reports that classify observed MCP tools by risk signals before handoff
 - provider-aware tunnel audit fields for ngrok, Cloudflare, Tailscale, LocalXpose, Pinggy, Holepunch, and generic forwarders
 - Cloudflare Tunnel profiles for Access-gated, service-token, OAuth-resource, and audit-first shares
@@ -367,6 +368,7 @@ Start with:
 - [MCP policy workflow: preset, learn, amend, lifecycle](docs/mcp-policy.md)
 - [MCP schema workflow: discover, diff, generate policy](docs/mcp-schemas.md)
 - [MCP evidence workflow: record, replay, inspect, impact, diff](docs/mcp-evidence.md)
+- [CI policy gates and SARIF output](docs/ci-policy-gates.md)
 - [MCP reverse proxy](docs/mcp-proxy.md)
 - [MCP fabric config, discovery, and conformance](docs/mcp-fabric.md)
 - [Codespaces and devcontainers](docs/devcontainers.md)

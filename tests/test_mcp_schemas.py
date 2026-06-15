@@ -165,6 +165,7 @@ def test_mcp_schemas_cli_discover_and_diff(tmp_path, capsys):
     baseline_catalog = tmp_path / "baseline.catalog.json"
     current_catalog = tmp_path / "current.catalog.json"
     diff_report = tmp_path / "diff.md"
+    diff_sarif = tmp_path / "diff.sarif"
     baseline_source.write_text(json.dumps({"responses": _schema_responses()}), encoding="utf-8")
     current_source.write_text(
         json.dumps({"responses": _schema_responses(tool_description="Read a project file")}),
@@ -211,10 +212,13 @@ def test_mcp_schemas_cli_discover_and_diff(tmp_path, capsys):
             "changed",
             "--report-out",
             str(diff_report),
+            "--sarif-out",
+            str(diff_sarif),
             "--compact",
         ]
     )
     diff_output = json.loads(capsys.readouterr().out)
+    sarif_payload = json.loads(diff_sarif.read_text(encoding="utf-8"))
 
     assert status == 0
     assert status_current == 0
@@ -225,7 +229,10 @@ def test_mcp_schemas_cli_discover_and_diff(tmp_path, capsys):
     assert diff_output["summary"]["changed"] == 1
     assert diff_output["changed"][0]["id"] == "read_file"
     assert diff_output["report_out"] == str(diff_report)
+    assert diff_output["sarif_out"] == str(diff_sarif)
     assert "# snulbug mcp policy schemas diff" in diff_report.read_text(encoding="utf-8")
+    assert sarif_payload["runs"][0]["results"][0]["ruleId"] == "snulbug.schema.changed"
+    assert sarif_payload["runs"][0]["results"][0]["level"] == "error"
 
 
 def test_parse_mcp_schema_headers_adds_bearer_when_missing():

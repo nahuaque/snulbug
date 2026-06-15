@@ -12,12 +12,14 @@ from ..cli_helpers import (
     add_allow_path_arg,
     add_compact_arg,
     add_force_arg,
+    add_sarif_out_arg,
     add_token_arg,
     add_token_env_arg,
     add_validate_arg,
     write_generated_session_output,
     write_json_output,
     write_result_output,
+    write_sarif_output,
 )
 from .common import read_required_env
 
@@ -359,6 +361,7 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
         default=False,
         help="fail when --conformance-pack is missing or does not pass",
     )
+    add_sarif_out_arg(share_doctor, help="write a SARIF readiness gate report")
     add_compact_arg(share_doctor)
 
     share_client = share_subparsers.add_parser("client", help="print generated MCP client config")
@@ -820,6 +823,10 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                 conformance_pack=args.conformance_pack,
                 require_conformance=args.require_conformance,
             )
+            if args.sarif_out is not None:
+                from ..sarif import sarif_for_share_doctor
+
+                write_sarif_output(args.sarif_out, sarif_for_share_doctor(result), result)
             status = 0 if result["ok"] else 1
             if args.compact:
                 write_json_output(result, compact=True)

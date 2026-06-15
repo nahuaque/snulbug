@@ -167,6 +167,7 @@ def test_diff_cli_writes_policy_review_report(tmp_path, capsys):
     new_policy = tmp_path / "new.lua"
     fixture = tmp_path / "request.json"
     report = tmp_path / "policy-diff.md"
+    sarif = tmp_path / "policy-diff.sarif"
     old_policy.write_text(
         """
         return function(request, context)
@@ -207,18 +208,25 @@ def test_diff_cli_writes_policy_review_report(tmp_path, capsys):
             str(fixture),
             "--report-out",
             str(report),
+            "--sarif-out",
+            str(sarif),
             "--compact",
         ]
     )
     output = json.loads(capsys.readouterr().out)
     report_text = report.read_text(encoding="utf-8")
+    sarif_payload = json.loads(sarif.read_text(encoding="utf-8"))
 
     assert status == 0
     assert output["report_out"] == str(report)
+    assert output["sarif_out"] == str(sarif)
     assert output["capability_delta"]["summary"]["newly_allowed_tools"] == 1
     assert "# MCP Policy Evidence Diff" in report_text
     assert "newly allows 1 tool, 1 path pattern, 1 argument shape" in report_text
     assert "files.read_file(path)" in report_text
+    assert sarif_payload["version"] == "2.1.0"
+    assert sarif_payload["runs"][0]["results"][0]["ruleId"] == "snulbug.policy.newly_allowed_capability"
+    assert sarif_payload["runs"][0]["results"][0]["level"] == "warning"
 
     rich_status = simulator_main(["mcp", "evidence", "diff", str(old_policy), str(new_policy), str(fixture)])
     rich_output = capsys.readouterr().out

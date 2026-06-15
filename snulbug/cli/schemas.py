@@ -8,10 +8,12 @@ from ..cli_helpers import (
     add_compact_arg,
     add_force_arg,
     add_report_out_arg,
+    add_sarif_out_arg,
     add_token_arg,
     add_token_env_arg,
     add_validate_arg,
     write_report_output,
+    write_sarif_output,
 )
 
 
@@ -74,6 +76,7 @@ def add_mcp_policy_schemas_command(policy_subparsers: argparse._SubParsersAction
         help="return exit code 1 when this change type is present; repeat or use any",
     )
     add_report_out_arg(mcp_schemas_diff, help="write a Markdown schema diff report")
+    add_sarif_out_arg(mcp_schemas_diff, help="write a SARIF schema gate report")
     add_compact_arg(mcp_schemas_diff)
 
     mcp_schemas_generate = mcp_schemas_subparsers.add_parser(
@@ -150,6 +153,10 @@ def handle_mcp_schemas_command(
                     result,
                     trailing_newline=True,
                 )
+            if args.sarif_out is not None:
+                from ..sarif import sarif_for_schema_diff
+
+                write_sarif_output(args.sarif_out, sarif_for_schema_diff(result), result)
             return result, status, format_mcp_schema_diff_report
         elif args.schemas_command == "generate":
             result = generate_mcp_schema_policy(
