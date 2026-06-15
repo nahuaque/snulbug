@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -90,6 +91,48 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
     )
     add_force_arg(share_report, help="overwrite --output when it exists")
     add_compact_arg(share_report)
+
+    share_contract = share_subparsers.add_parser(
+        "contract",
+        help="write or print a secret-light share contract",
+    )
+    share_contract.add_argument("directory", type=Path, help="share session directory")
+    share_contract.add_argument("--output", "--out", type=Path, help="write contract JSON to this path")
+    share_contract.add_argument("--timeout", type=float, default=1.0, help="live check timeout in seconds")
+    share_contract.add_argument(
+        "--live-checks",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="probe the local gateway and configured upstreams",
+    )
+    share_contract.add_argument(
+        "--include-doctor",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="run share doctor and include the readiness result in the contract",
+    )
+    share_contract.add_argument("--url", "--public-url", dest="url", help="public MCP URL override")
+    share_contract.add_argument("--conformance-pack", type=Path, help="fabric conformance pack to run via share doctor")
+    share_contract.add_argument(
+        "--require-conformance",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="fail the included doctor result when no conformance pack is supplied",
+    )
+    share_contract.add_argument(
+        "--sign",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="sign the contract with an HMAC secret",
+    )
+    share_contract.add_argument("--key-id", default="local-share", help="signature key identifier")
+    share_contract.add_argument(
+        "--secret-env",
+        default="SNULBUG_SHARE_CONTRACT_SECRET",
+        help="environment variable containing the contract signing secret",
+    )
+    add_force_arg(share_contract, help="overwrite --output when it exists")
+    add_compact_arg(share_contract)
 
     share_promote = share_subparsers.add_parser("promote", help="promote the share policy bundle lifecycle")
     _add_share_lifecycle_args(share_promote, include_to=True)
@@ -372,6 +415,7 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
         run_auth_conformance_pack,
         run_mcp_share,
         share_client_config,
+        share_contract,
         share_report,
         share_status,
     )
@@ -575,6 +619,29 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
             )
             status = 0 if result["ok"] else 1
             write_result_output(result, compact=args.compact, formatter=lambda value: value["report"])
+            return status
+
+        if command == "contract":
+            result = share_contract(
+                args.directory,
+                output=args.output,
+                timeout=args.timeout,
+                live_checks=args.live_checks,
+                include_doctor=args.include_doctor,
+                public_url=args.url,
+                conformance_pack=args.conformance_pack,
+                require_conformance=args.require_conformance,
+                sign=args.sign,
+                secret=read_required_env(args.secret_env) if args.sign else None,
+                key_id=args.key_id,
+                force=args.force,
+            )
+            status = 0 if result["ok"] else 1
+            write_result_output(
+                result,
+                compact=args.compact,
+                formatter=lambda value: json.dumps(value["contract"], indent=2, sort_keys=True),
+            )
             return status
 
         if command == "promote":

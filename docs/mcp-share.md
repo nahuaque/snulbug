@@ -12,7 +12,7 @@ local MCP server without hand-wiring every control.
 The high-level session loop is:
 
 ```text
-share create -> share run -> share status -> policy amend -> share activate -> share report
+share create -> share run -> share status -> policy amend -> share activate -> share doctor -> share contract -> share report
 ```
 
 Create the bounded session:
@@ -139,6 +139,31 @@ commands see the resolved public endpoint.
 ```bash
 uv run snulbug mcp share doctor .snulbug/shares/share-... \
   --url "${PUBLIC_MCP_URL}"
+```
+
+Generate a share contract when you want a machine-readable handoff artifact for
+a reviewer, agent harness, or CI attachment:
+
+```bash
+uv run snulbug mcp share contract .snulbug/shares/share-... \
+  --output .snulbug/shares/share-.../share-contract.json
+```
+
+The contract records the public client URL, redacted header names, upstreams,
+policy lifecycle state, lease bounds, auth/scope configuration, recent evidence
+counts, findings, and last doctor state. It does not include bearer tokens,
+lease tokens, raw request bodies, or raw response bodies. Add `--include-doctor`
+to run the readiness gate while generating it, and add `--sign` to attach an
+HMAC signature using `SNULBUG_SHARE_CONTRACT_SECRET`:
+
+```bash
+export SNULBUG_SHARE_CONTRACT_SECRET=...
+uv run snulbug mcp share contract .snulbug/shares/share-... \
+  --include-doctor \
+  --sign \
+  --key-id local-review \
+  --output .snulbug/shares/share-.../share-contract.signed.json \
+  --force
 ```
 
 For OAuth protected-resource shares, run the auth-specific doctor before handing

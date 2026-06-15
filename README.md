@@ -80,7 +80,7 @@ uv add "snulbug[discovery,redis] @ git+https://github.com/lbruhacs/snulbug"
 The primary workflow is:
 
 ```text
-share create -> share run -> share status -> policy amend -> share activate -> share report
+share create -> share run -> share status -> policy amend -> share activate -> share doctor -> share contract -> share report
 ```
 
 Ask the CLI for a copy-paste version before wiring a client or harness:
@@ -155,6 +155,8 @@ PUBLIC_MCP_URL=https://YOUR-FORWARDING-DOMAIN/mcp
 uv run snulbug mcp share doctor .snulbug/shares/share-... \
   --url "${PUBLIC_MCP_URL}"
 uv run snulbug mcp share client .snulbug/shares/share-...
+uv run snulbug mcp share contract .snulbug/shares/share-... \
+  --output .snulbug/shares/share-.../share-contract.json
 ```
 
 If the share uses OAuth protected-resource mode, run the auth doctor too:

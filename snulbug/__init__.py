@@ -257,6 +257,7 @@ from .share import (
     run_auth_conformance_pack,
     run_mcp_share,
     share_client_config,
+    share_contract,
     share_report,
     share_status,
 )
@@ -532,6 +533,7 @@ __all__ = [
     "run_proxy",
     "score_mcp_schema_catalog",
     "share_client_config",
+    "share_contract",
     "share_report",
     "SHARE_SESSION_MODEL_PATH",
     "SHARE_SESSION_MODEL_TYPE",

@@ -25,6 +25,7 @@ from snulbug import (
     run_auth_conformance_pack,
     run_mcp_share,
     share_client_config,
+    share_contract,
     share_report,
     share_session_model_path,
     share_status,
@@ -557,6 +558,75 @@ def test_mcp_share_status_and_report_summarize_session_evidence(tmp_path):
     assert "shell_exec" in report["report"]
     assert "Policy Amendments" in report["report"]
     assert (tmp_path / "share-report.md").is_file()
+
+
+def test_mcp_share_contract_redacts_tokens_and_can_sign(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    write_share_audit_log(tmp_path)
+
+    result = share_contract(tmp_path, sign=True, secret="contract-secret", key_id="dev-key")
+    contract = result["contract"]
+    encoded = json.dumps(contract, sort_keys=True)
+
+    assert result["ok"] is True
+    assert result["signed"] is True
+    assert contract["schema"] == "snulbug.share-contract.v1"
+    assert contract["digest"].startswith("sha256:")
+    assert contract["snulbug_signature"]["algorithm"] == "hmac-sha256"
+    assert contract["snulbug_signature"]["key_id"] == "dev-key"
+    assert contract["snulbug_signature"]["digest"] == contract["digest"]
+    assert contract["client"]["headers"]["Authorization"] == "[REDACTED]"
+    assert contract["client"]["headers"]["x-snulbug-lease"] == "[REDACTED]"
+    assert contract["commands"]["export_token"] == "export SNULBUG_SHARE_TOKEN=[REDACTED]"
+    assert contract["evidence"]["traffic"]["event_count"] == 3
+    assert contract["evidence"]["traffic"]["blocked"] == 1
+    assert contract["upstream_auth"]["strip_client_authorization"] is True
+    assert "share-secret" not in encoded
+    assert "sbl_" not in encoded
+
+
+def test_mcp_share_contract_cli_writes_contract_file(tmp_path, capsys, monkeypatch):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    monkeypatch.setenv("SNULBUG_SHARE_CONTRACT_SECRET", "contract-secret")
+    output_path = tmp_path / "share-contract.json"
+
+    status_code = simulator_main(
+        [
+            "mcp",
+            "share",
+            "contract",
+            str(tmp_path),
+            "--output",
+            str(output_path),
+            "--sign",
+            "--key-id",
+            "dev-key",
+            "--compact",
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+    written = json.loads(output_path.read_text(encoding="utf-8"))
+
+    assert status_code == 0
+    assert output["ok"] is True
+    assert output["path"] == str(output_path)
+    assert output["digest"] == written["digest"]
+    assert written["snulbug_signature"]["key_id"] == "dev-key"
+    assert written["client"]["headers"]["Authorization"] == "[REDACTED]"
 
 
 def test_mcp_share_doctor_url_override_updates_manifest_and_client(tmp_path, monkeypatch):

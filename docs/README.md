@@ -5,7 +5,7 @@
 Start with the share session lifecycle:
 
 ```text
-share create -> share run -> share status -> policy amend -> share activate -> share report
+share create -> share run -> share status -> policy amend -> share activate -> share doctor -> share contract -> share report
 ```
 
 - [Quickstart: local MCP policy gateway](quickstart.md)

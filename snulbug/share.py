@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import http.client
 import json
 import os
@@ -61,6 +63,10 @@ DEFAULT_SHARE_MEMBER_DISCOVERY_PROVIDER = "share-members"
 SHARE_MEMBER_KINDS = ("codespaces", "devcontainer", "holepunch", "container", "generic")
 AUTH_CONFORMANCE_SCHEMA = "snulbug.auth-conformance-pack.v1"
 AUTH_CONFORMANCE_VERSION = 1
+SHARE_CONTRACT_SCHEMA = "snulbug.share-contract.v1"
+SHARE_CONTRACT_VERSION = 1
+SHARE_CONTRACT_SIGNATURE_FIELD = "snulbug_signature"
+SHARE_CONTRACT_ALGORITHM = "hmac-sha256"
 
 
 def create_mcp_share(
@@ -437,6 +443,71 @@ def share_report(
         "path": str(output_path) if output_path is not None else None,
         "report": report,
         "status": status,
+    }
+
+
+def share_contract(
+    directory: str | Path,
+    *,
+    output: str | Path | None = None,
+    timeout: float = 1.0,
+    live_checks: bool = False,
+    include_doctor: bool = False,
+    public_url: str | None = None,
+    conformance_pack: str | Path | None = None,
+    require_conformance: bool = False,
+    sign: bool = False,
+    secret: str | None = None,
+    key_id: str = "local-share",
+    force: bool = False,
+) -> dict[str, Any]:
+    """Generate a secret-light contract describing what a share exposes."""
+
+    share_dir = Path(directory)
+    doctor: dict[str, Any] | None = None
+    if include_doctor:
+        doctor = doctor_mcp_share(
+            share_dir,
+            timeout=timeout,
+            public_url=public_url,
+            live_checks=live_checks,
+            conformance_pack=conformance_pack,
+            require_conformance=require_conformance,
+        )
+    elif public_url:
+        _update_share_client_url(share_dir, public_url)
+
+    manifest = load_mcp_share(share_dir)
+    status = share_status(share_dir, timeout=timeout, live_checks=live_checks)
+    proxy_summary = _share_contract_proxy_summary(share_dir, manifest)
+    contract = _finalize_share_contract(
+        _share_contract_payload(
+            share_dir=share_dir,
+            manifest=manifest,
+            status=status,
+            proxy_summary=proxy_summary,
+            doctor=doctor,
+        ),
+        sign=sign,
+        secret=secret,
+        key_id=key_id,
+    )
+
+    output_path = Path(output) if output is not None else None
+    if output_path is not None:
+        if output_path.exists() and not force:
+            raise FileExistsError(f"share contract already exists: {output_path}")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(contract, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    ok = bool(status.get("ok", False)) and (doctor is None or bool(doctor.get("ok", False)))
+    return {
+        "ok": ok,
+        "share": str(share_dir),
+        "path": str(output_path) if output_path is not None else None,
+        "digest": contract.get("digest"),
+        "signed": SHARE_CONTRACT_SIGNATURE_FIELD in contract,
+        "contract": contract,
     }
 
 
@@ -3804,6 +3875,450 @@ def _share_recordings_status(share_dir: Path, session_model: Mapping[str, Any]) 
             "bytes": path.stat().st_size if path.exists() else 0,
         }
     return result
+
+
+def _share_contract_payload(
+    *,
+    share_dir: Path,
+    manifest: Mapping[str, Any],
+    status: Mapping[str, Any],
+    proxy_summary: Mapping[str, Any],
+    doctor: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    session = _mapping(manifest.get("session"))
+    session_model = _mapping(status.get("session_model"))
+    health = _mapping(manifest.get("health"))
+    return _drop_empty_json(
+        {
+            "schema": SHARE_CONTRACT_SCHEMA,
+            "version": SHARE_CONTRACT_VERSION,
+            "generated_at": _now_iso(),
+            "share": {
+                "id": session.get("id") or session_model.get("id"),
+                "state": status.get("state"),
+                "directory": str(share_dir),
+                "created_at": manifest.get("created_at"),
+                "updated_at": manifest.get("updated_at"),
+                "task": session.get("task"),
+                "preset": session.get("preset"),
+                "provider": session.get("provider"),
+                "ttl": session.get("ttl"),
+            },
+            "client": _share_contract_client(manifest.get("client")),
+            "gateway": _share_contract_gateway(status.get("gateway"), session_model=session_model),
+            "auth": proxy_summary.get("auth"),
+            "cloudflare_access": proxy_summary.get("cloudflare_access"),
+            "upstream_auth": proxy_summary.get("upstream_auth"),
+            "policy": _share_contract_policy(status.get("policy")),
+            "lease": _share_contract_lease(status.get("lease"), status.get("leases"), session=session),
+            "upstreams": _share_contract_upstreams(status.get("upstreams")),
+            "members": _share_contract_members(status.get("members")),
+            "tunnel": status.get("tunnel_doctor"),
+            "health": {
+                "last_checked_at": health.get("last_checked_at"),
+                "last_summary": health.get("last_summary"),
+                "last_doctor_ok": _mapping(health.get("share_doctor")).get("ok"),
+                "doctor": _share_contract_doctor(doctor),
+            },
+            "evidence": {
+                "traffic": _share_contract_traffic(status.get("traffic")),
+                "recordings": status.get("recordings"),
+                "amendments": _share_contract_amendments(status.get("amendments")),
+                "findings": status.get("findings"),
+            },
+            "commands": _share_contract_commands(status.get("commands")),
+            "files": status.get("files"),
+            "config": proxy_summary.get("config"),
+        }
+    )
+
+
+def _share_contract_client(value: Any) -> dict[str, Any]:
+    client = _mapping(value)
+    headers = _mapping(client.get("headers"))
+    return _drop_empty_json(
+        {
+            "name": client.get("name"),
+            "url": client.get("url"),
+            "config": client.get("config"),
+            "header_names": sorted(str(key) for key in headers),
+            "headers": {str(key): SECRET_REPLACEMENT for key in headers},
+        }
+    )
+
+
+def _share_contract_gateway(value: Any, *, session_model: Mapping[str, Any]) -> dict[str, Any]:
+    gateway = dict(_mapping(value))
+    model_gateway = _mapping(session_model.get("gateway"))
+    for key in ("host", "port", "local_url", "config", "fabric_config", "state_store"):
+        if model_gateway.get(key) is not None:
+            gateway.setdefault(key, model_gateway.get(key))
+    return _drop_empty_json(gateway)
+
+
+def _share_contract_policy(value: Any) -> dict[str, Any]:
+    policy = _mapping(value)
+    return _drop_empty_json(
+        {
+            "bundle": policy.get("bundle"),
+            "active_policy": policy.get("active_policy"),
+            "lifecycle_state": policy.get("lifecycle_state"),
+            "lifecycle_signed": policy.get("lifecycle_signed"),
+            "lifecycle_signature_key_id": _mapping(policy.get("lifecycle_signature")).get("key_id"),
+            "last_amendment": policy.get("last_amendment"),
+            "last_lifecycle": policy.get("last_lifecycle"),
+        }
+    )
+
+
+def _share_contract_lease(value: Any, summary: Any, *, session: Mapping[str, Any]) -> dict[str, Any]:
+    lease = _mapping(value)
+    leases_summary = _mapping(summary)
+    current = _mapping(leases_summary.get("current"))
+    return _drop_empty_json(
+        {
+            "required": session.get("lease_required"),
+            "header": session.get("lease_header"),
+            "file": lease.get("file") or leases_summary.get("file"),
+            "id": lease.get("id") or current.get("id"),
+            "active": lease.get("active"),
+            "active_count": leases_summary.get("active_count"),
+            "expires_at": current.get("expires_at"),
+            "task": current.get("task"),
+            "allow_tools": current.get("allow_tools"),
+            "allow_paths": current.get("allow_paths"),
+            "allow_hosts": current.get("allow_hosts"),
+            "allow_commands": current.get("allow_commands"),
+            "max_calls": current.get("max_calls"),
+            "used_calls": current.get("used_calls"),
+        }
+    )
+
+
+def _share_contract_upstreams(value: Any) -> list[dict[str, Any]]:
+    upstreams = []
+    for item in _sequence(value):
+        upstream = _mapping(item)
+        upstreams.append(
+            _drop_empty_json(
+                {
+                    "name": upstream.get("name"),
+                    "url": upstream.get("url"),
+                    "transport": upstream.get("transport"),
+                    "route": upstream.get("route"),
+                    "member_id": upstream.get("member_id"),
+                    "reachable": upstream.get("reachable"),
+                    "checked": upstream.get("checked"),
+                    "status": upstream.get("status"),
+                    "health": upstream.get("health"),
+                }
+            )
+        )
+    return upstreams
+
+
+def _share_contract_members(value: Any) -> dict[str, Any]:
+    members = _mapping(value)
+    attachments = []
+    for item in _sequence(members.get("attachments")):
+        attachment = _mapping(item)
+        attachments.append(
+            _drop_empty_json(
+                {
+                    "member_id": attachment.get("member_id"),
+                    "kind": attachment.get("kind"),
+                    "status": attachment.get("status"),
+                    "role": attachment.get("role"),
+                    "upstreams": attachment.get("upstreams"),
+                    "labels": attachment.get("labels"),
+                }
+            )
+        )
+    return _drop_empty_json(
+        {
+            "registry": members.get("registry"),
+            "registry_key": members.get("registry_key"),
+            "discovery_provider": members.get("discovery_provider"),
+            "attachments": attachments,
+        }
+    )
+
+
+def _share_contract_traffic(value: Any) -> dict[str, Any]:
+    traffic = _mapping(value)
+    return _drop_empty_json(
+        {
+            "source": traffic.get("source"),
+            "source_kind": traffic.get("source_kind"),
+            "exists": traffic.get("exists"),
+            "event_count": traffic.get("event_count"),
+            "allowed": traffic.get("allowed"),
+            "blocked": traffic.get("blocked"),
+            "confirmed": traffic.get("confirmed"),
+            "confirmation_approved": traffic.get("confirmation_approved"),
+            "confirmation_denied": traffic.get("confirmation_denied"),
+            "redacted_events": traffic.get("redacted_events"),
+            "response_redacted": traffic.get("response_redacted"),
+            "record_redacted": traffic.get("record_redacted"),
+            "methods": traffic.get("methods"),
+            "tools": traffic.get("tools"),
+            "clients": traffic.get("clients"),
+            "source_ips": traffic.get("source_ips"),
+            "inspection": _share_contract_inspection(traffic.get("inspection")),
+            "inspection_error": traffic.get("inspection_error"),
+        }
+    )
+
+
+def _share_contract_inspection(value: Any) -> dict[str, Any]:
+    inspection = _mapping(value)
+    return _drop_empty_json(
+        {
+            "ok": inspection.get("ok"),
+            "event_count": inspection.get("event_count"),
+            "methods": inspection.get("methods"),
+            "tools": inspection.get("tools"),
+            "findings": inspection.get("findings"),
+        }
+    )
+
+
+def _share_contract_amendments(value: Any) -> dict[str, Any]:
+    amendments = _mapping(value)
+    return _drop_empty_json(
+        {
+            "candidate_count": amendments.get("candidate_count"),
+            "last": amendments.get("last"),
+        }
+    )
+
+
+def _share_contract_doctor(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    if value is None:
+        return {}
+    return _drop_empty_json(
+        {
+            "ok": value.get("ok"),
+            "summary": value.get("summary"),
+            "recommendations": value.get("recommendations"),
+            "checks": value.get("checks"),
+            "conformance": value.get("conformance"),
+        }
+    )
+
+
+def _share_contract_commands(value: Any) -> dict[str, Any]:
+    commands = _mapping(value)
+    result: dict[str, Any] = {}
+    for key, command in commands.items():
+        if command is None:
+            continue
+        name = str(key)
+        if isinstance(command, Sequence) and not isinstance(command, str | bytes | bytearray):
+            result[name] = [_redact_share_contract_command(str(item), name=name) for item in command]
+        else:
+            result[name] = _redact_share_contract_command(str(command), name=name)
+    return result
+
+
+def _redact_share_contract_command(command: str, *, name: str) -> str:
+    if name == "export_token":
+        return f"export {DEFAULT_SHARE_TOKEN_ENV}={SECRET_REPLACEMENT}"
+    return command
+
+
+def _share_contract_proxy_summary(share_dir: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
+    files = _mapping(manifest.get("files"))
+    config = files.get("config")
+    if not isinstance(config, str) or not config:
+        return {"config": {"loaded": False}}
+    config_path = _resolve_share_path(share_dir, config)
+    try:
+        from .config import load_mcp_proxy_config
+        from .credentials import credential_metadata
+
+        proxy_config = load_mcp_proxy_config(config_path)
+        return _drop_empty_json(
+            {
+                "config": {"path": str(config_path), "loaded": True},
+                "auth": _share_contract_auth_config(proxy_config.get("auth")),
+                "cloudflare_access": _share_contract_cloudflare_config(proxy_config),
+                "upstream_auth": _share_contract_upstream_auth(proxy_config, credential_metadata=credential_metadata),
+            }
+        )
+    except Exception as exc:
+        return {"config": {"path": str(config_path), "loaded": False, "error": str(exc)}}
+
+
+def _share_contract_auth_config(value: Any) -> dict[str, Any]:
+    auth = _mapping(value)
+    issuers = []
+    for issuer in _sequence(auth.get("issuers")):
+        issuer_config = _mapping(issuer)
+        issuers.append(_share_contract_auth_issuer_config(issuer_config))
+    return _drop_empty_json(
+        {
+            "mode": auth.get("mode"),
+            "resource": auth.get("resource"),
+            "resource_aliases": auth.get("resource_aliases"),
+            "issuer": auth.get("issuer"),
+            "authorization_servers": auth.get("authorization_servers"),
+            "audience": auth.get("audience"),
+            "audiences": auth.get("audiences"),
+            "required_scopes": auth.get("required_scopes"),
+            "scopes_supported": auth.get("scopes_supported"),
+            "token_validation": auth.get("token_validation"),
+            "issuer_discovery": auth.get("issuer_discovery"),
+            "jwks_url": auth.get("jwks_url"),
+            "issuer_metadata_url": auth.get("issuer_metadata_url"),
+            "resource_metadata_url": auth.get("resource_metadata_url"),
+            "jwks_path": str(auth.get("jwks_path")) if auth.get("jwks_path") else None,
+            "strip_authorization_upstream": auth.get("strip_authorization_upstream"),
+            "scope_map": auth.get("scope_map"),
+            "required_claims": auth.get("required_claims"),
+            "claim_policy": _share_contract_claim_policy(auth.get("claim_policy")),
+            "issuers": issuers,
+        }
+    )
+
+
+def _share_contract_auth_issuer_config(value: Mapping[str, Any]) -> dict[str, Any]:
+    return _drop_empty_json(
+        {
+            "name": value.get("name"),
+            "issuer": value.get("issuer"),
+            "audience": value.get("audience"),
+            "audiences": value.get("audiences"),
+            "required_scopes": value.get("required_scopes"),
+            "scopes_supported": value.get("scopes_supported"),
+            "token_validation": value.get("token_validation"),
+            "issuer_discovery": value.get("issuer_discovery"),
+            "jwks_url": value.get("jwks_url"),
+            "issuer_metadata_url": value.get("issuer_metadata_url"),
+            "jwks_path": str(value.get("jwks_path")) if value.get("jwks_path") else None,
+            "scope_map": value.get("scope_map"),
+            "required_claims": value.get("required_claims"),
+            "claim_policy": _share_contract_claim_policy(value.get("claim_policy")),
+        }
+    )
+
+
+def _share_contract_claim_policy(value: Any) -> dict[str, Any]:
+    claim_policy = _mapping(value)
+    rules = []
+    for rule in _sequence(claim_policy.get("rules")):
+        rule_config = _mapping(rule)
+        rules.append(
+            _drop_empty_json(
+                {
+                    "name": rule_config.get("name"),
+                    "claim": rule_config.get("claim"),
+                    "matches": rule_config.get("matches"),
+                    "tools": rule_config.get("tools"),
+                    "methods": rule_config.get("methods"),
+                    "upstreams": rule_config.get("upstreams"),
+                    "effect": rule_config.get("effect"),
+                }
+            )
+        )
+    return _drop_empty_json(
+        {
+            "tenant_claim": claim_policy.get("tenant_claim"),
+            "group_claim": claim_policy.get("group_claim"),
+            "subject_claim": claim_policy.get("subject_claim"),
+            "rules": rules,
+        }
+    )
+
+
+def _share_contract_cloudflare_config(proxy_config: Mapping[str, Any]) -> dict[str, Any]:
+    return _drop_empty_json(
+        {
+            "mode": proxy_config.get("cloudflare_access"),
+            "require_jwt": proxy_config.get("cloudflare_access_require_jwt"),
+            "require_email": proxy_config.get("cloudflare_access_require_email"),
+            "require_cf_ray": proxy_config.get("cloudflare_access_require_cf_ray"),
+            "validate_jwt": proxy_config.get("cloudflare_access_validate_jwt"),
+            "team_domain": proxy_config.get("cloudflare_access_team_domain"),
+            "issuer": proxy_config.get("cloudflare_access_issuer"),
+            "audience": proxy_config.get("cloudflare_access_audience"),
+            "certs_url": proxy_config.get("cloudflare_access_certs_url"),
+            "allowed_domains": proxy_config.get("cloudflare_access_allowed_domains"),
+            "allowed_emails": proxy_config.get("cloudflare_access_allowed_emails"),
+        }
+    )
+
+
+def _share_contract_upstream_auth(
+    proxy_config: Mapping[str, Any],
+    *,
+    credential_metadata: Any,
+) -> dict[str, Any]:
+    upstreams = []
+    for item in _sequence(proxy_config.get("upstreams")):
+        upstream = _mapping(item)
+        metadata = credential_metadata(upstream.get("credential"))
+        if metadata:
+            upstreams.append(
+                _drop_empty_json(
+                    {
+                        "name": upstream.get("name"),
+                        "url": upstream.get("url"),
+                        "credential": metadata,
+                    }
+                )
+            )
+    return _drop_empty_json(
+        {
+            "strip_client_authorization": _mapping(proxy_config.get("auth")).get("strip_authorization_upstream"),
+            "default": credential_metadata(proxy_config.get("upstream_credential")),
+            "upstreams": upstreams,
+        }
+    )
+
+
+def _finalize_share_contract(
+    payload: Mapping[str, Any],
+    *,
+    sign: bool,
+    secret: str | None,
+    key_id: str,
+) -> dict[str, Any]:
+    contract = dict(_drop_empty_json(payload))
+    contract["digest"] = _share_contract_digest(contract)
+    if sign:
+        if not secret:
+            raise ValueError("share contract signing requires a non-empty secret")
+        contract[SHARE_CONTRACT_SIGNATURE_FIELD] = {
+            "algorithm": SHARE_CONTRACT_ALGORITHM,
+            "key_id": key_id,
+            "digest": contract["digest"],
+            "value": _share_contract_signature_value(contract, secret),
+        }
+    return contract
+
+
+def _share_contract_digest(contract: Mapping[str, Any]) -> str:
+    return (
+        "sha256:" + hashlib.sha256(_share_contract_canonical_json(_share_contract_payload_only(contract))).hexdigest()
+    )
+
+
+def _share_contract_signature_value(contract: Mapping[str, Any], secret: str) -> str:
+    digest = hmac.new(
+        secret.encode("utf-8"),
+        _share_contract_canonical_json(_share_contract_payload_only(contract)),
+        hashlib.sha256,
+    ).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _share_contract_payload_only(contract: Mapping[str, Any]) -> dict[str, Any]:
+    return {str(key): value for key, value in contract.items() if key not in {SHARE_CONTRACT_SIGNATURE_FIELD, "digest"}}
+
+
+def _share_contract_canonical_json(value: Mapping[str, Any]) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
 def _share_amendment_status(session_model: Mapping[str, Any]) -> dict[str, Any]:
