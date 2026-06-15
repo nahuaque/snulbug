@@ -29,6 +29,11 @@ from .scaffolds import (
     write_scaffold,
 )
 
+CLOUDFLARE_ACCESS_PROFILES = ("access-gate", "service-token", "oauth-resource", "audit")
+DEFAULT_CLOUDFLARE_ACCESS_PROFILE = "access-gate"
+DEFAULT_CLOUDFLARE_SERVICE_TOKEN_CLIENT_ID_ENV = "CLOUDFLARE_ACCESS_CLIENT_ID"
+DEFAULT_CLOUDFLARE_SERVICE_TOKEN_CLIENT_SECRET_ENV = "CLOUDFLARE_ACCESS_CLIENT_SECRET"
+
 
 def create_mcp_quickstart(
     directory: str | Path = ".",
@@ -64,6 +69,7 @@ def create_mcp_quickstart(
     lease_header: str = "x-snulbug-lease",
     tunnel_provider: str = "auto",
     tunnel_public_url: str | None = None,
+    cloudflare_profile: str | None = None,
     cloudflare_access: str = "off",
     cloudflare_access_require_jwt: bool = True,
     cloudflare_access_require_email: bool = False,
@@ -78,11 +84,34 @@ def create_mcp_quickstart(
     cloudflare_access_jwks_cache_seconds: float = 300.0,
     cloudflare_access_jwks_fetch_timeout: float = 5.0,
     cloudflare_access_leeway_seconds: float = 60.0,
+    auth_issuer: str | None = None,
+    auth_resource: str | None = None,
+    auth_audience: str | None = None,
+    auth_required_scopes: Sequence[str] | None = None,
+    auth_jwks_url: str | None = None,
+    auth_token_validation: str = "jwt",
     timeout: float = 30.0,
     force: bool = False,
     validate: bool = True,
 ) -> dict[str, Any]:
     """Create a local MCP policy proxy starter project."""
+
+    resolved_cloudflare_profile, tunnel_provider = _resolve_cloudflare_profile(
+        tunnel_provider,
+        cloudflare_profile,
+    )
+    cloudflare_client_headers = _cloudflare_profile_client_headers(resolved_cloudflare_profile)
+    cloudflare_auth_config = _cloudflare_profile_auth_config(
+        resolved_cloudflare_profile,
+        tunnel_public_url=tunnel_public_url,
+        local_url=f"http://{host}:{port}/mcp",
+        issuer=auth_issuer,
+        resource=auth_resource,
+        audience=auth_audience,
+        required_scopes=auth_required_scopes,
+        jwks_url=auth_jwks_url,
+        token_validation=auth_token_validation,
+    )
 
     root = Path(directory)
     policy_dir = _resolve_output(root, policy_output)
@@ -142,6 +171,7 @@ def create_mcp_quickstart(
         "lease_header": lease_header,
         "tunnel_provider": tunnel_provider,
         "tunnel_public_url": tunnel_public_url or "",
+        "cloudflare_access_profile": resolved_cloudflare_profile or "",
         "cloudflare_access": cloudflare_access,
         "cloudflare_access_require_jwt": cloudflare_access_require_jwt,
         "cloudflare_access_require_email": cloudflare_access_require_email,
@@ -158,8 +188,28 @@ def create_mcp_quickstart(
         "cloudflare_access_leeway_seconds": cloudflare_access_leeway_seconds,
         "timeout": timeout,
     }
+    config_values.update(
+        _cloudflare_profile_proxy_values(
+            resolved_cloudflare_profile,
+            allowed_emails=cloudflare_access_allowed_emails,
+            allowed_domains=cloudflare_access_allowed_domains,
+            team_domain=cloudflare_access_team_domain,
+            issuer=cloudflare_access_issuer,
+            audience=cloudflare_access_audience,
+            certs_url=cloudflare_access_certs_url,
+            jwks_cache_seconds=cloudflare_access_jwks_cache_seconds,
+            jwks_fetch_timeout=cloudflare_access_jwks_fetch_timeout,
+            leeway_seconds=cloudflare_access_leeway_seconds,
+        )
+    )
     event_sinks = default_event_sink_configs(audit_path=_config_path(audit_event_out, config_path.parent))
-    _write_mcp_proxy_config(config_path, config_values, event_sinks=event_sinks, force=force)
+    _write_mcp_proxy_config(
+        config_path,
+        config_values,
+        auth=cloudflare_auth_config,
+        event_sinks=event_sinks,
+        force=force,
+    )
 
     validation = validate_bundle(policy_dir) if validate else None
     bundle_tests = test_bundle(policy_dir) if validate else None
@@ -172,7 +222,7 @@ def create_mcp_quickstart(
     client_url = f"http://{host}:{port}/mcp"
     record_path = _resolve_output(root, record_out)
     lease_path = _resolve_output(root, lease_file)
-    client_headers = {"Authorization": f"Bearer {effective_token}"}
+    client_headers = {"Authorization": f"Bearer {effective_token}", **cloudflare_client_headers}
     next_steps = [
         f"uv run snulbug mcp share run --config {config_path}",
         (
@@ -223,7 +273,11 @@ def create_mcp_quickstart(
                 GeneratedLog("audit_events", audit_event_out, "audit_jsonl"),
             ],
             next_steps=next_steps,
-            metadata={"preset": preset, "upstream": upstream},
+            metadata={
+                "preset": preset,
+                "upstream": upstream,
+                "cloudflare_access_profile": resolved_cloudflare_profile,
+            },
         ),
         ok=ok,
     )
@@ -269,20 +323,27 @@ def create_mcp_quickstart(
             "lease_header": lease_header,
             "tunnel_provider": tunnel_provider,
             "tunnel_public_url": tunnel_public_url,
-            "cloudflare_access": cloudflare_access,
-            "cloudflare_access_require_jwt": cloudflare_access_require_jwt,
-            "cloudflare_access_require_email": cloudflare_access_require_email,
-            "cloudflare_access_require_cf_ray": cloudflare_access_require_cf_ray,
-            "cloudflare_access_allowed_emails": list(cloudflare_access_allowed_emails or []),
-            "cloudflare_access_allowed_domains": list(cloudflare_access_allowed_domains or []),
-            "cloudflare_access_validate_jwt": cloudflare_access_validate_jwt,
-            "cloudflare_access_team_domain": cloudflare_access_team_domain,
-            "cloudflare_access_issuer": cloudflare_access_issuer,
-            "cloudflare_access_audience": cloudflare_access_audience,
-            "cloudflare_access_certs_url": cloudflare_access_certs_url,
-            "cloudflare_access_jwks_cache_seconds": cloudflare_access_jwks_cache_seconds,
-            "cloudflare_access_jwks_fetch_timeout": cloudflare_access_jwks_fetch_timeout,
-            "cloudflare_access_leeway_seconds": cloudflare_access_leeway_seconds,
+            "cloudflare_access_profile": resolved_cloudflare_profile,
+            "cloudflare_access": config_values["cloudflare_access"],
+            "cloudflare_access_require_jwt": config_values["cloudflare_access_require_jwt"],
+            "cloudflare_access_require_email": config_values["cloudflare_access_require_email"],
+            "cloudflare_access_require_cf_ray": config_values["cloudflare_access_require_cf_ray"],
+            "cloudflare_access_allowed_emails": list(config_values["cloudflare_access_allowed_emails"]),
+            "cloudflare_access_allowed_domains": list(config_values["cloudflare_access_allowed_domains"]),
+            "cloudflare_access_validate_jwt": config_values["cloudflare_access_validate_jwt"],
+            "cloudflare_access_team_domain": config_values["cloudflare_access_team_domain"] or None,
+            "cloudflare_access_issuer": config_values["cloudflare_access_issuer"] or None,
+            "cloudflare_access_audience": config_values["cloudflare_access_audience"] or None,
+            "cloudflare_access_certs_url": config_values["cloudflare_access_certs_url"] or None,
+            "cloudflare_access_jwks_cache_seconds": config_values["cloudflare_access_jwks_cache_seconds"],
+            "cloudflare_access_jwks_fetch_timeout": config_values["cloudflare_access_jwks_fetch_timeout"],
+            "cloudflare_access_leeway_seconds": config_values["cloudflare_access_leeway_seconds"],
+            "auth": cloudflare_auth_config,
+        },
+        "cloudflare": {
+            "profile": resolved_cloudflare_profile,
+            "client_headers": cloudflare_client_headers,
+            "auth": cloudflare_auth_config,
         },
         "validation": validation,
         "tests": bundle_tests,
@@ -317,12 +378,13 @@ def _write_mcp_proxy_config(
     path: Path,
     values: dict[str, Any],
     *,
+    auth: Mapping[str, Any] | None = None,
     event_sinks: Sequence[Mapping[str, Any]] = (),
     force: bool = False,
 ) -> None:
     if path.exists() and not force:
         raise FileExistsError(f"config file already exists: {path}")
-    template = GatewayTemplate(proxy=values, event_sinks=event_sinks)
+    template = GatewayTemplate(proxy=values, auth=auth, event_sinks=event_sinks)
     write_scaffold(
         ScaffoldPlan(
             name="mcp share quickstart config",
@@ -343,3 +405,105 @@ def _scaffold_child_path(root: Path, path: Path) -> Path | str:
     if path.is_absolute():
         return path
     return _config_path(path, root)
+
+
+def _resolve_cloudflare_profile(
+    tunnel_provider: str,
+    cloudflare_profile: str | None,
+) -> tuple[str | None, str]:
+    if cloudflare_profile is not None and cloudflare_profile not in CLOUDFLARE_ACCESS_PROFILES:
+        raise ValueError(f"cloudflare_profile must be one of: {', '.join(CLOUDFLARE_ACCESS_PROFILES)}")
+    if cloudflare_profile is not None and tunnel_provider == "auto":
+        tunnel_provider = "cloudflare"
+    if tunnel_provider == "cloudflare":
+        return cloudflare_profile or DEFAULT_CLOUDFLARE_ACCESS_PROFILE, tunnel_provider
+    if cloudflare_profile is not None:
+        raise ValueError("cloudflare_profile requires tunnel_provider='cloudflare' or tunnel_provider='auto'")
+    return None, tunnel_provider
+
+
+def _cloudflare_profile_proxy_values(
+    profile: str | None,
+    *,
+    allowed_emails: Sequence[str] | None,
+    allowed_domains: Sequence[str] | None,
+    team_domain: str | None,
+    issuer: str | None,
+    audience: str | None,
+    certs_url: str | None,
+    jwks_cache_seconds: float,
+    jwks_fetch_timeout: float,
+    leeway_seconds: float,
+) -> dict[str, Any]:
+    if profile is None:
+        return {}
+    if profile == "oauth-resource":
+        access_mode = "audit"
+        validate_jwt = False
+    elif profile == "audit":
+        access_mode = "audit"
+        validate_jwt = bool(team_domain and audience)
+    else:
+        access_mode = "enforce"
+        validate_jwt = True
+    domains = list(allowed_domains or [])
+    emails = list(allowed_emails or [])
+    return {
+        "cloudflare_access_profile": profile,
+        "cloudflare_access": access_mode,
+        "cloudflare_access_require_jwt": True,
+        "cloudflare_access_require_email": bool(emails or domains),
+        "cloudflare_access_require_cf_ray": True,
+        "cloudflare_access_allowed_emails": emails,
+        "cloudflare_access_allowed_domains": domains,
+        "cloudflare_access_validate_jwt": validate_jwt,
+        "cloudflare_access_team_domain": team_domain or "",
+        "cloudflare_access_issuer": issuer or "",
+        "cloudflare_access_audience": audience or "",
+        "cloudflare_access_certs_url": certs_url or "",
+        "cloudflare_access_jwks_cache_seconds": jwks_cache_seconds,
+        "cloudflare_access_jwks_fetch_timeout": jwks_fetch_timeout,
+        "cloudflare_access_leeway_seconds": leeway_seconds,
+    }
+
+
+def _cloudflare_profile_client_headers(profile: str | None) -> dict[str, str]:
+    if profile != "service-token":
+        return {}
+    return {
+        "CF-Access-Client-Id": f"${{{DEFAULT_CLOUDFLARE_SERVICE_TOKEN_CLIENT_ID_ENV}}}",
+        "CF-Access-Client-Secret": f"${{{DEFAULT_CLOUDFLARE_SERVICE_TOKEN_CLIENT_SECRET_ENV}}}",
+    }
+
+
+def _cloudflare_profile_auth_config(
+    profile: str | None,
+    *,
+    tunnel_public_url: str | None,
+    local_url: str,
+    issuer: str | None,
+    resource: str | None,
+    audience: str | None,
+    required_scopes: Sequence[str] | None,
+    jwks_url: str | None,
+    token_validation: str,
+) -> dict[str, Any] | None:
+    if profile != "oauth-resource":
+        return None
+    if not issuer:
+        raise ValueError("cloudflare_profile='oauth-resource' requires auth_issuer")
+    effective_resource = resource or tunnel_public_url or local_url
+    effective_scopes = list(required_scopes or ["mcp:connect"])
+    return {
+        "mode": "oauth-resource",
+        "resource": effective_resource,
+        "issuer": issuer,
+        "authorization_servers": [issuer],
+        "audience": audience or effective_resource,
+        "required_scopes": effective_scopes,
+        "scopes_supported": effective_scopes,
+        "jwks_url": jwks_url or "",
+        "issuer_discovery": True,
+        "token_validation": token_validation,
+        "strip_authorization_upstream": True,
+    }

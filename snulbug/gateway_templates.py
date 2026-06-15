@@ -13,6 +13,7 @@ class GatewayTemplate:
 
     proxy: Mapping[str, Any] = field(default_factory=dict)
     upstreams: Sequence[Mapping[str, Any]] = ()
+    auth: Mapping[str, Any] | None = None
     event_sinks: Sequence[Mapping[str, Any]] = ()
     fabric: Mapping[str, Any] | None = None
     fabric_credentials: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
@@ -38,6 +39,8 @@ def render_gateway_toml(template: GatewayTemplate, *, header: str | None = None)
         _append_block(lines, render_toml_table("mcp.proxy", template.proxy))
     for upstream in template.upstreams:
         _append_block(lines, render_toml_array_table("mcp.proxy.upstreams", upstream))
+    if template.auth is not None:
+        _append_block(lines, render_toml_table("mcp.auth", template.auth))
     for sink in template.event_sinks:
         _append_block(lines, render_toml_array_table("mcp.events.sinks", sink))
 

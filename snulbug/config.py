@@ -82,6 +82,7 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "lease_header": "x-snulbug-lease",
     "tunnel_provider": "auto",
     "tunnel_public_url": None,
+    "cloudflare_access_profile": None,
     "cloudflare_access": "off",
     "cloudflare_access_require_jwt": True,
     "cloudflare_access_require_email": False,
@@ -168,6 +169,7 @@ lease_required = false
 lease_header = "x-snulbug-lease"
 tunnel_provider = "auto"
 tunnel_public_url = ""
+cloudflare_access_profile = ""
 cloudflare_access = "off"
 cloudflare_access_require_jwt = true
 cloudflare_access_require_email = false
@@ -437,6 +439,7 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         "schema_validation_action",
         "lease_header",
         "tunnel_provider",
+        "cloudflare_access_profile",
         "cloudflare_access",
         "cloudflare_access_team_domain",
         "cloudflare_access_issuer",
@@ -516,6 +519,17 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         )
     if normalized["cloudflare_access"] not in {"off", "audit", "enforce"}:
         raise ValueError("mcp.proxy.cloudflare_access must be 'off', 'audit', or 'enforce'")
+    if normalized.get("cloudflare_access_profile") == "":
+        normalized["cloudflare_access_profile"] = None
+    if normalized.get("cloudflare_access_profile") is not None and normalized["cloudflare_access_profile"] not in {
+        "access-gate",
+        "service-token",
+        "oauth-resource",
+        "audit",
+    }:
+        raise ValueError(
+            "mcp.proxy.cloudflare_access_profile must be 'access-gate', 'service-token', 'oauth-resource', or 'audit'"
+        )
 
     normalized["upstreams"] = _normalize_upstreams(normalized.get("upstreams", []), base_dir=base)
     upstream_credential = normalized.get("upstream_credential")

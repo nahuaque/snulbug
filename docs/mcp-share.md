@@ -483,6 +483,56 @@ edge checks, then forwards allowed traffic to the internal Agent Endpoint.
 See [End-to-end ngrok MCP gateway](ngrok-end-to-end.md) for the full
 upstream-to-public-Cloud-Endpoint walkthrough.
 
+For Cloudflare Tunnel, `share create --provider cloudflare` defaults to the
+`access-gate` profile. This makes Cloudflare Access the outer user/device gate,
+requires `CF-Access-Jwt-Assertion`, requires `CF-Ray`, strips Access credential
+headers before upstream forwarding, and expects signed Access JWT validation to
+be configured before `share doctor` passes:
+
+```bash
+uv run snulbug mcp share create \
+  --provider cloudflare \
+  --url https://mcp.example.com/mcp \
+  --cloudflare-access-team-domain team.cloudflareaccess.com \
+  --cloudflare-access-audience YOUR-CLOUDFLARE-ACCESS-AUD-TAG \
+  --cloudflare-access-allow-domain example.com
+```
+
+Use the `service-token` profile for machine clients that cannot complete a
+browser Access session. The generated MCP client config uses environment
+placeholders, not raw service-token secrets:
+
+```bash
+uv run snulbug mcp share create \
+  --provider cloudflare \
+  --cloudflare-profile service-token \
+  --url https://mcp.example.com/mcp \
+  --cloudflare-access-team-domain team.cloudflareaccess.com \
+  --cloudflare-access-audience YOUR-CLOUDFLARE-ACCESS-AUD-TAG
+```
+
+Then set these where the MCP client runs:
+
+```bash
+export CLOUDFLARE_ACCESS_CLIENT_ID=...
+export CLOUDFLARE_ACCESS_CLIENT_SECRET=...
+```
+
+Use the `oauth-resource` profile when the MCP client supports MCP OAuth and
+snulbug should be the OAuth protected resource. In that profile Cloudflare
+Tunnel is transport, Cloudflare Access stays in audit mode, and snulbug
+validates OAuth issuer/resource/audience/scopes:
+
+```bash
+uv run snulbug mcp share create \
+  --provider cloudflare \
+  --cloudflare-profile oauth-resource \
+  --url https://mcp.example.com/mcp \
+  --auth-issuer https://auth.example.com
+```
+
+Use the `audit` profile to observe Cloudflare Access headers before enforcing.
+
 ## Close out
 
 When the task is complete:

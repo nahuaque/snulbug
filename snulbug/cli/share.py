@@ -24,6 +24,7 @@ from .common import read_required_env
 PROVIDERS = ("generic", "ngrok", "cloudflare", "tailscale", "localxpose", "pinggy", "holepunch")
 QUICKSTART_TUNNEL_PROVIDERS = ("auto", *PROVIDERS)
 ATTACH_MEMBER_KINDS = ("codespaces", "devcontainer", "holepunch", "container", "generic")
+CLOUDFLARE_ACCESS_PROFILES = ("access-gate", "service-token", "oauth-resource", "audit")
 
 
 def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -455,6 +456,7 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                 lease_header=args.lease_header,
                 tunnel_provider=args.tunnel_provider,
                 tunnel_public_url=args.tunnel_public_url,
+                cloudflare_profile=args.cloudflare_profile,
                 cloudflare_access=args.cloudflare_access,
                 cloudflare_access_require_jwt=args.cloudflare_access_require_jwt,
                 cloudflare_access_require_email=args.cloudflare_access_require_email,
@@ -469,6 +471,12 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                 cloudflare_access_jwks_cache_seconds=args.cloudflare_access_jwks_cache_seconds,
                 cloudflare_access_jwks_fetch_timeout=args.cloudflare_access_jwks_fetch_timeout,
                 cloudflare_access_leeway_seconds=args.cloudflare_access_leeway_seconds,
+                auth_issuer=args.auth_issuer,
+                auth_resource=args.auth_resource,
+                auth_audience=args.auth_audience,
+                auth_required_scopes=args.auth_scope or None,
+                auth_jwks_url=args.auth_jwks_url,
+                auth_token_validation=args.auth_token_validation,
                 timeout=args.timeout,
                 force=args.force,
                 validate=args.validate,
@@ -487,6 +495,19 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                 public_url=args.url,
                 ngrok_internal_url=args.ngrok_internal_url,
                 ngrok_endpoint_name=args.ngrok_endpoint_name,
+                cloudflare_profile=args.cloudflare_profile,
+                auth_issuer=args.auth_issuer,
+                auth_resource=args.auth_resource,
+                auth_audience=args.auth_audience,
+                auth_required_scopes=args.auth_scope or None,
+                auth_jwks_url=args.auth_jwks_url,
+                auth_token_validation=args.auth_token_validation,
+                cloudflare_access_allowed_emails=args.cloudflare_access_allow_email,
+                cloudflare_access_allowed_domains=args.cloudflare_access_allow_domain,
+                cloudflare_access_team_domain=args.cloudflare_access_team_domain,
+                cloudflare_access_issuer=args.cloudflare_access_issuer,
+                cloudflare_access_audience=args.cloudflare_access_audience,
+                cloudflare_access_certs_url=args.cloudflare_access_certs_url,
                 token=args.token,
                 ttl=args.ttl,
                 task=args.task,
@@ -915,6 +936,7 @@ def _add_quickstart_args(parser: argparse.ArgumentParser) -> None:
         help="provider label for tunnel-aware audit fields",
     )
     parser.add_argument("--tunnel-public-url", help="public tunnel URL to include in audit fields")
+    _add_cloudflare_profile_args(parser)
     parser.add_argument(
         "--cloudflare-access",
         choices=("off", "audit", "enforce"),
@@ -991,6 +1013,67 @@ def _add_quickstart_args(parser: argparse.ArgumentParser) -> None:
     add_compact_arg(parser)
 
 
+def _add_cloudflare_profile_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--cloudflare-profile",
+        choices=CLOUDFLARE_ACCESS_PROFILES,
+        help=(
+            "Cloudflare Tunnel auth defaults: access-gate, service-token, oauth-resource, or audit. "
+            "Defaults to access-gate when the provider is cloudflare."
+        ),
+    )
+    parser.add_argument(
+        "--auth-issuer",
+        help="OAuth issuer URL for --cloudflare-profile oauth-resource",
+    )
+    parser.add_argument(
+        "--auth-resource",
+        help="OAuth resource indicator for --cloudflare-profile oauth-resource; defaults to the public MCP URL",
+    )
+    parser.add_argument(
+        "--auth-audience",
+        help="OAuth audience for --cloudflare-profile oauth-resource; defaults to the resource",
+    )
+    parser.add_argument(
+        "--auth-scope",
+        action="append",
+        default=[],
+        help="required OAuth scope for --cloudflare-profile oauth-resource; repeat for multiple scopes",
+    )
+    parser.add_argument("--auth-jwks-url", help="explicit OAuth JWKS URL; issuer discovery is used when omitted")
+    parser.add_argument(
+        "--auth-token-validation",
+        choices=("jwt", "introspection", "jwt_or_introspection", "jwt_and_introspection"),
+        default="jwt",
+        help="OAuth token validation mode for --cloudflare-profile oauth-resource",
+    )
+
+
+def _add_cloudflare_access_setup_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--cloudflare-access-allow-email",
+        action="append",
+        default=[],
+        help="allowed Cloudflare Access authenticated user email; repeat for multiple emails",
+    )
+    parser.add_argument(
+        "--cloudflare-access-allow-domain",
+        action="append",
+        default=[],
+        help="allowed Cloudflare Access authenticated email domain; repeat for multiple domains",
+    )
+    parser.add_argument(
+        "--cloudflare-access-team-domain",
+        help="Cloudflare Access team domain, such as your-team.cloudflareaccess.com",
+    )
+    parser.add_argument("--cloudflare-access-issuer", help="expected Access JWT issuer; defaults to team domain")
+    parser.add_argument("--cloudflare-access-audience", help="Cloudflare Access application AUD tag")
+    parser.add_argument(
+        "--cloudflare-access-certs-url",
+        help="JWKS URL for Access certs; defaults to <team-domain>/cdn-cgi/access/certs",
+    )
+
+
 def _add_share_create_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--directory", type=Path, help="share session directory")
     parser.add_argument(
@@ -1035,6 +1118,8 @@ def _add_share_create_args(parser: argparse.ArgumentParser) -> None:
         help="HTTP header carrying the task lease token",
     )
     parser.add_argument("--client-name", default="snulbug-share", help="MCP client config server name")
+    _add_cloudflare_profile_args(parser)
+    _add_cloudflare_access_setup_args(parser)
     add_force_arg(parser, help="overwrite generated share files")
     add_validate_arg(parser, help="validate and test the generated policy bundle")
     add_compact_arg(parser)

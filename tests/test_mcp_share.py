@@ -275,6 +275,126 @@ def test_create_mcp_share_ngrok_writes_cloud_endpoint_artifacts(tmp_path):
     assert "Attach" in result["commands"]["provider"][1]
 
 
+def test_create_mcp_share_cloudflare_access_gate_profile_defaults_to_safe_jwt_validation(tmp_path, monkeypatch):
+    result = create_mcp_share(
+        tmp_path,
+        provider="cloudflare",
+        public_url="https://mcp.example.com/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    proxy_config = load_mcp_proxy_config(tmp_path / "snulbug.toml")
+    manifest = json.loads((tmp_path / "share.json").read_text(encoding="utf-8"))
+
+    def fake_doctor_tunnel(**kwargs):
+        return {
+            "ok": True,
+            "url": kwargs["url"],
+            "local_url": "http://127.0.0.1:8080/mcp",
+            "checks": [],
+            "summary": {"passed": 1, "failed": 0, "warnings": 0, "skipped": 0},
+        }
+
+    monkeypatch.setattr("snulbug.tunnel.doctor_tunnel", fake_doctor_tunnel)
+    doctor = doctor_mcp_share(tmp_path, live_checks=False)
+    checks = {check["id"]: check for check in doctor["checks"]}
+
+    assert result["session"]["cloudflare_access_profile"] == "access-gate"
+    assert manifest["session"]["cloudflare_access_profile"] == "access-gate"
+    assert proxy_config["cloudflare_access_profile"] == "access-gate"
+    assert proxy_config["cloudflare_access"] == "enforce"
+    assert proxy_config["cloudflare_access_require_jwt"] is True
+    assert proxy_config["cloudflare_access_require_cf_ray"] is True
+    assert proxy_config["cloudflare_access_validate_jwt"] is True
+    assert proxy_config["cloudflare_access_team_domain"] is None
+    assert proxy_config["cloudflare_access_audience"] is None
+    assert doctor["ok"] is False
+    assert checks["cloudflare.access_gate.jwt_config"]["status"] == "fail"
+
+
+def test_mcp_share_cloudflare_service_token_profile_writes_client_headers_and_doctor_checks(
+    tmp_path,
+    monkeypatch,
+):
+    create_mcp_share(
+        tmp_path,
+        provider="cloudflare",
+        public_url="https://mcp.example.com/mcp",
+        token="share-secret",
+        cloudflare_profile="service-token",
+        cloudflare_access_team_domain="team.cloudflareaccess.com",
+        cloudflare_access_audience="access-aud-tag",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    def fake_doctor_tunnel(**kwargs):
+        return {
+            "ok": True,
+            "url": kwargs["url"],
+            "local_url": "http://127.0.0.1:8080/mcp",
+            "checks": [],
+            "summary": {"passed": 1, "failed": 0, "warnings": 0, "skipped": 0},
+        }
+
+    monkeypatch.setattr("snulbug.tunnel.doctor_tunnel", fake_doctor_tunnel)
+
+    client = json.loads((tmp_path / "mcp-client.json").read_text(encoding="utf-8"))
+    result = doctor_mcp_share(tmp_path, live_checks=False)
+    checks = {check["id"]: check for check in result["checks"]}
+
+    assert client["mcpServers"]["snulbug-share"]["headers"]["CF-Access-Client-Id"] == ("${CLOUDFLARE_ACCESS_CLIENT_ID}")
+    assert client["mcpServers"]["snulbug-share"]["headers"]["CF-Access-Client-Secret"] == (
+        "${CLOUDFLARE_ACCESS_CLIENT_SECRET}"
+    )
+    assert result["ok"] is True
+    assert result["cloudflare"]["profile"] == "service-token"
+    assert checks["cloudflare.access_gate.jwt_config"]["status"] == "pass"
+    assert checks["cloudflare.service_token.client_headers"]["status"] == "pass"
+
+
+def test_mcp_share_cloudflare_oauth_resource_profile_keeps_access_out_of_oauth_path(tmp_path, monkeypatch):
+    create_mcp_share(
+        tmp_path,
+        provider="cloudflare",
+        public_url="https://mcp.example.com/mcp",
+        token="share-secret",
+        cloudflare_profile="oauth-resource",
+        auth_issuer="https://auth.example.com",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    def fake_doctor_tunnel(**kwargs):
+        return {
+            "ok": True,
+            "url": kwargs["url"],
+            "local_url": "http://127.0.0.1:8080/mcp",
+            "checks": [],
+            "summary": {"passed": 1, "failed": 0, "warnings": 0, "skipped": 0},
+        }
+
+    monkeypatch.setattr("snulbug.tunnel.doctor_tunnel", fake_doctor_tunnel)
+
+    proxy_config = load_mcp_proxy_config(tmp_path / "snulbug.toml")
+    result = doctor_mcp_share(tmp_path, live_checks=False)
+    checks = {check["id"]: check for check in result["checks"]}
+
+    assert proxy_config["cloudflare_access_profile"] == "oauth-resource"
+    assert proxy_config["cloudflare_access"] == "audit"
+    assert proxy_config["auth"]["mode"] == "oauth-resource"
+    assert proxy_config["auth"]["resource"] == "https://mcp.example.com/mcp"
+    assert proxy_config["auth"]["issuer"] == "https://auth.example.com"
+    assert result["ok"] is True
+    assert result["cloudflare"]["profile"] == "oauth-resource"
+    assert checks["cloudflare.oauth_resource.auth_enabled"]["status"] == "pass"
+    assert checks["cloudflare.oauth_resource.access_not_enforced"]["status"] == "pass"
+    assert checks["cloudflare.oauth_resource.no_access_client_headers"]["status"] == "pass"
+    assert checks["cloudflare.oauth_resource.anti_passthrough"]["status"] == "pass"
+
+
 def test_mcp_share_lifecycle_helpers_read_manifest(tmp_path):
     create_mcp_share(
         tmp_path,

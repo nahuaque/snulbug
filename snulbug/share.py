@@ -79,6 +79,19 @@ def create_mcp_share(
     public_url: str | None = None,
     ngrok_internal_url: str | None = None,
     ngrok_endpoint_name: str = DEFAULT_NGROK_INTERNAL_ENDPOINT_NAME,
+    cloudflare_profile: str | None = None,
+    auth_issuer: str | None = None,
+    auth_resource: str | None = None,
+    auth_audience: str | None = None,
+    auth_required_scopes: Sequence[str] | None = None,
+    auth_jwks_url: str | None = None,
+    auth_token_validation: str = "jwt",
+    cloudflare_access_allowed_emails: Sequence[str] | None = None,
+    cloudflare_access_allowed_domains: Sequence[str] | None = None,
+    cloudflare_access_team_domain: str | None = None,
+    cloudflare_access_issuer: str | None = None,
+    cloudflare_access_audience: str | None = None,
+    cloudflare_access_certs_url: str | None = None,
     token: str | None = None,
     ttl: str = DEFAULT_SHARE_TTL,
     task: str = "Ephemeral MCP share session",
@@ -143,6 +156,19 @@ def create_mcp_share(
         lease_header=lease_header,
         tunnel_provider=provider,
         tunnel_public_url=tunnel_preview["public_url"],
+        cloudflare_profile=cloudflare_profile,
+        auth_issuer=auth_issuer,
+        auth_resource=auth_resource,
+        auth_audience=auth_audience,
+        auth_required_scopes=auth_required_scopes,
+        auth_jwks_url=auth_jwks_url,
+        auth_token_validation=auth_token_validation,
+        cloudflare_access_allowed_emails=cloudflare_access_allowed_emails,
+        cloudflare_access_allowed_domains=cloudflare_access_allowed_domains,
+        cloudflare_access_team_domain=cloudflare_access_team_domain,
+        cloudflare_access_issuer=cloudflare_access_issuer,
+        cloudflare_access_audience=cloudflare_access_audience,
+        cloudflare_access_certs_url=cloudflare_access_certs_url,
         force=force,
         validate=validate,
     )
@@ -173,6 +199,9 @@ def create_mcp_share(
         "Authorization": f"Bearer {bearer_token}",
         lease_header: lease["token"],
     }
+    cloudflare_headers = _mapping(quickstart.get("cloudflare")).get("client_headers")
+    if isinstance(cloudflare_headers, Mapping):
+        client_headers.update({str(key): str(value) for key, value in cloudflare_headers.items()})
     client_config = _client_config(client_name, tunnel["client"]["url"], client_headers)
     client_config_path = share_dir / "mcp-client.json"
     _write_json(client_config_path, client_config, force=force)
@@ -194,6 +223,7 @@ def create_mcp_share(
         state=state,
         lease_required=lease_required,
         lease_header=lease_header,
+        client_extra_headers={key: value for key, value in client_headers.items() if key.startswith("CF-Access-")},
         client_name=client_name,
         force=force,
     )
@@ -246,6 +276,7 @@ def create_mcp_share(
                 "session_id": session_id,
                 "provider": provider,
                 "preset": preset,
+                "cloudflare_access_profile": _mapping(quickstart.get("cloudflare")).get("profile"),
                 "ttl": ttl,
                 "task": task,
                 "upstream": upstream,
@@ -299,6 +330,7 @@ def create_mcp_share(
             "model": str(share_session_model_path(share_dir)),
             "provider": provider,
             "preset": preset,
+            "cloudflare_access_profile": _mapping(quickstart.get("cloudflare")).get("profile"),
             "ttl": ttl,
             "task": task,
             "lease_required": lease_required,
@@ -868,6 +900,9 @@ def doctor_mcp_share(
     policy = _share_policy_doctor_checks(share_dir, proxy_config, status)
     checks.extend(policy["checks"])
     recommendations.extend(policy["recommendations"])
+    cloudflare_profile = _share_cloudflare_profile_doctor_checks(proxy_config, manifest)
+    checks.extend(cloudflare_profile["checks"])
+    recommendations.extend(cloudflare_profile["recommendations"])
 
     fabric = None
     if fabric_config is not None:
@@ -921,6 +956,7 @@ def doctor_mcp_share(
         "recommendations": _unique_strings(recommendations),
         "status": status,
         "policy": policy["result"],
+        "cloudflare": cloudflare_profile["result"],
         "fabric": fabric,
         "conformance": conformance["result"],
         "tunnel": tunnel,
@@ -3658,6 +3694,257 @@ def _share_policy_doctor_checks(
     }
 
 
+def _share_cloudflare_profile_doctor_checks(
+    proxy_config: Mapping[str, Any] | None,
+    manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+    recommendations: list[str] = []
+    result: dict[str, Any] = {"ok": True, "profile": None, "provider": None}
+    if proxy_config is None:
+        return {"result": result, "checks": checks, "recommendations": recommendations}
+
+    session = _mapping(manifest.get("session"))
+    provider = str(session.get("provider") or proxy_config.get("tunnel_provider") or "generic")
+    profile = proxy_config.get("cloudflare_access_profile") or session.get("cloudflare_access_profile")
+    profile = str(profile) if profile else None
+    if provider != "cloudflare" and profile is None:
+        return {"result": result, "checks": checks, "recommendations": recommendations}
+
+    auth = _mapping(proxy_config.get("auth"))
+    access_mode = str(proxy_config.get("cloudflare_access") or "off")
+    client_headers = _share_auth_client_headers(manifest, {})
+    cf_client_header_names = sorted(name for name in client_headers if name in _CLOUDFLARE_ACCESS_HEADER_NAMES)
+    result = {
+        "ok": True,
+        "profile": profile,
+        "provider": provider,
+        "access_mode": access_mode,
+        "auth_mode": auth.get("mode"),
+        "client_cloudflare_headers": cf_client_header_names,
+    }
+
+    profile_configured = profile in {"access-gate", "service-token", "oauth-resource", "audit"}
+    _add_share_doctor_check(
+        checks,
+        "cloudflare.profile.configured",
+        profile_configured,
+        f"Cloudflare profile is {profile}" if profile_configured else "Cloudflare profile is not configured",
+        component="cloudflare",
+        details={"provider": provider, "profile": profile},
+    )
+    if not profile_configured:
+        recommendations.append(
+            "Recreate or update this share with --cloudflare-profile access-gate, service-token, "
+            "oauth-resource, or audit."
+        )
+        result["ok"] = False
+        return {"result": result, "checks": checks, "recommendations": recommendations}
+
+    if profile in {"access-gate", "service-token"}:
+        _add_cloudflare_access_gate_checks(
+            checks,
+            recommendations,
+            proxy_config,
+            auth,
+            profile=profile,
+        )
+        if profile == "service-token":
+            has_client_id = "cf-access-client-id" in client_headers
+            has_client_secret = "cf-access-client-secret" in client_headers
+            env_placeholders = all(
+                str(client_headers.get(name, "")).startswith("${")
+                for name in ("cf-access-client-id", "cf-access-client-secret")
+                if name in client_headers
+            )
+            _add_share_doctor_check(
+                checks,
+                "cloudflare.service_token.client_headers",
+                has_client_id and has_client_secret and env_placeholders,
+                "Cloudflare Access service-token client headers use environment placeholders"
+                if has_client_id and has_client_secret and env_placeholders
+                else "Cloudflare Access service-token client headers are missing or not env placeholders",
+                component="cloudflare",
+                details={"headers": cf_client_header_names},
+            )
+            if not has_client_id or not has_client_secret:
+                recommendations.append(
+                    "Use the generated service-token client config or add CF-Access-Client-Id and "
+                    "CF-Access-Client-Secret as environment-placeholder headers."
+                )
+    elif profile == "oauth-resource":
+        auth_enabled = auth.get("mode") == "oauth-resource"
+        _add_share_doctor_check(
+            checks,
+            "cloudflare.oauth_resource.auth_enabled",
+            auth_enabled,
+            "MCP OAuth protected-resource mode is enabled"
+            if auth_enabled
+            else "MCP OAuth protected-resource mode is not enabled",
+            component="cloudflare",
+            details={"auth_mode": auth.get("mode")},
+        )
+        access_does_not_block = access_mode != "enforce"
+        _add_share_doctor_check(
+            checks,
+            "cloudflare.oauth_resource.access_not_enforced",
+            access_does_not_block,
+            "Cloudflare Access is not enforced in front of MCP OAuth discovery"
+            if access_does_not_block
+            else "Cloudflare Access enforcement can block MCP OAuth discovery",
+            component="cloudflare",
+            details={"cloudflare_access": access_mode},
+        )
+        no_cf_client_headers = not cf_client_header_names
+        _add_share_doctor_check(
+            checks,
+            "cloudflare.oauth_resource.no_access_client_headers",
+            no_cf_client_headers,
+            "MCP OAuth client config does not embed Cloudflare Access client headers"
+            if no_cf_client_headers
+            else "Cloudflare Access client headers are embedded in an MCP OAuth client config",
+            component="cloudflare",
+            details={"headers": cf_client_header_names},
+        )
+        anti_passthrough = auth.get("strip_authorization_upstream") is True
+        _add_share_doctor_check(
+            checks,
+            "cloudflare.oauth_resource.anti_passthrough",
+            anti_passthrough,
+            "caller Authorization headers are stripped before upstream forwarding"
+            if anti_passthrough
+            else "caller Authorization headers may be forwarded upstream",
+            component="cloudflare",
+        )
+        if not auth_enabled:
+            recommendations.append(
+                "Regenerate with --cloudflare-profile oauth-resource --auth-issuer <issuer> or merge the "
+                "generated share auth init snippet into snulbug.toml."
+            )
+        if not access_does_not_block:
+            recommendations.append(
+                "Keep Cloudflare Access in audit/off mode for MCP OAuth resource shares unless OAuth metadata "
+                "and discovery paths are explicitly exempted."
+            )
+    elif profile == "audit":
+        audit_mode = access_mode == "audit"
+        _add_share_doctor_check(
+            checks,
+            "cloudflare.audit.mode",
+            audit_mode,
+            "Cloudflare Access audit mode is enabled"
+            if audit_mode
+            else "Cloudflare Access audit profile requires cloudflare_access = 'audit'",
+            component="cloudflare",
+            details={"cloudflare_access": access_mode},
+        )
+        no_cf_client_headers = not cf_client_header_names
+        _add_share_doctor_check(
+            checks,
+            "cloudflare.audit.no_access_client_headers",
+            no_cf_client_headers,
+            "audit profile does not embed Cloudflare Access service-token headers"
+            if no_cf_client_headers
+            else "audit profile embeds Cloudflare Access service-token headers",
+            component="cloudflare",
+            details={"headers": cf_client_header_names},
+        )
+
+    result["ok"] = _checks_ok(checks, component="cloudflare")
+    return {"result": result, "checks": checks, "recommendations": _unique_strings(recommendations)}
+
+
+def _add_cloudflare_access_gate_checks(
+    checks: list[dict[str, Any]],
+    recommendations: list[str],
+    proxy_config: Mapping[str, Any],
+    auth: Mapping[str, Any],
+    *,
+    profile: str,
+) -> None:
+    access_enforced = proxy_config.get("cloudflare_access") == "enforce"
+    _add_share_doctor_check(
+        checks,
+        "cloudflare.access_gate.enforced",
+        access_enforced,
+        "Cloudflare Access is enforced at the snulbug origin"
+        if access_enforced
+        else "Cloudflare Access gate profile requires cloudflare_access = 'enforce'",
+        component="cloudflare",
+        details={"cloudflare_access": proxy_config.get("cloudflare_access"), "profile": profile},
+    )
+    require_jwt = proxy_config.get("cloudflare_access_require_jwt") is True
+    _add_share_doctor_check(
+        checks,
+        "cloudflare.access_gate.jwt_required",
+        require_jwt,
+        "Cloudflare Access JWT assertion is required"
+        if require_jwt
+        else "Cloudflare Access JWT assertion is not required",
+        component="cloudflare",
+    )
+    validate_jwt = proxy_config.get("cloudflare_access_validate_jwt") is True
+    _add_share_doctor_check(
+        checks,
+        "cloudflare.access_gate.jwt_validated",
+        validate_jwt,
+        "Cloudflare Access JWT assertion is cryptographically validated"
+        if validate_jwt
+        else "Cloudflare Access JWT assertion validation is disabled",
+        component="cloudflare",
+    )
+    team_domain = bool(proxy_config.get("cloudflare_access_team_domain"))
+    audience = bool(proxy_config.get("cloudflare_access_audience"))
+    _add_share_doctor_check(
+        checks,
+        "cloudflare.access_gate.jwt_config",
+        team_domain and audience,
+        "Cloudflare Access team domain and AUD tag are configured"
+        if team_domain and audience
+        else "Cloudflare Access team domain or AUD tag is missing",
+        component="cloudflare",
+        details={
+            "team_domain": proxy_config.get("cloudflare_access_team_domain"),
+            "audience_configured": audience,
+        },
+    )
+    require_cf_ray = proxy_config.get("cloudflare_access_require_cf_ray") is True
+    _add_share_doctor_check(
+        checks,
+        "cloudflare.access_gate.cf_ray_required",
+        require_cf_ray,
+        "CF-Ray is required so requests are tied to Cloudflare edge traffic"
+        if require_cf_ray
+        else "CF-Ray is not required for Cloudflare Access profile",
+        component="cloudflare",
+    )
+    not_oauth_resource = auth.get("mode") != "oauth-resource"
+    _add_share_doctor_check(
+        checks,
+        "cloudflare.access_gate.not_wrapping_oauth_resource",
+        not_oauth_resource,
+        "Cloudflare Access profile is not wrapping MCP OAuth resource mode"
+        if not_oauth_resource
+        else "Cloudflare Access enforcement can block MCP OAuth protected-resource discovery",
+        component="cloudflare",
+        details={"auth_mode": auth.get("mode")},
+    )
+    if not validate_jwt or not team_domain or not audience:
+        recommendations.append(
+            "Set cloudflare_access_team_domain and cloudflare_access_audience, and keep "
+            "cloudflare_access_validate_jwt = true for Cloudflare Access gate profiles."
+        )
+    if not not_oauth_resource:
+        recommendations.append(
+            "Use --cloudflare-profile oauth-resource for MCP OAuth shares, or remove [mcp.auth] "
+            "OAuth protected-resource mode from this Access-gated share."
+        )
+
+
+def _checks_ok(checks: Sequence[Mapping[str, Any]], *, component: str) -> bool:
+    return all(check.get("status") != "fail" for check in checks if check.get("component") == component)
+
+
 def _run_share_conformance_doctor(
     pack: str | Path | None,
     *,
@@ -4390,6 +4677,7 @@ def _share_contract_claim_policy(value: Any) -> dict[str, Any]:
 def _share_contract_cloudflare_config(proxy_config: Mapping[str, Any]) -> dict[str, Any]:
     return _drop_empty_json(
         {
+            "profile": proxy_config.get("cloudflare_access_profile"),
             "mode": proxy_config.get("cloudflare_access"),
             "require_jwt": proxy_config.get("cloudflare_access_require_jwt"),
             "require_email": proxy_config.get("cloudflare_access_require_email"),
@@ -5813,6 +6101,7 @@ def _share_manifest(
             "directory": str(share_dir),
             "provider": provider,
             "preset": preset,
+            "cloudflare_access_profile": _mapping(quickstart.get("cloudflare")).get("profile"),
             "ttl": ttl,
             "task": task,
             "upstream": upstream,
@@ -6039,6 +6328,7 @@ def _write_container_upstream_recipe(
     state: str,
     lease_required: bool,
     lease_header: str,
+    client_extra_headers: Mapping[str, str] | None,
     client_name: str,
     force: bool,
 ) -> dict[str, Any]:
@@ -6072,6 +6362,7 @@ def _write_container_upstream_recipe(
         "Authorization": f"Bearer {token}",
         lease_header: lease["token"],
     }
+    client_headers.update(dict(client_extra_headers or {}))
     client_config_path = recipe_dir / "mcp-client.facade.json"
     facade_config_path = recipe_dir / "snulbug.facade.toml"
     local_config_path = recipe_dir / "snulbug.local.toml"

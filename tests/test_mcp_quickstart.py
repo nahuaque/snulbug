@@ -75,6 +75,84 @@ def test_create_mcp_quickstart_writes_policy_config_and_trace_dir(tmp_path):
     assert '"read_repo",' in (policy / "policy.lua").read_text(encoding="utf-8")
 
 
+def test_create_mcp_quickstart_defaults_cloudflare_to_access_gate_profile(tmp_path):
+    result = create_mcp_quickstart(
+        tmp_path,
+        tunnel_provider="cloudflare",
+        tunnel_public_url="https://mcp.example.com/mcp",
+        token="dev-secret",
+        cloudflare_access_team_domain="team.cloudflareaccess.com",
+        cloudflare_access_audience="access-aud-tag",
+        cloudflare_access_allowed_domains=["example.com"],
+        validate=False,
+    )
+
+    proxy_config = load_mcp_proxy_config(tmp_path / "snulbug.toml")
+
+    assert result["ok"] is True
+    assert result["cloudflare"]["profile"] == "access-gate"
+    assert result["client"]["headers"] == {"Authorization": "Bearer dev-secret"}
+    assert proxy_config["tunnel_provider"] == "cloudflare"
+    assert proxy_config["cloudflare_access_profile"] == "access-gate"
+    assert proxy_config["cloudflare_access"] == "enforce"
+    assert proxy_config["cloudflare_access_require_jwt"] is True
+    assert proxy_config["cloudflare_access_require_email"] is True
+    assert proxy_config["cloudflare_access_require_cf_ray"] is True
+    assert proxy_config["cloudflare_access_validate_jwt"] is True
+    assert proxy_config["cloudflare_access_team_domain"] == "team.cloudflareaccess.com"
+    assert proxy_config["cloudflare_access_audience"] == "access-aud-tag"
+    assert proxy_config["cloudflare_access_allowed_domains"] == ["example.com"]
+    assert proxy_config["auth"]["mode"] == "off"
+
+
+def test_create_mcp_quickstart_cloudflare_service_token_profile_adds_client_placeholders(tmp_path):
+    result = create_mcp_quickstart(
+        tmp_path,
+        cloudflare_profile="service-token",
+        tunnel_public_url="https://mcp.example.com/mcp",
+        token="dev-secret",
+        cloudflare_access_team_domain="team.cloudflareaccess.com",
+        cloudflare_access_audience="access-aud-tag",
+        validate=False,
+    )
+
+    proxy_config = load_mcp_proxy_config(tmp_path / "snulbug.toml")
+
+    assert proxy_config["tunnel_provider"] == "cloudflare"
+    assert proxy_config["cloudflare_access_profile"] == "service-token"
+    assert proxy_config["cloudflare_access"] == "enforce"
+    assert proxy_config["cloudflare_access_validate_jwt"] is True
+    assert result["client"]["headers"]["Authorization"] == "Bearer dev-secret"
+    assert result["client"]["headers"]["CF-Access-Client-Id"] == "${CLOUDFLARE_ACCESS_CLIENT_ID}"
+    assert result["client"]["headers"]["CF-Access-Client-Secret"] == "${CLOUDFLARE_ACCESS_CLIENT_SECRET}"
+
+
+def test_create_mcp_quickstart_cloudflare_oauth_resource_profile_writes_auth_block(tmp_path):
+    result = create_mcp_quickstart(
+        tmp_path,
+        cloudflare_profile="oauth-resource",
+        tunnel_public_url="https://mcp.example.com/mcp",
+        token="dev-secret",
+        auth_issuer="https://auth.example.com",
+        auth_required_scopes=["mcp:connect", "mcp:tools.read"],
+        validate=False,
+    )
+
+    proxy_config = load_mcp_proxy_config(tmp_path / "snulbug.toml")
+
+    assert proxy_config["tunnel_provider"] == "cloudflare"
+    assert proxy_config["cloudflare_access_profile"] == "oauth-resource"
+    assert proxy_config["cloudflare_access"] == "audit"
+    assert proxy_config["cloudflare_access_validate_jwt"] is False
+    assert proxy_config["auth"]["mode"] == "oauth-resource"
+    assert proxy_config["auth"]["resource"] == "https://mcp.example.com/mcp"
+    assert proxy_config["auth"]["issuer"] == "https://auth.example.com"
+    assert proxy_config["auth"]["audience"] == "https://mcp.example.com/mcp"
+    assert proxy_config["auth"]["required_scopes"] == ["mcp:connect", "mcp:tools.read"]
+    assert proxy_config["auth"]["strip_authorization_upstream"] is True
+    assert result["client"]["headers"] == {"Authorization": "Bearer dev-secret"}
+
+
 def test_mcp_share_quickstart_cli_writes_compact_result(tmp_path, capsys):
     status = simulator_main(
         [

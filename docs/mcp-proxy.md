@@ -583,6 +583,7 @@ Access headers that Cloudflare forwards after an Access policy succeeds.
 [mcp.proxy]
 tunnel_provider = "cloudflare"
 tunnel_public_url = "https://mcp.example.com/mcp"
+cloudflare_access_profile = "access-gate"
 cloudflare_access = "enforce"
 cloudflare_access_require_jwt = true
 cloudflare_access_require_email = true
@@ -598,6 +599,19 @@ cloudflare_access_audience = "YOUR-CLOUDFLARE-ACCESS-AUD-TAG"
 - `audit`: record what would have been blocked but allow the request.
 - `enforce`: reject requests before Lua policy and upstream forwarding when
   required Access headers or allowlist checks are missing.
+
+`cloudflare_access_profile` is generation/doctor metadata used by
+`snulbug mcp share create --provider cloudflare`:
+
+- `access-gate`: default Cloudflare Tunnel profile; enforce Access, validate
+  the signed Access JWT, and keep snulbug bearer/lease/policy checks inside.
+- `service-token`: same origin-side Access enforcement, plus generated MCP
+  client headers for `CF-Access-Client-Id` and `CF-Access-Client-Secret` using
+  environment-variable placeholders.
+- `oauth-resource`: Cloudflare Tunnel as transport while snulbug acts as the
+  MCP OAuth protected resource; Cloudflare Access stays in `audit` mode so it
+  does not block OAuth protected-resource discovery.
+- `audit`: observe Cloudflare Access headers before enforcing.
 
 Set `cloudflare_access_team_domain` to the Cloudflare Access issuer domain for
 your Zero Trust team, such as `my-team.cloudflareaccess.com`. snulbug derives
