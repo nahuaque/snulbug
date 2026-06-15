@@ -122,6 +122,8 @@ secret-looking paths such as `.env`, `.ssh/`, `secrets/`, `*.pem`, and `*.key`,
 and blocks write-like tools from targeting generated/cache paths such as
 `.git/`, `node_modules/`, `.venv/`, `__pycache__/`, `dist/`, or `build/`.
 Allowed decisions include `context.workspace.path_class` for audit/reporting.
+The preset is built from the reusable Lua `workspace.*` helpers documented in
+the [Lua request API](lua-request-api.md#workspace-firewall-helpers).
 
 ```bash
 uv run snulbug mcp policy preset workspace-firewall \

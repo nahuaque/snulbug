@@ -1008,3 +1008,199 @@ def test_capability_guards_reject_parent_path_traversal():
         "reason": "parent path traversal is not allowed",
         "reason_code": "mcp.path_traversal",
     }
+
+
+def test_workspace_require_under_project_allows_relative_project_paths():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return workspace.require_under_project("path", {
+            allowed_paths = { "README.md", "docs/" }
+          }) or decision.allow("test.workspace_allowed", {
+            values = workspace.path_values("path")
+          })
+        end
+        """
+    )
+
+    decision = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","id":"1","method":"tools/call",'
+                '"params":{"name":"safe_read_file","arguments":{"path":"docs/api.md"}}}'
+            )
+        }
+    )
+
+    assert decision == {
+        "action": "continue",
+        "reason_code": "test.workspace_allowed",
+        "context": {"values": ["docs/api.md"]},
+    }
+
+
+def test_workspace_require_under_project_rejects_absolute_and_traversal_paths():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return workspace.require_under_project("path")
+            or decision.allow("test.workspace_allowed")
+        end
+        """
+    )
+
+    traversal = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","id":"1","method":"tools/call",'
+                '"params":{"name":"safe_read_file","arguments":{"path":"../secrets.env"}}}'
+            )
+        }
+    )
+    absolute = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","id":"2","method":"tools/call",'
+                '"params":{"name":"safe_read_file","arguments":{"path":"/tmp/secrets.env"}}}'
+            )
+        }
+    )
+
+    assert traversal["action"] == "reject"
+    assert traversal["reason_code"] == "mcp.workspace_path_outside"
+    assert traversal["context"]["workspace"] == {
+        "argument": "path",
+        "path": "../secrets.env",
+        "path_class": "outside",
+        "write_intent": False,
+    }
+    assert absolute["action"] == "reject"
+    assert absolute["reason_code"] == "mcp.workspace_path_outside"
+    assert absolute["context"]["workspace"]["path"] == "/tmp/secrets.env"
+
+
+def test_workspace_secret_and_generated_path_helpers_block_common_local_dev_risks():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return workspace.require_under_project({ "path", "target" }, {
+            allowed_paths = { "." }
+          }) or workspace.block_secret_paths({ "path", "target" })
+            or workspace.block_generated_paths({ "path", "target" })
+            or decision.allow("test.workspace_allowed")
+        end
+        """
+    )
+
+    secret = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","id":"1","method":"tools/call",'
+                '"params":{"name":"safe_read_file","arguments":{"path":".env"}}}'
+            )
+        }
+    )
+    generated = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","id":"2","method":"tools/call",'
+                '"params":{"name":"safe_read_file","arguments":{"target":"node_modules/pkg/index.js"}}}'
+            )
+        }
+    )
+
+    assert secret["action"] == "reject"
+    assert secret["reason_code"] == "mcp.workspace_secret_blocked"
+    assert secret["context"]["workspace"] == {
+        "argument": "path",
+        "path": ".env",
+        "path_class": "secret",
+        "write_intent": False,
+    }
+    assert generated["action"] == "reject"
+    assert generated["reason_code"] == "mcp.workspace_generated_path_blocked"
+    assert generated["context"]["workspace"] == {
+        "argument": "target",
+        "path": "node_modules/pkg/index.js",
+        "path_class": "generated",
+        "write_intent": False,
+    }
+
+
+def test_workspace_block_generated_paths_can_be_limited_to_write_like_tools():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return workspace.block_generated_paths("path", {
+            write_only = true,
+            reason_code = "mcp.workspace_generated_write_blocked"
+          }) or decision.allow("test.workspace_allowed")
+        end
+        """
+    )
+
+    read = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","id":"1","method":"tools/call",'
+                '"params":{"name":"safe_read_file","arguments":{"path":"dist/app.js"}}}'
+            )
+        }
+    )
+    write = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","id":"2","method":"tools/call",'
+                '"params":{"name":"write_file","arguments":{"path":"dist/app.js"}}}'
+            )
+        }
+    )
+
+    assert read == {"action": "continue", "reason_code": "test.workspace_allowed"}
+    assert write["action"] == "reject"
+    assert write["reason_code"] == "mcp.workspace_generated_write_blocked"
+    assert write["context"]["workspace"]["write_intent"] is True
+
+
+def test_workspace_readonly_only_blocks_write_like_tools_and_non_read_methods():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return workspace.readonly_only()
+            or decision.allow("test.readonly_allowed", {
+              write_intent = workspace.write_intent()
+            })
+        end
+        """
+    )
+
+    read = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","id":"1","method":"tools/call",'
+                '"params":{"name":"safe_read_file","arguments":{"path":"README.md"}}}'
+            )
+        }
+    )
+    write_tool = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","id":"2","method":"tools/call",'
+                '"params":{"name":"write_file","arguments":{"path":"README.md"}}}'
+            )
+        }
+    )
+    write_method = script.decide({"body": '{"jsonrpc":"2.0","id":"3","method":"roots/set","params":{}}'})
+
+    assert read == {
+        "action": "continue",
+        "reason_code": "test.readonly_allowed",
+        "context": {"write_intent": False},
+    }
+    assert write_tool["action"] == "reject"
+    assert write_tool["reason_code"] == "mcp.workspace_readonly_required"
+    assert write_tool["context"]["tool"] == "write_file"
+    assert write_tool["context"]["workspace"]["write_intent"] is True
+    assert write_method["action"] == "reject"
+    assert write_method["reason_code"] == "mcp.workspace_readonly_required"
+    assert write_method["context"]["method"] == "roots/set"

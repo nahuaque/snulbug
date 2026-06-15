@@ -625,6 +625,7 @@ return function(source, source_name, instruction_limit)
 
   local current_auth = {}
   local current_lease = {}
+  local current_request = {}
   local current_share = {}
   local current_upstream = {}
 
@@ -1739,6 +1740,428 @@ return function(source, source_name, instruction_limit)
     return cap.command(argument_value(request_or_call, key), allowed_commands, options)
   end
 
+  local workspace_path_keys = {
+    path = true,
+    paths = true,
+    filepath = true,
+    file = true,
+    files = true,
+    filename = true,
+    directory = true,
+    dir = true,
+    root = true,
+    cwd = true,
+    source = true,
+    src = true,
+    destination = true,
+    dest = true,
+    target = true,
+    targetpath = true,
+    oldpath = true,
+    newpath = true,
+    from = true,
+    to = true,
+  }
+
+  local workspace_secret_suffixes = {
+    ".pem",
+    ".key",
+    ".p12",
+    ".pfx",
+    ".crt",
+    ".cert",
+  }
+
+  local workspace_generated_segments = {
+    ".git",
+    ".snulbug",
+    ".venv",
+    "venv",
+    "node_modules",
+    "__pycache__",
+    ".ruff_cache",
+    ".pytest_cache",
+    ".mypy_cache",
+    "dist",
+    "build",
+    "coverage",
+  }
+
+  local workspace_write_terms = {
+    "write",
+    "edit",
+    "create",
+    "delete",
+    "remove",
+    "rename",
+    "move",
+    "patch",
+    "replace",
+    "append",
+    "mkdir",
+    "rm",
+    "touch",
+    "save",
+  }
+
+  local workspace_read_methods = {
+    ["initialize"] = true,
+    ["notifications/initialized"] = true,
+    ["tools/list"] = true,
+    ["tools/call"] = true,
+    ["resources/list"] = true,
+    ["resources/templates/list"] = true,
+    ["resources/read"] = true,
+    ["prompts/list"] = true,
+    ["prompts/get"] = true,
+  }
+
+  local function normalize_workspace_arg_key(key)
+    local lower = string.lower(tostring(key or ""))
+    return string.gsub(lower, "[_%.%-]", "")
+  end
+
+  local function workspace_key_matches(key, keys)
+    local normalized = normalize_workspace_arg_key(key)
+    if keys == nil then
+      return workspace_path_keys[normalized] == true
+    end
+    if type(keys) == "string" then
+      return normalized == normalize_workspace_arg_key(keys)
+    end
+    if type(keys) == "table" then
+      if keys[normalized] == true or keys[key] == true then
+        return true
+      end
+      for _, configured in ipairs(keys) do
+        if normalized == normalize_workspace_arg_key(configured) then
+          return true
+        end
+      end
+    end
+    return false
+  end
+
+  local function workspace_basename(path)
+    return string.match(path, "([^/]+)$") or path
+  end
+
+  local function workspace_has_segment(path, segment)
+    return string.find("/" .. path .. "/", "/" .. segment .. "/", 1, true) ~= nil
+  end
+
+  local function workspace_is_secret_path(path)
+    local lower = string.lower(path or "")
+    local base = workspace_basename(lower)
+    if base == ".env" or starts_with(base, ".env.") then
+      return true
+    end
+    if workspace_has_segment(lower, ".ssh")
+      or workspace_has_segment(lower, ".gnupg")
+      or workspace_has_segment(lower, "secrets") then
+      return true
+    end
+    if lower == ".kube/config" or ends_with(lower, "/.kube/config") then
+      return true
+    end
+    for _, suffix in ipairs(workspace_secret_suffixes) do
+      if ends_with(lower, suffix) then
+        return true
+      end
+    end
+    return false
+  end
+
+  local function workspace_is_generated_path(path)
+    local lower = string.lower(path or "")
+    for _, segment in ipairs(workspace_generated_segments) do
+      if workspace_has_segment(lower, segment) then
+        return true
+      end
+    end
+    return false
+  end
+
+  local function workspace_tool_is_write_like(tool)
+    local lower = string.lower(tool or "")
+    for _, term in ipairs(workspace_write_terms) do
+      if string.find(lower, term, 1, true) ~= nil then
+        return true
+      end
+    end
+    return false
+  end
+
+  local function workspace_allowed_roots(options)
+    options = options_table(options)
+    if type(options.roots) == "table" then
+      return options.roots
+    end
+    if type(options.allowed_paths) == "table" then
+      return options.allowed_paths
+    end
+    if type(options.project_paths) == "table" then
+      return options.project_paths
+    end
+    return { "." }
+  end
+
+  local function workspace_path_under_roots(path, roots)
+    if value_allowed(path, roots) then
+      return true
+    end
+    if type(roots) == "table" then
+      for _, root in ipairs(roots) do
+        if path_under(path, root) then
+          return true
+        end
+      end
+    end
+    return false
+  end
+
+  local function workspace_path_info(path, argument, roots)
+    local info = {
+      argument = argument or "",
+      path = tostring(path),
+      path_class = "allowed",
+    }
+    if type(path) ~= "string" or path == "" then
+      info.path_class = "invalid"
+      return info
+    end
+
+    local normalized = normalize_relative_path(path)
+    info.path = normalized
+    if starts_with(normalized, "/") or starts_with(normalized, "~") or string.match(normalized, "^%a:") ~= nil then
+      info.path_class = "outside"
+      return info
+    end
+    if contains_parent_segment(normalized) then
+      info.path_class = "outside"
+      return info
+    end
+    if not workspace_path_under_roots(normalized, roots) then
+      info.path_class = "outside"
+      return info
+    end
+    if workspace_is_secret_path(normalized) then
+      info.path_class = "secret"
+      return info
+    end
+    if workspace_is_generated_path(normalized) then
+      info.path_class = "generated"
+      return info
+    end
+    return info
+  end
+
+  local function workspace_collect_path_values(value, key, keys, output, depth)
+    if depth > 5 then
+      return
+    end
+
+    if workspace_key_matches(key, keys) then
+      if type(value) == "string" then
+        table.insert(output, { argument = tostring(key), value = value })
+      elseif type(value) == "table" then
+        for _, item in ipairs(value) do
+          table.insert(output, { argument = tostring(key), value = item })
+        end
+      else
+        table.insert(output, { argument = tostring(key), value = value })
+      end
+    end
+
+    if type(value) == "table" then
+      for child_key, child_value in pairs(value) do
+        if type(child_key) == "string" then
+          workspace_collect_path_values(child_value, child_key, keys, output, depth + 1)
+        end
+      end
+    end
+  end
+
+  local function workspace_path_values(keys)
+    local values = {}
+    local call = mcp.call(current_request)
+    if type(call.args) == "table" then
+      workspace_collect_path_values(call.args, "", keys, values, 0)
+    end
+    return values
+  end
+
+  local function workspace_context(info, details)
+    local call = mcp.call(current_request)
+    local workspace_details = {
+      argument = info.argument or "",
+      path = info.path or "",
+      path_class = info.path_class or "none",
+      write_intent = workspace_tool_is_write_like(call.tool),
+    }
+    return merge_context({
+      policy = "mcp-workspace",
+      method = call.method or "",
+      tool = call.tool or "",
+      workspace = workspace_details,
+    }, details)
+  end
+
+  local function workspace_reject(info, body, reason, reason_code, options)
+    options = options_table(options)
+    local decision_options = copy_options(options)
+    decision_options.reason = options.reason or reason
+    decision_options.reason_code = options.reason_code or reason_code
+    decision_options.context = merge_context(workspace_context(info), options.context)
+    return decision.reject(options.status or 403, options.body or body, decision_options)
+  end
+
+  local workspace = {}
+
+  function workspace.write_intent()
+    local call = mcp.call(current_request)
+    return workspace_tool_is_write_like(call.tool)
+  end
+
+  function workspace.path_values(keys)
+    local result = {}
+    for _, value in ipairs(workspace_path_values(keys)) do
+      table.insert(result, value.value)
+    end
+    return result
+  end
+
+  function workspace.path_summary(keys, options)
+    local roots = workspace_allowed_roots(options)
+    local values = workspace_path_values(keys)
+    if #values == 0 then
+      return {
+        argument = "",
+        path = "",
+        path_class = "none",
+        write_intent = workspace.write_intent(),
+      }
+    end
+    local first = nil
+    for _, value in ipairs(values) do
+      local info = workspace_path_info(value.value, value.argument, roots)
+      if first == nil then
+        first = info
+      end
+      if info.path_class == "generated" then
+        info.write_intent = workspace.write_intent()
+        return info
+      end
+    end
+    first.write_intent = workspace.write_intent()
+    return first
+  end
+
+  function workspace.require_under_project(keys, options)
+    options = options_table(options)
+    local roots = workspace_allowed_roots(options)
+    local values = workspace_path_values(keys)
+    if #values == 0 and options.required == true then
+      local missing = { argument = type(keys) == "string" and keys or "", path = "", path_class = "invalid" }
+      return workspace_reject(
+        missing,
+        "MCP workspace path blocked (invalid): ",
+        "MCP tool path argument is missing or invalid",
+        "mcp.workspace_path_invalid",
+        options
+      )
+    end
+    for _, value in ipairs(values) do
+      local info = workspace_path_info(value.value, value.argument, roots)
+      if info.path_class == "invalid" then
+        return workspace_reject(
+          info,
+          "MCP workspace path blocked (invalid): " .. tostring(info.path),
+          "MCP tool path argument is missing or invalid",
+          "mcp.workspace_path_invalid",
+          options
+        )
+      end
+      if info.path_class == "outside" then
+        return workspace_reject(
+          info,
+          "MCP workspace path blocked (outside): " .. tostring(info.path),
+          "MCP tool path is outside the allowed workspace paths",
+          "mcp.workspace_path_outside",
+          options
+        )
+      end
+    end
+    return nil
+  end
+
+  function workspace.block_secret_paths(keys, options)
+    options = options_table(options)
+    for _, value in ipairs(workspace_path_values(keys)) do
+      if type(value.value) == "string" then
+        local path = normalize_relative_path(value.value)
+        if workspace_is_secret_path(path) then
+          local info = { argument = value.argument, path = path, path_class = "secret" }
+          return workspace_reject(
+            info,
+            "MCP workspace path blocked (secret): " .. tostring(path),
+            "MCP tool path looks like a secret-bearing file or directory",
+            "mcp.workspace_secret_blocked",
+            options
+          )
+        end
+      end
+    end
+    return nil
+  end
+
+  function workspace.block_generated_paths(keys, options)
+    options = options_table(options)
+    if options.write_only == true and not workspace.write_intent() then
+      return nil
+    end
+    for _, value in ipairs(workspace_path_values(keys)) do
+      if type(value.value) == "string" then
+        local path = normalize_relative_path(value.value)
+        if workspace_is_generated_path(path) then
+          local info = { argument = value.argument, path = path, path_class = "generated" }
+          return workspace_reject(
+            info,
+            "MCP workspace path blocked (generated): " .. tostring(path),
+            "MCP tool path targets generated or cache output",
+            "mcp.workspace_generated_path_blocked",
+            options
+          )
+        end
+      end
+    end
+    return nil
+  end
+
+  function workspace.readonly_only(options)
+    options = options_table(options)
+    local call = mcp.call(current_request)
+    local method = call.method
+    local tool = call.tool or ""
+    local allowed = workspace_read_methods[method] == true
+    if method == "tools/call" and workspace_tool_is_write_like(tool) then
+      allowed = false
+    end
+    if allowed then
+      return nil
+    end
+    local info = { argument = "", path = "", path_class = "none" }
+    return workspace_reject(
+      info,
+      "MCP request is not read-only",
+      "MCP method or tool is outside the read-only workspace policy",
+      "mcp.workspace_readonly_required",
+      options
+    )
+  end
+
+  safe_env.workspace = workspace
+
   safe_env.cap = cap
 
   local loader = loadstring or load
@@ -1775,11 +2198,13 @@ return function(source, source_name, instruction_limit)
 
     set_auth_context(context)
     set_lease_context(context)
+    current_request = request
     set_share_context(context)
     set_upstream_context(context)
     local ok, result = pcall(handler, request, context, state or {})
     set_auth_context({})
     set_lease_context({})
+    current_request = {}
     set_share_context({})
     set_upstream_context({})
 

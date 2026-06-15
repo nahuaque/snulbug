@@ -283,6 +283,62 @@ return cap.tool(request, { "files.read_file" }, {
 })
 ```
 
+## Workspace Firewall Helpers
+
+The `workspace` table provides higher-level local-dev filesystem guards for
+MCP tools that accept project path arguments. The helpers inspect the current
+MCP request, so policies can stay terse:
+
+```lua
+return function(request, context)
+  return workspace.require_under_project("path")
+    or workspace.block_secret_paths("path")
+    or workspace.block_generated_paths("path")
+    or workspace.readonly_only()
+    or decision.allow("mcp.workspace_allowed")
+end
+```
+
+Available guards:
+
+- `workspace.require_under_project(arg_key_or_keys, options)`: require matching
+  path arguments to be relative project paths with no absolute paths, home-dir
+  paths, drive-letter paths, or parent traversal. By default this allows any
+  relative project path; pass `options.allowed_paths`, `options.roots`, or
+  `options.project_paths` to constrain paths to selected roots.
+- `workspace.block_secret_paths(arg_key_or_keys, options)`: block
+  secret-looking paths such as `.env`, `.env.*`, `.ssh/`, `.gnupg/`,
+  `secrets/`, `.kube/config`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.crt`,
+  and `*.cert`.
+- `workspace.block_generated_paths(arg_key_or_keys, options)`: block generated
+  or cache paths such as `.git/`, `.snulbug/`, `.venv/`, `venv/`,
+  `node_modules/`, `__pycache__/`, `.ruff_cache/`, `.pytest_cache/`,
+  `.mypy_cache/`, `dist/`, `build/`, and `coverage/`. Set
+  `options.write_only = true` to apply this only to write-like tool names.
+- `workspace.readonly_only(options)`: allow read-oriented MCP methods and
+  reject write-like tool calls such as names containing `write`, `edit`,
+  `create`, `delete`, `rename`, `patch`, `append`, `mkdir`, `rm`, `touch`, or
+  `save`.
+
+`arg_key_or_keys` can be a string, an array, a map, or `nil`. When it is `nil`,
+the helpers inspect common path-like argument names such as `path`, `paths`,
+`file`, `directory`, `cwd`, `source`, `destination`, `target`, `oldpath`, and
+`newpath`.
+
+Supporting helpers:
+
+- `workspace.write_intent()`: true when the current tool name looks write-like.
+- `workspace.path_values(arg_key_or_keys)`: return matching raw argument values.
+- `workspace.path_summary(arg_key_or_keys, options)`: return one sanitized
+  summary table with `argument`, `path`, `path_class`, and `write_intent`.
+
+Workspace guard rejections use stable reason codes such as
+`mcp.workspace_path_invalid`, `mcp.workspace_path_outside`,
+`mcp.workspace_secret_blocked`, `mcp.workspace_generated_path_blocked`, and
+`mcp.workspace_readonly_required`. `options.context`, `options.reason`,
+`options.reason_code`, and confirmation fields can override or extend the
+standard decision.
+
 ## OAuth Auth Helpers
 
 When `[mcp.auth]` runs in OAuth protected-resource mode, Lua policies also get
