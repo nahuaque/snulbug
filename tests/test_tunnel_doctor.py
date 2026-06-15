@@ -55,6 +55,25 @@ def test_tunnel_doctor_fails_when_public_url_reaches_unprotected_upstream():
     assert "Point the tunnel at snulbug" in result["recommendations"][0]
 
 
+def test_tunnel_doctor_skips_dependent_public_checks_when_url_unreachable():
+    result = doctor_tunnel(
+        provider="generic",
+        url="https://127.0.0.1:1/mcp",
+        headers={"Authorization": "Bearer local-dev-secret"},
+        timeout=0.25,
+    )
+
+    checks = {check["id"]: check for check in result["checks"]}
+
+    assert result["ok"] is False
+    assert checks["public.reachable"]["status"] == "fail"
+    assert checks["public.unauthenticated_blocked"]["status"] == "skip"
+    assert checks["public.authenticated_mcp_round_trip"]["status"] == "skip"
+    assert result["summary"]["failed"] == 1
+    assert "Fix the public tunnel URL" in result["recommendations"][0]
+    assert all("Point the tunnel at snulbug" not in recommendation for recommendation in result["recommendations"])
+
+
 def test_tunnel_doctor_cli_surface_is_removed():
     with pytest.raises(SystemExit) as exc:
         simulator_main(["tunnel", "doctor", "--help"])

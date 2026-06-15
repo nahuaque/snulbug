@@ -512,13 +512,12 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         "ngrok",
         "cloudflare",
         "tailscale",
-        "localxpose",
         "pinggy",
         "holepunch",
     }:
         raise ValueError(
             "mcp.proxy.tunnel_provider must be 'auto', 'generic', 'ngrok', 'cloudflare', "
-            "'tailscale', 'localxpose', 'pinggy', or 'holepunch'"
+            "'tailscale', 'pinggy', or 'holepunch'"
         )
     if normalized["cloudflare_access"] not in {"off", "audit", "enforce"}:
         raise ValueError("mcp.proxy.cloudflare_access must be 'off', 'audit', or 'enforce'")

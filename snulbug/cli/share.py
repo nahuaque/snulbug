@@ -23,7 +23,7 @@ from ..cli_helpers import (
 )
 from .common import read_required_env
 
-PROVIDERS = ("generic", "ngrok", "cloudflare", "tailscale", "localxpose", "pinggy", "holepunch")
+PROVIDERS = ("generic", "ngrok", "cloudflare", "tailscale", "pinggy", "holepunch")
 QUICKSTART_TUNNEL_PROVIDERS = ("auto", *PROVIDERS)
 ATTACH_MEMBER_KINDS = ("codespaces", "devcontainer", "holepunch", "container", "generic")
 CLOUDFLARE_ACCESS_PROFILES = ("access-gate", "service-token", "oauth-resource", "audit")

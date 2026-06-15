@@ -54,7 +54,7 @@ For a generated temporary bearer/lease share directory, see
 For a runnable upstream-plus-proxy walkthrough, see the
 [end-to-end MCP policy proxy demo](../examples/mcp_proxy_demo/README.md).
 
-Point ngrok, Cloudflare Tunnel, Tailscale Funnel, LocalXpose, Pinggy, or a
+Point ngrok, Cloudflare Tunnel, Tailscale Funnel, Pinggy, or a
 private Holepunch peer bridge at `http://127.0.0.1:8080`. The proxy applies the
 Lua policy before forwarding to the upstream server. Use `tunnel-safe` unless
 you have a stronger external access-control layer in front of the tunnel or
@@ -115,7 +115,7 @@ snulbug mcp share doctor .snulbug/shares/share-... \
 ```
 
 See [MCP share sessions](mcp-share.md) for Cloudflare Access, Tailscale Funnel,
-LocalXpose, Pinggy, and Holepunch peer bridge variants.
+Pinggy, and Holepunch peer bridge variants.
 
 `record_out` writes replayable request records for traffic that passes through
 the proxy. `[[mcp.events.sinks]]` writes operational outputs such as redacted
@@ -238,7 +238,7 @@ format = "text"
 ```
 
 `tunnel_provider` can be `auto`, `generic`, `ngrok`, `cloudflare`, `tailscale`,
-`localxpose`, `pinggy`, or `holepunch`. With `auto`, snulbug infers the provider
+`pinggy`, or `holepunch`. With `auto`, snulbug infers the provider
 from request headers and the public host when possible. Set `tunnel_public_url`
 when you want audit logs to record the externally shared MCP URL or client-side
 peer bridge URL even if the request reaches snulbug through a local reverse

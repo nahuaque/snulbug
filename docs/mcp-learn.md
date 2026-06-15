@@ -94,7 +94,7 @@ and inspection workflows can explain why enforcement changed.
 
 Learned policies are intentionally mechanical. Review `LEARNED.md` and
 `policy.lua` before using the result with ngrok, Cloudflare Tunnel, Tailscale
-Funnel, LocalXpose, Pinggy, Holepunch, or another tunnel/peer bridge. If the
+Funnel, Pinggy, Holepunch, or another tunnel/peer bridge. If the
 session missed a legitimate workflow, run that workflow through the proxy and
 regenerate the bundle.
 

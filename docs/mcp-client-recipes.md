@@ -222,40 +222,6 @@ uv run snulbug mcp share doctor .snulbug/shares/share-... \
   --url "${TAILSCALE_FUNNEL_URL}/mcp"
 ```
 
-### LocalXpose with bearer auth
-
-LocalXpose's basic HTTP tunnel forwards to `localhost:8080`, which matches the
-default snulbug proxy port. Start snulbug first, then expose snulbug rather than
-the upstream MCP server:
-
-```bash
-uv run snulbug mcp share create \
-  --provider localxpose \
-  --upstream http://127.0.0.1:9000 \
-  --allow-tool safe_read_file \
-  --allow-tool list_project_files \
-  --ttl 30m
-export SNULBUG_SHARE_TOKEN=...
-uv run snulbug mcp share run .snulbug/shares/share-...
-loclx tunnel http
-export LOCALXPOSE_URL=https://YOUR-LOCALXPOSE-FORWARDING-DOMAIN
-```
-
-The MCP client should use the LocalXpose URL and bearer header:
-
-```text
-${LOCALXPOSE_URL}/mcp
-Authorization: Bearer ${SNULBUG_SHARE_TOKEN}
-x-snulbug-lease: YOUR_SHARE_LEASE_TOKEN
-```
-
-Before sharing the LocalXpose URL, run:
-
-```bash
-uv run snulbug mcp share doctor .snulbug/shares/share-... \
-  --url "${LOCALXPOSE_URL}/mcp"
-```
-
 ### Pinggy with bearer auth
 
 Pinggy's SSH quickstart can expose the default snulbug proxy port without a

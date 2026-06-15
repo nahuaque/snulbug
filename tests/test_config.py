@@ -510,7 +510,7 @@ def test_gateway_template_renders_loadable_proxy_and_fabric_config(tmp_path):
     assert fabric["proxy"]["upstreams"][0]["tool_prefix"] == "files."
 
 
-def test_load_mcp_proxy_config_accepts_localxpose_provider(tmp_path):
+def test_load_mcp_proxy_config_rejects_localxpose_provider(tmp_path):
     config = tmp_path / "snulbug.toml"
     config.write_text(
         """
@@ -522,10 +522,8 @@ def test_load_mcp_proxy_config_accepts_localxpose_provider(tmp_path):
         encoding="utf-8",
     )
 
-    result = load_mcp_proxy_config(config)
-
-    assert result["tunnel_provider"] == "localxpose"
-    assert result["tunnel_public_url"] == "https://dev.loclx.io/mcp"
+    with pytest.raises(ValueError, match="tunnel_provider"):
+        load_mcp_proxy_config(config)
 
 
 def test_load_mcp_proxy_config_accepts_pinggy_provider(tmp_path):

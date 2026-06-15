@@ -190,6 +190,7 @@ def create_mcp_share(
         config=quickstart["config"],
         local_url=local_url,
         public_url=tunnel_preview["public_url"],
+        hostname=hostname,
         ngrok_internal_url=ngrok_internal_url,
         ngrok_endpoint_name=ngrok_endpoint_name,
         token_env=DEFAULT_SHARE_TOKEN_ENV,
