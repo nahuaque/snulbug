@@ -169,6 +169,13 @@ uv run snulbug mcp share run .snulbug/shares/share-... \
   --require-contract .snulbug/shares/share-.../share-contract.json
 ```
 
+The running gateway publishes a zero-install trust surface:
+
+- `https://YOUR-FORWARDING-DOMAIN/snulbug` human trust page
+- `https://YOUR-FORWARDING-DOMAIN/.well-known/snulbug/share` compact JSON summary
+- `https://YOUR-FORWARDING-DOMAIN/.well-known/snulbug/share-contract` approved contract JSON
+- `https://YOUR-FORWARDING-DOMAIN/.well-known/snulbug/share-contract.sha256` binding digest
+
 If the share uses OAuth protected-resource mode, run the auth doctor too:
 
 ```bash

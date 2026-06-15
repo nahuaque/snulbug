@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import http.client
 import json
 import os
@@ -62,6 +63,9 @@ HOP_BY_HOP_HEADERS = {
     b"upgrade",
 }
 SHARE_CONTRACT_WELL_KNOWN_PATH = "/.well-known/snulbug/share-contract"
+SHARE_CONTRACT_DIGEST_WELL_KNOWN_PATH = "/.well-known/snulbug/share-contract.sha256"
+SHARE_SUMMARY_WELL_KNOWN_PATH = "/.well-known/snulbug/share"
+SHARE_TRUST_PAGE_PATH = "/snulbug"
 
 
 @dataclass(frozen=True)
@@ -1624,6 +1628,7 @@ class ShareContractMiddleware:
         self.app = app
         self.contract = dict(contract)
         self.metadata = dict(metadata or _share_contract_metadata(contract))
+        self.summary = _share_contract_summary(self.contract, metadata=self.metadata)
         self.path = path
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -1632,25 +1637,40 @@ class ShareContractMiddleware:
             return
 
         _set_proxy_metadata(scope, {"share": self.metadata})
-        if self._is_contract_request(scope):
-            response = _json_response(self.contract)
-            if str(scope.get("method", "GET")).upper() == "HEAD":
-                response["body"] = b""
-                response["headers"] = _merge_headers(response["headers"], [(b"content-length", b"0")])
-            await _send_response(
-                send,
-                status=response["status"],
-                headers=response["headers"],
-                body=response["body"],
-            )
+        response = self._metadata_response(scope)
+        if response is not None:
+            await self._send_metadata_response(scope, send, response)
             return
         await self.app(scope, receive, send)
 
-    def _is_contract_request(self, scope: Scope) -> bool:
+    def _metadata_response(self, scope: Scope) -> dict[str, Any] | None:
         method = str(scope.get("method", "GET")).upper()
         if method not in {"GET", "HEAD"}:
-            return False
-        return str(scope.get("path", "/")).rstrip("/") == self.path.rstrip("/")
+            return None
+        path = str(scope.get("path", "/")).rstrip("/") or "/"
+        if path == self.path.rstrip("/"):
+            return _json_response(self.contract)
+        if path == SHARE_CONTRACT_DIGEST_WELL_KNOWN_PATH:
+            digest = str(self.metadata.get("contract_digest") or self.contract.get("binding_digest") or "")
+            return _text_response(f"{digest}\n")
+        if path == SHARE_SUMMARY_WELL_KNOWN_PATH:
+            return _json_response(self.summary)
+        if path == SHARE_TRUST_PAGE_PATH:
+            return _html_response(_share_contract_trust_page(self.summary, self.contract))
+        return None
+
+    async def _send_metadata_response(self, scope: Scope, send: Send, response: Mapping[str, Any]) -> None:
+        body = response["body"]
+        headers = list(response["headers"])
+        if str(scope.get("method", "GET")).upper() == "HEAD":
+            body = b""
+            headers = _merge_headers(headers, [(b"content-length", b"0")])
+        await _send_response(
+            send,
+            status=response["status"],
+            headers=headers,
+            body=body,
+        )
 
 
 class CloudflareAccessMiddleware:
@@ -3111,6 +3131,12 @@ def _drop_empty(value: Mapping[str, Any]) -> dict[str, Any]:
     return {key: item for key, item in value.items() if item not in (None, "", [], {})}
 
 
+def _sequence(value: Any) -> list[Any]:
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        return list(value)
+    return []
+
+
 def _exact_target(upstream: SplitResult) -> str:
     path = upstream.path or "/"
     return f"{path}?{upstream.query}" if upstream.query else path
@@ -3196,8 +3222,284 @@ def _share_contract_metadata(contract: Mapping[str, Any] | None) -> dict[str, An
             "contract_signed": bool(signature),
             "contract_verified": True,
             "contract_required": True,
+            "contract_runtime_status": "bound",
         }
     )
+
+
+def _share_contract_summary(contract: Mapping[str, Any], *, metadata: Mapping[str, Any]) -> dict[str, Any]:
+    share = _mapping(contract.get("share"))
+    client = _mapping(contract.get("client"))
+    policy = _mapping(contract.get("policy"))
+    lease = _mapping(contract.get("lease"))
+    auth = _mapping(contract.get("auth"))
+    tunnel = _mapping(contract.get("tunnel"))
+    health = _mapping(contract.get("health"))
+    upstreams = [
+        _drop_empty(
+            {
+                "name": upstream.get("name"),
+                "transport": upstream.get("transport"),
+                "url": upstream.get("url"),
+                "route": upstream.get("route"),
+                "member_id": upstream.get("member_id"),
+            }
+        )
+        for upstream in (_mapping(item) for item in _sequence(contract.get("upstreams")))
+    ]
+    evidence = _mapping(contract.get("evidence"))
+    traffic = _mapping(evidence.get("traffic"))
+    return _drop_empty(
+        {
+            "schema": "snulbug.share-summary.v1",
+            "version": 1,
+            "status": "contract-bound",
+            "mcp_url": client.get("url"),
+            "trust_page": SHARE_TRUST_PAGE_PATH,
+            "well_known": {
+                "contract": SHARE_CONTRACT_WELL_KNOWN_PATH,
+                "contract_digest": SHARE_CONTRACT_DIGEST_WELL_KNOWN_PATH,
+                "summary": SHARE_SUMMARY_WELL_KNOWN_PATH,
+            },
+            "contract": dict(metadata),
+            "share": {
+                "id": share.get("id"),
+                "provider": share.get("provider"),
+                "preset": share.get("preset"),
+                "task": share.get("task"),
+                "ttl": share.get("ttl"),
+            },
+            "client": {
+                "url": client.get("url"),
+                "header_names": client.get("header_names"),
+            },
+            "policy": {
+                "bundle": policy.get("bundle"),
+                "active_policy": policy.get("active_policy"),
+                "lifecycle_state": policy.get("lifecycle_state"),
+                "signed": policy.get("lifecycle_signed"),
+            },
+            "lease": {
+                "required": lease.get("required"),
+                "header": lease.get("header"),
+                "active": lease.get("active"),
+                "active_count": lease.get("active_count"),
+                "allow_tools": lease.get("allow_tools"),
+                "allow_paths": lease.get("allow_paths"),
+            },
+            "auth": {
+                "mode": auth.get("mode"),
+                "resource": auth.get("resource"),
+                "issuer": auth.get("issuer"),
+                "audience": auth.get("audience"),
+                "required_scopes": auth.get("required_scopes"),
+                "strip_authorization_upstream": auth.get("strip_authorization_upstream"),
+            },
+            "upstreams": upstreams,
+            "observed_tools": traffic.get("tools"),
+            "tunnel": {
+                "provider": tunnel.get("provider"),
+                "public_url": tunnel.get("public_url"),
+            },
+            "doctor": {
+                "ok": health.get("last_doctor_ok"),
+                "last_checked_at": health.get("last_checked_at"),
+                "summary": health.get("last_summary"),
+            },
+        }
+    )
+
+
+def _share_contract_trust_page(summary: Mapping[str, Any], contract: Mapping[str, Any]) -> str:
+    contract_summary = _mapping(summary.get("contract"))
+    share = _mapping(summary.get("share"))
+    client = _mapping(summary.get("client"))
+    policy = _mapping(summary.get("policy"))
+    lease = _mapping(summary.get("lease"))
+    auth = _mapping(summary.get("auth"))
+    doctor = _mapping(summary.get("doctor"))
+    upstreams = [_mapping(item) for item in _sequence(summary.get("upstreams"))]
+    observed_tools = [_mapping(item) for item in _sequence(summary.get("observed_tools"))]
+    digest = contract_summary.get("contract_digest") or "-"
+    key_id = contract_summary.get("contract_key_id") or "-"
+    signed = "yes" if contract_summary.get("contract_signed") else "no"
+    runtime_status = contract_summary.get("contract_runtime_status") or "bound"
+    doctor_ok = _trust_page_status(doctor.get("ok"))
+    upstream_rows = (
+        "".join(
+            "<tr>"
+            f"<td>{_html_value(upstream.get('name') or 'upstream')}</td>"
+            f"<td>{_html_value(upstream.get('transport') or 'http')}</td>"
+            f"<td><code>{_html_value(upstream.get('url') or '-')}</code></td>"
+            "</tr>"
+            for upstream in upstreams
+        )
+        or '<tr><td colspan="3">No upstreams declared</td></tr>'
+    )
+    tool_rows = (
+        "".join(
+            f"<tr><td>{_html_value(tool.get('value') or '-')}</td><td>{_html_value(tool.get('count') or 0)}</td></tr>"
+            for tool in observed_tools[:12]
+        )
+        or '<tr><td colspan="2">No tools observed yet</td></tr>'
+    )
+    required_scopes = ", ".join(str(scope) for scope in _sequence(auth.get("required_scopes"))) or "-"
+    allow_tools = ", ".join(str(tool) for tool in _sequence(lease.get("allow_tools"))) or "-"
+    allow_paths = ", ".join(str(path) for path in _sequence(lease.get("allow_paths"))) or "-"
+    contract_json = json.dumps(contract, indent=2, sort_keys=True)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>snulbug share</title>
+  <style>
+    :root {{
+      color-scheme: light dark;
+      --bg: #f7f8f6;
+      --fg: #18201b;
+      --muted: #5e6a61;
+      --line: #d6ddd6;
+      --panel: #ffffff;
+      --accent: #b43b2f;
+      --ok: #1f7a4d;
+      --warn: #a15c00;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }}
+    @media (prefers-color-scheme: dark) {{
+      :root {{ --bg: #121512; --fg: #edf2ec; --muted: #aeb7af; --line: #313a32; --panel: #1b211c; }}
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; background: var(--bg); color: var(--fg); }}
+    main {{ width: min(1120px, calc(100vw - 32px)); margin: 0 auto; padding: 28px 0 40px; }}
+    header {{ display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }}
+    h1 {{ margin: 0; font-size: 28px; line-height: 1.1; letter-spacing: 0; }}
+    h2 {{ margin: 0 0 12px; font-size: 16px; letter-spacing: 0; }}
+    p {{ margin: 6px 0; color: var(--muted); }}
+    code, pre {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
+    code {{ overflow-wrap: anywhere; }}
+    pre {{ margin: 0; overflow: auto; white-space: pre-wrap; line-height: 1.45; }}
+    .brand {{ color: var(--accent); font-weight: 700; font-size: 18px; }}
+    .status {{ border: 1px solid var(--line); border-radius: 999px; padding: 7px 10px; font-size: 13px; }}
+    .status.ok {{ color: var(--ok); }}
+    .status.warn {{ color: var(--warn); }}
+    .hero {{
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      padding: 22px 0;
+      margin-bottom: 20px;
+    }}
+    .digest {{ color: var(--fg); font-size: 14px; }}
+    .grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }}
+    .panel {{ background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }}
+    .wide {{ grid-column: 1 / -1; }}
+    dl {{ display: grid; grid-template-columns: minmax(120px, 190px) minmax(0, 1fr); gap: 8px 12px; margin: 0; }}
+    dt {{ color: var(--muted); }}
+    dd {{ margin: 0; min-width: 0; overflow-wrap: anywhere; }}
+    table {{ width: 100%; border-collapse: collapse; }}
+    th, td {{ text-align: left; border-top: 1px solid var(--line); padding: 9px 6px; vertical-align: top; }}
+    th {{ color: var(--muted); font-weight: 600; }}
+    @media (max-width: 760px) {{
+      main {{ width: min(100vw - 20px, 1120px); padding-top: 18px; }}
+      header {{ align-items: flex-start; flex-direction: column; }}
+      .grid {{ grid-template-columns: 1fr; }}
+      dl {{ grid-template-columns: 1fr; }}
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="brand">snulbug</div>
+      <div class="status ok">contract bound</div>
+    </header>
+    <section class="hero">
+      <h1>MCP share trust page</h1>
+      <p class="digest"><code>{_html_value(digest)}</code></p>
+      <p>
+        Runtime <code>{_html_value(runtime_status)}</code>,
+        signer key id <code>{_html_value(key_id)}</code>,
+        signed <code>{_html_value(signed)}</code>,
+        doctor {_html_value(doctor_ok)}.
+      </p>
+    </section>
+    <section class="grid">
+      <article class="panel">
+        <h2>Connection</h2>
+        <dl>
+          <dt>MCP URL</dt><dd><code>{_html_value(client.get("url") or summary.get("mcp_url") or "-")}</code></dd>
+          <dt>Provider</dt><dd>{_html_value(share.get("provider") or "-")}</dd>
+          <dt>Task</dt><dd>{_html_value(share.get("task") or "-")}</dd>
+          <dt>TTL</dt><dd>{_html_value(share.get("ttl") or "-")}</dd>
+        </dl>
+      </article>
+      <article class="panel">
+        <h2>Controls</h2>
+        <dl>
+          <dt>Policy</dt><dd>{_html_value(policy.get("lifecycle_state") or "-")}</dd>
+          <dt>Lease required</dt><dd>{_html_value(_yes_no(lease.get("required")))}</dd>
+          <dt>Auth mode</dt><dd>{_html_value(auth.get("mode") or "-")}</dd>
+          <dt>Scopes</dt><dd>{_html_value(required_scopes)}</dd>
+        </dl>
+      </article>
+      <article class="panel wide">
+        <h2>Upstreams</h2>
+        <table>
+          <thead><tr><th>Name</th><th>Transport</th><th>URL</th></tr></thead>
+          <tbody>{upstream_rows}</tbody>
+        </table>
+      </article>
+      <article class="panel">
+        <h2>Lease Bounds</h2>
+        <dl>
+          <dt>Allowed tools</dt><dd>{_html_value(allow_tools)}</dd>
+          <dt>Allowed paths</dt><dd>{_html_value(allow_paths)}</dd>
+        </dl>
+      </article>
+      <article class="panel">
+        <h2>Observed Tools</h2>
+        <table>
+          <thead><tr><th>Tool</th><th>Count</th></tr></thead>
+          <tbody>{tool_rows}</tbody>
+        </table>
+      </article>
+      <article class="panel wide">
+        <h2>Well-Known Endpoints</h2>
+        <dl>
+          <dt>Contract</dt><dd><code>{SHARE_CONTRACT_WELL_KNOWN_PATH}</code></dd>
+          <dt>Digest</dt><dd><code>{SHARE_CONTRACT_DIGEST_WELL_KNOWN_PATH}</code></dd>
+          <dt>Summary</dt><dd><code>{SHARE_SUMMARY_WELL_KNOWN_PATH}</code></dd>
+        </dl>
+      </article>
+      <article class="panel wide">
+        <h2>Contract JSON</h2>
+        <pre>{_html_value(contract_json)}</pre>
+      </article>
+    </section>
+  </main>
+</body>
+</html>
+"""
+
+
+def _trust_page_status(value: Any) -> str:
+    if value is True:
+        return "passed"
+    if value is False:
+        return "failed"
+    return "not checked"
+
+
+def _yes_no(value: Any) -> str:
+    if value is True:
+        return "yes"
+    if value is False:
+        return "no"
+    return "unknown"
+
+
+def _html_value(value: Any) -> str:
+    return html.escape(str(value), quote=True)
 
 
 def _is_oauth_resource_metadata_request(scope: Scope, config: OAuthResourceConfig) -> bool:
@@ -3258,6 +3560,30 @@ def _json_response(payload: Mapping[str, Any], *, status: int = 200) -> dict[str
         "status": status,
         "headers": [
             (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode("ascii")),
+        ],
+        "body": body,
+    }
+
+
+def _text_response(text: str, *, status: int = 200) -> dict[str, Any]:
+    body = text.encode("utf-8")
+    return {
+        "status": status,
+        "headers": [
+            (b"content-type", b"text/plain; charset=utf-8"),
+            (b"content-length", str(len(body)).encode("ascii")),
+        ],
+        "body": body,
+    }
+
+
+def _html_response(text: str, *, status: int = 200) -> dict[str, Any]:
+    body = text.encode("utf-8")
+    return {
+        "status": status,
+        "headers": [
+            (b"content-type", b"text/html; charset=utf-8"),
             (b"content-length", str(len(body)).encode("ascii")),
         ],
         "body": body,

@@ -113,6 +113,17 @@ def test_reverse_proxy_exposes_share_contract_and_records_digest_metadata(tmp_pa
     contract = {
         "schema": "snulbug.share-contract.v1",
         "version": 1,
+        "share": {"id": "share-1", "provider": "ngrok", "task": "Review files", "ttl": "30m"},
+        "client": {"url": "https://share.example.test/mcp", "header_names": ["Authorization", "x-snulbug-lease"]},
+        "policy": {
+            "bundle": "policy.snulbug",
+            "active_policy": "policy.snulbug/active.lua",
+            "lifecycle_state": "active",
+        },
+        "lease": {"required": True, "active_count": 1, "allow_tools": ["safe_read_file"], "allow_paths": ["README.md"]},
+        "auth": {"mode": "oauth-resource", "required_scopes": ["mcp:connect"]},
+        "upstreams": [{"name": "files", "transport": "http", "url": "http://127.0.0.1:9000/mcp"}],
+        "health": {"last_doctor_ok": True},
         "binding_digest": "sha256:binding",
         "digest": "sha256:document",
         "snulbug_signature": {
@@ -132,6 +143,9 @@ def test_reverse_proxy_exposes_share_contract_and_records_digest_metadata(tmp_pa
 
     try:
         metadata = run_asgi(app, method="GET", path="/.well-known/snulbug/share-contract")
+        digest = run_asgi(app, method="GET", path="/.well-known/snulbug/share-contract.sha256")
+        summary = run_asgi(app, method="GET", path="/.well-known/snulbug/share")
+        trust_page = run_asgi(app, method="GET", path="/snulbug")
         sent = run_asgi(
             app,
             path="/mcp",
@@ -143,15 +157,30 @@ def test_reverse_proxy_exposes_share_contract_and_records_digest_metadata(tmp_pa
         server.server_close()
 
     served = json.loads(metadata[1]["body"])
+    summary_payload = json.loads(summary[1]["body"])
+    trust_html = trust_page[1]["body"].decode("utf-8")
     records = load_record_log(record_log)
     audit_events = [json.loads(line) for line in audit_log.read_text(encoding="utf-8").splitlines()]
     assert metadata[0]["status"] == 200
     assert served == contract
+    assert digest[0]["status"] == 200
+    assert digest[1]["body"] == b"sha256:binding\n"
+    assert summary[0]["status"] == 200
+    assert summary_payload["schema"] == "snulbug.share-summary.v1"
+    assert summary_payload["mcp_url"] == "https://share.example.test/mcp"
+    assert summary_payload["contract"]["contract_runtime_status"] == "bound"
+    assert summary_payload["contract"]["contract_digest"] == "sha256:binding"
+    assert summary_payload["policy"]["lifecycle_state"] == "active"
+    assert summary_payload["lease"]["required"] is True
+    assert trust_page[0]["status"] == 200
+    assert "MCP share trust page" in trust_html
+    assert "sha256:binding" in trust_html
+    assert "https://share.example.test/mcp" in trust_html
     assert sent[0]["status"] == 200
-    assert records[1]["metadata"]["share"]["contract_digest"] == "sha256:binding"
-    assert records[1]["metadata"]["share"]["contract_document_digest"] == "sha256:document"
-    assert records[1]["metadata"]["share"]["contract_key_id"] == "dev-key"
-    assert audit_events[1]["share"]["contract_digest"] == "sha256:binding"
+    assert records[-1]["metadata"]["share"]["contract_digest"] == "sha256:binding"
+    assert records[-1]["metadata"]["share"]["contract_document_digest"] == "sha256:document"
+    assert records[-1]["metadata"]["share"]["contract_key_id"] == "dev-key"
+    assert audit_events[-1]["share"]["contract_digest"] == "sha256:binding"
 
 
 def test_reverse_proxy_event_dispatcher_fans_out_same_event(tmp_path):

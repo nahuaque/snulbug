@@ -4947,7 +4947,15 @@ def run_mcp_share(
     contract_path = _resolve_optional_share_path(share_dir, require_contract)
     if contract_path is not None:
         contract = load_share_contract(contract_path)
+        current_contract = share_contract(share_dir, live_checks=False, include_doctor=False)["contract"]
+        if current_contract.get("binding_digest") != contract.get("binding_digest"):
+            raise ValueError(
+                "required share contract has drifted from current share state: "
+                f"expected {contract.get('binding_digest')}, current {current_contract.get('binding_digest')}"
+            )
         contract_metadata = share_contract_runtime_metadata(contract, path=contract_path, required=True, verified=True)
+        contract_metadata["contract_matched_at_startup"] = True
+        contract_metadata["contract_drifted"] = False
     if dry_run:
         return {
             "ok": True,

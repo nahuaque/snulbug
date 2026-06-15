@@ -665,6 +665,35 @@ def test_mcp_share_run_dry_run_validates_required_contract(tmp_path):
     assert result["contract"]["contract_signed"] is True
     assert result["contract"]["contract_key_id"] == "dev-key"
     assert result["contract"]["contract_digest"] == contract_result["contract"]["binding_digest"]
+    assert result["contract"]["contract_matched_at_startup"] is True
+    assert result["contract"]["contract_drifted"] is False
+
+
+def test_mcp_share_run_rejects_drifted_required_contract(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    contract_path = tmp_path / "share-contract.json"
+    share_contract(
+        tmp_path,
+        output=contract_path,
+        sign=True,
+        secret="contract-secret",
+        key_id="dev-key",
+    )
+    manifest_path = tmp_path / "share.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["client"]["url"] = "https://changed.example.test/mcp"
+    manifest["tunnel"]["public_url"] = "https://changed.example.test/mcp"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="required share contract has drifted"):
+        run_mcp_share(tmp_path, dry_run=True, require_contract=contract_path)
 
 
 def test_mcp_share_doctor_url_override_updates_manifest_and_client(tmp_path, monkeypatch):

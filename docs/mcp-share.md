@@ -179,6 +179,22 @@ binding digest in audit metadata as `metadata.share.contract_digest`. `share
 status` and `share doctor` compare the required binding digest against the
 current share shape and flag drift before you hand the URL to a client.
 
+For humans and MCP clients that do not run snulbug locally, the same bound
+runtime exposes a zero-install verification surface:
+
+```text
+GET /snulbug
+GET /.well-known/snulbug/share
+GET /.well-known/snulbug/share-contract
+GET /.well-known/snulbug/share-contract.sha256
+```
+
+`/snulbug` is a browser-readable trust page with the MCP URL, binding digest,
+signer key id, policy lifecycle, lease/auth requirements, upstream summary,
+observed tools, and the approved contract JSON. The well-known JSON/text
+endpoints give simple HTTP-only agent harnesses the same contract and digest
+without requiring a snulbug binary on the client side.
+
 For OAuth protected-resource shares, run the auth-specific doctor before handing
 the URL to an MCP client:
 
