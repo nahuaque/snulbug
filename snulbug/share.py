@@ -773,7 +773,9 @@ def format_share_status_report(result: Mapping[str, Any]) -> str:
 def format_share_report(result: Mapping[str, Any]) -> str:
     """Render a full human-readable share report."""
 
-    lines = _share_report_lines(result, title="# snulbug MCP share report")
+    lines = _share_review_lines(result)
+    lines.extend(["", "---", ""])
+    lines.extend(_share_report_lines(result, title="## Detailed Status"))
     traffic = _mapping(result.get("traffic"))
     if traffic.get("inspection_report"):
         lines.extend(["", "## Evidence Detail", "", str(traffic["inspection_report"]).rstrip()])
@@ -4616,6 +4618,178 @@ def _share_findings(
         if isinstance(finding, Mapping):
             findings.append(dict(finding))
     return findings
+
+
+def _share_review_lines(result: Mapping[str, Any]) -> list[str]:
+    session = _mapping(result.get("session"))
+    gateway = _mapping(result.get("gateway"))
+    tunnel = _mapping(result.get("tunnel_doctor"))
+    policy = _mapping(result.get("policy"))
+    amendments = _mapping(result.get("amendments"))
+    traffic = _mapping(result.get("traffic"))
+    recordings = _mapping(result.get("recordings"))
+    leases = _mapping(result.get("leases"))
+    contract = _mapping(result.get("contract"))
+    client = _mapping(result.get("client"))
+    findings = [item for item in _sequence(result.get("findings")) if isinstance(item, Mapping)]
+    upstreams = [item for item in _sequence(result.get("upstreams")) if isinstance(item, Mapping)]
+    active_lease = _mapping(leases.get("current"))
+    public_url = tunnel.get("public_url") or client.get("url") or "-"
+    blocked = int(traffic.get("blocked", 0) or 0)
+    allowed = int(traffic.get("allowed", 0) or 0)
+    confirmed = int(traffic.get("confirmed", 0) or 0)
+    event_count = int(traffic.get("event_count", 0) or 0)
+    severity_counts = Counter(str(item.get("severity") or "info") for item in findings)
+    lines = [
+        "# snulbug MCP share report",
+        "",
+        "## Executive Summary",
+        "",
+        f"- Result: `{_share_report_result_label(result)}`",
+        f"- Share: `{result.get('directory')}` state=`{result.get('state')}` task=`{session.get('task') or '-'}`",
+        f"- Exposure: provider=`{session.get('provider') or '-'}` public_url=`{public_url}`",
+        f"- Gateway: `{gateway.get('url') or '-'}` reachable=`{_yes_no_unknown(gateway.get('reachable'))}`",
+        f"- Activity: `{event_count}` events, `{allowed}` allowed, `{blocked}` blocked, `{confirmed}` confirmed",
+        (
+            f"- Review load: `{severity_counts.get('error', 0)}` errors, "
+            f"`{severity_counts.get('warning', 0)}` warnings, `{severity_counts.get('info', 0)}` info findings"
+        ),
+        "",
+        "## Exposure Boundary",
+        "",
+        f"- Client URL: `{public_url}`",
+        f"- Local gateway: `{gateway.get('url') or '-'}`",
+        (
+            f"- Provider: `{session.get('provider') or '-'}` "
+            f"preset=`{session.get('preset') or '-'}` ttl=`{session.get('ttl') or '-'}`"
+        ),
+        (
+            f"- Task lease required: `{_yes_no_unknown(session.get('lease_required'))}` "
+            f"header=`{session.get('lease_header') or '-'}`"
+        ),
+        (
+            f"- Current lease: `{active_lease.get('id') or '-'}` "
+            f"active=`{_yes_no_unknown(active_lease.get('active'))}` "
+            f"expires=`{active_lease.get('expires_at') or '-'}`"
+        ),
+        f"- Policy bundle: `{policy.get('bundle') or '-'}`",
+        f"- Active policy: `{policy.get('active_policy') or '-'}`",
+        "",
+        "### Upstreams Exposed",
+        "",
+    ]
+    if upstreams:
+        for upstream in upstreams:
+            lines.append(
+                "- "
+                f"`{upstream.get('name') or 'upstream'}` transport=`{upstream.get('transport') or 'http'}` "
+                f"url=`{upstream.get('url') or '-'}` reachable=`{_yes_no_unknown(upstream.get('reachable'))}`"
+            )
+    else:
+        lines.append("- None configured")
+
+    lines.extend(
+        [
+            "",
+            "## Access And Activity Review",
+            "",
+            f"- Total requests/events observed: `{event_count}`",
+            f"- Allowed: `{allowed}`",
+            f"- Blocked: `{blocked}`",
+            f"- Human confirmations: `{confirmed}` approved=`{traffic.get('confirmation_approved', 0)}` "
+            f"denied=`{traffic.get('confirmation_denied', 0)}`",
+            f"- Observed MCP methods: {_inline_counts(traffic.get('methods'))}",
+            f"- Observed MCP tools/targets: {_inline_counts(traffic.get('tools'))}",
+            f"- Observed clients: {_inline_counts(traffic.get('clients'))}",
+            f"- Observed source IPs: {_inline_counts(traffic.get('source_ips'))}",
+            "",
+            "## Data Protection Review",
+            "",
+            "This report is secret-light: it does not include raw bearer tokens, lease tokens, request bodies, "
+            "or response bodies.",
+            "",
+            f"- Secret-bearing client config: `{_mapping(client).get('config') or '-'}`",
+            f"- Replay log: `{_mapping(recordings.get('record_log')).get('path') or '-'}` "
+            f"exists=`{_yes_no_unknown(_mapping(recordings.get('record_log')).get('exists'))}`",
+            f"- Audit log: `{_mapping(recordings.get('audit_log')).get('path') or '-'}` "
+            f"exists=`{_yes_no_unknown(_mapping(recordings.get('audit_log')).get('exists'))}`",
+            f"- Events containing redaction markers: `{traffic.get('redacted_events', 0)}`",
+            f"- Replay records redacted: `{traffic.get('record_redacted', 0)}`",
+            f"- Response redactions: `{traffic.get('response_redacted', 0)}`",
+            "",
+            "## Policy Review",
+            "",
+            (
+                f"- Lifecycle: `{policy.get('lifecycle_state') or 'observed'}` "
+                f"signed=`{_yes_no_unknown(policy.get('lifecycle_signed'))}`"
+            ),
+            f"- Last lifecycle action: `{_share_last_lifecycle_label(policy)}`",
+            f"- Last amendment: `{amendments.get('last') or '-'}`",
+            f"- Proposed amendment candidates: `{amendments.get('candidate_count', 0)}`",
+            f"- Share contract required: `{_yes_no_unknown(contract.get('required'))}` "
+            f"signed=`{_yes_no_unknown(contract.get('signed'))}` drifted=`{_yes_no_unknown(contract.get('drifted'))}`",
+            "",
+            "## Findings To Review",
+            "",
+        ]
+    )
+    if findings:
+        for finding in findings:
+            message = finding.get("message", finding.get("count", ""))
+            lines.append(f"- `{finding.get('severity', 'info')}` `{finding.get('type')}`: {message}")
+    else:
+        lines.append("- None")
+    lines.extend(_share_action_checklist(result))
+    return lines
+
+
+def _share_report_result_label(result: Mapping[str, Any]) -> str:
+    findings = [item for item in _sequence(result.get("findings")) if isinstance(item, Mapping)]
+    if any(item.get("severity") == "error" for item in findings):
+        return "attention required"
+    if any(item.get("severity") == "warning" for item in findings):
+        return "review recommended"
+    traffic = _mapping(result.get("traffic"))
+    if int(traffic.get("event_count", 0) or 0) == 0:
+        return "no traffic observed"
+    return "ready for review"
+
+
+def _share_action_checklist(result: Mapping[str, Any]) -> list[str]:
+    commands = _mapping(result.get("commands"))
+    traffic = _mapping(result.get("traffic"))
+    policy = _mapping(result.get("policy"))
+    lines = ["", "## Action Checklist", ""]
+    doctor = commands.get("doctor") or commands.get("share_doctor")
+    client = commands.get("client")
+    close = commands.get("close")
+    inspect_audit = commands.get("inspect_audit")
+    if isinstance(doctor, str):
+        lines.append(f"- [ ] Run readiness checks: `{doctor}`")
+    if int(traffic.get("blocked", 0) or 0):
+        if isinstance(inspect_audit, str):
+            lines.append(f"- [ ] Review blocked decisions and redactions: `{inspect_audit}`")
+        else:
+            lines.append("- [ ] Review blocked decisions and redactions in the audit log.")
+    if policy.get("lifecycle_state") != "active":
+        lines.append("- [ ] Promote and activate the reviewed policy bundle before reusing this share shape.")
+    if isinstance(client, str):
+        lines.append(f"- [ ] Generate or inspect the MCP client config: `{client}`")
+    if isinstance(close, str):
+        lines.append(f"- [ ] Close the share and revoke its lease when finished: `{close}`")
+    if len(lines) == 3:
+        lines.append("- [ ] No immediate follow-up actions were generated.")
+    return lines
+
+
+def _inline_counts(values: Any, *, limit: int = 5) -> str:
+    entries = [item for item in _sequence(values) if isinstance(item, Mapping)]
+    if not entries:
+        return "`none`"
+    rendered = [f"`{item.get('value')}` (`{item.get('count', 0)}`)" for item in entries[:limit]]
+    if len(entries) > limit:
+        rendered.append(f"`+{len(entries) - limit} more`")
+    return ", ".join(rendered)
 
 
 def _share_report_lines(result: Mapping[str, Any], *, title: str) -> list[str]:

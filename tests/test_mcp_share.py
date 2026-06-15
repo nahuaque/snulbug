@@ -623,11 +623,22 @@ def test_mcp_share_status_and_report_summarize_session_evidence(tmp_path):
     assert any(finding["type"] == "risky_tools_observed" for finding in status["findings"])
     assert report["ok"] is True
     assert report["path"] == str(tmp_path / "share-report.md")
+    assert "## Executive Summary" in report["report"]
+    assert "## Exposure Boundary" in report["report"]
+    assert "## Access And Activity Review" in report["report"]
+    assert "## Data Protection Review" in report["report"]
+    assert "## Policy Review" in report["report"]
+    assert "## Findings To Review" in report["report"]
+    assert "## Action Checklist" in report["report"]
+    assert "This report is secret-light" in report["report"]
+    assert "review recommended" in report["report"]
     assert "## Traffic" in report["report"]
     assert "Confirmed approved" in report["report"]
     assert "Secrets redacted events" in report["report"]
     assert "shell_exec" in report["report"]
     assert "Policy Amendments" in report["report"]
+    assert "share-secret" not in report["report"]
+    assert "sbl_" not in report["report"]
     assert (tmp_path / "share-report.md").is_file()
 
 
