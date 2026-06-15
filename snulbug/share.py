@@ -80,6 +80,7 @@ def create_mcp_share(
     ngrok_internal_url: str | None = None,
     ngrok_endpoint_name: str = DEFAULT_NGROK_INTERNAL_ENDPOINT_NAME,
     cloudflare_profile: str | None = None,
+    tailscale_profile: str | None = None,
     auth_issuer: str | None = None,
     auth_resource: str | None = None,
     auth_audience: str | None = None,
@@ -157,6 +158,7 @@ def create_mcp_share(
         tunnel_provider=provider,
         tunnel_public_url=tunnel_preview["public_url"],
         cloudflare_profile=cloudflare_profile,
+        tailscale_profile=tailscale_profile,
         auth_issuer=auth_issuer,
         auth_resource=auth_resource,
         auth_audience=auth_audience,
@@ -277,6 +279,7 @@ def create_mcp_share(
                 "provider": provider,
                 "preset": preset,
                 "cloudflare_access_profile": _mapping(quickstart.get("cloudflare")).get("profile"),
+                "tailscale_profile": _mapping(quickstart.get("tailscale")).get("profile"),
                 "ttl": ttl,
                 "task": task,
                 "upstream": upstream,
@@ -331,6 +334,7 @@ def create_mcp_share(
             "provider": provider,
             "preset": preset,
             "cloudflare_access_profile": _mapping(quickstart.get("cloudflare")).get("profile"),
+            "tailscale_profile": _mapping(quickstart.get("tailscale")).get("profile"),
             "ttl": ttl,
             "task": task,
             "lease_required": lease_required,
@@ -903,6 +907,9 @@ def doctor_mcp_share(
     cloudflare_profile = _share_cloudflare_profile_doctor_checks(proxy_config, manifest)
     checks.extend(cloudflare_profile["checks"])
     recommendations.extend(cloudflare_profile["recommendations"])
+    tailscale_profile = _share_tailscale_profile_doctor_checks(proxy_config, manifest, status, public_url=str(url))
+    checks.extend(tailscale_profile["checks"])
+    recommendations.extend(tailscale_profile["recommendations"])
 
     fabric = None
     if fabric_config is not None:
@@ -957,6 +964,7 @@ def doctor_mcp_share(
         "status": status,
         "policy": policy["result"],
         "cloudflare": cloudflare_profile["result"],
+        "tailscale": tailscale_profile["result"],
         "fabric": fabric,
         "conformance": conformance["result"],
         "tunnel": tunnel,
@@ -3945,6 +3953,260 @@ def _checks_ok(checks: Sequence[Mapping[str, Any]], *, component: str) -> bool:
     return all(check.get("status") != "fail" for check in checks if check.get("component") == component)
 
 
+def _share_tailscale_profile_doctor_checks(
+    proxy_config: Mapping[str, Any] | None,
+    manifest: Mapping[str, Any],
+    status: Mapping[str, Any],
+    *,
+    public_url: str | None,
+) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+    recommendations: list[str] = []
+    result: dict[str, Any] = {"ok": True, "profile": None, "provider": None}
+    if proxy_config is None:
+        return {"result": result, "checks": checks, "recommendations": recommendations}
+
+    session = _mapping(manifest.get("session"))
+    provider = str(session.get("provider") or proxy_config.get("tunnel_provider") or "generic")
+    profile = proxy_config.get("tailscale_profile") or session.get("tailscale_profile")
+    profile = str(profile) if profile else None
+    if provider != "tailscale" and profile is None:
+        return {"result": result, "checks": checks, "recommendations": recommendations}
+
+    client_headers = _share_auth_client_headers(manifest, {})
+    auth = _mapping(proxy_config.get("auth"))
+    lease = _mapping(status.get("lease"))
+    lease_summary = _mapping(status.get("leases"))
+    result = {
+        "ok": True,
+        "profile": profile,
+        "provider": provider,
+        "auth_mode": auth.get("mode"),
+        "lease_required": proxy_config.get("lease_required"),
+        "active_leases": lease_summary.get("active_count"),
+    }
+
+    profile_configured = profile in {"funnel-public", "serve-tailnet", "oauth-resource"}
+    _add_share_doctor_check(
+        checks,
+        "tailscale.profile.configured",
+        profile_configured,
+        f"Tailscale profile is {profile}" if profile_configured else "Tailscale profile is not configured",
+        component="tailscale",
+        details={"provider": provider, "profile": profile},
+    )
+    if not profile_configured:
+        recommendations.append(
+            "Recreate or update this share with --tailscale-profile funnel-public, serve-tailnet, or oauth-resource."
+        )
+        result["ok"] = False
+        return {"result": result, "checks": checks, "recommendations": recommendations}
+
+    provider_matches = proxy_config.get("tunnel_provider") == "tailscale" or provider == "tailscale"
+    _add_share_doctor_check(
+        checks,
+        "tailscale.provider.configured",
+        provider_matches,
+        "Tailscale tunnel provider is configured"
+        if provider_matches
+        else "Tailscale profile requires tunnel_provider = 'tailscale'",
+        component="tailscale",
+        details={"manifest_provider": provider, "config_provider": proxy_config.get("tunnel_provider")},
+    )
+
+    tsnet_url = _tailscale_url_is_tsnet(public_url)
+    _add_share_doctor_check(
+        checks,
+        "tailscale.url.tsnet",
+        tsnet_url,
+        "public/client URL uses a Tailscale .ts.net HTTPS host"
+        if tsnet_url
+        else "public/client URL does not look like a Tailscale .ts.net HTTPS host",
+        component="tailscale",
+        details={"url": public_url},
+        severity="warning" if profile == "serve-tailnet" else "error",
+    )
+    if not tsnet_url:
+        recommendations.append(
+            "Pass --hostname HOST.TAILNET.ts.net or --url https://HOST.TAILNET.ts.net/mcp for Tailscale shares."
+        )
+
+    bearer_present = str(client_headers.get("authorization") or "").startswith("Bearer ")
+    _add_share_doctor_check(
+        checks,
+        "tailscale.client.bearer",
+        bearer_present,
+        "MCP client config includes snulbug bearer authorization"
+        if bearer_present
+        else "MCP client config is missing snulbug bearer authorization",
+        component="tailscale",
+    )
+
+    if profile == "funnel-public":
+        _add_tailscale_lease_checks(
+            checks,
+            recommendations,
+            proxy_config,
+            lease,
+            required=True,
+            component="tailscale",
+            prefix="tailscale.funnel_public",
+        )
+        not_oauth_resource = auth.get("mode") != "oauth-resource"
+        _add_share_doctor_check(
+            checks,
+            "tailscale.funnel_public.not_oauth_resource",
+            not_oauth_resource,
+            "Funnel public profile is using bearer/lease policy rather than MCP OAuth mode"
+            if not_oauth_resource
+            else "Use --tailscale-profile oauth-resource for MCP OAuth shares",
+            component="tailscale",
+            details={"auth_mode": auth.get("mode")},
+        )
+    elif profile == "serve-tailnet":
+        _add_tailscale_lease_checks(
+            checks,
+            recommendations,
+            proxy_config,
+            lease,
+            required=False,
+            component="tailscale",
+            prefix="tailscale.serve_tailnet",
+        )
+        not_oauth_resource = auth.get("mode") != "oauth-resource"
+        _add_share_doctor_check(
+            checks,
+            "tailscale.serve_tailnet.not_oauth_resource",
+            not_oauth_resource,
+            "Serve tailnet profile is using bearer policy rather than MCP OAuth mode"
+            if not_oauth_resource
+            else "Use --tailscale-profile oauth-resource for MCP OAuth shares",
+            component="tailscale",
+            severity="warning",
+            details={"auth_mode": auth.get("mode")},
+        )
+    elif profile == "oauth-resource":
+        auth_enabled = auth.get("mode") == "oauth-resource"
+        _add_share_doctor_check(
+            checks,
+            "tailscale.oauth_resource.auth_enabled",
+            auth_enabled,
+            "MCP OAuth protected-resource mode is enabled"
+            if auth_enabled
+            else "MCP OAuth protected-resource mode is not enabled",
+            component="tailscale",
+            details={"auth_mode": auth.get("mode")},
+        )
+        resource_match = _tailscale_auth_resource_matches_url(auth, public_url)
+        _add_share_doctor_check(
+            checks,
+            "tailscale.oauth_resource.resource_matches_url",
+            resource_match,
+            "MCP OAuth resource/audience includes the Tailscale client URL"
+            if resource_match
+            else "MCP OAuth resource/audience does not include the Tailscale client URL",
+            component="tailscale",
+            details={
+                "url": public_url,
+                "resource": auth.get("resource"),
+                "resource_aliases": _sequence(auth.get("resource_aliases")),
+                "audience": auth.get("audience"),
+                "audiences": _sequence(auth.get("audiences")),
+            },
+        )
+        anti_passthrough = auth.get("strip_authorization_upstream") is True
+        _add_share_doctor_check(
+            checks,
+            "tailscale.oauth_resource.anti_passthrough",
+            anti_passthrough,
+            "caller Authorization headers are stripped before upstream forwarding"
+            if anti_passthrough
+            else "caller Authorization headers may be forwarded upstream",
+            component="tailscale",
+        )
+        _add_tailscale_lease_checks(
+            checks,
+            recommendations,
+            proxy_config,
+            lease,
+            required=False,
+            component="tailscale",
+            prefix="tailscale.oauth_resource",
+        )
+        if not auth_enabled:
+            recommendations.append(
+                "Regenerate with --tailscale-profile oauth-resource --auth-issuer <issuer> or merge an MCP OAuth "
+                "protected-resource auth config into snulbug.toml."
+            )
+        if not resource_match:
+            recommendations.append(
+                "Set mcp.auth.resource and mcp.auth.audience to the exact Tailscale MCP URL, or add explicit aliases."
+            )
+
+    result["ok"] = _checks_ok(checks, component="tailscale")
+    return {"result": result, "checks": checks, "recommendations": _unique_strings(recommendations)}
+
+
+def _add_tailscale_lease_checks(
+    checks: list[dict[str, Any]],
+    recommendations: list[str],
+    proxy_config: Mapping[str, Any],
+    lease: Mapping[str, Any],
+    *,
+    required: bool,
+    component: str,
+    prefix: str,
+) -> None:
+    lease_required = proxy_config.get("lease_required") is True
+    active_lease = lease.get("active") is True
+    severity = "error" if required else "warning"
+    _add_share_doctor_check(
+        checks,
+        f"{prefix}.lease_required",
+        lease_required,
+        "task leases are required for MCP tools/call"
+        if lease_required
+        else "task leases are not required for MCP tools/call",
+        component=component,
+        severity=severity,
+    )
+    _add_share_doctor_check(
+        checks,
+        f"{prefix}.active_lease",
+        active_lease,
+        "an active task lease exists" if active_lease else "no active task lease exists for this share",
+        component=component,
+        severity=severity,
+        details={"lease": lease},
+    )
+    if required and (not lease_required or not active_lease):
+        recommendations.append(
+            "Keep lease_required = true and create an active task lease before sharing a public Tailscale Funnel URL."
+        )
+
+
+def _tailscale_url_is_tsnet(url: str | None) -> bool:
+    if not isinstance(url, str) or not url:
+        return False
+    parsed = urlsplit(url)
+    host = parsed.hostname or ""
+    return parsed.scheme == "https" and (host.endswith(".ts.net") or ".ts.net" in host)
+
+
+def _tailscale_auth_resource_matches_url(auth: Mapping[str, Any], url: str | None) -> bool:
+    if not isinstance(url, str) or not url:
+        return False
+    resources = [
+        *([str(auth["resource"])] if isinstance(auth.get("resource"), str) and auth.get("resource") else []),
+        *(str(item) for item in _sequence(auth.get("resource_aliases"))),
+    ]
+    audiences = [
+        *([str(auth["audience"])] if isinstance(auth.get("audience"), str) and auth.get("audience") else []),
+        *(str(item) for item in _sequence(auth.get("audiences"))),
+    ]
+    return _url_in_values(url, resources) and _url_in_values(url, audiences)
+
+
 def _run_share_conformance_doctor(
     pack: str | Path | None,
     *,
@@ -4351,6 +4613,7 @@ def _share_contract_payload(
             "gateway": _share_contract_gateway(status.get("gateway"), session_model=session_model),
             "auth": proxy_summary.get("auth"),
             "cloudflare_access": proxy_summary.get("cloudflare_access"),
+            "tailscale": proxy_summary.get("tailscale"),
             "upstream_auth": proxy_summary.get("upstream_auth"),
             "policy": _share_contract_policy(status.get("policy")),
             "lease": _share_contract_lease(status.get("lease"), status.get("leases"), session=session),
@@ -4586,6 +4849,7 @@ def _share_contract_proxy_summary(share_dir: Path, manifest: Mapping[str, Any]) 
                 "config": {"path": str(config_path), "loaded": True},
                 "auth": _share_contract_auth_config(proxy_config.get("auth")),
                 "cloudflare_access": _share_contract_cloudflare_config(proxy_config),
+                "tailscale": _share_contract_tailscale_config(proxy_config),
                 "upstream_auth": _share_contract_upstream_auth(proxy_config, credential_metadata=credential_metadata),
             }
         )
@@ -4689,6 +4953,21 @@ def _share_contract_cloudflare_config(proxy_config: Mapping[str, Any]) -> dict[s
             "certs_url": proxy_config.get("cloudflare_access_certs_url"),
             "allowed_domains": proxy_config.get("cloudflare_access_allowed_domains"),
             "allowed_emails": proxy_config.get("cloudflare_access_allowed_emails"),
+        }
+    )
+
+
+def _share_contract_tailscale_config(proxy_config: Mapping[str, Any]) -> dict[str, Any]:
+    auth = _mapping(proxy_config.get("auth"))
+    return _drop_empty_json(
+        {
+            "profile": proxy_config.get("tailscale_profile"),
+            "provider": proxy_config.get("tunnel_provider"),
+            "public_url": proxy_config.get("tunnel_public_url"),
+            "lease_required": proxy_config.get("lease_required"),
+            "lease_header": proxy_config.get("lease_header"),
+            "auth_mode": auth.get("mode"),
+            "strip_authorization_upstream": auth.get("strip_authorization_upstream"),
         }
     )
 
@@ -6102,6 +6381,7 @@ def _share_manifest(
             "provider": provider,
             "preset": preset,
             "cloudflare_access_profile": _mapping(quickstart.get("cloudflare")).get("profile"),
+            "tailscale_profile": _mapping(quickstart.get("tailscale")).get("profile"),
             "ttl": ttl,
             "task": task,
             "upstream": upstream,

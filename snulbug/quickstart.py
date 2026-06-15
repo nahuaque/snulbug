@@ -33,6 +33,8 @@ CLOUDFLARE_ACCESS_PROFILES = ("access-gate", "service-token", "oauth-resource", 
 DEFAULT_CLOUDFLARE_ACCESS_PROFILE = "access-gate"
 DEFAULT_CLOUDFLARE_SERVICE_TOKEN_CLIENT_ID_ENV = "CLOUDFLARE_ACCESS_CLIENT_ID"
 DEFAULT_CLOUDFLARE_SERVICE_TOKEN_CLIENT_SECRET_ENV = "CLOUDFLARE_ACCESS_CLIENT_SECRET"
+TAILSCALE_PROFILES = ("funnel-public", "serve-tailnet", "oauth-resource")
+DEFAULT_TAILSCALE_PROFILE = "funnel-public"
 
 
 def create_mcp_quickstart(
@@ -70,6 +72,7 @@ def create_mcp_quickstart(
     tunnel_provider: str = "auto",
     tunnel_public_url: str | None = None,
     cloudflare_profile: str | None = None,
+    tailscale_profile: str | None = None,
     cloudflare_access: str = "off",
     cloudflare_access_require_jwt: bool = True,
     cloudflare_access_require_email: bool = False,
@@ -100,9 +103,14 @@ def create_mcp_quickstart(
         tunnel_provider,
         cloudflare_profile,
     )
+    resolved_tailscale_profile, tunnel_provider = _resolve_tailscale_profile(
+        tunnel_provider,
+        tailscale_profile,
+    )
     cloudflare_client_headers = _cloudflare_profile_client_headers(resolved_cloudflare_profile)
-    cloudflare_auth_config = _cloudflare_profile_auth_config(
+    auth_config = _tunnel_profile_auth_config(
         resolved_cloudflare_profile,
+        resolved_tailscale_profile,
         tunnel_public_url=tunnel_public_url,
         local_url=f"http://{host}:{port}/mcp",
         issuer=auth_issuer,
@@ -172,6 +180,7 @@ def create_mcp_quickstart(
         "tunnel_provider": tunnel_provider,
         "tunnel_public_url": tunnel_public_url or "",
         "cloudflare_access_profile": resolved_cloudflare_profile or "",
+        "tailscale_profile": resolved_tailscale_profile or "",
         "cloudflare_access": cloudflare_access,
         "cloudflare_access_require_jwt": cloudflare_access_require_jwt,
         "cloudflare_access_require_email": cloudflare_access_require_email,
@@ -206,7 +215,7 @@ def create_mcp_quickstart(
     _write_mcp_proxy_config(
         config_path,
         config_values,
-        auth=cloudflare_auth_config,
+        auth=auth_config,
         event_sinks=event_sinks,
         force=force,
     )
@@ -277,6 +286,7 @@ def create_mcp_quickstart(
                 "preset": preset,
                 "upstream": upstream,
                 "cloudflare_access_profile": resolved_cloudflare_profile,
+                "tailscale_profile": resolved_tailscale_profile,
             },
         ),
         ok=ok,
@@ -324,6 +334,7 @@ def create_mcp_quickstart(
             "tunnel_provider": tunnel_provider,
             "tunnel_public_url": tunnel_public_url,
             "cloudflare_access_profile": resolved_cloudflare_profile,
+            "tailscale_profile": resolved_tailscale_profile,
             "cloudflare_access": config_values["cloudflare_access"],
             "cloudflare_access_require_jwt": config_values["cloudflare_access_require_jwt"],
             "cloudflare_access_require_email": config_values["cloudflare_access_require_email"],
@@ -338,12 +349,16 @@ def create_mcp_quickstart(
             "cloudflare_access_jwks_cache_seconds": config_values["cloudflare_access_jwks_cache_seconds"],
             "cloudflare_access_jwks_fetch_timeout": config_values["cloudflare_access_jwks_fetch_timeout"],
             "cloudflare_access_leeway_seconds": config_values["cloudflare_access_leeway_seconds"],
-            "auth": cloudflare_auth_config,
+            "auth": auth_config,
         },
         "cloudflare": {
             "profile": resolved_cloudflare_profile,
             "client_headers": cloudflare_client_headers,
-            "auth": cloudflare_auth_config,
+            "auth": auth_config if resolved_cloudflare_profile == "oauth-resource" else None,
+        },
+        "tailscale": {
+            "profile": resolved_tailscale_profile,
+            "auth": auth_config if resolved_tailscale_profile == "oauth-resource" else None,
         },
         "validation": validation,
         "tests": bundle_tests,
@@ -422,6 +437,21 @@ def _resolve_cloudflare_profile(
     return None, tunnel_provider
 
 
+def _resolve_tailscale_profile(
+    tunnel_provider: str,
+    tailscale_profile: str | None,
+) -> tuple[str | None, str]:
+    if tailscale_profile is not None and tailscale_profile not in TAILSCALE_PROFILES:
+        raise ValueError(f"tailscale_profile must be one of: {', '.join(TAILSCALE_PROFILES)}")
+    if tailscale_profile is not None and tunnel_provider == "auto":
+        tunnel_provider = "tailscale"
+    if tunnel_provider == "tailscale":
+        return tailscale_profile or DEFAULT_TAILSCALE_PROFILE, tunnel_provider
+    if tailscale_profile is not None:
+        raise ValueError("tailscale_profile requires tunnel_provider='tailscale' or tunnel_provider='auto'")
+    return None, tunnel_provider
+
+
 def _cloudflare_profile_proxy_values(
     profile: str | None,
     *,
@@ -476,8 +506,9 @@ def _cloudflare_profile_client_headers(profile: str | None) -> dict[str, str]:
     }
 
 
-def _cloudflare_profile_auth_config(
-    profile: str | None,
+def _tunnel_profile_auth_config(
+    cloudflare_profile: str | None,
+    tailscale_profile: str | None,
     *,
     tunnel_public_url: str | None,
     local_url: str,
@@ -488,10 +519,11 @@ def _cloudflare_profile_auth_config(
     jwks_url: str | None,
     token_validation: str,
 ) -> dict[str, Any] | None:
-    if profile != "oauth-resource":
+    oauth_resource_enabled = cloudflare_profile == "oauth-resource" or tailscale_profile == "oauth-resource"
+    if not oauth_resource_enabled:
         return None
     if not issuer:
-        raise ValueError("cloudflare_profile='oauth-resource' requires auth_issuer")
+        raise ValueError("oauth-resource tunnel profiles require auth_issuer")
     effective_resource = resource or tunnel_public_url or local_url
     effective_scopes = list(required_scopes or ["mcp:connect"])
     return {

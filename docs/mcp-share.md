@@ -483,6 +483,47 @@ edge checks, then forwards allowed traffic to the internal Agent Endpoint.
 See [End-to-end ngrok MCP gateway](ngrok-end-to-end.md) for the full
 upstream-to-public-Cloud-Endpoint walkthrough.
 
+For Tailscale, `share create --provider tailscale` defaults to the
+`funnel-public` profile. This assumes the client URL is reachable through
+Tailscale Funnel, keeps snulbug as the MCP policy boundary, and requires the
+generated bearer header plus an active task lease before `share doctor` passes:
+
+```bash
+uv run snulbug mcp share create \
+  --provider tailscale \
+  --url https://dev.tailnet.ts.net/mcp \
+  --allow-tool safe_read_file \
+  --ttl 30m
+sudo tailscale funnel 8080
+uv run snulbug mcp share doctor .snulbug/shares/share-... \
+  --url https://dev.tailnet.ts.net/mcp
+```
+
+Use the `serve-tailnet` profile when the endpoint is tailnet-only through
+Tailscale Serve rather than public Funnel. Bearer auth still applies, but the
+doctor treats leases as a recommended task boundary instead of a public-share
+hard requirement:
+
+```bash
+uv run snulbug mcp share create \
+  --provider tailscale \
+  --tailscale-profile serve-tailnet \
+  --url https://dev.tailnet.ts.net/mcp
+```
+
+Use the `oauth-resource` profile when the MCP client supports MCP OAuth and
+snulbug should terminate OAuth for the Tailscale URL. In this profile, Tailscale
+is transport, snulbug validates issuer/resource/audience/scopes, and the caller
+`Authorization` header is stripped before upstream forwarding:
+
+```bash
+uv run snulbug mcp share create \
+  --provider tailscale \
+  --tailscale-profile oauth-resource \
+  --url https://dev.tailnet.ts.net/mcp \
+  --auth-issuer https://auth.example.com
+```
+
 For Cloudflare Tunnel, `share create --provider cloudflare` defaults to the
 `access-gate` profile. This makes Cloudflare Access the outer user/device gate,
 requires `CF-Access-Jwt-Assertion`, requires `CF-Ray`, strips Access credential

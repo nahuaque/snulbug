@@ -83,6 +83,7 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "tunnel_provider": "auto",
     "tunnel_public_url": None,
     "cloudflare_access_profile": None,
+    "tailscale_profile": None,
     "cloudflare_access": "off",
     "cloudflare_access_require_jwt": True,
     "cloudflare_access_require_email": False,
@@ -170,6 +171,7 @@ lease_header = "x-snulbug-lease"
 tunnel_provider = "auto"
 tunnel_public_url = ""
 cloudflare_access_profile = ""
+tailscale_profile = ""
 cloudflare_access = "off"
 cloudflare_access_require_jwt = true
 cloudflare_access_require_email = false
@@ -440,6 +442,7 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         "lease_header",
         "tunnel_provider",
         "cloudflare_access_profile",
+        "tailscale_profile",
         "cloudflare_access",
         "cloudflare_access_team_domain",
         "cloudflare_access_issuer",
@@ -530,6 +533,14 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         raise ValueError(
             "mcp.proxy.cloudflare_access_profile must be 'access-gate', 'service-token', 'oauth-resource', or 'audit'"
         )
+    if normalized.get("tailscale_profile") == "":
+        normalized["tailscale_profile"] = None
+    if normalized.get("tailscale_profile") is not None and normalized["tailscale_profile"] not in {
+        "funnel-public",
+        "serve-tailnet",
+        "oauth-resource",
+    }:
+        raise ValueError("mcp.proxy.tailscale_profile must be 'funnel-public', 'serve-tailnet', or 'oauth-resource'")
 
     normalized["upstreams"] = _normalize_upstreams(normalized.get("upstreams", []), base_dir=base)
     upstream_credential = normalized.get("upstream_credential")

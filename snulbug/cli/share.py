@@ -25,6 +25,7 @@ PROVIDERS = ("generic", "ngrok", "cloudflare", "tailscale", "localxpose", "pingg
 QUICKSTART_TUNNEL_PROVIDERS = ("auto", *PROVIDERS)
 ATTACH_MEMBER_KINDS = ("codespaces", "devcontainer", "holepunch", "container", "generic")
 CLOUDFLARE_ACCESS_PROFILES = ("access-gate", "service-token", "oauth-resource", "audit")
+TAILSCALE_PROFILES = ("funnel-public", "serve-tailnet", "oauth-resource")
 
 
 def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -457,6 +458,7 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                 tunnel_provider=args.tunnel_provider,
                 tunnel_public_url=args.tunnel_public_url,
                 cloudflare_profile=args.cloudflare_profile,
+                tailscale_profile=args.tailscale_profile,
                 cloudflare_access=args.cloudflare_access,
                 cloudflare_access_require_jwt=args.cloudflare_access_require_jwt,
                 cloudflare_access_require_email=args.cloudflare_access_require_email,
@@ -496,6 +498,7 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                 ngrok_internal_url=args.ngrok_internal_url,
                 ngrok_endpoint_name=args.ngrok_endpoint_name,
                 cloudflare_profile=args.cloudflare_profile,
+                tailscale_profile=args.tailscale_profile,
                 auth_issuer=args.auth_issuer,
                 auth_resource=args.auth_resource,
                 auth_audience=args.auth_audience,
@@ -937,6 +940,7 @@ def _add_quickstart_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--tunnel-public-url", help="public tunnel URL to include in audit fields")
     _add_cloudflare_profile_args(parser)
+    _add_tailscale_profile_args(parser)
     parser.add_argument(
         "--cloudflare-access",
         choices=("off", "audit", "enforce"),
@@ -1024,28 +1028,39 @@ def _add_cloudflare_profile_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--auth-issuer",
-        help="OAuth issuer URL for --cloudflare-profile oauth-resource",
+        help="OAuth issuer URL for an oauth-resource tunnel profile",
     )
     parser.add_argument(
         "--auth-resource",
-        help="OAuth resource indicator for --cloudflare-profile oauth-resource; defaults to the public MCP URL",
+        help="OAuth resource indicator for an oauth-resource tunnel profile; defaults to the public MCP URL",
     )
     parser.add_argument(
         "--auth-audience",
-        help="OAuth audience for --cloudflare-profile oauth-resource; defaults to the resource",
+        help="OAuth audience for an oauth-resource tunnel profile; defaults to the resource",
     )
     parser.add_argument(
         "--auth-scope",
         action="append",
         default=[],
-        help="required OAuth scope for --cloudflare-profile oauth-resource; repeat for multiple scopes",
+        help="required OAuth scope for an oauth-resource tunnel profile; repeat for multiple scopes",
     )
     parser.add_argument("--auth-jwks-url", help="explicit OAuth JWKS URL; issuer discovery is used when omitted")
     parser.add_argument(
         "--auth-token-validation",
         choices=("jwt", "introspection", "jwt_or_introspection", "jwt_and_introspection"),
         default="jwt",
-        help="OAuth token validation mode for --cloudflare-profile oauth-resource",
+        help="OAuth token validation mode for oauth-resource tunnel profiles",
+    )
+
+
+def _add_tailscale_profile_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--tailscale-profile",
+        choices=TAILSCALE_PROFILES,
+        help=(
+            "Tailscale posture defaults: funnel-public, serve-tailnet, or oauth-resource. "
+            "Defaults to funnel-public when the provider is tailscale."
+        ),
     )
 
 
@@ -1119,6 +1134,7 @@ def _add_share_create_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--client-name", default="snulbug-share", help="MCP client config server name")
     _add_cloudflare_profile_args(parser)
+    _add_tailscale_profile_args(parser)
     _add_cloudflare_access_setup_args(parser)
     add_force_arg(parser, help="overwrite generated share files")
     add_validate_arg(parser, help="validate and test the generated policy bundle")

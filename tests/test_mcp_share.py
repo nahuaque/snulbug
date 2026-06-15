@@ -395,6 +395,92 @@ def test_mcp_share_cloudflare_oauth_resource_profile_keeps_access_out_of_oauth_p
     assert checks["cloudflare.oauth_resource.anti_passthrough"]["status"] == "pass"
 
 
+def test_mcp_share_tailscale_funnel_public_profile_requires_bearer_and_lease(tmp_path, monkeypatch):
+    result = create_mcp_share(
+        tmp_path,
+        provider="tailscale",
+        public_url="https://dev.tailnet.ts.net/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    def fake_doctor_tunnel(**kwargs):
+        return {
+            "ok": True,
+            "url": kwargs["url"],
+            "local_url": "http://127.0.0.1:8080/mcp",
+            "checks": [],
+            "summary": {"passed": 1, "failed": 0, "warnings": 0, "skipped": 0},
+        }
+
+    monkeypatch.setattr("snulbug.tunnel.doctor_tunnel", fake_doctor_tunnel)
+
+    proxy_config = load_mcp_proxy_config(tmp_path / "snulbug.toml")
+    manifest = json.loads((tmp_path / "share.json").read_text(encoding="utf-8"))
+    session_model = load_share_session_model(tmp_path)
+    doctor = doctor_mcp_share(tmp_path, live_checks=False)
+    checks = {check["id"]: check for check in doctor["checks"]}
+
+    assert result["session"]["tailscale_profile"] == "funnel-public"
+    assert manifest["session"]["tailscale_profile"] == "funnel-public"
+    assert session_model["tunnel"]["tailscale_profile"] == "funnel-public"
+    assert proxy_config["tunnel_provider"] == "tailscale"
+    assert proxy_config["tailscale_profile"] == "funnel-public"
+    assert proxy_config["lease_required"] is True
+    assert doctor["ok"] is True
+    assert doctor["tailscale"]["profile"] == "funnel-public"
+    assert checks["tailscale.profile.configured"]["status"] == "pass"
+    assert checks["tailscale.url.tsnet"]["status"] == "pass"
+    assert checks["tailscale.client.bearer"]["status"] == "pass"
+    assert checks["tailscale.funnel_public.lease_required"]["status"] == "pass"
+    assert checks["tailscale.funnel_public.active_lease"]["status"] == "pass"
+    assert checks["tailscale.funnel_public.not_oauth_resource"]["status"] == "pass"
+
+
+def test_mcp_share_tailscale_oauth_resource_profile_doctor_checks_auth_boundary(tmp_path, monkeypatch):
+    create_mcp_share(
+        tmp_path,
+        provider="tailscale",
+        public_url="https://dev.tailnet.ts.net/mcp",
+        token="share-secret",
+        tailscale_profile="oauth-resource",
+        auth_issuer="https://auth.example.com",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    def fake_doctor_tunnel(**kwargs):
+        return {
+            "ok": True,
+            "url": kwargs["url"],
+            "local_url": "http://127.0.0.1:8080/mcp",
+            "checks": [],
+            "summary": {"passed": 1, "failed": 0, "warnings": 0, "skipped": 0},
+        }
+
+    monkeypatch.setattr("snulbug.tunnel.doctor_tunnel", fake_doctor_tunnel)
+
+    proxy_config = load_mcp_proxy_config(tmp_path / "snulbug.toml")
+    contract = share_contract(tmp_path, live_checks=False)["contract"]
+    doctor = doctor_mcp_share(tmp_path, live_checks=False)
+    checks = {check["id"]: check for check in doctor["checks"]}
+
+    assert proxy_config["tunnel_provider"] == "tailscale"
+    assert proxy_config["tailscale_profile"] == "oauth-resource"
+    assert proxy_config["auth"]["mode"] == "oauth-resource"
+    assert proxy_config["auth"]["resource"] == "https://dev.tailnet.ts.net/mcp"
+    assert proxy_config["auth"]["issuer"] == "https://auth.example.com"
+    assert proxy_config["auth"]["strip_authorization_upstream"] is True
+    assert contract["tailscale"]["profile"] == "oauth-resource"
+    assert contract["tailscale"]["auth_mode"] == "oauth-resource"
+    assert doctor["ok"] is True
+    assert doctor["tailscale"]["profile"] == "oauth-resource"
+    assert checks["tailscale.oauth_resource.auth_enabled"]["status"] == "pass"
+    assert checks["tailscale.oauth_resource.resource_matches_url"]["status"] == "pass"
+    assert checks["tailscale.oauth_resource.anti_passthrough"]["status"] == "pass"
+
+
 def test_mcp_share_lifecycle_helpers_read_manifest(tmp_path):
     create_mcp_share(
         tmp_path,

@@ -55,6 +55,7 @@ def test_create_mcp_quickstart_writes_policy_config_and_trace_dir(tmp_path):
     assert proxy_config["lease_header"] == "x-snulbug-lease"
     assert proxy_config["tunnel_provider"] == "auto"
     assert proxy_config["tunnel_public_url"] is None
+    assert proxy_config["tailscale_profile"] is None
     assert proxy_config["cloudflare_access"] == "off"
     assert proxy_config["cloudflare_access_require_jwt"] is True
     assert proxy_config["cloudflare_access_require_email"] is False
@@ -148,6 +149,52 @@ def test_create_mcp_quickstart_cloudflare_oauth_resource_profile_writes_auth_blo
     assert proxy_config["auth"]["resource"] == "https://mcp.example.com/mcp"
     assert proxy_config["auth"]["issuer"] == "https://auth.example.com"
     assert proxy_config["auth"]["audience"] == "https://mcp.example.com/mcp"
+    assert proxy_config["auth"]["required_scopes"] == ["mcp:connect", "mcp:tools.read"]
+    assert proxy_config["auth"]["strip_authorization_upstream"] is True
+    assert result["client"]["headers"] == {"Authorization": "Bearer dev-secret"}
+
+
+def test_create_mcp_quickstart_defaults_tailscale_to_funnel_public_profile(tmp_path):
+    result = create_mcp_quickstart(
+        tmp_path,
+        tunnel_provider="tailscale",
+        tunnel_public_url="https://dev.tailnet.ts.net/mcp",
+        token="dev-secret",
+        validate=False,
+    )
+
+    proxy_config = load_mcp_proxy_config(tmp_path / "snulbug.toml")
+
+    assert result["ok"] is True
+    assert result["tailscale"]["profile"] == "funnel-public"
+    assert result["client"]["headers"] == {"Authorization": "Bearer dev-secret"}
+    assert proxy_config["tunnel_provider"] == "tailscale"
+    assert proxy_config["tunnel_public_url"] == "https://dev.tailnet.ts.net/mcp"
+    assert proxy_config["tailscale_profile"] == "funnel-public"
+    assert proxy_config["auth"]["mode"] == "off"
+
+
+def test_create_mcp_quickstart_tailscale_oauth_resource_profile_writes_auth_block(tmp_path):
+    result = create_mcp_quickstart(
+        tmp_path,
+        tailscale_profile="oauth-resource",
+        tunnel_public_url="https://dev.tailnet.ts.net/mcp",
+        token="dev-secret",
+        auth_issuer="https://auth.example.com",
+        auth_required_scopes=["mcp:connect", "mcp:tools.read"],
+        validate=False,
+    )
+
+    proxy_config = load_mcp_proxy_config(tmp_path / "snulbug.toml")
+
+    assert result["ok"] is True
+    assert result["tailscale"]["profile"] == "oauth-resource"
+    assert proxy_config["tunnel_provider"] == "tailscale"
+    assert proxy_config["tailscale_profile"] == "oauth-resource"
+    assert proxy_config["auth"]["mode"] == "oauth-resource"
+    assert proxy_config["auth"]["resource"] == "https://dev.tailnet.ts.net/mcp"
+    assert proxy_config["auth"]["issuer"] == "https://auth.example.com"
+    assert proxy_config["auth"]["audience"] == "https://dev.tailnet.ts.net/mcp"
     assert proxy_config["auth"]["required_scopes"] == ["mcp:connect", "mcp:tools.read"]
     assert proxy_config["auth"]["strip_authorization_upstream"] is True
     assert result["client"]["headers"] == {"Authorization": "Bearer dev-secret"}

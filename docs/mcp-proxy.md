@@ -212,6 +212,7 @@ lease_required = false
 lease_header = "x-snulbug-lease"
 tunnel_provider = "auto"
 tunnel_public_url = ""
+tailscale_profile = ""
 cloudflare_access = "off"
 cloudflare_access_require_jwt = true
 cloudflare_access_require_email = false
@@ -242,6 +243,38 @@ from request headers and the public host when possible. Set `tunnel_public_url`
 when you want audit logs to record the externally shared MCP URL or client-side
 peer bridge URL even if the request reaches snulbug through a local reverse
 proxy.
+
+## Tailscale Funnel / Serve Profiles
+
+For generated share sessions, `--provider tailscale` defaults to the
+`funnel-public` profile. That profile treats the `.ts.net` URL as publicly
+reachable through Funnel and expects both snulbug bearer auth and an active task
+lease before `share doctor` passes:
+
+```bash
+uv run snulbug mcp share create \
+  --provider tailscale \
+  --url https://dev.tailnet.ts.net/mcp \
+  --allow-tool safe_read_file \
+  --ttl 30m
+```
+
+The equivalent proxy config shape is:
+
+```toml
+[mcp.proxy]
+tunnel_provider = "tailscale"
+tunnel_public_url = "https://dev.tailnet.ts.net/mcp"
+tailscale_profile = "funnel-public"
+lease_required = true
+lease_header = "x-snulbug-lease"
+```
+
+Use `tailscale_profile = "serve-tailnet"` for tailnet-only Tailscale Serve
+shares. It still expects snulbug bearer auth, but lease checks are warnings
+rather than hard public-Funnel failures. Use `tailscale_profile = "oauth-resource"`
+when the MCP client supports MCP OAuth and snulbug should
+terminate OAuth before forwarding to upstream MCP servers.
 
 ## Event Sinks
 

@@ -342,6 +342,7 @@ Workflow:
 - audit JSONL with MCP-aware fields
 - provider-aware tunnel audit fields for ngrok, Cloudflare, Tailscale, LocalXpose, Pinggy, Holepunch, and generic forwarders
 - Cloudflare Tunnel profiles for Access-gated, service-token, OAuth-resource, and audit-first shares
+- Tailscale Funnel/Serve profiles for public bearer+lease shares, tailnet-only shares, and OAuth-resource shares
 - optional Cloudflare Access origin-side audit/enforcement with Access JWT validation
 - optional OAuth protected-resource mode with JWT/JWKS or token-introspection validation and MCP bearer challenges
 - OAuth scope-to-MCP method/tool mapping for least-privilege public shares

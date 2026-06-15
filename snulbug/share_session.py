@@ -74,6 +74,8 @@ def build_share_session_model(
         },
         "tunnel": {
             "provider": session.get("provider") or tunnel.get("provider"),
+            "cloudflare_access_profile": session.get("cloudflare_access_profile"),
+            "tailscale_profile": session.get("tailscale_profile"),
             "public_url": public_url,
             "local_url": local_url,
             "client_url": public_url,
