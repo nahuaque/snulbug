@@ -349,6 +349,7 @@ Start with:
 - [MCP client setup recipes](docs/mcp-client-recipes.md)
 - [MCP auth interop recipes](docs/mcp-auth-recipes.md)
 - [OAuth claim-policy examples](examples/auth_claim_patterns/README.md)
+- [Provider-aware Lua policy templates](examples/provider_policy_templates/README.md)
 - [Security model](docs/security-model.md)
 - [Positioning and comparisons](docs/comparison.md)
 - [Roadmap](docs/roadmap.md)

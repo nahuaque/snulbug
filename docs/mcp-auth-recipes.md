@@ -157,3 +157,8 @@ For explicit identity-to-tool patterns, see
 [`examples/auth_claim_patterns`](../examples/auth_claim_patterns/README.md).
 It includes tenant isolation, group-gated tools, and GitHub Actions
 OIDC/workload identity configs that are parsed and exercised by the test suite.
+
+For provider-specific Lua helper patterns, see
+[`examples/provider_policy_templates`](../examples/provider_policy_templates/README.md).
+It includes copyable Keycloak role gates, Entra app-role gates, GitHub Actions
+workload gates, and Cloudflare Access group gates.
