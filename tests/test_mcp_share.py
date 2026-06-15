@@ -857,6 +857,62 @@ def test_mcp_share_status_and_report_summarize_session_evidence(tmp_path):
     assert (tmp_path / "share-report.md").is_file()
 
 
+def test_mcp_share_tool_risks_use_schema_catalog_metadata(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    catalog = build_mcp_schema_catalog(
+        {
+            "tools/list": {
+                "result": {
+                    "tools": [
+                        {
+                            "name": "run_command",
+                            "description": "Run a shell command in the workspace",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {"command": {"type": "string", "description": "Shell command"}},
+                            },
+                            "annotations": {"destructiveHint": True},
+                        }
+                    ]
+                }
+            }
+        },
+        methods=("tools/list",),
+        label="risk-review",
+    )
+    schema_path = tmp_path / "traces" / "schemas.json"
+    schema_path.parent.mkdir(exist_ok=True)
+    schema_path.write_text(json.dumps(catalog, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    status = share_status(tmp_path, live_checks=False)
+    report = share_report(tmp_path, live_checks=False)
+    tool = status["tool_risks"]["tools"][0]
+    signal_codes = {signal["code"] for signal in tool["signals"]}
+
+    assert status["schemas"]["catalog_count"] == 1
+    assert status["schemas"]["tool_count"] == 1
+    assert status["tool_risks"]["schema_catalogs"]["sources"][0]["path"] == str(schema_path)
+    assert tool["name"] == "run_command"
+    assert tool["level"] == "high"
+    assert tool["count"] == 0
+    assert tool["evidence_sources"] == ["schema"]
+    assert tool["confidence"] == "medium"
+    assert tool["schema"]["tool_hash"] == catalog["surfaces"]["tools"][0]["hash"]
+    assert tool["schema"]["input_properties"] == ["command"]
+    assert "argument.command" in signal_codes
+    assert "annotation.destructive" in signal_codes
+    assert "schema.open_arguments" in signal_codes
+    assert "Schema catalogs: `1` loaded, `1` declared tools, `0` errors" in report["report"]
+    assert "`schema`" in report["report"]
+
+
 def test_mcp_share_contract_redacts_tokens_and_can_sign(tmp_path):
     create_mcp_share(
         tmp_path,

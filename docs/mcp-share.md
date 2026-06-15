@@ -66,6 +66,16 @@ uv run snulbug mcp share report .snulbug/shares/share-... \
   --output .snulbug/shares/share-.../share-report.md
 ```
 
+`share status`, `share report`, and share contracts include a tool-risk review.
+It combines observed tool calls from `traces/audit.jsonl` or
+`traces/session.jsonl` with discovered MCP schema catalogs when present. Drop a
+catalog at `traces/schemas.json`, `schemas.json`, `schemas/*.json`, or
+`.snulbug/schemas/*.json` inside the share directory, or reference one from the
+session model, and the report will classify schema-declared tools even before
+traffic is observed. The table records evidence source, confidence, risk level,
+categories, and signals such as command-capable arguments, network/path
+arguments, destructive annotations, and open argument schemas.
+
 ## Generated files
 
 By default, the command writes under `.snulbug/shares/share-*` and creates:

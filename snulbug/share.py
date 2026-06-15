@@ -433,7 +433,9 @@ def share_status(
     gateway = _share_gateway_status(share_dir, manifest, session_model, timeout=timeout, live_checks=live_checks)
     upstreams = _share_upstream_statuses(share_dir, manifest, timeout=timeout, live_checks=live_checks)
     traffic = _share_traffic_summary(share_dir, session_model)
-    tool_risks = classify_mcp_tool_risks(traffic.get("tools"))
+    schema_catalogs = _share_schema_catalog_context(share_dir, manifest, session_model)
+    tool_risks = classify_mcp_tool_risks(_share_tool_risk_inputs(traffic.get("tools"), schema_catalogs))
+    tool_risks["schema_catalogs"] = _share_schema_catalog_status(schema_catalogs)
     recordings = _share_recordings_status(share_dir, session_model)
     policy = _mapping(session_model.get("policy"))
     members = _mapping(session_model.get("members"))
@@ -470,6 +472,7 @@ def share_status(
         "contract": contract,
         "traffic": traffic,
         "tool_risks": tool_risks,
+        "schemas": _share_schema_catalog_status(schema_catalogs),
         "recordings": recordings,
         "findings": findings,
     }
@@ -4526,6 +4529,213 @@ def _share_traffic_summary(share_dir: Path, session_model: Mapping[str, Any]) ->
     return summary
 
 
+def _share_schema_catalog_context(
+    share_dir: Path,
+    manifest: Mapping[str, Any],
+    session_model: Mapping[str, Any],
+) -> dict[str, Any]:
+    from .mcp_schemas import normalize_mcp_schema_catalog
+
+    sources: list[dict[str, Any]] = []
+    tools_by_name: dict[str, dict[str, Any]] = {}
+    seen_paths: set[str] = set()
+    for candidate in _share_schema_catalog_candidates(share_dir, manifest, session_model):
+        candidate_path = _resolve_share_path(share_dir, candidate.get("path"))
+        path_key = str(candidate_path)
+        if path_key in seen_paths:
+            continue
+        seen_paths.add(path_key)
+        source = {
+            "path": str(candidate_path),
+            "source": candidate.get("source"),
+            "explicit": bool(candidate.get("explicit")),
+            "exists": candidate_path.is_file(),
+            "loaded": False,
+        }
+        if not candidate_path.is_file():
+            if candidate.get("explicit"):
+                source["error"] = "schema catalog not found"
+                sources.append(source)
+            continue
+        try:
+            catalog = normalize_mcp_schema_catalog(_read_json(candidate_path))
+            surfaces = _mapping(catalog.get("surfaces"))
+            tools = [
+                item
+                for item in _auth_schema_surface_items(surfaces.get("tools"))
+                if isinstance(item, Mapping) and item.get("name")
+            ]
+            source.update(
+                {
+                    "loaded": True,
+                    "ok": bool(catalog.get("ok")),
+                    "hash": catalog.get("hash"),
+                    "label": catalog.get("label"),
+                    "tool_count": len(tools),
+                    "summary": _jsonish_copy(catalog.get("summary") or {}),
+                }
+            )
+            sources.append(source)
+            for tool in tools:
+                _merge_share_schema_tool(tools_by_name, tool, catalog=catalog, path=candidate_path)
+        except Exception as exc:
+            source["error"] = str(exc)
+            sources.append(source)
+
+    loaded_sources = [source for source in sources if source.get("loaded") is True]
+    errors = [source for source in sources if source.get("error")]
+    tools = sorted(tools_by_name.values(), key=lambda item: str(item.get("name") or ""))
+    return {
+        "sources": sources,
+        "tools": tools,
+        "summary": {
+            "catalog_count": len(loaded_sources),
+            "source_count": len(sources),
+            "tool_count": len(tools),
+            "errors": len(errors),
+        },
+    }
+
+
+def _share_schema_catalog_candidates(
+    share_dir: Path,
+    manifest: Mapping[str, Any],
+    session_model: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+
+    def add_ref(value: Any, *, source: str, explicit: bool = True) -> None:
+        if isinstance(value, Mapping):
+            for key in ("path", "file", "catalog", "schema_catalog"):
+                if value.get(key):
+                    add_ref(value.get(key), source=source, explicit=explicit)
+                    return
+            return
+        if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+            for item in value:
+                add_ref(item, source=source, explicit=explicit)
+            return
+        if value is None or str(value) == "":
+            return
+        candidates.append({"path": str(value), "source": source, "explicit": explicit})
+
+    files = _mapping(manifest.get("files"))
+    evidence = _mapping(session_model.get("evidence"))
+    paths = _mapping(session_model.get("paths"))
+    add_ref(manifest.get("schemas"), source="manifest.schemas")
+    for key in ("schema_catalog", "schema_catalogs", "schemas"):
+        add_ref(files.get(key), source=f"manifest.files.{key}")
+        add_ref(evidence.get(key), source=f"session.evidence.{key}")
+        add_ref(paths.get(key), source=f"session.paths.{key}")
+
+    for path in (
+        share_dir / "traces" / "schemas.json",
+        share_dir / "schemas.json",
+    ):
+        add_ref(path, source="share.default", explicit=False)
+    for directory in (share_dir / "schemas", share_dir / ".snulbug" / "schemas"):
+        if directory.is_dir():
+            for path in sorted(directory.glob("*.json")):
+                add_ref(path, source="share.default", explicit=False)
+    return candidates
+
+
+def _merge_share_schema_tool(
+    tools_by_name: dict[str, dict[str, Any]],
+    tool: Mapping[str, Any],
+    *,
+    catalog: Mapping[str, Any],
+    path: Path,
+) -> None:
+    name = str(tool.get("name") or "")
+    if not name:
+        return
+    catalog_hash = catalog.get("hash") if isinstance(catalog.get("hash"), str) else None
+    tool_hash = tool.get("hash") if isinstance(tool.get("hash"), str) else None
+    existing = tools_by_name.get(name)
+    if existing is None:
+        entry = dict(tool)
+        entry["schema_hash"] = tool_hash
+        entry["schema_hashes"] = [tool_hash] if tool_hash else []
+        entry["catalog_hashes"] = [catalog_hash] if catalog_hash else []
+        entry["catalog_paths"] = [str(path)]
+        entry["schema_variants"] = len(set(entry["schema_hashes"]))
+        tools_by_name[name] = entry
+        return
+
+    if not existing.get("description") and tool.get("description"):
+        existing["description"] = tool.get("description")
+    for key in ("inputSchema", "outputSchema", "annotations"):
+        if not existing.get(key) and tool.get(key):
+            existing[key] = tool.get(key)
+    if tool_hash:
+        existing["schema_hashes"] = sorted({*map(str, _sequence(existing.get("schema_hashes"))), tool_hash})
+        existing.setdefault("schema_hash", tool_hash)
+    if catalog_hash:
+        existing["catalog_hashes"] = sorted({*map(str, _sequence(existing.get("catalog_hashes"))), catalog_hash})
+    existing["catalog_paths"] = sorted({*map(str, _sequence(existing.get("catalog_paths"))), str(path)})
+    existing["schema_variants"] = len(set(_sequence(existing.get("schema_hashes"))))
+
+
+def _share_tool_risk_inputs(
+    observed_tools: Any,
+    schema_catalogs: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    observed_counts = _share_observed_tool_counts(observed_tools)
+    inputs: list[dict[str, Any]] = []
+    schema_names: set[str] = set()
+    for tool in _sequence(schema_catalogs.get("tools")):
+        if not isinstance(tool, Mapping):
+            continue
+        name = str(tool.get("name") or "")
+        if not name:
+            continue
+        schema_names.add(name)
+        count = observed_counts.get(name, 0)
+        entry = dict(tool)
+        entry["count"] = count
+        entry["evidence_sources"] = ["schema", *(("observed",) if count else ())]
+        entry["confidence"] = "high" if count else "medium"
+        inputs.append(entry)
+    for name, count in sorted(observed_counts.items()):
+        if name in schema_names:
+            continue
+        inputs.append({"name": name, "count": count, "evidence_sources": ["observed"], "confidence": "medium"})
+    return inputs
+
+
+def _share_observed_tool_counts(observed_tools: Any) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in _sequence(observed_tools):
+        if not isinstance(item, Mapping):
+            continue
+        name = item.get("value") or item.get("name")
+        if name is None or str(name) == "":
+            continue
+        counts[str(name)] = counts.get(str(name), 0) + int(item.get("count") or 0)
+    return counts
+
+
+def _share_schema_catalog_status(schema_catalogs: Mapping[str, Any]) -> dict[str, Any]:
+    summary = _mapping(schema_catalogs.get("summary"))
+    sources = [
+        {
+            key: source.get(key)
+            for key in ("path", "source", "explicit", "exists", "loaded", "ok", "hash", "label", "tool_count", "error")
+            if source.get(key) is not None
+        }
+        for source in _sequence(schema_catalogs.get("sources"))
+        if isinstance(source, Mapping)
+    ]
+    return {
+        "catalog_count": int(summary.get("catalog_count", 0) or 0),
+        "source_count": int(summary.get("source_count", 0) or 0),
+        "tool_count": int(summary.get("tool_count", 0) or 0),
+        "errors": int(summary.get("errors", 0) or 0),
+        "sources": sources,
+    }
+
+
 def _share_recordings_status(share_dir: Path, session_model: Mapping[str, Any]) -> dict[str, Any]:
     evidence = _mapping(session_model.get("evidence"))
     result = {}
@@ -5176,7 +5386,7 @@ def _share_findings(
             {
                 "severity": "warning",
                 "type": "high_risk_mcp_tools",
-                "message": "high-risk MCP tools observed: "
+                "message": "high-risk MCP tools observed or declared: "
                 + ", ".join(str(_mapping(item).get("name")) for item in high_risk_tools[:5]),
                 "count": len(high_risk_tools),
             }
@@ -5393,15 +5603,21 @@ def _tool_risk_summary_inline(tool_risks: Mapping[str, Any]) -> str:
 
 def _tool_risk_report_lines(tool_risks: Mapping[str, Any]) -> list[str]:
     tools = [item for item in _sequence(tool_risks.get("tools")) if isinstance(item, Mapping)]
+    schema_catalogs = _mapping(tool_risks.get("schema_catalogs"))
     lines = [
         f"- Summary: {_tool_risk_summary_inline(tool_risks)}",
         f"- Categories: {_inline_counts(tool_risks.get('categories'))}",
+        (
+            f"- Schema catalogs: `{schema_catalogs.get('catalog_count', 0)}` loaded, "
+            f"`{schema_catalogs.get('tool_count', 0)}` declared tools, "
+            f"`{schema_catalogs.get('errors', 0)}` errors"
+        ),
         "",
-        "| Tool | Risk | Count | Categories | Signals |",
-        "| --- | --- | --- | --- | --- |",
+        "| Tool | Risk | Count | Evidence | Confidence | Categories | Signals |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     if not tools:
-        lines.append("| - | - | - | - | - |")
+        lines.append("| - | - | - | - | - | - | - |")
         return lines
     for tool in tools[:10]:
         signals = [
@@ -5416,6 +5632,10 @@ def _tool_risk_report_lines(tool_risks: Mapping[str, Any]) -> list[str]:
                     _markdown_table_cell(f"`{tool.get('name') or '-'}`"),
                     _markdown_table_cell(tool.get("level")),
                     _markdown_table_cell(tool.get("count", 0)),
+                    _markdown_table_cell(
+                        ", ".join(f"`{item}`" for item in _sequence(tool.get("evidence_sources"))) or "-"
+                    ),
+                    _markdown_table_cell(tool.get("confidence") or "-"),
                     _markdown_table_cell(", ".join(f"`{item}`" for item in _sequence(tool.get("categories"))) or "-"),
                     _markdown_table_cell(", ".join(f"`{item}`" for item in signals[:4]) or "-"),
                 ]

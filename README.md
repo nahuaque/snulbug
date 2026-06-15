@@ -15,6 +15,7 @@ It gives you a tight loop for agent-tool safety:
 - record redacted replay and audit logs
 - learn a least-privilege policy from observed traffic
 - amend blocked requests into reviewable candidate bundles
+- classify observed and schema-declared MCP tools by risk before handoff
 - use task-scoped leases for temporary tool/path grants, optionally bound to
   OAuth subject, tenant, client, group, issuer, or auth profile
 - turn OAuth identity into MCP-specific tool permissions

@@ -70,11 +70,27 @@ class ToolRiskSignal:
 def classify_mcp_tool(tool: str | Mapping[str, Any], *, count: int = 0) -> dict[str, Any]:
     """Classify one MCP tool using secret-safe name/schema heuristics."""
 
+    evidence_sources: list[str] = []
+    confidence: str | None = None
+    schema_hash: str | None = None
+    schema_hashes: list[str] = []
+    catalog_hashes: list[str] = []
+    catalog_paths: list[str] = []
+    schema_variants: int | None = None
     if isinstance(tool, Mapping):
         name = str(tool.get("name") or tool.get("value") or "")
         description = tool.get("description") if isinstance(tool.get("description"), str) else ""
         annotations = _mapping(tool.get("annotations"))
         input_schema = _mapping(tool.get("inputSchema"))
+        evidence_sources = _string_list(tool.get("evidence_sources") or tool.get("evidence"))
+        confidence = tool.get("confidence") if isinstance(tool.get("confidence"), str) else None
+        schema_hash = tool.get("schema_hash") if isinstance(tool.get("schema_hash"), str) else None
+        if schema_hash is None and isinstance(tool.get("hash"), str) and input_schema:
+            schema_hash = str(tool.get("hash"))
+        schema_hashes = _string_list(tool.get("schema_hashes"))
+        catalog_hashes = _string_list(tool.get("catalog_hashes"))
+        catalog_paths = _string_list(tool.get("catalog_paths"))
+        schema_variants = tool.get("schema_variants") if isinstance(tool.get("schema_variants"), int) else None
     else:
         name = str(tool)
         description = ""
@@ -121,6 +137,26 @@ def classify_mcp_tool(tool: str | Mapping[str, Any], *, count: int = 0) -> dict[
         for signal, category in _schema_property_signals(str(property_name), _mapping(property_schema)):
             signals.append(signal)
             categories.add(category)
+    if input_schema and input_schema.get("type", "object") == "object":
+        additional_properties = input_schema.get("additionalProperties")
+        if additional_properties is not False:
+            signals.append(
+                ToolRiskSignal(
+                    "schema.open_arguments",
+                    "medium",
+                    "tool input schema allows undeclared arguments",
+                )
+            )
+            categories.add("open-schema")
+    if schema_variants is not None and schema_variants > 1:
+        signals.append(
+            ToolRiskSignal(
+                "schema.variant_conflict",
+                "high",
+                "multiple schema variants were found for this tool",
+            )
+        )
+        categories.add("schema-drift")
 
     if not signals:
         signals.append(ToolRiskSignal("tool.observed", "low", "tool was observed but has no obvious high-risk signal"))
@@ -128,7 +164,7 @@ def classify_mcp_tool(tool: str | Mapping[str, Any], *, count: int = 0) -> dict[
 
     score = min(100, sum(RISK_WEIGHTS.get(signal.severity, 0) for signal in signals))
     level = _risk_level(score, signals)
-    return {
+    result: dict[str, Any] = {
         "name": name,
         "level": level,
         "score": score,
@@ -136,6 +172,21 @@ def classify_mcp_tool(tool: str | Mapping[str, Any], *, count: int = 0) -> dict[
         "categories": sorted(categories),
         "signals": [signal.to_dict() for signal in signals],
     }
+    if evidence_sources:
+        result["evidence_sources"] = sorted(dict.fromkeys(evidence_sources))
+    if confidence:
+        result["confidence"] = confidence
+    schema = _schema_summary(
+        input_schema,
+        schema_hash=schema_hash,
+        schema_hashes=schema_hashes,
+        catalog_hashes=catalog_hashes,
+        catalog_paths=catalog_paths,
+        schema_variants=schema_variants,
+    )
+    if schema:
+        result["schema"] = schema
+    return result
 
 
 def classify_mcp_tool_risks(tools: Sequence[Any] | Mapping[str, Any] | None) -> dict[str, Any]:
@@ -204,6 +255,45 @@ def _schema_property_signals(name: str, schema: Mapping[str, Any]) -> list[tuple
     return signals
 
 
+def _schema_summary(
+    input_schema: Mapping[str, Any],
+    *,
+    schema_hash: str | None,
+    schema_hashes: Sequence[str],
+    catalog_hashes: Sequence[str],
+    catalog_paths: Sequence[str],
+    schema_variants: int | None,
+) -> dict[str, Any]:
+    properties = sorted(str(key) for key in _mapping(input_schema.get("properties")).keys())
+    required = sorted(str(item) for item in _sequence(input_schema.get("required")))
+    summary: dict[str, Any] = {}
+    if schema_hash:
+        summary["tool_hash"] = schema_hash
+    if schema_hashes:
+        summary["tool_hashes"] = sorted(dict.fromkeys(schema_hashes))
+    if catalog_hashes:
+        summary["catalog_hashes"] = sorted(dict.fromkeys(catalog_hashes))
+    if catalog_paths:
+        summary["catalog_paths"] = sorted(dict.fromkeys(catalog_paths))
+    if schema_variants is not None:
+        summary["variants"] = schema_variants
+    if input_schema:
+        summary["input_properties"] = properties
+        summary["required"] = required
+        summary["additional_properties"] = _additional_properties_summary(input_schema.get("additionalProperties"))
+    return summary
+
+
+def _additional_properties_summary(value: Any) -> Any:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, Mapping):
+        return "schema"
+    if value is None:
+        return None
+    return str(value)
+
+
 def _risk_level(score: int, signals: Sequence[ToolRiskSignal]) -> str:
     level = "low"
     if score >= 60:
@@ -228,3 +318,9 @@ def _sequence(value: Any) -> list[Any]:
     if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
         return list(value)
     return []
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    return [str(item) for item in _sequence(value) if item is not None and str(item)]
