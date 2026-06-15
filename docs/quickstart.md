@@ -231,12 +231,17 @@ uv run snulbug mcp share create \
 export SNULBUG_SHARE_TOKEN=...
 uv run snulbug mcp share run .snulbug/shares/share-...
 (cd .snulbug/shares/share-.../tunnel && \
-  ngrok http 8080 --traffic-policy-file ngrok-traffic-policy.yml)
+  ngrok start --config ngrok-agent.yml --all)
 ```
 
-Copy the exact `Forwarding` HTTPS URL printed by ngrok. Random free ngrok URLs
-commonly use domains such as `ngrok-free.dev` or `ngrok-free.app`; do not
-rewrite them into an `ngrok.app` hostname.
+For ngrok, snulbug generates the standard MCP gateway shape: a private
+`.internal` Agent Endpoint in `ngrok-agent.yml` and a public Cloud Endpoint
+Traffic Policy in `ngrok-traffic-policy.yml`. Replace `YOUR_NGROK_AUTHTOKEN`
+or merge the endpoint into your existing ngrok config, then create or choose
+the public Cloud Endpoint for your MCP URL and attach the generated Traffic
+Policy. The Traffic Policy performs coarse MCP checks and forwards allowed
+traffic to the internal Agent Endpoint; snulbug remains the MCP-aware policy
+boundary behind it.
 
 Use curl as a minimal MCP client to verify `tools/list` through the tunnel:
 

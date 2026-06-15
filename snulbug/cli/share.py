@@ -486,6 +486,8 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                 upstream=args.upstream,
                 hostname=args.hostname,
                 public_url=args.url,
+                ngrok_internal_url=args.ngrok_internal_url,
+                ngrok_endpoint_name=args.ngrok_endpoint_name,
                 token=args.token,
                 ttl=args.ttl,
                 task=args.task,
@@ -997,6 +999,15 @@ def _add_share_create_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--upstream", default="http://127.0.0.1:9000", help="upstream MCP HTTP server")
     parser.add_argument("--hostname", help="provider hostname to use when --url is omitted")
     parser.add_argument("--url", "--public-url", dest="url", help="public tunnel or client bridge MCP URL")
+    parser.add_argument(
+        "--ngrok-internal-url",
+        help="ngrok internal Agent Endpoint URL; must be an https://*.internal origin",
+    )
+    parser.add_argument(
+        "--ngrok-endpoint-name",
+        default="snulbug-mcp-internal",
+        help="endpoint name in the generated ngrok v3 agent config",
+    )
     add_token_arg(parser, help="bearer token; defaults to a generated session token")
     parser.add_argument("--ttl", default="30m", help="share lease TTL, such as 30m, 2h, or 1d")
     parser.add_argument("--task", default="Ephemeral MCP share session", help="human-readable share task")

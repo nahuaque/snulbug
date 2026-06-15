@@ -11,13 +11,18 @@ Run the app:
 uv run uvicorn examples.mcp_gateway.app:application --host 127.0.0.1 --port 8000
 ```
 
-Expose it:
+For ngrok exposure, use the share workflow so snulbug generates the public Cloud
+Endpoint Traffic Policy and private internal Agent Endpoint config:
 
 ```bash
-ngrok http 8000
+uv run snulbug mcp share create \
+  --provider ngrok \
+  --upstream http://127.0.0.1:8000 \
+  --allow-tool safe_read_file
 ```
 
-Point MCP clients at the ngrok URL plus `/mcp`.
+Then run `uv run snulbug mcp share run ...` and follow the generated
+`tunnel/README.md`.
 
 For local, tunneled, header-authenticated, and managed stdio upstream patterns, see
 [MCP client setup recipes](mcp-client-recipes.md).

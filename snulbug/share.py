@@ -46,7 +46,7 @@ from .share_session import (
     update_share_session_model,
     write_share_session_model,
 )
-from .tunnel import TUNNEL_PROVIDERS, init_tunnel_provider
+from .tunnel import DEFAULT_NGROK_INTERNAL_ENDPOINT_NAME, TUNNEL_PROVIDERS, init_tunnel_provider
 
 DEFAULT_SHARE_PROVIDER = "holepunch"
 DEFAULT_SHARE_PRESET = "tunnel-safe"
@@ -77,6 +77,8 @@ def create_mcp_share(
     upstream: str = "http://127.0.0.1:9000",
     hostname: str | None = None,
     public_url: str | None = None,
+    ngrok_internal_url: str | None = None,
+    ngrok_endpoint_name: str = DEFAULT_NGROK_INTERNAL_ENDPOINT_NAME,
     token: str | None = None,
     ttl: str = DEFAULT_SHARE_TTL,
     task: str = "Ephemeral MCP share session",
@@ -121,6 +123,8 @@ def create_mcp_share(
         local_url=local_url,
         public_url=public_url,
         hostname=hostname,
+        ngrok_internal_url=ngrok_internal_url,
+        ngrok_endpoint_name=ngrok_endpoint_name,
         token_env=DEFAULT_SHARE_TOKEN_ENV,
         write=False,
     )
@@ -157,6 +161,8 @@ def create_mcp_share(
         config=quickstart["config"],
         local_url=local_url,
         public_url=tunnel_preview["public_url"],
+        ngrok_internal_url=ngrok_internal_url,
+        ngrok_endpoint_name=ngrok_endpoint_name,
         token_env=DEFAULT_SHARE_TOKEN_ENV,
         output_dir=share_dir / "tunnel",
         doctor_command=f"uv run snulbug mcp share doctor {shlex.quote(str(share_dir))}",

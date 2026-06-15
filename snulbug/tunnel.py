@@ -19,6 +19,8 @@ DEFAULT_TUNNEL_TOKEN_ENV = "SNULBUG_TOKEN"
 DEFAULT_TUNNEL_OUTPUT_DIR = ".snulbug/configs"
 DEFAULT_GENERIC_TUNNEL_HOST = "YOUR-TUNNEL-FORWARDING-DOMAIN"
 DEFAULT_NGROK_FORWARDING_HOST = "YOUR-NGROK-FORWARDING-DOMAIN"
+DEFAULT_NGROK_INTERNAL_URL = "https://snulbug-mcp.internal"
+DEFAULT_NGROK_INTERNAL_ENDPOINT_NAME = "snulbug-mcp-internal"
 DEFAULT_CLOUDFLARE_TUNNEL_HOST = "YOUR-CLOUDFLARE-TUNNEL-HOSTNAME"
 DEFAULT_TAILSCALE_FUNNEL_HOST = "YOUR-HOST.YOUR-TAILNET.ts.net"
 DEFAULT_LOCALXPOSE_FORWARDING_HOST = "YOUR-LOCALXPOSE-FORWARDING-DOMAIN"
@@ -188,6 +190,8 @@ def init_tunnel_provider(
     local_url: str | None = None,
     public_url: str | None = None,
     hostname: str | None = None,
+    ngrok_internal_url: str | None = None,
+    ngrok_endpoint_name: str = DEFAULT_NGROK_INTERNAL_ENDPOINT_NAME,
     token_env: str = DEFAULT_TUNNEL_TOKEN_ENV,
     path: str = DEFAULT_MCP_PATH,
     output_dir: str | Path | None = None,
@@ -201,6 +205,12 @@ def init_tunnel_provider(
         raise ValueError(f"provider must be one of: {', '.join(TUNNEL_PROVIDERS)}")
     if not token_env:
         raise ValueError("token_env must not be empty")
+    if provider != "ngrok" and (
+        ngrok_internal_url is not None or ngrok_endpoint_name != DEFAULT_NGROK_INTERNAL_ENDPOINT_NAME
+    ):
+        raise ValueError("ngrok_internal_url and ngrok_endpoint_name are only valid for provider='ngrok'")
+    if provider == "ngrok" and not ngrok_endpoint_name.strip():
+        raise ValueError("ngrok_endpoint_name must not be empty")
 
     config_result = _load_config(config)
     if config_result["explicit"] and config_result["ok"] is not True:
@@ -234,6 +244,8 @@ def init_tunnel_provider(
         config_path=config_path or Path(DEFAULT_CONFIG_PATH),
         output_dir=effective_output_dir,
         doctor_command=doctor_command or _share_doctor_command(None),
+        ngrok_internal_url=ngrok_internal_url,
+        ngrok_endpoint_name=ngrok_endpoint_name,
     )
     files = _tunnel_init_files(
         provider,
@@ -592,26 +604,47 @@ def _provider_plan(
     config_path: str | Path,
     output_dir: str | Path,
     doctor_command: str,
+    ngrok_internal_url: str | None = None,
+    ngrok_endpoint_name: str = DEFAULT_NGROK_INTERNAL_ENDPOINT_NAME,
 ) -> dict[str, Any]:
     token = f"${{{token_env}}}"
     bridge = None
     output = Path(output_dir)
     if provider == "ngrok":
-        tunnel_target = _ngrok_target(origin)
-        public_origin = _url_origin(public_endpoint)
-        url_arg = "" if _is_default_public_endpoint("ngrok", public_endpoint) else f" --url {public_origin}"
+        internal_url = _ngrok_internal_endpoint_url(ngrok_internal_url)
+        public_origin = _display_public_endpoint("ngrok", _url_origin(public_endpoint))
+        agent_config_file = _shell_path(output / "ngrok-agent.yml")
         traffic_policy_file = _shell_path(output / "ngrok-traffic-policy.yml")
         commands = [
             {
-                "id": "run-ngrok",
-                "title": "Expose snulbug with ngrok",
-                "description": "Point ngrok at the snulbug proxy origin with the generated Traffic Policy guard.",
-                "command": f"ngrok http {tunnel_target}{url_arg} --traffic-policy-file {traffic_policy_file}",
-            }
+                "id": "run-ngrok-agent",
+                "title": "Run the ngrok internal Agent Endpoint",
+                "description": (
+                    "Start the ngrok agent endpoint that privately forwards the ngrok Cloud Endpoint "
+                    "to the local snulbug proxy origin."
+                ),
+                "command": f"ngrok start --config {agent_config_file} --all",
+            },
+            {
+                "id": "attach-ngrok-cloud-policy",
+                "title": "Attach the Traffic Policy to your ngrok Cloud Endpoint",
+                "description": (
+                    "Create or choose the public Cloud Endpoint, then attach the generated Traffic Policy. "
+                    "The policy performs coarse MCP checks and forwards allowed traffic to the internal endpoint."
+                ),
+                "command": _shell_print_command(
+                    [
+                        f"In the ngrok dashboard, create or choose {public_origin}.",
+                        f"Attach {traffic_policy_file} as the endpoint Traffic Policy.",
+                    ]
+                ),
+            },
         ]
         traffic_policy = {
             "path": traffic_policy_file,
-            "mode": "edge-guard",
+            "mode": "cloud-endpoint",
+            "internal_endpoint": internal_url,
+            "agent_config": agent_config_file,
             "checks": [
                 "deny non-MCP paths",
                 "require Authorization header",
@@ -619,7 +652,15 @@ def _provider_plan(
                 "restrict HTTP methods",
                 "require JSON content type on POST",
                 "add snulbug/ngrok audit headers",
+                "forward allowed traffic to the ngrok internal Agent Endpoint",
             ],
+        }
+        bridge = {
+            "transport": "ngrok-internal",
+            "mode": "cloud-endpoint",
+            "internal_url": internal_url,
+            "endpoint_name": ngrok_endpoint_name,
+            "agent_config": "ngrok-agent.yml",
         }
     elif provider == "cloudflare":
         public_host = urlsplit(public_endpoint).hostname or DEFAULT_CLOUDFLARE_TUNNEL_HOST
@@ -737,7 +778,7 @@ def _provider_plan(
     return {
         "commands": commands,
         "traffic_policy": traffic_policy,
-        "bridge": bridge if provider == "holepunch" else None,
+        "bridge": bridge if provider in {"holepunch", "ngrok"} else None,
         "client": {
             "url": public_endpoint,
             "headers": {"Authorization": f"Bearer {token}"},
@@ -757,11 +798,28 @@ def _ngrok_target(origin: str) -> str:
     return origin
 
 
+def _ngrok_internal_endpoint_url(value: str | None) -> str:
+    endpoint = value or DEFAULT_NGROK_INTERNAL_URL
+    parsed = urlsplit(endpoint)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError("ngrok internal endpoint URL must be an absolute https:// URL")
+    if not parsed.hostname.endswith(".internal"):
+        raise ValueError("ngrok internal endpoint hostname must end with .internal")
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise ValueError("ngrok internal endpoint URL must not include a path, query, or fragment")
+    return _url_origin(endpoint)
+
+
 def _tailscale_target(origin: str) -> str:
     parsed = urlsplit(origin)
     if parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"} and not parsed.path:
         return str(parsed.port or 80)
     return origin
+
+
+def _shell_print_command(lines: Sequence[str]) -> str:
+    quoted = " ".join(shlex.quote(line) for line in lines)
+    return f"printf '%s\\n' {quoted}"
 
 
 def _pinggy_target(origin: str) -> str:
@@ -896,11 +954,21 @@ def _tunnel_init_files(
             }
         )
     elif provider == "ngrok":
+        bridge = plan.get("bridge") if isinstance(plan.get("bridge"), Mapping) else {}
+        internal_url = str(bridge.get("internal_url") or DEFAULT_NGROK_INTERNAL_URL)
+        endpoint_name = str(bridge.get("endpoint_name") or DEFAULT_NGROK_INTERNAL_ENDPOINT_NAME)
         files.append(
             {
                 "path": "ngrok-traffic-policy.yml",
                 "kind": "ngrok-traffic-policy",
-                "contents": _ngrok_traffic_policy(public_endpoint),
+                "contents": _ngrok_traffic_policy(public_endpoint, internal_url=internal_url),
+            }
+        )
+        files.append(
+            {
+                "path": "ngrok-agent.yml",
+                "kind": "ngrok-agent-config",
+                "contents": _ngrok_agent_config(origin, internal_url=internal_url, endpoint_name=endpoint_name),
             }
         )
     elif provider == "holepunch":
@@ -1012,12 +1080,26 @@ def _provider_readme_notes(provider: str, plan: Mapping[str, Any]) -> str:
     if not isinstance(traffic_policy, Mapping):
         return ""
     checks = "\n".join(f"- {check}" for check in traffic_policy.get("checks", []))
+    bridge = plan.get("bridge") if isinstance(plan.get("bridge"), Mapping) else {}
+    internal_url = bridge.get("internal_url") or traffic_policy.get("internal_endpoint") or DEFAULT_NGROK_INTERNAL_URL
+    endpoint_name = bridge.get("endpoint_name") or DEFAULT_NGROK_INTERNAL_ENDPOINT_NAME
+    agent_config = bridge.get("agent_config") or "ngrok-agent.yml"
     return (
-        "## Ngrok Traffic Policy\n\n"
-        f"The generated `{traffic_policy.get('path')}` file is an edge guard for local-dev MCP traffic:\n\n"
+        "## Ngrok MCP gateway\n\n"
+        "The generated ngrok setup follows the Cloud Endpoint plus private internal "
+        "Agent Endpoint pattern from ngrok's MCP gateway guidance:\n\n"
+        f"- Internal Agent Endpoint: `{internal_url}`\n"
+        f"- Agent endpoint name: `{endpoint_name}`\n"
+        f"- Agent config: `{agent_config}`\n"
+        f"- Cloud Endpoint Traffic Policy: `{traffic_policy.get('path')}`\n\n"
+        "Replace `YOUR_NGROK_AUTHTOKEN` in the generated agent config or merge the "
+        "endpoint block into your existing ngrok v3 config. Create or choose the "
+        "public ngrok Cloud Endpoint for your MCP URL, then attach the generated "
+        "Traffic Policy to that Cloud Endpoint.\n\n"
+        "The policy is a coarse edge guard for local-dev MCP traffic:\n\n"
         f"{checks}\n\n"
-        "Run the ngrok command from this directory, or pass an absolute path to "
-        "`--traffic-policy-file`.\n\n"
+        "Snulbug remains the MCP-aware authorization, lease, recording, audit, and "
+        "response-policy boundary behind ngrok.\n\n"
     )
 
 
@@ -1144,7 +1226,23 @@ def _cloudflared_config(origin: str, public_endpoint: str) -> str:
     )
 
 
-def _ngrok_traffic_policy(public_endpoint: str) -> str:
+def _ngrok_agent_config(origin: str, *, internal_url: str, endpoint_name: str) -> str:
+    return (
+        "# Generated by snulbug for ngrok's MCP gateway pattern.\n"
+        "# Replace YOUR_NGROK_AUTHTOKEN or merge this endpoint into your existing ngrok v3 config.\n"
+        "version: 3\n"
+        "agent:\n"
+        "  authtoken: YOUR_NGROK_AUTHTOKEN\n"
+        "endpoints:\n"
+        f"  - name: {_yaml_string(endpoint_name)}\n"
+        f"    url: {_yaml_string(internal_url)}\n"
+        "    description: Private internal Agent Endpoint for the local snulbug MCP gateway.\n"
+        "    upstream:\n"
+        f"      url: {_yaml_string(origin)}\n"
+    )
+
+
+def _ngrok_traffic_policy(public_endpoint: str, *, internal_url: str) -> str:
     mcp_path = urlsplit(public_endpoint).path or DEFAULT_MCP_PATH
     public_url = _normalize_url(public_endpoint, mcp_path)
     expressions = {
@@ -1158,8 +1256,9 @@ def _ngrok_traffic_policy(public_endpoint: str) -> str:
         ),
     }
     return (
-        "# Generated by snulbug. This is a coarse ngrok edge guard; snulbug still\n"
-        "# performs MCP-aware authorization, replay recording, auditing, and response policy.\n"
+        "# Generated by snulbug for an ngrok public Cloud Endpoint.\n"
+        "# This is a coarse ngrok edge guard; snulbug still performs MCP-aware\n"
+        "# authorization, replay recording, auditing, and response policy behind it.\n"
         "on_http_request:\n"
         "  - name: Add snulbug tunnel audit headers\n"
         "    actions:\n"
@@ -1205,6 +1304,11 @@ def _ngrok_traffic_policy(public_endpoint: str) -> str:
         "      - type: deny\n"
         "        config:\n"
         "          status_code: 415\n"
+        "  - name: Forward allowed MCP traffic to the private snulbug Agent Endpoint\n"
+        "    actions:\n"
+        "      - type: forward-internal\n"
+        "        config:\n"
+        f"          url: {_yaml_string(internal_url)}\n"
     )
 
 

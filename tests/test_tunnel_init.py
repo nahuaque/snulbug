@@ -23,23 +23,30 @@ def test_tunnel_init_ngrok_generates_command_doctor_and_policy_snippet(tmp_path,
     assert (tmp_path / ".snulbug/configs/snulbug.toml").is_file()
     assert (tmp_path / ".snulbug/configs/policy.snulbug/policy.lua").is_file()
     assert (tmp_path / ".snulbug/configs/ngrok-traffic-policy.yml").is_file()
+    assert (tmp_path / ".snulbug/configs/ngrok-agent.yml").is_file()
     assert result["local_origin"] == "http://127.0.0.1:8080"
     assert result["public_url"] == "https://mcp-dev.ngrok.app/mcp"
-    assert result["commands"][0]["command"] == (
-        "ngrok http 8080 --url https://mcp-dev.ngrok.app "
-        "--traffic-policy-file .snulbug/configs/ngrok-traffic-policy.yml"
-    )
+    assert result["commands"][0]["command"] == "ngrok start --config .snulbug/configs/ngrok-agent.yml --all"
+    assert "Attach .snulbug/configs/ngrok-traffic-policy.yml" in result["commands"][1]["command"]
     assert result["traffic_policy"]["path"] == ".snulbug/configs/ngrok-traffic-policy.yml"
+    assert result["traffic_policy"]["mode"] == "cloud-endpoint"
+    assert result["traffic_policy"]["internal_endpoint"] == "https://snulbug-mcp.internal"
     assert "require Authorization header" in result["traffic_policy"]["checks"]
     assert result["doctor"]["command"] == "snulbug mcp share doctor <share-directory>"
     policy_file = next(file for file in result["files"] if file["path"] == "ngrok-traffic-policy.yml")
+    agent_file = next(file for file in result["files"] if file["path"] == "ngrok-agent.yml")
     assert 'x-snulbug-traffic-policy: "ngrok-mcp-v1"' in policy_file["contents"]
     assert 'req.url.path != \\"/mcp\\"' in policy_file["contents"]
     assert "!hasReqHeader('Authorization')" in policy_file["contents"]
     assert "!getReqHeader('Authorization').exists(v, v.matches('^Bearer .+'))" in policy_file["contents"]
     assert "!(req.method in ['GET', 'POST', 'OPTIONS', 'DELETE'])" in policy_file["contents"]
     assert "req.method == 'POST'" in policy_file["contents"]
+    assert "type: forward-internal" in policy_file["contents"]
+    assert 'url: "https://snulbug-mcp.internal"' in policy_file["contents"]
     assert 'body: "Authorization required"' not in policy_file["contents"]
+    assert "version: 3" in agent_file["contents"]
+    assert 'url: "https://snulbug-mcp.internal"' in agent_file["contents"]
+    assert 'url: "http://127.0.0.1:8080"' in agent_file["contents"]
 
 
 def test_tunnel_init_ngrok_without_config_writes_default_config_dir(tmp_path, monkeypatch):
@@ -53,9 +60,7 @@ def test_tunnel_init_ngrok_without_config_writes_default_config_dir(tmp_path, mo
     assert result["config"] == ".snulbug/configs/snulbug.toml"
     assert result["output_dir"] == ".snulbug/configs"
     assert result["public_url"] == "https://YOUR-NGROK-FORWARDING-DOMAIN/mcp"
-    assert result["commands"][0]["command"] == (
-        "ngrok http 8080 --traffic-policy-file .snulbug/configs/ngrok-traffic-policy.yml"
-    )
+    assert result["commands"][0]["command"] == ("ngrok start --config .snulbug/configs/ngrok-agent.yml --all")
     assert result["doctor"]["command"] == "snulbug mcp share doctor <share-directory>"
     assert result["written_files"] == [
         ".snulbug/configs/snulbug.toml",
@@ -63,16 +68,19 @@ def test_tunnel_init_ngrok_without_config_writes_default_config_dir(tmp_path, mo
         ".snulbug/configs/traces",
         ".snulbug/configs/README.md",
         ".snulbug/configs/ngrok-traffic-policy.yml",
+        ".snulbug/configs/ngrok-agent.yml",
     ]
     assert (tmp_path / ".snulbug/configs/snulbug.toml").is_file()
     assert (tmp_path / ".snulbug/configs/policy.snulbug/policy.lua").is_file()
     assert (tmp_path / ".snulbug/configs/ngrok-traffic-policy.yml").is_file()
+    assert (tmp_path / ".snulbug/configs/ngrok-agent.yml").is_file()
     assert "Generated snulbug config" in report
     assert "Config: `.snulbug/configs/snulbug.toml`" in report
     assert "export SNULBUG_TOKEN=local-dev-secret" in report
     assert "export NGROK_URL=https://YOUR-NGROK-FORWARDING-DOMAIN" in report
     assert "ngrok-free.dev" in report
-    assert "--traffic-policy-file .snulbug/configs/ngrok-traffic-policy.yml" in report
+    assert "ngrok start --config .snulbug/configs/ngrok-agent.yml --all" in report
+    assert "internal Agent Endpoint" in report
     assert "snulbug mcp share run --config .snulbug/configs/snulbug.toml" in result["next_steps"][1]
 
 
@@ -88,16 +96,56 @@ def test_tunnel_init_ngrok_writes_readme_and_traffic_policy(tmp_path):
 
     readme = output_dir / "README.md"
     policy = output_dir / "ngrok-traffic-policy.yml"
+    agent = output_dir / "ngrok-agent.yml"
     assert result["written_files"] == [
         str(output_dir / "snulbug.toml"),
         str(output_dir / "policy.snulbug"),
         str(output_dir / "traces"),
         str(readme),
         str(policy),
+        str(agent),
     ]
-    assert f"--traffic-policy-file {policy}" in readme.read_text(encoding="utf-8")
-    assert "Ngrok Traffic Policy" in readme.read_text(encoding="utf-8")
+    assert f"ngrok start --config {agent} --all" in readme.read_text(encoding="utf-8")
+    assert "Ngrok MCP gateway" in readme.read_text(encoding="utf-8")
     assert 'x-snulbug-public-url: "https://mcp-dev.ngrok.app/mcp"' in policy.read_text(encoding="utf-8")
+    assert "type: forward-internal" in policy.read_text(encoding="utf-8")
+    assert 'url: "https://snulbug-mcp.internal"' in agent.read_text(encoding="utf-8")
+
+
+def test_tunnel_init_ngrok_can_customize_internal_agent_endpoint(tmp_path):
+    output_dir = tmp_path / "ngrok"
+
+    result = init_tunnel_provider(
+        provider="ngrok",
+        local_url="http://127.0.0.1:8080/mcp",
+        hostname="mcp-dev.ngrok.app",
+        ngrok_internal_url="https://team-snulbug.internal",
+        ngrok_endpoint_name="team-snulbug-agent",
+        output_dir=output_dir,
+    )
+
+    policy = (output_dir / "ngrok-traffic-policy.yml").read_text(encoding="utf-8")
+    agent = (output_dir / "ngrok-agent.yml").read_text(encoding="utf-8")
+    assert result["bridge"] == {
+        "transport": "ngrok-internal",
+        "mode": "cloud-endpoint",
+        "internal_url": "https://team-snulbug.internal",
+        "endpoint_name": "team-snulbug-agent",
+        "agent_config": "ngrok-agent.yml",
+    }
+    assert 'url: "https://team-snulbug.internal"' in policy
+    assert 'name: "team-snulbug-agent"' in agent
+    assert 'url: "https://team-snulbug.internal"' in agent
+
+
+def test_tunnel_init_ngrok_rejects_non_internal_agent_endpoint(tmp_path):
+    with pytest.raises(ValueError, match="must end with .internal"):
+        init_tunnel_provider(
+            provider="ngrok",
+            local_url="http://127.0.0.1:8080/mcp",
+            ngrok_internal_url="https://mcp.example.com",
+            output_dir=tmp_path,
+        )
 
 
 def test_tunnel_init_cloudflare_writes_generated_files(tmp_path):

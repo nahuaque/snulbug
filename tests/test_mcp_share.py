@@ -249,6 +249,32 @@ def test_mcp_share_create_subcommand_emits_compact_session_plan(tmp_path, capsys
     assert (tmp_path / "share.json").is_file()
 
 
+def test_create_mcp_share_ngrok_writes_cloud_endpoint_artifacts(tmp_path):
+    result = create_mcp_share(
+        tmp_path,
+        provider="ngrok",
+        public_url="https://mcp-dev.ngrok.app/mcp",
+        ngrok_internal_url="https://team-snulbug.internal",
+        ngrok_endpoint_name="team-snulbug-agent",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    policy = tmp_path / "tunnel" / "ngrok-traffic-policy.yml"
+    agent = tmp_path / "tunnel" / "ngrok-agent.yml"
+    assert result["ok"] is True
+    assert policy.is_file()
+    assert agent.is_file()
+    assert "type: forward-internal" in policy.read_text(encoding="utf-8")
+    assert 'url: "https://team-snulbug.internal"' in policy.read_text(encoding="utf-8")
+    assert 'name: "team-snulbug-agent"' in agent.read_text(encoding="utf-8")
+    assert 'url: "https://team-snulbug.internal"' in agent.read_text(encoding="utf-8")
+    assert result["tunnel"]["bridge"]["mode"] == "cloud-endpoint"
+    assert result["commands"]["provider"][0] == f"(cd {tmp_path / 'tunnel'} && ngrok start --config {agent} --all)"
+    assert "Attach" in result["commands"]["provider"][1]
+
+
 def test_mcp_share_lifecycle_helpers_read_manifest(tmp_path):
     create_mcp_share(
         tmp_path,

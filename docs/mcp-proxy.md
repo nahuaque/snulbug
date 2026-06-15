@@ -73,12 +73,14 @@ uv run snulbug mcp share create \
 export SNULBUG_SHARE_TOKEN=...
 uv run snulbug mcp share run .snulbug/shares/share-...
 (cd .snulbug/shares/share-.../tunnel && \
-  ngrok http 8080 --traffic-policy-file ngrok-traffic-policy.yml)
+  ngrok start --config ngrok-agent.yml --all)
 ```
 
-Copy the exact `Forwarding` HTTPS URL printed by ngrok. Random free ngrok URLs
-commonly use domains such as `ngrok-free.dev` or `ngrok-free.app`; do not
-rewrite them into an `ngrok.app` hostname.
+For ngrok, the generated provider directory contains `ngrok-agent.yml` for the
+private `.internal` Agent Endpoint and `ngrok-traffic-policy.yml` for the
+public Cloud Endpoint. Attach the Traffic Policy to the public Cloud Endpoint;
+it performs coarse MCP checks and forwards allowed traffic to the internal
+Agent Endpoint.
 
 ```bash
 NGROK_URL=https://YOUR-NGROK-FORWARDING-DOMAIN

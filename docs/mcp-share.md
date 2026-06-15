@@ -475,6 +475,12 @@ Pass `--hostname` only when you have a reserved tunnel hostname; otherwise copy
 the exact forwarding URL printed by the tunnel provider and pass it to
 `snulbug mcp share doctor --url`.
 
+For ngrok, the generated provider setup follows ngrok's MCP gateway pattern by
+default: `tunnel/ngrok-agent.yml` defines a private `.internal` Agent Endpoint
+that points at snulbug, and `tunnel/ngrok-traffic-policy.yml` is attached to
+the public Cloud Endpoint. The Traffic Policy keeps the existing coarse MCP
+edge checks, then forwards allowed traffic to the internal Agent Endpoint.
+
 ## Close out
 
 When the task is complete:
