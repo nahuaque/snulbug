@@ -46,6 +46,7 @@ from .share_session import (
     update_share_session_model,
     write_share_session_model,
 )
+from .tool_risk import classify_mcp_tool_risks
 from .tunnel import DEFAULT_NGROK_INTERNAL_ENDPOINT_NAME, TUNNEL_PROVIDERS, init_tunnel_provider
 
 DEFAULT_SHARE_PROVIDER = "holepunch"
@@ -432,6 +433,7 @@ def share_status(
     gateway = _share_gateway_status(share_dir, manifest, session_model, timeout=timeout, live_checks=live_checks)
     upstreams = _share_upstream_statuses(share_dir, manifest, timeout=timeout, live_checks=live_checks)
     traffic = _share_traffic_summary(share_dir, session_model)
+    tool_risks = classify_mcp_tool_risks(traffic.get("tools"))
     recordings = _share_recordings_status(share_dir, session_model)
     policy = _mapping(session_model.get("policy"))
     members = _mapping(session_model.get("members"))
@@ -442,6 +444,7 @@ def share_status(
         gateway=gateway,
         upstreams=upstreams,
         traffic=traffic,
+        tool_risks=tool_risks,
         tunnel=tunnel,
         policy=policy,
         contract=contract,
@@ -466,6 +469,7 @@ def share_status(
         "amendments": amendments,
         "contract": contract,
         "traffic": traffic,
+        "tool_risks": tool_risks,
         "recordings": recordings,
         "findings": findings,
     }
@@ -4628,6 +4632,7 @@ def _share_contract_payload(
             },
             "evidence": {
                 "traffic": _share_contract_traffic(status.get("traffic")),
+                "tool_risks": status.get("tool_risks"),
                 "recordings": status.get("recordings"),
                 "amendments": _share_contract_amendments(status.get("amendments")),
                 "findings": status.get("findings"),
@@ -5122,6 +5127,7 @@ def _share_findings(
     gateway: Mapping[str, Any],
     upstreams: Sequence[Mapping[str, Any]],
     traffic: Mapping[str, Any],
+    tool_risks: Mapping[str, Any],
     tunnel: Mapping[str, Any],
     policy: Mapping[str, Any],
     contract: Mapping[str, Any],
@@ -5164,6 +5170,17 @@ def _share_findings(
                 + ", ".join(str(item.get("value")) for item in risky_tools[:5]),
             }
         )
+    high_risk_tools = [item for item in _sequence(tool_risks.get("tools")) if _mapping(item).get("level") == "high"]
+    if high_risk_tools:
+        findings.append(
+            {
+                "severity": "warning",
+                "type": "high_risk_mcp_tools",
+                "message": "high-risk MCP tools observed: "
+                + ", ".join(str(_mapping(item).get("name")) for item in high_risk_tools[:5]),
+                "count": len(high_risk_tools),
+            }
+        )
     if policy.get("lifecycle_state") not in {None, "active"}:
         findings.append(
             {
@@ -5194,6 +5211,7 @@ def _share_review_lines(result: Mapping[str, Any]) -> list[str]:
     policy = _mapping(result.get("policy"))
     amendments = _mapping(result.get("amendments"))
     traffic = _mapping(result.get("traffic"))
+    tool_risks = _mapping(result.get("tool_risks"))
     recordings = _mapping(result.get("recordings"))
     leases = _mapping(result.get("leases"))
     contract = _mapping(result.get("contract"))
@@ -5267,8 +5285,13 @@ def _share_review_lines(result: Mapping[str, Any]) -> list[str]:
             f"denied=`{traffic.get('confirmation_denied', 0)}`",
             f"- Observed MCP methods: {_inline_counts(traffic.get('methods'))}",
             f"- Observed MCP tools/targets: {_inline_counts(traffic.get('tools'))}",
+            f"- Tool risk summary: {_tool_risk_summary_inline(tool_risks)}",
             f"- Observed clients: {_inline_counts(traffic.get('clients'))}",
             f"- Observed source IPs: {_inline_counts(traffic.get('source_ips'))}",
+            "",
+            "## Tool Risk Review",
+            "",
+            *_tool_risk_report_lines(tool_risks),
             "",
             "## Data Protection Review",
             "",
@@ -5359,6 +5382,49 @@ def _inline_counts(values: Any, *, limit: int = 5) -> str:
     return ", ".join(rendered)
 
 
+def _tool_risk_summary_inline(tool_risks: Mapping[str, Any]) -> str:
+    summary = _mapping(tool_risks.get("summary"))
+    return (
+        f"`{int(summary.get('high', 0) or 0)}` high, "
+        f"`{int(summary.get('medium', 0) or 0)}` medium, "
+        f"`{int(summary.get('low', 0) or 0)}` low"
+    )
+
+
+def _tool_risk_report_lines(tool_risks: Mapping[str, Any]) -> list[str]:
+    tools = [item for item in _sequence(tool_risks.get("tools")) if isinstance(item, Mapping)]
+    lines = [
+        f"- Summary: {_tool_risk_summary_inline(tool_risks)}",
+        f"- Categories: {_inline_counts(tool_risks.get('categories'))}",
+        "",
+        "| Tool | Risk | Count | Categories | Signals |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    if not tools:
+        lines.append("| - | - | - | - | - |")
+        return lines
+    for tool in tools[:10]:
+        signals = [
+            str(_mapping(signal).get("code"))
+            for signal in _sequence(tool.get("signals"))
+            if _mapping(signal).get("code")
+        ]
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _markdown_table_cell(f"`{tool.get('name') or '-'}`"),
+                    _markdown_table_cell(tool.get("level")),
+                    _markdown_table_cell(tool.get("count", 0)),
+                    _markdown_table_cell(", ".join(f"`{item}`" for item in _sequence(tool.get("categories"))) or "-"),
+                    _markdown_table_cell(", ".join(f"`{item}`" for item in signals[:4]) or "-"),
+                ]
+            )
+            + " |"
+        )
+    return lines
+
+
 def _share_report_lines(result: Mapping[str, Any], *, title: str) -> list[str]:
     session = _mapping(result.get("session"))
     gateway = _mapping(result.get("gateway"))
@@ -5367,6 +5433,7 @@ def _share_report_lines(result: Mapping[str, Any], *, title: str) -> list[str]:
     members = _mapping(result.get("members"))
     amendments = _mapping(result.get("amendments"))
     traffic = _mapping(result.get("traffic"))
+    tool_risks = _mapping(result.get("tool_risks"))
     recordings = _mapping(result.get("recordings"))
     leases = _mapping(result.get("leases"))
     contract = _mapping(result.get("contract"))
@@ -5454,6 +5521,10 @@ def _share_report_lines(result: Mapping[str, Any], *, title: str) -> list[str]:
             "### Tools",
             "",
             *_count_lines(traffic.get("tools")),
+            "",
+            "### Tool Risk Classifier",
+            "",
+            *_tool_risk_report_lines(tool_risks),
             "",
             "### Clients / Sources",
             "",
@@ -5575,6 +5646,11 @@ def _count_lines(values: Any, *, label: str = "item") -> list[str]:
 def _risky_tool_name(value: str) -> bool:
     normalized = value.lower().replace("-", "_")
     return any(term in normalized for term in ("shell", "exec", "command", "terminal", "subprocess", "spawn"))
+
+
+def _markdown_table_cell(value: Any) -> str:
+    text = "-" if value in (None, "") else str(value)
+    return text.replace("|", "\\|").replace("\n", " ")
 
 
 def _yes_no_unknown(value: Any) -> str:

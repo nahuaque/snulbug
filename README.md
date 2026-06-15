@@ -341,6 +341,7 @@ Workflow:
 - redacted replay logs for deterministic policy testing
 - audit JSONL with MCP-aware fields
 - policy evidence diffs that summarize newly allowed tools, MCP path patterns, and argument shapes
+- share reports that classify observed MCP tools by risk signals before handoff
 - provider-aware tunnel audit fields for ngrok, Cloudflare, Tailscale, LocalXpose, Pinggy, Holepunch, and generic forwarders
 - Cloudflare Tunnel profiles for Access-gated, service-token, OAuth-resource, and audit-first shares
 - Tailscale Funnel/Serve profiles for public bearer+lease shares, tailnet-only shares, and OAuth-resource shares

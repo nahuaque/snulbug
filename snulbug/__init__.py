@@ -281,6 +281,7 @@ from .state import (
     SQLiteStateStore,
     StateLimits,
 )
+from .tool_risk import classify_mcp_tool, classify_mcp_tool_risks
 from .tunnel import (
     TUNNEL_PROVIDERS,
     TunnelAuditConfig,
@@ -414,6 +415,8 @@ __all__ = [
     "clear_fabric_runtime_status",
     "close_mcp_share",
     "compare_decisions",
+    "classify_mcp_tool",
+    "classify_mcp_tool_risks",
     "copy_builtin_preset",
     "codespace_forwarded_url",
     "create_lease",

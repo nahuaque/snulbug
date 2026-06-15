@@ -318,7 +318,10 @@ uv run snulbug mcp share report .snulbug/shares/share-... \
 The report is human-readable Markdown built from the session model plus audit
 and replay logs. It lists what was exposed, observed clients and source IPs,
 tools observed, allowed/blocked/confirmed counts, redaction and risk findings,
-upstream health, policy state, and exact next commands.
+upstream health, policy state, and exact next commands. It also classifies
+observed MCP tools by risk signal, so shell/process tools, mutating tools,
+network-capable tools, filesystem tools, and secret-like tools are visible
+before you reuse or hand off the share.
 
 ## Remote member attach
 

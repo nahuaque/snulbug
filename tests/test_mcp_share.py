@@ -825,13 +825,20 @@ def test_mcp_share_status_and_report_summarize_session_evidence(tmp_path):
     assert status["traffic"]["redacted_events"] == 1
     assert status["traffic"]["response_redacted"] == 1
     assert status["traffic"]["tools"][0]["value"] == "shell_exec"
+    assert status["tool_risks"]["summary"]["high"] == 1
+    assert status["tool_risks"]["tools"][0]["name"] == "shell_exec"
+    assert status["tool_risks"]["tools"][0]["level"] == "high"
+    assert status["tool_risks"]["tools"][0]["count"] == 2
+    assert "command" in status["tool_risks"]["tools"][0]["categories"]
     assert status["recordings"]["audit_log"]["exists"] is True
     assert any(finding["type"] == "risky_tools_observed" for finding in status["findings"])
+    assert any(finding["type"] == "high_risk_mcp_tools" for finding in status["findings"])
     assert report["ok"] is True
     assert report["path"] == str(tmp_path / "share-report.md")
     assert "## Executive Summary" in report["report"]
     assert "## Exposure Boundary" in report["report"]
     assert "## Access And Activity Review" in report["report"]
+    assert "## Tool Risk Review" in report["report"]
     assert "## Data Protection Review" in report["report"]
     assert "## Policy Review" in report["report"]
     assert "## Findings To Review" in report["report"]
@@ -842,6 +849,8 @@ def test_mcp_share_status_and_report_summarize_session_evidence(tmp_path):
     assert "Confirmed approved" in report["report"]
     assert "Secrets redacted events" in report["report"]
     assert "shell_exec" in report["report"]
+    assert "tool.shell_or_process" in report["report"]
+    assert "Tool risk summary: `1` high, `0` medium, `0` low" in report["report"]
     assert "Policy Amendments" in report["report"]
     assert "share-secret" not in report["report"]
     assert "sbl_" not in report["report"]
@@ -880,6 +889,8 @@ def test_mcp_share_contract_redacts_tokens_and_can_sign(tmp_path):
     assert contract["commands"]["export_token"] == "export SNULBUG_SHARE_TOKEN=[REDACTED]"
     assert contract["evidence"]["traffic"]["event_count"] == 3
     assert contract["evidence"]["traffic"]["blocked"] == 1
+    assert contract["evidence"]["tool_risks"]["summary"]["high"] == 1
+    assert contract["evidence"]["tool_risks"]["tools"][0]["name"] == "shell_exec"
     assert contract["upstream_auth"]["strip_client_authorization"] is True
     assert status["contract"]["required"] is False
     assert status["contract"]["binding_digest"] == contract["binding_digest"]
