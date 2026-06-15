@@ -203,7 +203,7 @@ from .mcp_tools import (
 from .middleware import LuaConfig, LuaMiddleware
 from .policy_activation import POLICY_ACTIVATION_MODES, reconcile_policy_activation
 from .presets import McpPolicyOptions, copy_builtin_preset, generate_mcp_preset, list_builtin_presets
-from .promotion import compare_decisions, diff_policies
+from .promotion import compare_decisions, diff_policies, format_policy_diff_report
 from .proxy import (
     FabricConfigReloadMiddleware,
     FacadeHealthPolicy,
@@ -464,6 +464,7 @@ __all__ = [
     "format_mcp_schema_policy_report",
     "format_mcp_tool_diff_report",
     "format_mcp_tool_snapshot_report",
+    "format_policy_diff_report",
     "format_mcp_auth_lab_report",
     "format_mcp_auth_init_report",
     "format_mcp_auth_recipe_report",

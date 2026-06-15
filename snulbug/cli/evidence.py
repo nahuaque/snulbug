@@ -117,6 +117,13 @@ def add_mcp_evidence_command(mcp_subparsers: argparse._SubParsersAction[argparse
         action="store_true",
         help="return exit code 0 even when regressions are found",
     )
+    add_report_out_arg(mcp_evidence_diff, help="optional Markdown policy diff report path")
+    mcp_evidence_diff.add_argument(
+        "--report-format",
+        choices=("markdown",),
+        default="markdown",
+        help="policy diff report output format",
+    )
     add_compact_arg(mcp_evidence_diff)
 
 
@@ -196,7 +203,7 @@ def handle_mcp_evidence_command(args: argparse.Namespace, parser: argparse.Argum
                 )
             status = 0 if args.no_fail or result["ok"] else 1
         elif args.evidence_command == "diff":
-            from ..promotion import diff_policies
+            from ..promotion import diff_policies, format_policy_diff_report
 
             context = read_json(args.context) if args.context else None
             memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
@@ -209,6 +216,14 @@ def handle_mcp_evidence_command(args: argparse.Namespace, parser: argparse.Argum
                 instruction_limit=args.instruction_limit,
                 memory_limit_bytes=memory_limit,
             )
+            if args.report_out is not None:
+                report_text = format_policy_diff_report(result)
+                write_report_output(
+                    args.report_out,
+                    report_text,
+                    result,
+                    report_format=args.report_format,
+                )
             status = 0 if args.no_fail or result["safe_to_promote"] else 1
         else:
             parser.error(f"unknown mcp evidence command: {args.evidence_command}")

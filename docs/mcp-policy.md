@@ -62,6 +62,11 @@ uv run snulbug mcp policy amend \
   --out candidate-policy.snulbug
 ```
 
+`policy amend` writes `AMEND.md` and records a capability delta in
+`manifest.json`. That delta makes the review concrete: newly allowed tools,
+MCP path patterns, resources/prompts, and tool argument shapes are listed before
+the generated Lua is promoted.
+
 If a human approved a blocked or risky request through the confirmation broker,
 use the same command with the approved-confirmation source to turn those
 approvals into a reviewable candidate bundle:

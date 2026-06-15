@@ -9,6 +9,12 @@ from typing import Any
 from .bundle import load_bundle
 from .inspection import _load_events
 from .mcp_policy_bundles import write_mcp_policy_bundle
+from .policy_review import (
+    diff_capability_surfaces,
+    format_capability_delta_markdown,
+    format_capability_delta_summary,
+    policy_capability_surface,
+)
 from .recorder import RECORD_TYPE, load_record_log
 from .simulator import simulate_policy
 
@@ -51,6 +57,7 @@ def learn_mcp_policy(
         "tools": sorted(model.tools),
         "resources": sorted(model.resources),
         "prompts": sorted(model.prompts),
+        "capability_surface": model.capability_surface(),
         "validation": bundle.validation,
         "next_steps": bundle.next_steps,
     }
@@ -75,10 +82,12 @@ def amend_mcp_policy(
 
     source_bundle = load_bundle(bundle)
     model = _LearnedPolicy.from_manifest(source_bundle.manifest)
+    before_surface = model.capability_surface()
     events = _load_events(log, kind=kind)
     amendment = _Amendment(allow_risky=allow_risky, source=source_mode)
     for event in events:
         amendment.add_event(model, event)
+    capability_delta = diff_capability_surfaces(before_surface, model.capability_surface())
 
     output_path = Path(output)
     manifest = model.manifest(source_bundle.manifest.get("generated_from", str(bundle)))
@@ -90,6 +99,7 @@ def amend_mcp_policy(
         "event_count": amendment.event_count,
         "candidate_event_count": amendment.candidate_event_count,
         "additions": amendment.additions,
+        "capability_delta": capability_delta,
         "rejected": amendment.rejected,
         "ignored": amendment.ignored,
     }
@@ -97,7 +107,7 @@ def amend_mcp_policy(
         output_path,
         policy=model.to_lua(),
         manifest=manifest,
-        report=amendment.report(source_bundle.root, log, model),
+        report=amendment.report(source_bundle.root, log, model, capability_delta),
         report_name="AMEND.md",
         force=force,
         exists_label="amend output",
@@ -119,6 +129,7 @@ def amend_mcp_policy(
         "event_count": amendment.event_count,
         "candidate_event_count": amendment.candidate_event_count,
         "additions": amendment.additions,
+        "capability_delta": capability_delta,
         "rejected": amendment.rejected,
         "ignored": amendment.ignored,
         "validation": generated.validation,
@@ -243,8 +254,23 @@ class _LearnedPolicy:
                     for tool, keys in sorted(self.tool_argument_keys.items())
                     if keys or tool in self.tools
                 },
+                "capability_surface": self.capability_surface(),
             },
         }
+
+    def capability_surface(self) -> dict[str, Any]:
+        return policy_capability_surface(
+            paths=sorted(self.paths),
+            methods=sorted(self.methods),
+            tools=sorted(self.tools),
+            resources=sorted(self.resources),
+            prompts=sorted(self.prompts),
+            tool_argument_keys={
+                tool: sorted(keys)
+                for tool, keys in sorted(self.tool_argument_keys.items())
+                if keys or tool in self.tools
+            },
+        )
 
     def report(self, log: str | Path) -> str:
         lines = [
@@ -526,7 +552,13 @@ class _Amendment:
             else:
                 self._ignore("missing_target", reason_code, event)
 
-    def report(self, source_bundle: Path, log: str | Path, model: _LearnedPolicy) -> str:
+    def report(
+        self,
+        source_bundle: Path,
+        log: str | Path,
+        model: _LearnedPolicy,
+        capability_delta: Mapping[str, Any],
+    ) -> str:
         return "\n".join(
             [
                 "# MCP Policy Amendment",
@@ -539,6 +571,11 @@ class _Amendment:
                 f"- Additions: {len(self.additions)}",
                 f"- Rejected: {len(self.rejected)}",
                 f"- Ignored: {len(self.ignored)}",
+                f"- Capability delta: {format_capability_delta_summary(capability_delta)}",
+                "",
+                "## Capability Delta",
+                "",
+                format_capability_delta_markdown(capability_delta),
                 "",
                 "## Added",
                 "",

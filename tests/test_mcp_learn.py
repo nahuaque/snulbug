@@ -115,11 +115,22 @@ def test_amend_mcp_policy_generates_candidate_from_blocked_events(tmp_path):
     ]
     assert result["baseline"]["ok"] is True
     assert result["baseline"]["checked"] == 2
+    assert result["capability_delta"]["summary"]["newly_allowed_tools"] == 1
+    assert result["capability_delta"]["summary"]["newly_allowed_path_patterns"] == 0
+    assert result["capability_delta"]["summary"]["newly_allowed_argument_shapes"] == 2
+    assert result["capability_delta"]["newly_allowed"]["tools"] == ["git.status"]
+    assert result["capability_delta"]["newly_allowed"]["argument_shapes"] == [
+        {"tool": "files.read_file", "keys": ["encoding", "path"], "shape": "files.read_file(encoding, path)"},
+        {"tool": "git.status", "keys": ["staged"], "shape": "git.status(staged)"},
+    ]
     assert validate_bundle(candidate)["ok"] is True
     manifest = json.loads((candidate / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["generated_by"] == "snulbug mcp policy amend"
     assert manifest["learned"]["tools"] == ["files.read_file", "git.status"]
+    assert manifest["amendment"]["capability_delta"]["summary"]["newly_allowed_tools"] == 1
     report = (candidate / "AMEND.md").read_text(encoding="utf-8")
+    assert "Capability delta: newly allows 1 tool, 0 path patterns, 2 argument shapes" in report
+    assert "files.read_file(encoding, path)" in report
     assert "git.status" in report
     assert "shell_exec" in report
 

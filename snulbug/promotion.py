@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .policy_review import (
+    format_capability_delta_markdown,
+    format_capability_delta_summary,
+    newly_allowed_capability_delta,
+    request_capability_summary,
+)
 from .runtime import CompiledLuaScript, LuaDecisionError, LuaRuntimeError, compile_lua_file
 from .simulator import normalize_request
 from .state import BoundedPolicyState, SnapshotStateStore
@@ -64,6 +70,7 @@ def diff_policies(
         )
     changed = [result for result in results if result["changed"]]
     regressions = [result for result in results if result["regression"]]
+    capability_delta = newly_allowed_capability_delta(results)
     return {
         "safe_to_promote": not regressions,
         "old_policy": str(old_script_path),
@@ -71,6 +78,7 @@ def diff_policies(
         "fixture_count": len(results),
         "changed_decisions": len(changed),
         "regression_count": len(regressions),
+        "capability_delta": capability_delta,
         "regressions": regressions,
         "results": results,
     }
@@ -93,10 +101,49 @@ def diff_fixture(
     return {
         "fixture": str(fixture_path),
         "body_read": body_read,
+        "request": request_capability_summary(request),
         "old": old_result,
         "new": new_result,
         **comparison,
     }
+
+
+def format_policy_diff_report(diff: Mapping[str, Any]) -> str:
+    """Format a fixture-based policy diff as a Markdown review report."""
+
+    capability_delta = _mapping(diff.get("capability_delta"))
+    lines = [
+        "# MCP Policy Evidence Diff",
+        "",
+        "## Summary",
+        "",
+        _table(
+            ["Field", "Value"],
+            [
+                ["Safe to promote", diff.get("safe_to_promote")],
+                ["Old policy", diff.get("old_policy")],
+                ["New policy", diff.get("new_policy")],
+                ["Fixtures", diff.get("fixture_count", 0)],
+                ["Changed decisions", diff.get("changed_decisions", 0)],
+                ["Regressions", diff.get("regression_count", 0)],
+                ["Capability delta", format_capability_delta_summary(capability_delta)],
+            ],
+        ),
+        "",
+        "## Newly Allowed Capability Delta",
+        "",
+        format_capability_delta_markdown(capability_delta),
+        "",
+        "## Regressions",
+        "",
+        _decision_table(diff.get("regressions")),
+        "",
+        "## Changed Fixtures",
+        "",
+        _decision_table([item for item in _mapping_sequence(diff.get("results")) if item.get("changed")]),
+        "",
+    ]
+    return "\n".join(lines)
 
 
 def compare_decisions(old_decision: Any, new_decision: Any) -> dict[str, Any]:
@@ -245,3 +292,54 @@ def _error_reason(old_error: str | None, new_error: str | None) -> str | None:
 def _read_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as file:
         return json.load(file)
+
+
+def _decision_table(values: Any) -> str:
+    rows = []
+    for item in _mapping_sequence(values):
+        request = _mapping(item.get("request"))
+        rows.append(
+            [
+                item.get("fixture"),
+                request.get("method") or "-",
+                request.get("tool") or request.get("target") or "-",
+                _result_action(item.get("old")),
+                _result_action(item.get("new")),
+                item.get("reason") or "-",
+            ]
+        )
+    return _table(["Fixture", "Method", "Target", "Old", "New", "Reason"], rows)
+
+
+def _result_action(value: Any) -> str:
+    result = _mapping(value)
+    decision = _mapping(result.get("decision"))
+    return str(result.get("action") or decision.get("action") or "-")
+
+
+def _mapping_sequence(value: Any) -> list[Mapping[str, Any]]:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes | bytearray):
+        return []
+    return [item for item in value if isinstance(item, Mapping)]
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _table(headers: Sequence[str], rows: Sequence[Sequence[Any]]) -> str:
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join("---" for _ in headers) + " |",
+    ]
+    if not rows:
+        lines.append("| " + " | ".join("-" for _ in headers) + " |")
+        return "\n".join(lines)
+    for row in rows:
+        lines.append("| " + " | ".join(_markdown_cell(value) for value in row) + " |")
+    return "\n".join(lines)
+
+
+def _markdown_cell(value: Any) -> str:
+    text = "-" if value is None else str(value)
+    return text.replace("|", "\\|").replace("\n", " ")

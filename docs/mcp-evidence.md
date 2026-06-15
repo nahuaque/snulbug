@@ -55,6 +55,19 @@ Use fixture diffing for small policy review gates:
 uv run snulbug mcp evidence diff active.lua draft.lua fixtures/
 ```
 
+Write a reviewable Markdown diff when the policy change should go through the
+same review path as code:
+
+```bash
+uv run snulbug mcp evidence diff active.lua draft.lua fixtures/ \
+  --report-out traces/policy-diff.md
+```
+
+The diff report now includes a capability delta for newly allowed fixtures,
+summarizing changes such as newly allowed tools, MCP path patterns, and
+tool argument shapes. For example: `newly allows 2 tools, 1 path pattern, 3
+argument shapes`.
+
 ## Evidence types
 
 Replay records are deterministic fixtures. They capture the normalized request,
@@ -100,7 +113,8 @@ uv run snulbug mcp evidence impact traces/session.jsonl --lease leases.json
 Before merging a hand-edited Lua policy:
 
 ```bash
-uv run snulbug mcp evidence diff active.lua draft.lua fixtures/
+uv run snulbug mcp evidence diff active.lua draft.lua fixtures/ \
+  --report-out traces/policy-diff.md
 ```
 
 ## Deep references
