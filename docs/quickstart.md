@@ -181,6 +181,13 @@ cloudflare_access_require_email = false
 cloudflare_access_require_cf_ray = true
 cloudflare_access_allowed_emails = []
 cloudflare_access_allowed_domains = []
+cloudflare_access_validate_jwt = false
+cloudflare_access_team_domain = ""
+cloudflare_access_audience = ""
+cloudflare_access_certs_url = ""
+cloudflare_access_jwks_cache_seconds = 300.0
+cloudflare_access_jwks_fetch_timeout = 5.0
+cloudflare_access_leeway_seconds = 60.0
 timeout = 30.0
 ```
 
@@ -273,10 +280,16 @@ tunnel_provider = "cloudflare"
 cloudflare_access = "enforce"
 cloudflare_access_require_email = true
 cloudflare_access_allowed_domains = ["example.com"]
+cloudflare_access_validate_jwt = true
+cloudflare_access_team_domain = "YOUR-TEAM.cloudflareaccess.com"
+cloudflare_access_audience = "YOUR-CLOUDFLARE-ACCESS-AUD-TAG"
 ```
 
 Use `cloudflare_access = "audit"` first if you want to see what would be
-blocked before turning on enforcement.
+blocked before turning on enforcement. `cloudflare_access_audience` is the
+Cloudflare Access application AUD tag, not the public MCP URL. When JWT
+validation is enabled, email/domain allowlists use the signed Access JWT email
+claim instead of trusting the forwarded email header.
 
 Return-path controls are enabled in the generated config. Tool/resource/prompt
 results are capped by `response_max_bytes`, likely secrets are redacted before

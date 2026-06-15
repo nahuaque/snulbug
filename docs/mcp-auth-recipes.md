@@ -101,10 +101,17 @@ cloudflare_access = "enforce"
 cloudflare_access_require_jwt = true
 cloudflare_access_require_email = true
 cloudflare_access_require_cf_ray = true
+cloudflare_access_validate_jwt = true
+cloudflare_access_team_domain = "YOUR-TEAM.cloudflareaccess.com"
+cloudflare_access_audience = "YOUR-CLOUDFLARE-ACCESS-AUD-TAG"
 
 [mcp.auth]
 mode = "off"
 ```
+
+`cloudflare_access_audience` is the Cloudflare Access application AUD tag. With
+JWT validation enabled, snulbug verifies the Access assertion signature and uses
+the signed email claim for allowlists.
 
 The GitHub OIDC recipe is also different. GitHub Actions OIDC tokens do not
 carry MCP scopes, so the recipe validates issuer/audience and expects leases and
@@ -126,9 +133,10 @@ URI. Temporary tunnel domains may require an `api://...` Application ID URI; in
 that case, keep the configuration intentional and validate it with
 `share auth doctor`.
 
-Cloudflare Access can be used without OAuth protected-resource mode. Keep
-snulbug leases and Lua policy enabled for task-specific bounds after Access
-succeeds.
+Cloudflare Access can be used without OAuth protected-resource mode. Enable
+`cloudflare_access_validate_jwt` so snulbug validates the Access assertion at
+the origin, then keep snulbug leases and Lua policy enabled for task-specific
+bounds after Access succeeds.
 
 GitHub OIDC should be treated as workload identity, not user OAuth. Require
 `lease_required = true`, bind the task lease to the exact workflow subject or

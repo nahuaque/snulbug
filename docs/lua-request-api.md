@@ -312,7 +312,13 @@ so policies do not need to know each provider's raw JWT/header layout:
   - `auth.keycloak_has_role(role, client_id)`: true when the role is present;
     omit `client_id` to check realm roles and all client role sets.
 - Cloudflare Access:
-  - `auth.cloudflare_email()`: return the normalized Access email header.
+  - `auth.cloudflare_email()`: return the normalized Access email. When
+    assertion validation is enabled, this comes from the signed JWT claim;
+    otherwise it comes from the Access email header.
+  - `auth.cloudflare_jwt_validated()`: true when the Access assertion was
+    cryptographically validated by the proxy.
+  - `auth.cloudflare_subject()`: return the validated Access JWT subject when
+    available.
   - `auth.cloudflare_groups()`: return normalized Access groups.
   - `auth.cloudflare_has_group(group_or_groups)`: true when any group matches.
 - GitHub Actions OIDC:

@@ -88,6 +88,14 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "cloudflare_access_require_cf_ray": True,
     "cloudflare_access_allowed_emails": [],
     "cloudflare_access_allowed_domains": [],
+    "cloudflare_access_validate_jwt": False,
+    "cloudflare_access_team_domain": None,
+    "cloudflare_access_issuer": None,
+    "cloudflare_access_audience": None,
+    "cloudflare_access_certs_url": None,
+    "cloudflare_access_jwks_cache_seconds": 300.0,
+    "cloudflare_access_jwks_fetch_timeout": 5.0,
+    "cloudflare_access_leeway_seconds": 60.0,
     "timeout": 30.0,
     "event_sinks": [],
 }
@@ -166,6 +174,13 @@ cloudflare_access_require_email = false
 cloudflare_access_require_cf_ray = true
 cloudflare_access_allowed_emails = []
 cloudflare_access_allowed_domains = []
+cloudflare_access_validate_jwt = false
+cloudflare_access_team_domain = ""
+cloudflare_access_audience = ""
+cloudflare_access_certs_url = ""
+cloudflare_access_jwks_cache_seconds = 300.0
+cloudflare_access_jwks_fetch_timeout = 5.0
+cloudflare_access_leeway_seconds = 60.0
 timeout = 30.0
 
 [mcp.auth]
@@ -423,6 +438,10 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         "lease_header",
         "tunnel_provider",
         "cloudflare_access",
+        "cloudflare_access_team_domain",
+        "cloudflare_access_issuer",
+        "cloudflare_access_audience",
+        "cloudflare_access_certs_url",
     ):
         value = normalized.get(field)
         if value is not None and not isinstance(value, str):
@@ -465,9 +484,18 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         "cloudflare_access_require_jwt",
         "cloudflare_access_require_email",
         "cloudflare_access_require_cf_ray",
+        "cloudflare_access_validate_jwt",
     ):
         if not isinstance(normalized.get(field), bool):
             raise ValueError(f"mcp.proxy.{field} must be a boolean")
+    for field in (
+        "cloudflare_access_jwks_cache_seconds",
+        "cloudflare_access_jwks_fetch_timeout",
+        "cloudflare_access_leeway_seconds",
+    ):
+        value = normalized.get(field)
+        if not isinstance(value, int | float) or float(value) < 0:
+            raise ValueError(f"mcp.proxy.{field} must be a non-negative number")
     if normalized["tool_pinning_action"] not in {"warn", "block"}:
         raise ValueError("mcp.proxy.tool_pinning_action must be 'warn' or 'block'")
     if normalized["schema_validation_action"] not in {"warn", "block"}:
@@ -512,6 +540,14 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         normalized.get("cloudflare_access_allowed_domains", []),
         field="cloudflare_access_allowed_domains",
     )
+    for field in (
+        "cloudflare_access_team_domain",
+        "cloudflare_access_issuer",
+        "cloudflare_access_audience",
+        "cloudflare_access_certs_url",
+    ):
+        if normalized.get(field) == "":
+            normalized[field] = None
     normalized["policy"] = _resolve_path(base, normalized["policy"])
     for field in ("record_out",):
         if normalized.get(field):
@@ -519,6 +555,9 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
     if normalized.get("lease_file"):
         normalized["lease_file"] = _resolve_path(base, normalized["lease_file"])
     normalized["timeout"] = float(normalized["timeout"])
+    normalized["cloudflare_access_jwks_cache_seconds"] = float(normalized["cloudflare_access_jwks_cache_seconds"])
+    normalized["cloudflare_access_jwks_fetch_timeout"] = float(normalized["cloudflare_access_jwks_fetch_timeout"])
+    normalized["cloudflare_access_leeway_seconds"] = float(normalized["cloudflare_access_leeway_seconds"])
     normalized["facade_health_cooldown_seconds"] = float(normalized["facade_health_cooldown_seconds"])
     normalized["event_sinks"] = normalize_event_sink_configs(normalized.get("event_sinks", []), base_dir=base)
     normalized["auth"] = normalize_mcp_auth_config(normalized.get("auth", {}), base_dir=base)

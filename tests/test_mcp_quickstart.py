@@ -61,6 +61,14 @@ def test_create_mcp_quickstart_writes_policy_config_and_trace_dir(tmp_path):
     assert proxy_config["cloudflare_access_require_cf_ray"] is True
     assert proxy_config["cloudflare_access_allowed_emails"] == []
     assert proxy_config["cloudflare_access_allowed_domains"] == []
+    assert proxy_config["cloudflare_access_validate_jwt"] is False
+    assert proxy_config["cloudflare_access_team_domain"] is None
+    assert proxy_config["cloudflare_access_issuer"] is None
+    assert proxy_config["cloudflare_access_audience"] is None
+    assert proxy_config["cloudflare_access_certs_url"] is None
+    assert proxy_config["cloudflare_access_jwks_cache_seconds"] == 300.0
+    assert proxy_config["cloudflare_access_jwks_fetch_timeout"] == 5.0
+    assert proxy_config["cloudflare_access_leeway_seconds"] == 60.0
     assert validate_bundle(policy)["ok"] is True
     assert run_bundle_tests(policy)["ok"] is True
     assert 'local token = "dev-secret"' in (policy / "policy.lua").read_text(encoding="utf-8")

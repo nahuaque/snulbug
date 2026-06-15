@@ -54,6 +54,13 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         cloudflare_access_require_cf_ray = true
         cloudflare_access_allowed_emails = ["dev@example.com"]
         cloudflare_access_allowed_domains = ["example.com"]
+        cloudflare_access_validate_jwt = true
+        cloudflare_access_team_domain = "team.cloudflareaccess.com"
+        cloudflare_access_audience = "access-aud-tag"
+        cloudflare_access_certs_url = "https://team.cloudflareaccess.com/cdn-cgi/access/certs"
+        cloudflare_access_jwks_cache_seconds = 600
+        cloudflare_access_jwks_fetch_timeout = 3.5
+        cloudflare_access_leeway_seconds = 15
         timeout = 5.5
 
         [mcp.auth]
@@ -140,6 +147,14 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
     assert result["cloudflare_access_require_cf_ray"] is True
     assert result["cloudflare_access_allowed_emails"] == ["dev@example.com"]
     assert result["cloudflare_access_allowed_domains"] == ["example.com"]
+    assert result["cloudflare_access_validate_jwt"] is True
+    assert result["cloudflare_access_team_domain"] == "team.cloudflareaccess.com"
+    assert result["cloudflare_access_issuer"] is None
+    assert result["cloudflare_access_audience"] == "access-aud-tag"
+    assert result["cloudflare_access_certs_url"] == "https://team.cloudflareaccess.com/cdn-cgi/access/certs"
+    assert result["cloudflare_access_jwks_cache_seconds"] == 600.0
+    assert result["cloudflare_access_jwks_fetch_timeout"] == 3.5
+    assert result["cloudflare_access_leeway_seconds"] == 15.0
     assert result["auth"] == {
         "mode": "oauth-resource",
         "resource": "https://mcp.example.com/mcp",
@@ -979,6 +994,14 @@ def test_mcp_share_run_cli_loads_config_before_running(monkeypatch, tmp_path):
     assert calls[0]["cloudflare_access_require_cf_ray"] is True
     assert calls[0]["cloudflare_access_allowed_emails"] == []
     assert calls[0]["cloudflare_access_allowed_domains"] == []
+    assert calls[0]["cloudflare_access_validate_jwt"] is False
+    assert calls[0]["cloudflare_access_team_domain"] is None
+    assert calls[0]["cloudflare_access_issuer"] is None
+    assert calls[0]["cloudflare_access_audience"] is None
+    assert calls[0]["cloudflare_access_certs_url"] is None
+    assert calls[0]["cloudflare_access_jwks_cache_seconds"] == 300.0
+    assert calls[0]["cloudflare_access_jwks_fetch_timeout"] == 5.0
+    assert calls[0]["cloudflare_access_leeway_seconds"] == 60.0
     assert calls[0]["event_sinks"] == [
         {
             "type": "audit_jsonl",

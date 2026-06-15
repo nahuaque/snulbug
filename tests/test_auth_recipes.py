@@ -35,8 +35,9 @@ def test_generate_cloudflare_access_recipe_uses_access_adapter_not_oauth_mode():
     assert result["ok"] is True
     assert result["provider"] == "cloudflare-access"
     assert 'cloudflare_access = "enforce"' in result["snulbug_config"]
+    assert "cloudflare_access_validate_jwt = true" in result["snulbug_config"]
     assert 'mode = "off"' in result["snulbug_config"]
-    assert "Cloudflare Access headers" in result["summary"]
+    assert "Cloudflare Access assertion" in result["summary"]
 
 
 def test_generate_github_oidc_recipe_uses_issuer_and_no_mcp_scopes():

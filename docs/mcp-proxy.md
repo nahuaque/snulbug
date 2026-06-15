@@ -216,6 +216,13 @@ cloudflare_access_require_email = false
 cloudflare_access_require_cf_ray = true
 cloudflare_access_allowed_emails = []
 cloudflare_access_allowed_domains = []
+cloudflare_access_validate_jwt = false
+cloudflare_access_team_domain = ""
+cloudflare_access_audience = ""
+cloudflare_access_certs_url = ""
+cloudflare_access_jwks_cache_seconds = 300.0
+cloudflare_access_jwks_fetch_timeout = 5.0
+cloudflare_access_leeway_seconds = 60.0
 timeout = 30.0
 
 [[mcp.events.sinks]]
@@ -578,6 +585,9 @@ cloudflare_access = "enforce"
 cloudflare_access_require_jwt = true
 cloudflare_access_require_email = true
 cloudflare_access_allowed_domains = ["example.com"]
+cloudflare_access_validate_jwt = true
+cloudflare_access_team_domain = "YOUR-TEAM.cloudflareaccess.com"
+cloudflare_access_audience = "YOUR-CLOUDFLARE-ACCESS-AUD-TAG"
 ```
 
 `cloudflare_access` can be:
@@ -587,15 +597,27 @@ cloudflare_access_allowed_domains = ["example.com"]
 - `enforce`: reject requests before Lua policy and upstream forwarding when
   required Access headers or allowlist checks are missing.
 
-The adapter records redacted `cloudflare_access` audit fields including mode,
-email, email domain, `CF-Ray`, country, decision, and `reason_code`. It never
-stores the raw `CF-Access-Jwt-Assertion`, and it strips Access credential
-headers before forwarding to the local upstream.
+Set `cloudflare_access_team_domain` to the Cloudflare Access issuer domain for
+your Zero Trust team, such as `my-team.cloudflareaccess.com`. snulbug derives
+the certs URL as `<team-domain>/cdn-cgi/access/certs` unless
+`cloudflare_access_certs_url` is set explicitly. Set
+`cloudflare_access_audience` to the Access application AUD tag, not the MCP URL.
 
-This is an origin-side defense, not a replacement for Cloudflare Access policy
-configuration. snulbug checks that expected Access headers are present and
-match local allowlists; it does not cryptographically validate the Access JWT in
-this first adapter.
+With `cloudflare_access_validate_jwt = true`, snulbug validates
+`CF-Access-Jwt-Assertion` with RS256, issuer, audience, expiry, and the cached
+Cloudflare Access JWKS before Lua or upstream forwarding. Email/domain
+allowlists then use the signed JWT `email` claim instead of trusting
+`CF-Access-Authenticated-User-Email`. In `audit` mode, failed validation is
+recorded as `would_block` but traffic is still allowed.
+
+The adapter records redacted `cloudflare_access` audit fields including mode,
+email, email source, email domain, JWT validation status, `CF-Ray`, country,
+decision, and `reason_code`. It never stores the raw
+`CF-Access-Jwt-Assertion`, and it strips Access credential headers before
+forwarding to the local upstream.
+
+This is an origin-side defense that complements, rather than replaces,
+Cloudflare Access policy configuration.
 
 ## Task-Scoped Leases
 

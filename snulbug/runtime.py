@@ -899,6 +899,14 @@ return function(source, source_name, instruction_limit)
     return auth_provider("cloudflare_access").email
   end
 
+  function auth.cloudflare_jwt_validated()
+    return auth_provider("cloudflare_access").jwt_validated == true
+  end
+
+  function auth.cloudflare_subject()
+    return auth_provider("cloudflare_access").jwt_subject
+  end
+
   function auth.cloudflare_groups()
     return provider_list("cloudflare_access", "groups")
   end

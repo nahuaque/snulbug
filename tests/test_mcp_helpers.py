@@ -588,6 +588,8 @@ def test_provider_aware_auth_helpers_read_normalized_claims():
             keycloak_realm_admin = auth.keycloak_has_role("realm-admin"),
             keycloak_client_writer = auth.keycloak_has_role("writer", "mcp-client"),
             cloudflare_email = auth.cloudflare_email(),
+            cloudflare_subject = auth.cloudflare_subject(),
+            cloudflare_validated = auth.cloudflare_jwt_validated(),
             cloudflare_platform = auth.cloudflare_has_group("platform-dev"),
             github_repository = auth.github_repository(),
             github_ref = auth.github_ref(),
@@ -614,6 +616,8 @@ def test_provider_aware_auth_helpers_read_normalized_claims():
                     },
                     "cloudflare_access": {
                         "email": "dev@example.com",
+                        "jwt_validated": True,
+                        "jwt_subject": "cf-user-1",
                         "groups": ["platform-dev"],
                     },
                     "github_actions": {
@@ -637,6 +641,8 @@ def test_provider_aware_auth_helpers_read_normalized_claims():
             "keycloak_realm_admin": True,
             "keycloak_client_writer": True,
             "cloudflare_email": "dev@example.com",
+            "cloudflare_subject": "cf-user-1",
+            "cloudflare_validated": True,
             "cloudflare_platform": True,
             "github_repository": "acme/widget",
             "github_ref": "refs/heads/main",

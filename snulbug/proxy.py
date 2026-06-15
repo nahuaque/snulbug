@@ -1629,7 +1629,10 @@ class CloudflareAccessMiddleware:
             return
 
         _ensure_scope_state(scope)
-        decision = evaluate_cloudflare_access(scope, config=self.config)
+        if self.config.validate_jwt:
+            decision = await asyncio.to_thread(evaluate_cloudflare_access, scope, config=self.config)
+        else:
+            decision = evaluate_cloudflare_access(scope, config=self.config)
         _set_proxy_metadata(scope, {"cloudflare_access": decision.metadata})
         if decision.allowed:
             child_scope = dict(scope)
@@ -1990,6 +1993,14 @@ def create_proxy_application(
     cloudflare_access_require_cf_ray: bool = True,
     cloudflare_access_allowed_emails: Sequence[str] = (),
     cloudflare_access_allowed_domains: Sequence[str] = (),
+    cloudflare_access_validate_jwt: bool = False,
+    cloudflare_access_team_domain: str | None = None,
+    cloudflare_access_issuer: str | None = None,
+    cloudflare_access_audience: str | None = None,
+    cloudflare_access_certs_url: str | None = None,
+    cloudflare_access_jwks_cache_seconds: float = 300.0,
+    cloudflare_access_jwks_fetch_timeout: float = 5.0,
+    cloudflare_access_leeway_seconds: float = 60.0,
     auth_config: Mapping[str, Any] | OAuthResourceConfig | None = None,
     topology_audit: Mapping[str, Any] | None = None,
     event_sinks: Sequence[Mapping[str, Any]] | None = None,
@@ -2077,6 +2088,14 @@ def create_proxy_application(
         require_cf_ray=cloudflare_access_require_cf_ray,
         allowed_emails=cloudflare_access_allowed_emails,
         allowed_domains=cloudflare_access_allowed_domains,
+        validate_jwt=cloudflare_access_validate_jwt,
+        team_domain=cloudflare_access_team_domain,
+        issuer=cloudflare_access_issuer,
+        audience=cloudflare_access_audience,
+        certs_url=cloudflare_access_certs_url,
+        jwks_cache_seconds=cloudflare_access_jwks_cache_seconds,
+        jwks_fetch_timeout=cloudflare_access_jwks_fetch_timeout,
+        leeway_seconds=cloudflare_access_leeway_seconds,
     )
     if cloudflare_access_config.mode != "off":
         app = CloudflareAccessMiddleware(
@@ -2145,6 +2164,14 @@ def run_proxy(
     cloudflare_access_require_cf_ray: bool = True,
     cloudflare_access_allowed_emails: Sequence[str] = (),
     cloudflare_access_allowed_domains: Sequence[str] = (),
+    cloudflare_access_validate_jwt: bool = False,
+    cloudflare_access_team_domain: str | None = None,
+    cloudflare_access_issuer: str | None = None,
+    cloudflare_access_audience: str | None = None,
+    cloudflare_access_certs_url: str | None = None,
+    cloudflare_access_jwks_cache_seconds: float = 300.0,
+    cloudflare_access_jwks_fetch_timeout: float = 5.0,
+    cloudflare_access_leeway_seconds: float = 60.0,
     auth_config: Mapping[str, Any] | OAuthResourceConfig | None = None,
     topology_audit: Mapping[str, Any] | None = None,
     event_sinks: Sequence[Mapping[str, Any]] | None = None,
@@ -2194,6 +2221,14 @@ def run_proxy(
         cloudflare_access_require_cf_ray=cloudflare_access_require_cf_ray,
         cloudflare_access_allowed_emails=cloudflare_access_allowed_emails,
         cloudflare_access_allowed_domains=cloudflare_access_allowed_domains,
+        cloudflare_access_validate_jwt=cloudflare_access_validate_jwt,
+        cloudflare_access_team_domain=cloudflare_access_team_domain,
+        cloudflare_access_issuer=cloudflare_access_issuer,
+        cloudflare_access_audience=cloudflare_access_audience,
+        cloudflare_access_certs_url=cloudflare_access_certs_url,
+        cloudflare_access_jwks_cache_seconds=cloudflare_access_jwks_cache_seconds,
+        cloudflare_access_jwks_fetch_timeout=cloudflare_access_jwks_fetch_timeout,
+        cloudflare_access_leeway_seconds=cloudflare_access_leeway_seconds,
         auth_config=auth_config,
         topology_audit=topology_audit,
         event_sinks=event_sinks,
@@ -2257,6 +2292,14 @@ def proxy_config_run_kwargs(
         "cloudflare_access_require_cf_ray": proxy_config["cloudflare_access_require_cf_ray"],
         "cloudflare_access_allowed_emails": proxy_config["cloudflare_access_allowed_emails"],
         "cloudflare_access_allowed_domains": proxy_config["cloudflare_access_allowed_domains"],
+        "cloudflare_access_validate_jwt": proxy_config["cloudflare_access_validate_jwt"],
+        "cloudflare_access_team_domain": proxy_config["cloudflare_access_team_domain"],
+        "cloudflare_access_issuer": proxy_config["cloudflare_access_issuer"],
+        "cloudflare_access_audience": proxy_config["cloudflare_access_audience"],
+        "cloudflare_access_certs_url": proxy_config["cloudflare_access_certs_url"],
+        "cloudflare_access_jwks_cache_seconds": proxy_config["cloudflare_access_jwks_cache_seconds"],
+        "cloudflare_access_jwks_fetch_timeout": proxy_config["cloudflare_access_jwks_fetch_timeout"],
+        "cloudflare_access_leeway_seconds": proxy_config["cloudflare_access_leeway_seconds"],
         "auth_config": proxy_config.get("auth", {}),
         "topology_audit": effective_topology_audit,
         "event_sinks": proxy_config["event_sinks"],
@@ -2521,13 +2564,18 @@ def _merge_lua_auth_context(existing: Mapping[str, Any], incoming: Mapping[str, 
 
 
 def _cloudflare_access_auth_context(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    jwt_validation = _mapping(metadata.get("jwt_validation"))
     provider_context = _drop_empty(
         {
             "enabled": metadata.get("enabled"),
             "mode": metadata.get("mode"),
             "allowed": metadata.get("allowed"),
             "reason_code": metadata.get("reason_code"),
+            "jwt_validated": metadata.get("jwt_validated"),
+            "jwt_subject": jwt_validation.get("subject"),
+            "jwt_type": jwt_validation.get("type"),
             "email": metadata.get("email"),
+            "email_source": metadata.get("email_source"),
             "email_domain": metadata.get("email_domain"),
             "groups": metadata.get("groups"),
             "service_token_present": metadata.get("service_token_present"),

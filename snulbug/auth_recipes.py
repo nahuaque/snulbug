@@ -339,12 +339,12 @@ def _cloudflare_access_recipe(public_url: str, *, scopes: Sequence[str]) -> dict
         "scopes": list(scopes),
         "summary": (
             "Use Cloudflare Access as the outer user/device gate and snulbug as the origin-side MCP policy "
-            "gateway. This recipe uses Cloudflare Access headers, not OAuth protected-resource mode."
+            "gateway. This recipe validates the Cloudflare Access assertion, not OAuth protected-resource mode."
         ),
         "assumptions": [
             "The public MCP URL is a Cloudflare Access self-hosted application.",
             "cloudflared routes the public hostname to the snulbug origin.",
-            "snulbug is configured to verify Access-origin headers before Lua/upstream forwarding.",
+            "snulbug is configured to validate the Cloudflare Access assertion before Lua/upstream forwarding.",
         ],
         "provider_steps": [
             f"Create a Cloudflare Access self-hosted application for `{public_url}`.",
@@ -362,7 +362,8 @@ def _cloudflare_access_recipe(public_url: str, *, scopes: Sequence[str]) -> dict
             "doctor": f"uv run snulbug mcp share auth doctor --config snulbug.toml --url {public_url}",
         },
         "notes": [
-            "This is an origin-side verification layer for Cloudflare Access headers.",
+            "Set `cloudflare_access_team_domain` to your Zero Trust team domain.",
+            "Set `cloudflare_access_audience` to the Access application AUD tag, not the MCP URL.",
             'Use `cloudflare_access = "audit"` first if you want to observe headers before enforcing.',
             "Use snulbug leases and Lua policy for task-specific capability bounds after Access succeeds.",
         ],
@@ -464,6 +465,9 @@ cloudflare_access_require_jwt = true
 cloudflare_access_require_email = true
 cloudflare_access_require_cf_ray = true
 cloudflare_access_allowed_domains = ["example.com"]
+cloudflare_access_validate_jwt = true
+cloudflare_access_team_domain = "YOUR-TEAM.cloudflareaccess.com"
+cloudflare_access_audience = "YOUR-CLOUDFLARE-ACCESS-AUD-TAG"
 
 [mcp.auth]
 mode = "off"

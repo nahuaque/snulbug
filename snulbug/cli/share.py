@@ -418,6 +418,14 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                 cloudflare_access_require_cf_ray=args.cloudflare_access_require_cf_ray,
                 cloudflare_access_allowed_emails=args.cloudflare_access_allow_email,
                 cloudflare_access_allowed_domains=args.cloudflare_access_allow_domain,
+                cloudflare_access_validate_jwt=args.cloudflare_access_validate_jwt,
+                cloudflare_access_team_domain=args.cloudflare_access_team_domain,
+                cloudflare_access_issuer=args.cloudflare_access_issuer,
+                cloudflare_access_audience=args.cloudflare_access_audience,
+                cloudflare_access_certs_url=args.cloudflare_access_certs_url,
+                cloudflare_access_jwks_cache_seconds=args.cloudflare_access_jwks_cache_seconds,
+                cloudflare_access_jwks_fetch_timeout=args.cloudflare_access_jwks_fetch_timeout,
+                cloudflare_access_leeway_seconds=args.cloudflare_access_leeway_seconds,
                 timeout=args.timeout,
                 force=args.force,
                 validate=args.validate,
@@ -868,6 +876,40 @@ def _add_quickstart_args(parser: argparse.ArgumentParser) -> None:
         action="append",
         default=[],
         help="allowed Cloudflare Access authenticated email domain; repeat for multiple domains",
+    )
+    parser.add_argument(
+        "--cloudflare-access-validate-jwt",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="cryptographically validate CF-Access-Jwt-Assertion against Cloudflare Access certs",
+    )
+    parser.add_argument(
+        "--cloudflare-access-team-domain",
+        help="Cloudflare Access team domain, such as your-team.cloudflareaccess.com",
+    )
+    parser.add_argument("--cloudflare-access-issuer", help="expected Access JWT issuer; defaults to team domain")
+    parser.add_argument("--cloudflare-access-audience", help="Cloudflare Access application AUD tag")
+    parser.add_argument(
+        "--cloudflare-access-certs-url",
+        help="JWKS URL for Access certs; defaults to <team-domain>/cdn-cgi/access/certs",
+    )
+    parser.add_argument(
+        "--cloudflare-access-jwks-cache-seconds",
+        type=float,
+        default=300.0,
+        help="seconds to cache Cloudflare Access JWKS",
+    )
+    parser.add_argument(
+        "--cloudflare-access-jwks-fetch-timeout",
+        type=float,
+        default=5.0,
+        help="timeout in seconds when fetching Cloudflare Access JWKS",
+    )
+    parser.add_argument(
+        "--cloudflare-access-leeway-seconds",
+        type=float,
+        default=60.0,
+        help="JWT clock-skew leeway for Cloudflare Access assertions",
     )
     parser.add_argument("--timeout", type=float, default=30.0, help="upstream timeout in seconds")
     add_force_arg(parser, help="overwrite generated policy and config")

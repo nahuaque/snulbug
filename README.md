@@ -322,7 +322,7 @@ Workflow:
 - redacted replay logs for deterministic policy testing
 - audit JSONL with MCP-aware fields
 - provider-aware tunnel audit fields for ngrok, Cloudflare, Tailscale, LocalXpose, Pinggy, Holepunch, and generic forwarders
-- optional Cloudflare Access origin-side audit/enforcement
+- optional Cloudflare Access origin-side audit/enforcement with Access JWT validation
 - optional OAuth protected-resource mode with JWT/JWKS or token-introspection validation and MCP bearer challenges
 - OAuth scope-to-MCP method/tool mapping for least-privilege public shares
 - OAuth resource/audience drift checks for tunnel-safe public shares
