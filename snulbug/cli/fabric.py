@@ -99,9 +99,7 @@ def handle_mcp_fabric_command(args: argparse.Namespace, parser: argparse.Argumen
         doctor_fabric,
         fabric_status,
         format_fabric_discovery_report,
-        format_fabric_doctor_report,
         format_fabric_learn_report,
-        format_fabric_status_report,
         learn_fabric_profile,
     )
     from ..fabric_control import (
@@ -130,8 +128,9 @@ def handle_mcp_fabric_command(args: argparse.Namespace, parser: argparse.Argumen
             result = fabric_status(args.config)
             status = 0 if result["ok"] else 1
             if not args.compact:
-                sys.stdout.write(format_fabric_status_report(result))
-                sys.stdout.write("\n")
+                from .rich_reports import write_fabric_status_rich
+
+                write_fabric_status_rich(result)
                 return status
         elif args.fabric_command == "discover":
             result = discover_fabric_upstreams(args.config)
@@ -150,8 +149,9 @@ def handle_mcp_fabric_command(args: argparse.Namespace, parser: argparse.Argumen
             )
             status = 0 if result["ok"] else 1
             if not args.compact:
-                sys.stdout.write(format_fabric_doctor_report(result))
-                sys.stdout.write("\n")
+                from .rich_reports import write_fabric_doctor_rich
+
+                write_fabric_doctor_rich(result)
                 return status
         elif args.fabric_command == "learn":
             result = learn_fabric_profile(args.log, args.out, kind=args.kind, force=args.force)

@@ -263,6 +263,18 @@ def test_mcp_fabric_cli_emits_compact_status_and_doctor(tmp_path, capsys):
     assert doctor_output["ok"] is True
     assert doctor_output["summary"]["skipped"] >= 2
 
+    rich_status_code = simulator_main(["mcp", "fabric", "status", "--config", str(config)])
+    rich_status_output = capsys.readouterr().out
+    rich_doctor_code = simulator_main(["mcp", "fabric", "doctor", "--config", str(config)])
+    rich_doctor_output = capsys.readouterr().out
+
+    assert rich_status_code == 0
+    assert "snulbug fabric status" in rich_status_output
+    assert "Upstreams" in rich_status_output
+    assert rich_doctor_code == 0
+    assert "snulbug fabric doctor" in rich_doctor_output
+    assert "Checks" in rich_doctor_output
+
 
 def test_fabric_discover_resolves_directory_provider(tmp_path):
     discovery_dir = tmp_path / "discovery"

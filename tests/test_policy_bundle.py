@@ -164,6 +164,13 @@ def test_bundle_lifecycle_cli_promotes_and_verifies(tmp_path, capsys, monkeypatc
     assert verify_status == 0
     assert verify_output["verified"]["state"] == "proposed"
 
+    rich_lifecycle_status = simulator_main(["mcp", "policy", "lifecycle", "status", str(bundle)])
+    rich_lifecycle_output = capsys.readouterr().out
+
+    assert rich_lifecycle_status == 0
+    assert "snulbug policy lifecycle" in rich_lifecycle_output
+    assert "History" in rich_lifecycle_output
+
 
 def copy_example_bundle(tmp_path):
     destination = tmp_path / "idempotency.snulbug"

@@ -90,6 +90,23 @@ def test_mcp_impact_cli_writes_markdown_report_and_can_no_fail(tmp_path, capsys)
     assert output["report_out"] == str(report)
     assert "# snulbug MCP Impact Report" in report.read_text(encoding="utf-8")
 
+    rich_status = simulator_main(
+        [
+            "mcp",
+            "evidence",
+            "impact",
+            str(log),
+            "--policy",
+            str(candidate),
+            "--no-fail",
+        ]
+    )
+    rich_output = capsys.readouterr().out
+
+    assert rich_status == 0
+    assert "snulbug evidence impact" in rich_output
+    assert "Policy Impact" in rich_output
+
 
 def test_mcp_impact_report_formats_markdown(tmp_path):
     active = write_policy(tmp_path, "active.lua")

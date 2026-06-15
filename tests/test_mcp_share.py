@@ -1498,6 +1498,25 @@ def test_mcp_share_auth_doctor_cli_accepts_config_without_share_directory(tmp_pa
     assert output["ok"] is True
     assert output["config"] == str(config)
 
+    rich_status_code = simulator_main(
+        [
+            "mcp",
+            "share",
+            "auth",
+            "doctor",
+            "--config",
+            str(config),
+            "--url",
+            resource,
+            "--no-live-checks",
+        ]
+    )
+    rich_output = capsys.readouterr().out
+
+    assert rich_status_code == 0
+    assert "snulbug share auth doctor" in rich_output
+    assert "Checks" in rich_output
+
 
 def test_mcp_share_lifecycle_cli_status_doctor_client_run_and_close(tmp_path, capsys, monkeypatch):
     create_mcp_share(
@@ -1521,6 +1540,12 @@ def test_mcp_share_lifecycle_cli_status_doctor_client_run_and_close(tmp_path, ca
     assert report_code == 0
     assert "snulbug MCP share report" in report_output["report"]
 
+    rich_report_code = simulator_main(["mcp", "share", "report", str(tmp_path), "--no-live-checks"])
+    rich_report_output = capsys.readouterr().out
+    assert rich_report_code == 0
+    assert "snulbug share report" in rich_report_output
+    assert "Tool Risk Review" in rich_report_output
+
     def fake_doctor_tunnel(**_kwargs):
         return {"ok": True, "checks": [], "summary": {"passed": 1, "failed": 0, "warnings": 0, "skipped": 0}}
 
@@ -1530,6 +1555,12 @@ def test_mcp_share_lifecycle_cli_status_doctor_client_run_and_close(tmp_path, ca
     assert doctor_code == 0
     assert doctor_output["ok"] is True
     assert doctor_output["policy"]["ok"] is True
+
+    rich_doctor_code = simulator_main(["mcp", "share", "doctor", str(tmp_path), "--no-live-checks"])
+    rich_doctor_output = capsys.readouterr().out
+    assert rich_doctor_code == 0
+    assert "snulbug share doctor" in rich_doctor_output
+    assert "Checks" in rich_doctor_output
 
     client_code = simulator_main(["mcp", "share", "client", str(tmp_path), "--compact"])
     client_output = json.loads(capsys.readouterr().out)

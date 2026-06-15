@@ -409,8 +409,6 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
         doctor_mcp_share,
         doctor_mcp_share_auth,
         format_share_auth_conformance_report,
-        format_share_auth_doctor_report,
-        format_share_doctor_report,
         generate_auth_conformance_pack,
         promote_mcp_share_policy,
         run_auth_conformance_pack,
@@ -649,7 +647,12 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                 force=args.force,
             )
             status = 0 if result["ok"] else 1
-            write_result_output(result, compact=args.compact, formatter=lambda value: value["report"])
+            if args.compact:
+                write_json_output(result, compact=True)
+            else:
+                from .rich_reports import write_share_report_rich
+
+                write_share_report_rich(result)
             return status
 
         if command == "contract":
@@ -740,7 +743,12 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                     live_checks=args.live_checks,
                 )
                 status = 0 if result["ok"] else 1
-                write_result_output(result, compact=args.compact, formatter=format_share_auth_doctor_report)
+                if args.compact:
+                    write_json_output(result, compact=True)
+                else:
+                    from .rich_reports import write_share_auth_doctor_rich
+
+                    write_share_auth_doctor_rich(result)
                 return status
             if args.share_auth_command == "conformance":
                 if args.auth_conformance_command == "generate":
@@ -813,7 +821,12 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                 require_conformance=args.require_conformance,
             )
             status = 0 if result["ok"] else 1
-            write_result_output(result, compact=args.compact, formatter=format_share_doctor_report)
+            if args.compact:
+                write_json_output(result, compact=True)
+            else:
+                from .rich_reports import write_share_doctor_rich
+
+                write_share_doctor_rich(result)
             return status
 
         if command == "client":

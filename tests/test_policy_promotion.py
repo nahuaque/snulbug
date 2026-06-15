@@ -220,6 +220,13 @@ def test_diff_cli_writes_policy_review_report(tmp_path, capsys):
     assert "newly allows 1 tool, 1 path pattern, 1 argument shape" in report_text
     assert "files.read_file(path)" in report_text
 
+    rich_status = simulator_main(["mcp", "evidence", "diff", str(old_policy), str(new_policy), str(fixture)])
+    rich_output = capsys.readouterr().out
+
+    assert rich_status == 0
+    assert "snulbug evidence diff" in rich_output
+    assert "Newly Allowed Capability Delta" in rich_output
+
 
 def test_middleware_shadow_policy_records_candidate_without_affecting_response():
     captured = {}

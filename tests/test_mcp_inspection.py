@@ -143,6 +143,13 @@ def test_mcp_inspect_cli_outputs_compact_report(tmp_path, capsys):
     assert output["kind"] == "record"
     assert output["event_count"] == 1
 
+    rich_status = simulator_main(["mcp", "evidence", "inspect", str(record_log)])
+    rich_output = capsys.readouterr().out
+
+    assert rich_status == 0
+    assert "snulbug evidence inspect" in rich_output
+    assert "Decision Actions" in rich_output
+
 
 def test_mcp_inspect_cli_writes_markdown_session_report(tmp_path, capsys):
     policy = write_policy(tmp_path)

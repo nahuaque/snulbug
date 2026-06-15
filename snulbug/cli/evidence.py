@@ -182,6 +182,11 @@ def handle_mcp_evidence_command(args: argparse.Namespace, parser: argparse.Argum
                     report_format=args.report_format,
                 )
             status = 0
+            if not args.compact:
+                from .rich_reports import write_evidence_inspect_rich
+
+                write_evidence_inspect_rich(result)
+                return status
         elif args.evidence_command == "impact":
             from ..impact import analyze_mcp_impact, format_mcp_impact_report
 
@@ -202,6 +207,11 @@ def handle_mcp_evidence_command(args: argparse.Namespace, parser: argparse.Argum
                     report_format=args.report_format,
                 )
             status = 0 if args.no_fail or result["ok"] else 1
+            if not args.compact:
+                from .rich_reports import write_evidence_impact_rich
+
+                write_evidence_impact_rich(result)
+                return status
         elif args.evidence_command == "diff":
             from ..promotion import diff_policies, format_policy_diff_report
 
@@ -225,6 +235,11 @@ def handle_mcp_evidence_command(args: argparse.Namespace, parser: argparse.Argum
                     report_format=args.report_format,
                 )
             status = 0 if args.no_fail or result["safe_to_promote"] else 1
+            if not args.compact:
+                from .rich_reports import write_evidence_diff_rich
+
+                write_evidence_diff_rich(result)
+                return status
         else:
             parser.error(f"unknown mcp evidence command: {args.evidence_command}")
             return 2

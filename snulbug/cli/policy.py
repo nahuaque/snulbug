@@ -233,6 +233,10 @@ def handle_mcp_policy_command(
 
         if args.policy_command == "lifecycle":
             result, status = _handle_mcp_policy_lifecycle_command(args, parser)
+            if args.policy_lifecycle_command == "status" and status == 0:
+                from .rich_reports import format_policy_lifecycle_status_rich
+
+                return result, status, format_policy_lifecycle_status_rich
             return result, status, None
 
         parser.error(f"unknown mcp policy command: {args.policy_command}")
