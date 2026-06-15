@@ -480,6 +480,8 @@ default: `tunnel/ngrok-agent.yml` defines a private `.internal` Agent Endpoint
 that points at snulbug, and `tunnel/ngrok-traffic-policy.yml` is attached to
 the public Cloud Endpoint. The Traffic Policy keeps the existing coarse MCP
 edge checks, then forwards allowed traffic to the internal Agent Endpoint.
+See [End-to-end ngrok MCP gateway](ngrok-end-to-end.md) for the full
+upstream-to-public-Cloud-Endpoint walkthrough.
 
 ## Close out
 

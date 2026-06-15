@@ -385,6 +385,7 @@ Reference docs:
 - [State adapters](docs/state.md)
 - [Policy bundles](docs/bundles.md)
 - [MCP gateway example](docs/mcp-gateway.md)
+- [End-to-end ngrok MCP gateway](docs/ngrok-end-to-end.md)
 - [End-to-end MCP policy proxy demo](examples/mcp_proxy_demo/README.md)
 - [Keycloak OAuth compose demo](examples/keycloak_oauth_demo/README.md)
 - [Release process](docs/release.md)

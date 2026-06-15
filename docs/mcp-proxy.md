@@ -72,18 +72,18 @@ uv run snulbug mcp share create \
   --ttl 30m
 export SNULBUG_SHARE_TOKEN=...
 uv run snulbug mcp share run .snulbug/shares/share-...
-(cd .snulbug/shares/share-.../tunnel && \
-  ngrok start --config ngrok-agent.yml --all)
+ngrok start --config .snulbug/shares/share-.../tunnel/ngrok-agent.yml --all
 ```
 
 For ngrok, the generated provider directory contains `ngrok-agent.yml` for the
 private `.internal` Agent Endpoint and `ngrok-traffic-policy.yml` for the
 public Cloud Endpoint. Attach the Traffic Policy to the public Cloud Endpoint;
 it performs coarse MCP checks and forwards allowed traffic to the internal
-Agent Endpoint.
+Agent Endpoint. See [End-to-end ngrok MCP gateway](ngrok-end-to-end.md) for a
+complete public Cloud Endpoint walkthrough.
 
 ```bash
-NGROK_URL=https://YOUR-NGROK-FORWARDING-DOMAIN
+export NGROK_URL=https://YOUR-NGROK-CLOUD-ENDPOINT
 ```
 
 Use curl as a minimal MCP client to check the local proxy before exposing it:

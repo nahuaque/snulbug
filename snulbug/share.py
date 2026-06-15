@@ -5527,15 +5527,12 @@ def _command_plan(
     audit = share_dir / "traces" / "audit.jsonl"
     session = share_dir / "traces" / "session.jsonl"
     lease_file = share_dir / "leases.json"
-    tunnel_dir = share_dir / "tunnel"
     share_doctor = f"uv run snulbug mcp share doctor {shlex.quote(str(share_dir))}"
     return {
         "export_token": f"export {DEFAULT_SHARE_TOKEN_ENV}={shlex.quote(token)}",
         "run": f"uv run snulbug mcp share run {shlex.quote(str(share_dir))}",
         "proxy": f"uv run snulbug mcp share run --config {shlex.quote(str(config))}",
-        "provider": [
-            f"(cd {shlex.quote(str(tunnel_dir))} && {str(command['command'])})" for command in provider_commands
-        ],
+        "provider": [str(command["command"]) for command in provider_commands],
         "doctor": share_doctor,
         "share_doctor": share_doctor,
         "client": f"uv run snulbug mcp share client {shlex.quote(str(share_dir))}",
@@ -5770,7 +5767,23 @@ def _update_share_client_url(share_dir: Path, url: str) -> None:
 
 def _resolve_share_path(share_dir: Path, value: Any) -> Path:
     path = Path(str(value))
-    return path if path.is_absolute() else share_dir / path
+    if path.is_absolute():
+        return path
+    if _relative_path_starts_with(path, share_dir):
+        return path
+    if path.exists():
+        return path
+    return share_dir / path
+
+
+def _relative_path_starts_with(path: Path, prefix: Path) -> bool:
+    if path.is_absolute() or prefix.is_absolute():
+        return False
+    try:
+        path.relative_to(prefix)
+    except ValueError:
+        return False
+    return True
 
 
 def _display_path_relative_to(base: Path, path: Path) -> str:

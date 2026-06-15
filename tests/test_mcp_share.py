@@ -271,7 +271,7 @@ def test_create_mcp_share_ngrok_writes_cloud_endpoint_artifacts(tmp_path):
     assert 'name: "team-snulbug-agent"' in agent.read_text(encoding="utf-8")
     assert 'url: "https://team-snulbug.internal"' in agent.read_text(encoding="utf-8")
     assert result["tunnel"]["bridge"]["mode"] == "cloud-endpoint"
-    assert result["commands"]["provider"][0] == f"(cd {tmp_path / 'tunnel'} && ngrok start --config {agent} --all)"
+    assert result["commands"]["provider"][0] == f"ngrok start --config {agent} --all"
     assert "Attach" in result["commands"]["provider"][1]
 
 
@@ -338,6 +338,27 @@ def test_mcp_share_run_reconciles_from_session_model_without_manifest(tmp_path, 
     assert output["source"] == "session_model"
     assert output["share"] == str(tmp_path)
     assert output["resolved_paths"]["config"] == str(tmp_path / "snulbug.toml")
+
+
+def test_mcp_share_run_accepts_relative_share_directory_paths(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    share_dir = Path(".snulbug/shares/ngrok-demo")
+    create_mcp_share(
+        share_dir,
+        provider="ngrok",
+        public_url="https://mcp-dev.ngrok.app/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    status_code = simulator_main(["mcp", "share", "run", str(share_dir), "--dry-run", "--compact"])
+    output = json.loads(capsys.readouterr().out)
+
+    assert status_code == 0
+    assert output["ok"] is True
+    assert output["resolved_paths"]["config"] == str(share_dir / "snulbug.toml")
+    assert output["resolved_paths"]["policy"] == str(share_dir / "policy.snulbug" / "policy.lua")
 
 
 def test_mcp_share_run_applies_session_model_paths_before_starting_gateway(tmp_path, monkeypatch):
@@ -1182,11 +1203,12 @@ def test_mcp_share_lifecycle_cli_status_doctor_client_run_and_close(tmp_path, ca
         validate=False,
     )
 
-    status_code = simulator_main(["mcp", "share", "status", str(tmp_path), "--compact"])
+    status_code = simulator_main(["mcp", "share", "status", str(tmp_path), "--no-live-checks", "--compact"])
     status_output = json.loads(capsys.readouterr().out)
     assert status_code == 0
     assert status_output["state"] == "created"
-    assert status_output["gateway"]["reachable"] is False
+    assert status_output["gateway"]["checked"] is False
+    assert status_output["gateway"]["reachable"] is None
 
     report_code = simulator_main(["mcp", "share", "report", str(tmp_path), "--no-live-checks", "--compact"])
     report_output = json.loads(capsys.readouterr().out)
