@@ -409,7 +409,6 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
         format_share_auth_conformance_report,
         format_share_auth_doctor_report,
         format_share_doctor_report,
-        format_share_status_report,
         generate_auth_conformance_pack,
         promote_mcp_share_policy,
         run_auth_conformance_pack,
@@ -609,7 +608,12 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
         if command == "status":
             result = share_status(args.directory, timeout=args.timeout, live_checks=args.live_checks)
             status = 0 if result["ok"] else 1
-            write_result_output(result, compact=args.compact, formatter=format_share_status_report)
+            if args.compact:
+                write_json_output(result, compact=True)
+            else:
+                from .rich_share import write_share_status_rich
+
+                write_share_status_rich(result)
             return status
 
         if command == "report":

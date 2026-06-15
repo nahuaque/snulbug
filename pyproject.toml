@@ -37,6 +37,7 @@ classifiers = [
 dependencies = [
     "lupa>=2.5",
     "pyjwt[crypto]>=2.8",
+    "rich>=15.0.0",
     "tomli>=2.0; python_version < '3.11'",
     "uvicorn>=0.30",
 ]

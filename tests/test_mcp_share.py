@@ -361,6 +361,28 @@ def test_mcp_share_run_accepts_relative_share_directory_paths(tmp_path, capsys, 
     assert output["resolved_paths"]["policy"] == str(share_dir / "policy.snulbug" / "policy.lua")
 
 
+def test_mcp_share_status_cli_uses_rich_human_output(tmp_path, capsys):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    status_code = simulator_main(["mcp", "share", "status", str(tmp_path), "--no-live-checks"])
+    output = capsys.readouterr().out
+
+    assert status_code == 0
+    assert "snulbug share status" in output
+    assert "Health" in output
+    assert "Policy And Artifacts" in output
+    assert "Traffic" in output
+    assert "Next Commands" in output
+    assert not output.lstrip().startswith("{")
+
+
 def test_mcp_share_run_applies_session_model_paths_before_starting_gateway(tmp_path, monkeypatch):
     create_mcp_share(
         tmp_path,
