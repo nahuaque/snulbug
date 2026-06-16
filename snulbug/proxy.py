@@ -53,6 +53,10 @@ from .schema_policy import (
 from .state import MemoryStateStore, PolicyStateStore, SQLiteStateStore, StateLimits
 from .tool_risk import classify_mcp_tool
 from .tunnel import TunnelAuditConfig, build_tunnel_audit_metadata
+from .upstream_transports import (
+    UpstreamForwardContext,
+    get_upstream_transport,
+)
 
 HOP_BY_HOP_HEADERS = {
     b"connection",
@@ -96,6 +100,7 @@ class FacadeUpstream:
     bridge_env: Mapping[str, str] | None = None
     bridge_private: bool = True
     bridge_ready_timeout: float = 10.0
+    transport_config: Mapping[str, Any] | None = None
     manifest: Path | None = None
     manifest_required: bool = False
     manifest_secret_env: str | None = None
@@ -518,7 +523,7 @@ class ManagedHolepunchBridge:
 class FacadeRouteTable:
     upstreams: tuple[FacadeUpstream, ...]
     parsed: dict[str, SplitResult]
-    holepunch_bridges: dict[str, ManagedHolepunchBridge]
+    bridges: dict[str, ManagedHolepunchBridge]
     stdio_clients: dict[str, ManagedStdioMcpClient]
     default: FacadeUpstream
     prefixes: tuple[FacadeUpstream, ...]
@@ -528,14 +533,14 @@ class FacadeRouteTable:
     retired: bool = False
 
     async def startup(self) -> None:
-        if not self.holepunch_bridges:
+        if not self.bridges:
             return
-        await asyncio.gather(*(bridge.ensure_ready() for bridge in self.holepunch_bridges.values()))
+        await asyncio.gather(*(bridge.ensure_ready() for bridge in self.bridges.values()))
 
     async def aclose(self) -> None:
         for client in self.stdio_clients.values():
             await client.aclose()
-        for bridge in self.holepunch_bridges.values():
+        for bridge in self.bridges.values():
             await bridge.aclose()
 
     def upstream_for_tool(self, tool_name: str) -> FacadeUpstream | None:
@@ -1471,11 +1476,19 @@ class McpFacadeProxyApp:
         body: bytes,
         request: Mapping[str, Any],
     ) -> dict[str, Any]:
-        if upstream.transport == "stdio":
-            return await routes.stdio_clients[upstream.name].request(request)
-        if upstream.transport == "holepunch":
-            await routes.holepunch_bridges[upstream.name].ensure_ready()
-        return await asyncio.to_thread(self._forward_http, routes, upstream, scope, body)
+        transport = get_upstream_transport(upstream.transport)
+        return await transport.forward(
+            UpstreamForwardContext(
+                upstream=upstream,
+                scope=scope,
+                body=body,
+                request=request,
+                parsed=routes.parsed,
+                stdio_clients=routes.stdio_clients,
+                bridges=routes.bridges,
+                forward_http=lambda: asyncio.to_thread(self._forward_http, routes, upstream, scope, body),
+            )
+        )
 
     def _forward_http(
         self,
@@ -2543,41 +2556,40 @@ def _build_facade_route_table(
     coerced = tuple(_coerce_facade_upstream(upstream) for upstream in upstreams)
     if not coerced:
         raise ValueError("facade mode requires at least one upstream")
-    parsed = {
-        upstream.name: _parse_upstream(_required_url(upstream))
-        for upstream in coerced
-        if upstream.transport in {"http", "holepunch"}
-    }
-    holepunch_bridges = {
-        upstream.name: ManagedHolepunchBridge(
-            _required_bridge_command(upstream),
-            upstream.bridge_args,
-            url=_required_url(upstream),
-            cwd=upstream.bridge_cwd,
-            env=upstream.bridge_env,
-            ready_timeout=upstream.bridge_ready_timeout,
-            probe_timeout=min(timeout, 1.0),
-        )
-        for upstream in coerced
-        if upstream.transport == "holepunch"
-    }
-    stdio_clients = {
-        upstream.name: ManagedStdioMcpClient(
-            _required_command(upstream),
-            upstream.args,
-            cwd=upstream.cwd,
-            env=upstream.env,
-            timeout=timeout,
-        )
-        for upstream in coerced
-        if upstream.transport == "stdio"
-    }
+    parsed: dict[str, SplitResult] = {}
+    bridges: dict[str, ManagedHolepunchBridge] = {}
+    stdio_clients: dict[str, ManagedStdioMcpClient] = {}
+    for upstream in coerced:
+        transport = get_upstream_transport(upstream.transport)
+        http_target = transport.http_target(upstream)
+        if http_target is not None:
+            parsed[upstream.name] = _parse_upstream(http_target.url)
+        bridge = transport.bridge(upstream, timeout=timeout)
+        if bridge is not None:
+            bridges[upstream.name] = ManagedHolepunchBridge(
+                bridge.command,
+                bridge.args,
+                url=bridge.url,
+                cwd=bridge.cwd,
+                env=bridge.env,
+                ready_timeout=bridge.ready_timeout,
+                probe_timeout=bridge.probe_timeout,
+            )
+        stdio_client = transport.stdio_client(upstream, timeout=timeout)
+        if stdio_client is not None:
+            stdio_clients[upstream.name] = ManagedStdioMcpClient(
+                stdio_client.command,
+                stdio_client.args,
+                cwd=stdio_client.cwd,
+                env=stdio_client.env,
+                timeout=timeout,
+            )
     default = next((upstream for upstream in coerced if upstream.default), coerced[0])
     prefixes = tuple(sorted(coerced, key=lambda upstream: len(upstream.tool_prefix), reverse=True))
     return FacadeRouteTable(
         upstreams=coerced,
         parsed=parsed,
-        holepunch_bridges=holepunch_bridges,
+        bridges=bridges,
         stdio_clients=stdio_clients,
         default=default,
         prefixes=prefixes,
@@ -2618,20 +2630,8 @@ def _facade_upstream_reload_fingerprint(upstream: FacadeUpstream) -> dict[str, A
         "tool_prefix": upstream.tool_prefix,
         "default": upstream.default,
         "transport": upstream.transport,
-        "url": upstream.url,
-        "command": upstream.command,
-        "args": list(upstream.args),
-        "cwd": upstream.cwd,
-        "env_keys": sorted((upstream.env or {}).keys()),
-        "peer": upstream.peer,
-        "local_port": upstream.local_port,
-        "bridge_config": upstream.bridge_config,
-        "bridge_command": upstream.bridge_command,
-        "bridge_args": list(upstream.bridge_args),
-        "bridge_cwd": upstream.bridge_cwd,
-        "bridge_env_keys": sorted((upstream.bridge_env or {}).keys()),
-        "bridge_private": upstream.bridge_private,
-        "bridge_ready_timeout": upstream.bridge_ready_timeout,
+        "transport_config": _copy_jsonish(upstream.transport_config or {}),
+        **dict(get_upstream_transport(upstream.transport).fingerprint(upstream)),
         "manifest": str(upstream.manifest) if upstream.manifest is not None else None,
         "manifest_required": upstream.manifest_required,
         "manifest_key_id": upstream.manifest_key_id,
@@ -2876,75 +2876,34 @@ def _coerce_facade_upstream(upstream: FacadeUpstream | Mapping[str, Any]) -> Fac
     name = upstream.get("name")
     if not isinstance(name, str) or not name:
         raise ValueError("facade upstream name must be a non-empty string")
-    transport = str(upstream.get("transport") or ("stdio" if upstream.get("command") else "http"))
-    if transport not in {"http", "stdio", "holepunch"}:
-        raise ValueError(f"facade upstream {name!r} transport must be 'http', 'stdio', or 'holepunch'")
-    url = upstream.get("url", upstream.get("upstream"))
-    command = upstream.get("command")
-    if transport in {"http", "holepunch"} and (not isinstance(url, str) or not url):
-        raise ValueError(f"facade upstream {name!r} url must be a non-empty string")
-    if transport == "stdio" and (not isinstance(command, str) or not command):
-        raise ValueError(f"facade upstream {name!r} command must be a non-empty string")
-    peer = upstream.get("peer")
-    if peer is not None and not isinstance(peer, str):
-        raise ValueError(f"facade upstream {name!r} peer must be a string")
-    local_port = upstream.get("local_port")
-    if local_port is not None and (not isinstance(local_port, int) or local_port <= 0):
-        raise ValueError(f"facade upstream {name!r} local_port must be a positive integer")
-    bridge_config = upstream.get("bridge_config")
-    if bridge_config is not None and not isinstance(bridge_config, str):
-        raise ValueError(f"facade upstream {name!r} bridge_config must be a string")
-    bridge_command = upstream.get("bridge_command")
-    if transport == "holepunch" and (not isinstance(bridge_command, str) or not bridge_command):
-        raise ValueError(f"facade upstream {name!r} bridge_command must be a non-empty string")
-    bridge_args = upstream.get("bridge_args", ())
-    if not isinstance(bridge_args, Sequence) or isinstance(bridge_args, str | bytes | bytearray):
-        raise ValueError(f"facade upstream {name!r} bridge_args must be a list of strings")
-    if not all(isinstance(arg, str) for arg in bridge_args):
-        raise ValueError(f"facade upstream {name!r} bridge_args must be a list of strings")
-    bridge_cwd = upstream.get("bridge_cwd")
-    if bridge_cwd is not None and not isinstance(bridge_cwd, str):
-        raise ValueError(f"facade upstream {name!r} bridge_cwd must be a string")
-    bridge_env = upstream.get("bridge_env")
-    if bridge_env is not None:
-        if not isinstance(bridge_env, Mapping) or not all(isinstance(key, str) for key in bridge_env):
-            raise ValueError(f"facade upstream {name!r} bridge_env must be a string table")
-        if not all(isinstance(value, str) for value in bridge_env.values()):
-            raise ValueError(f"facade upstream {name!r} bridge_env must be a string table")
-    bridge_private = upstream.get("bridge_private", True)
-    if not isinstance(bridge_private, bool):
-        raise ValueError(f"facade upstream {name!r} bridge_private must be a boolean")
-    bridge_ready_timeout = upstream.get("bridge_ready_timeout", 10.0)
-    if not isinstance(bridge_ready_timeout, int | float) or float(bridge_ready_timeout) <= 0:
-        raise ValueError(f"facade upstream {name!r} bridge_ready_timeout must be a positive number")
-    if transport == "holepunch" and not bridge_args:
-        bridge_args = _holepunch_bridge_args(
-            url=str(url),
-            local_port=local_port,
-            peer=peer,
-            bridge_config=bridge_config,
-            bridge_private=bridge_private,
-        )
+    transport_plugin = get_upstream_transport(
+        upstream.get("transport") or ("stdio" if upstream.get("command") else "http")
+    )
+    transport = transport_plugin.normalized_type
+    transport_fields = transport_plugin.normalize_runtime(upstream, field=f"facade upstream {name!r}")
+    url = transport_fields.get("url")
+    command = transport_fields.get("command")
+    peer = transport_fields.get("peer")
+    local_port = transport_fields.get("local_port")
+    bridge_config = transport_fields.get("bridge_config")
+    bridge_command = transport_fields.get("bridge_command")
+    bridge_args = transport_fields.get("bridge_args", ())
+    bridge_cwd = transport_fields.get("bridge_cwd")
+    bridge_env = transport_fields.get("bridge_env")
+    bridge_private = transport_fields.get("bridge_private", True)
+    bridge_ready_timeout = transport_fields.get("bridge_ready_timeout", 10.0)
     tool_prefix = upstream.get("tool_prefix", f"{name}.")
     if not isinstance(tool_prefix, str) or not tool_prefix:
         raise ValueError(f"facade upstream {name!r} tool_prefix must be a non-empty string")
-    args = upstream.get("args", [])
-    if not isinstance(args, Sequence) or isinstance(args, str | bytes | bytearray):
-        raise ValueError(f"facade upstream {name!r} args must be a list of strings")
-    if not all(isinstance(arg, str) for arg in args):
-        raise ValueError(f"facade upstream {name!r} args must be a list of strings")
-    cwd = upstream.get("cwd")
-    if cwd is not None and not isinstance(cwd, str):
-        raise ValueError(f"facade upstream {name!r} cwd must be a string")
-    env = upstream.get("env")
-    if env is not None:
-        if not isinstance(env, Mapping) or not all(isinstance(key, str) for key in env):
-            raise ValueError(f"facade upstream {name!r} env must be a string table")
-        if not all(isinstance(value, str) for value in env.values()):
-            raise ValueError(f"facade upstream {name!r} env must be a string table")
+    args = transport_fields.get("args", [])
+    cwd = transport_fields.get("cwd")
+    env = transport_fields.get("env")
     credential = upstream.get("credential")
     if credential is not None:
         credential = normalize_upstream_credential(credential, field=f"facade upstream {name!r} credential")
+    transport_config = transport_fields.get("transport_config", upstream.get("transport_config"))
+    if transport_config is not None and not isinstance(transport_config, Mapping):
+        raise ValueError(f"facade upstream {name!r} transport_config must be a table")
     manifest = upstream.get("manifest", upstream.get("manifest_path"))
     if manifest is not None and not isinstance(manifest, str | Path):
         raise ValueError(f"facade upstream {name!r} manifest must be a string path")
@@ -2995,6 +2954,7 @@ def _coerce_facade_upstream(upstream: FacadeUpstream | Mapping[str, Any]) -> Fac
         bridge_env=dict(bridge_env) if isinstance(bridge_env, Mapping) else None,
         bridge_private=bridge_private,
         bridge_ready_timeout=float(bridge_ready_timeout),
+        transport_config=dict(transport_config) if isinstance(transport_config, Mapping) else None,
         manifest=Path(manifest) if manifest is not None else None,
         manifest_required=manifest_required,
         manifest_secret_env=manifest_secret_env,
@@ -3047,63 +3007,13 @@ def _verify_upstream_manifest_config(
     }
 
 
-def _required_url(upstream: FacadeUpstream) -> str:
-    if not upstream.url:
-        raise ValueError(f"facade upstream {upstream.name!r} url is required")
-    return upstream.url
-
-
-def _required_command(upstream: FacadeUpstream) -> str:
-    if not upstream.command:
-        raise ValueError(f"facade upstream {upstream.name!r} command is required")
-    return upstream.command
-
-
-def _required_bridge_command(upstream: FacadeUpstream) -> str:
-    if not upstream.bridge_command:
-        raise ValueError(f"facade upstream {upstream.name!r} bridge_command is required")
-    return upstream.bridge_command
-
-
-def _holepunch_bridge_args(
-    *,
-    url: str,
-    local_port: int | None,
-    peer: str | None,
-    bridge_config: str | None,
-    bridge_private: bool,
-) -> list[str]:
-    port = local_port or urlsplit(url).port
-    if port is None:
-        raise ValueError("holepunch upstream url must include a port when local_port is omitted")
-    args = ["-p", str(port)]
-    if bridge_config:
-        args.extend(["-c", bridge_config])
-    elif peer:
-        args.extend(["-s", peer])
-    if bridge_private:
-        args.append("--private")
-    return args
-
-
 def _upstream_metadata(upstream: FacadeUpstream) -> dict[str, Any]:
     metadata: dict[str, Any] = {
         "name": upstream.name,
         "transport": upstream.transport,
         "tool_prefix": upstream.tool_prefix,
+        **dict(get_upstream_transport(upstream.transport).metadata(upstream)),
     }
-    if upstream.transport in {"http", "holepunch"}:
-        metadata["url"] = upstream.url
-    if upstream.transport == "holepunch":
-        metadata["bridge"] = {
-            "transport": "hypertele",
-            "peer": upstream.peer,
-            "local_port": upstream.local_port,
-            "config": upstream.bridge_config,
-            "command": upstream.bridge_command,
-            "private": upstream.bridge_private,
-            "ready_timeout": upstream.bridge_ready_timeout,
-        }
     if upstream.manifest_metadata:
         metadata["manifest"] = dict(upstream.manifest_metadata)
     auth = credential_metadata(upstream.credential)
@@ -3119,19 +3029,13 @@ def _facade_upstream_context(upstream: FacadeUpstream) -> dict[str, Any]:
             "transport": upstream.transport,
             "tool_prefix": upstream.tool_prefix,
             "default": upstream.default,
+            **dict(get_upstream_transport(upstream.transport).context(upstream)),
             "manifest_identity": upstream.manifest_identity,
             "manifest_metadata": _copy_jsonish(upstream.manifest_metadata or {}),
             "manifest": _drop_empty(
                 {
                     "identity": upstream.manifest_identity,
                     "metadata": _copy_jsonish(upstream.manifest_metadata or {}),
-                }
-            ),
-            "bridge": _drop_empty(
-                {
-                    "peer": upstream.peer,
-                    "local_port": upstream.local_port,
-                    "private": upstream.bridge_private,
                 }
             ),
         }
