@@ -21,6 +21,7 @@ share create -> share run -> share status -> policy amend -> share activate -> s
 - [CI policy gates and SARIF output](ci-policy-gates.md)
 - [Reverse proxy and live recording](mcp-proxy.md)
 - [Fabric control plane and facade routing](mcp-fabric.md)
+- [Lua policy DSL guide](lua-policy-dsl.md)
 
 ## Sharing, Tunnels, And Remote Dev
 
@@ -51,7 +52,7 @@ share create -> share run -> share status -> policy amend -> share activate -> s
 ## Generic ASGI Middleware
 
 - [ASGI middleware getting started](getting-started.md)
-- [Lua request API](lua-request-api.md)
+- [Lua policy reference](lua-request-api.md)
 - [Action reference](actions.md)
 - [Lower-level MCP gateway example](mcp-gateway.md)
 

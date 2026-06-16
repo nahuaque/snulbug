@@ -75,8 +75,9 @@ Supported actions include `continue`, `set_context`, `rewrite`, `respond`,
 `reject`, `challenge`, `redirect`, `rate_limit`, and `confirm`. See
 [Action reference](actions.md) for examples and fields.
 
-MCP-specific helper functions are documented in
-[Lua request API](lua-request-api.md).
+MCP-specific policy patterns are documented in the
+[Lua policy DSL guide](lua-policy-dsl.md). Exact helper names and arguments are
+listed in the [Lua policy reference](lua-request-api.md).
 
 ## Safety Model
 

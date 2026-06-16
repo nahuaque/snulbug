@@ -57,6 +57,9 @@ uv run snulbug mcp policy preset
 uv run snulbug mcp policy preset tunnel-safe --output policy.snulbug
 ```
 
+For a more complete policy-writing guide, see the
+[Lua policy DSL guide](lua-policy-dsl.md).
+
 Record request decisions and replay them later:
 
 ```bash

@@ -1,4 +1,9 @@
-# Lua request API
+# Lua Policy Reference
+
+This is the exhaustive reference for the Lua helpers available inside Snulbug
+policies. If you are writing a policy from scratch, start with the
+[Lua Policy DSL guide](lua-policy-dsl.md), then return here for exact helper
+names, arguments, and decision fields.
 
 Lua policies return a function:
 
