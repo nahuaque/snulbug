@@ -4,7 +4,7 @@ import http.client
 import json
 import shlex
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import SplitResult, urlsplit, urlunsplit
@@ -12,7 +12,6 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 from .config import DEFAULT_CONFIG_PATH, DEFAULT_MCP_PROXY_CONFIG, load_mcp_proxy_config
 from .quickstart import create_mcp_quickstart
 
-TUNNEL_PROVIDERS = ("generic", "ngrok", "cloudflare", "tailscale", "pinggy", "holepunch")
 DEFAULT_MCP_PATH = "/mcp"
 DEFAULT_AUTH_FAILURE_STATUSES = (401, 403)
 DEFAULT_TUNNEL_TOKEN_ENV = "SNULBUG_TOKEN"
@@ -39,6 +38,539 @@ DEFAULT_PUBLIC_HOSTS = {
     "tailscale": DEFAULT_TAILSCALE_FUNNEL_HOST,
     "pinggy": DEFAULT_PINGGY_FORWARDING_HOST,
 }
+
+
+@dataclass(frozen=True)
+class TunnelProviderContext:
+    """Resolved inputs passed to a tunnel provider plugin."""
+
+    origin: str
+    endpoint: str
+    public_endpoint: str
+    token_env: str
+    config_path: str | Path
+    output_dir: str | Path
+    doctor_command: str
+    options: Mapping[str, Any] = field(default_factory=dict)
+
+
+class TunnelProvider:
+    """Extension point for tunnel and peer-bridge provider integrations."""
+
+    name = "generic"
+    public_url_env: str | None = DEFAULT_PUBLIC_URL_ENVS["generic"]
+    default_public_host: str | None = DEFAULT_PUBLIC_HOSTS["generic"]
+    remote_label = "Public MCP URL"
+    share_target = "public MCP URL"
+    default_scheme = "https"
+
+    def public_endpoint(self, *, public_url: str | None, hostname: str | None, path: str) -> str:
+        if public_url:
+            return _normalize_url(public_url, path)
+        if not self.default_public_host and not hostname:
+            raise ValueError(f"provider {self.name!r} requires --url or --hostname")
+        return f"{self.default_scheme}://{hostname or self.default_public_host}{_normalize_path(path)}"
+
+    def build_plan(self, context: TunnelProviderContext) -> dict[str, Any]:
+        return {
+            "commands": [
+                {
+                    "id": "run-provider-tunnel",
+                    "title": "Expose snulbug with your tunnel provider",
+                    "description": "Point the tunnel at the snulbug proxy origin, not the upstream MCP server.",
+                    "command": (
+                        f"# Configure your tunnel provider to forward public HTTPS traffic to {context.origin}"
+                    ),
+                }
+            ],
+            "traffic_policy": None,
+            "bridge": None,
+            "client": self.client(context),
+            "doctor": self.doctor(context),
+        }
+
+    def init_files(self, context: TunnelProviderContext, plan: Mapping[str, Any]) -> list[dict[str, str]]:
+        return []
+
+    def readme_notes(self, plan: Mapping[str, Any]) -> str:
+        return ""
+
+    def default_public_origin(self) -> str | None:
+        if self.default_public_host is None:
+            return None
+        return f"{self.default_scheme}://{self.default_public_host}"
+
+    def is_default_public_endpoint(self, public_endpoint: str) -> bool:
+        default_origin = self.default_public_origin()
+        return bool(default_origin and _url_origin(public_endpoint) == default_origin)
+
+    def display_public_endpoint(self, public_endpoint: str) -> str:
+        if not self.is_default_public_endpoint(public_endpoint) or not self.public_url_env:
+            return public_endpoint
+        parsed = urlsplit(public_endpoint)
+        suffix = parsed.path or DEFAULT_MCP_PATH
+        if parsed.query:
+            suffix = f"{suffix}?{parsed.query}"
+        return f"${{{self.public_url_env}}}{suffix}"
+
+    def default_public_url_report_lines(self) -> list[str]:
+        if not self.public_url_env:
+            return []
+        origin = self.default_public_origin()
+        if not origin:
+            return []
+        title = f"{self.name.title()} URL"
+        note = "Set this to the exact public HTTPS origin printed or assigned by your tunnel provider."
+        return [
+            f"## {title}",
+            "",
+            note,
+            "",
+            "```bash",
+            f"export {self.public_url_env}={origin}",
+            "```",
+            "",
+        ]
+
+    def client(self, context: TunnelProviderContext) -> dict[str, Any]:
+        return {
+            "url": context.public_endpoint,
+            "headers": {"Authorization": f"Bearer ${{{context.token_env}}}"},
+        }
+
+    def doctor(self, context: TunnelProviderContext) -> dict[str, Any]:
+        return {
+            "command": context.doctor_command,
+            "local_url": context.endpoint,
+            "public_url": context.public_endpoint,
+        }
+
+    def matches_request(self, headers: Mapping[str, str], public_url: str | None) -> bool:
+        return False
+
+    def audit_metadata(self, headers: Mapping[str, str], metadata: Mapping[str, Any]) -> dict[str, Any]:
+        return {}
+
+
+class NgrokTunnelProvider(TunnelProvider):
+    name = "ngrok"
+    public_url_env = DEFAULT_PUBLIC_URL_ENVS["ngrok"]
+    default_public_host = DEFAULT_PUBLIC_HOSTS["ngrok"]
+
+    def build_plan(self, context: TunnelProviderContext) -> dict[str, Any]:
+        internal_url = _ngrok_internal_endpoint_url(_option_str(context.options, "ngrok_internal_url"))
+        endpoint_name = _option_str(context.options, "ngrok_endpoint_name") or DEFAULT_NGROK_INTERNAL_ENDPOINT_NAME
+        public_origin = self.display_public_endpoint(_url_origin(context.public_endpoint))
+        agent_config_file = _shell_path(Path(context.output_dir) / "ngrok-agent.yml")
+        traffic_policy_file = _shell_path(Path(context.output_dir) / "ngrok-traffic-policy.yml")
+        traffic_policy = {
+            "path": traffic_policy_file,
+            "mode": "cloud-endpoint",
+            "internal_endpoint": internal_url,
+            "agent_config": agent_config_file,
+            "checks": [
+                "deny non-MCP paths",
+                "require Authorization header",
+                "require Bearer token shape",
+                "restrict HTTP methods",
+                "require JSON content type on POST",
+                "add snulbug/ngrok audit headers",
+                "forward allowed traffic to the ngrok internal Agent Endpoint",
+            ],
+        }
+        bridge = {
+            "transport": "ngrok-internal",
+            "mode": "cloud-endpoint",
+            "internal_url": internal_url,
+            "endpoint_name": endpoint_name,
+            "agent_config": "ngrok-agent.yml",
+        }
+        return {
+            "commands": [
+                {
+                    "id": "run-ngrok-agent",
+                    "title": "Run the ngrok internal Agent Endpoint",
+                    "description": (
+                        "Start the ngrok agent endpoint that privately forwards the ngrok Cloud Endpoint "
+                        "to the local snulbug proxy origin."
+                    ),
+                    "command": f"ngrok start --config {agent_config_file} --all",
+                },
+                {
+                    "id": "attach-ngrok-cloud-policy",
+                    "title": "Attach the Traffic Policy to your ngrok Cloud Endpoint",
+                    "description": (
+                        "Create or choose the public Cloud Endpoint, then attach the generated Traffic Policy. "
+                        "The policy performs coarse MCP checks and forwards allowed traffic to the internal endpoint."
+                    ),
+                    "command": _shell_print_command(
+                        [
+                            f"In the ngrok dashboard, create or choose {public_origin}.",
+                            f"Attach {traffic_policy_file} as the endpoint Traffic Policy.",
+                        ]
+                    ),
+                },
+            ],
+            "traffic_policy": traffic_policy,
+            "bridge": bridge,
+            "client": self.client(context),
+            "doctor": self.doctor(context),
+        }
+
+    def init_files(self, context: TunnelProviderContext, plan: Mapping[str, Any]) -> list[dict[str, str]]:
+        bridge = plan.get("bridge") if isinstance(plan.get("bridge"), Mapping) else {}
+        internal_url = str(bridge.get("internal_url") or DEFAULT_NGROK_INTERNAL_URL)
+        endpoint_name = str(bridge.get("endpoint_name") or DEFAULT_NGROK_INTERNAL_ENDPOINT_NAME)
+        return [
+            {
+                "path": "ngrok-traffic-policy.yml",
+                "kind": "ngrok-traffic-policy",
+                "contents": _ngrok_traffic_policy(context.public_endpoint, internal_url=internal_url),
+            },
+            {
+                "path": "ngrok-agent.yml",
+                "kind": "ngrok-agent-config",
+                "contents": _ngrok_agent_config(context.origin, internal_url=internal_url, endpoint_name=endpoint_name),
+            },
+        ]
+
+    def readme_notes(self, plan: Mapping[str, Any]) -> str:
+        return _ngrok_readme_notes(plan)
+
+    def default_public_url_report_lines(self) -> list[str]:
+        return _provider_default_url_report_lines(
+            self,
+            title="Ngrok forwarding URL",
+            note=(
+                "Set this to the exact `Forwarding` HTTPS origin printed by the ngrok CLI. "
+                "Do not assume an `ngrok.app` domain; random free URLs may use `ngrok-free.dev`, "
+                "`ngrok-free.app`, or another ngrok-owned domain."
+            ),
+        )
+
+    def matches_request(self, headers: Mapping[str, str], public_url: str | None) -> bool:
+        host = (_host_from_url(public_url) or headers.get("x-forwarded-host") or headers.get("host") or "").lower()
+        header_blob = " ".join(f"{name}:{value}" for name, value in headers.items()).lower()
+        return "ngrok" in host or "ngrok" in header_blob
+
+    def audit_metadata(self, headers: Mapping[str, str], metadata: Mapping[str, Any]) -> dict[str, Any]:
+        return _drop_empty(
+            {
+                "request_id": headers.get("x-ngrok-request-id") or headers.get("ngrok-request-id"),
+                "trace_id": headers.get("x-ngrok-trace-id") or headers.get("ngrok-trace-id"),
+            }
+        )
+
+
+class CloudflareTunnelProvider(TunnelProvider):
+    name = "cloudflare"
+    public_url_env = DEFAULT_PUBLIC_URL_ENVS["cloudflare"]
+    default_public_host = DEFAULT_PUBLIC_HOSTS["cloudflare"]
+
+    def build_plan(self, context: TunnelProviderContext) -> dict[str, Any]:
+        public_host = urlsplit(context.public_endpoint).hostname or DEFAULT_CLOUDFLARE_TUNNEL_HOST
+        return {
+            "commands": [
+                {
+                    "id": "create-cloudflare-tunnel",
+                    "title": "Create and route a Cloudflare Tunnel",
+                    "description": "Create a named tunnel and route the public hostname to it.",
+                    "command": "\n".join(
+                        [
+                            "cloudflared tunnel create snulbug-mcp",
+                            f"cloudflared tunnel route dns snulbug-mcp {public_host}",
+                        ]
+                    ),
+                },
+                {
+                    "id": "run-cloudflare-tunnel",
+                    "title": "Run cloudflared with generated ingress config",
+                    "description": "The generated config routes only the public MCP hostname to snulbug.",
+                    "command": (
+                        f"cloudflared tunnel --config {_shell_path(Path(context.output_dir) / 'cloudflared.yml')} "
+                        "run snulbug-mcp"
+                    ),
+                },
+            ],
+            "traffic_policy": None,
+            "bridge": None,
+            "client": self.client(context),
+            "doctor": self.doctor(context),
+        }
+
+    def init_files(self, context: TunnelProviderContext, plan: Mapping[str, Any]) -> list[dict[str, str]]:
+        return [
+            {
+                "path": "cloudflared.yml",
+                "kind": "cloudflared-config",
+                "contents": _cloudflared_config(context.origin, context.public_endpoint),
+            }
+        ]
+
+    def default_public_url_report_lines(self) -> list[str]:
+        return _provider_default_url_report_lines(
+            self,
+            title="Cloudflare Tunnel URL",
+            note=(
+                "Set this to the actual Cloudflare Tunnel HTTPS origin that routes to snulbug. "
+                "For named tunnels, pass `--hostname` or replace the generated placeholder in "
+                "`cloudflared.yml` before running cloudflared."
+            ),
+        )
+
+    def matches_request(self, headers: Mapping[str, str], public_url: str | None) -> bool:
+        header_blob = " ".join(f"{name}:{value}" for name, value in headers.items()).lower()
+        return "cf-ray" in headers or "cf-connecting-ip" in headers or "cloudflare" in header_blob
+
+    def audit_metadata(self, headers: Mapping[str, str], metadata: Mapping[str, Any]) -> dict[str, Any]:
+        return _drop_empty(
+            {
+                "ray": headers.get("cf-ray"),
+                "connecting_ip": headers.get("cf-connecting-ip"),
+                "ip_country": headers.get("cf-ipcountry"),
+                "visitor": _parse_json(headers.get("cf-visitor", "")),
+                "access_authenticated_user_email": headers.get("cf-access-authenticated-user-email"),
+            }
+        )
+
+
+class TailscaleTunnelProvider(TunnelProvider):
+    name = "tailscale"
+    public_url_env = DEFAULT_PUBLIC_URL_ENVS["tailscale"]
+    default_public_host = DEFAULT_PUBLIC_HOSTS["tailscale"]
+
+    def build_plan(self, context: TunnelProviderContext) -> dict[str, Any]:
+        return {
+            "commands": [
+                {
+                    "id": "run-tailscale-funnel",
+                    "title": "Expose snulbug with Tailscale Funnel",
+                    "description": "Funnel exposes the snulbug proxy URL publicly; snulbug still enforces MCP policy.",
+                    "command": f"sudo tailscale funnel {_tailscale_target(context.origin)}",
+                }
+            ],
+            "traffic_policy": None,
+            "bridge": None,
+            "client": self.client(context),
+            "doctor": self.doctor(context),
+        }
+
+    def readme_notes(self, plan: Mapping[str, Any]) -> str:
+        return _tailscale_readme_notes(plan)
+
+    def default_public_url_report_lines(self) -> list[str]:
+        return _provider_default_url_report_lines(
+            self,
+            title="Tailscale Funnel URL",
+            note="Set this to the public Funnel HTTPS origin for this machine, usually `https://HOST.TAILNET.ts.net`.",
+        )
+
+    def matches_request(self, headers: Mapping[str, str], public_url: str | None) -> bool:
+        host = (_host_from_url(public_url) or headers.get("x-forwarded-host") or headers.get("host") or "").lower()
+        return host.endswith(".ts.net") or ".ts.net" in host
+
+    def audit_metadata(self, headers: Mapping[str, str], metadata: Mapping[str, Any]) -> dict[str, Any]:
+        return _drop_empty({"tsnet_host": bool((metadata.get("public_host") or "").endswith(".ts.net"))})
+
+
+class PinggyTunnelProvider(TunnelProvider):
+    name = "pinggy"
+    public_url_env = DEFAULT_PUBLIC_URL_ENVS["pinggy"]
+    default_public_host = DEFAULT_PUBLIC_HOSTS["pinggy"]
+
+    def build_plan(self, context: TunnelProviderContext) -> dict[str, Any]:
+        return {
+            "commands": [
+                {
+                    "id": "run-pinggy",
+                    "title": "Expose snulbug with Pinggy",
+                    "description": (
+                        "Point a Pinggy SSH HTTP tunnel at the snulbug proxy origin. "
+                        "Copy the HTTPS forwarding URL printed by Pinggy before running doctor."
+                    ),
+                    "command": f"ssh -p 443 -R0:{_pinggy_target(context.origin)} free.pinggy.io",
+                }
+            ],
+            "traffic_policy": None,
+            "bridge": None,
+            "client": self.client(context),
+            "doctor": self.doctor(context),
+        }
+
+    def default_public_url_report_lines(self) -> list[str]:
+        return _provider_default_url_report_lines(
+            self,
+            title="Pinggy forwarding URL",
+            note=(
+                "Set this to the exact Pinggy HTTPS URL printed by the SSH tunnel command. "
+                "Free Pinggy URLs commonly use a `pinggy-free.link` domain."
+            ),
+        )
+
+    def matches_request(self, headers: Mapping[str, str], public_url: str | None) -> bool:
+        host = (_host_from_url(public_url) or headers.get("x-forwarded-host") or headers.get("host") or "").lower()
+        header_blob = " ".join(f"{name}:{value}" for name, value in headers.items()).lower()
+        return "pinggy" in host or "pinggy" in header_blob
+
+    def audit_metadata(self, headers: Mapping[str, str], metadata: Mapping[str, Any]) -> dict[str, Any]:
+        return _drop_empty({"request_id": headers.get("x-request-id") or headers.get("x-correlation-id")})
+
+
+class HolepunchTunnelProvider(TunnelProvider):
+    name = "holepunch"
+    public_url_env = None
+    default_public_host = None
+    remote_label = "Client bridge MCP URL"
+    share_target = "peer bridge details"
+    default_scheme = "http"
+
+    def public_endpoint(self, *, public_url: str | None, hostname: str | None, path: str) -> str:
+        if public_url:
+            return _normalize_url(public_url, path)
+        origin = f"http://{hostname}" if hostname else DEFAULT_HOLEPUNCH_CLIENT_ORIGIN
+        return _normalize_url(origin, path)
+
+    def build_plan(self, context: TunnelProviderContext) -> dict[str, Any]:
+        origin_target = _host_port_from_origin(context.origin)
+        client_target = _host_port_from_origin(_url_origin(context.public_endpoint))
+        bridge = {
+            "transport": "hypertele",
+            "mode": "private",
+            "server_config": "hypertele-server.json",
+            "client_config": "hypertele-client.json",
+            "server_address": origin_target["host"],
+            "server_port": origin_target["port"],
+            "client_url": context.public_endpoint,
+            "client_host": client_target["host"],
+            "client_port": client_target["port"],
+        }
+        return {
+            "commands": [
+                {
+                    "id": "run-hypertele-server",
+                    "title": "Run the Hypertele server bridge on the snulbug machine",
+                    "description": (
+                        "Expose only the local snulbug origin to allowed Holepunch peers. "
+                        "The command prints the server peer key for the client side."
+                    ),
+                    "command": (
+                        f"hypertele-server -l {origin_target['port']} --address {origin_target['host']} "
+                        f"-c {_shell_path(Path(context.output_dir) / 'hypertele-server.json')} --private"
+                    ),
+                },
+                {
+                    "id": "run-hypertele-client",
+                    "title": "Run the Hypertele client bridge on the MCP client machine",
+                    "description": "Bind a local client-side MCP port and forward it over the private peer bridge.",
+                    "command": (
+                        f"hypertele -p {client_target['port']} "
+                        f"-c {_shell_path(Path(context.output_dir) / 'hypertele-client.json')} --private"
+                    ),
+                },
+            ],
+            "traffic_policy": None,
+            "bridge": bridge,
+            "client": self.client(context),
+            "doctor": self.doctor(context),
+        }
+
+    def init_files(self, context: TunnelProviderContext, plan: Mapping[str, Any]) -> list[dict[str, str]]:
+        return [
+            {
+                "path": "hypertele-server.json",
+                "kind": "hypertele-server-config",
+                "contents": _hypertele_server_config(),
+            },
+            {
+                "path": "hypertele-client.json",
+                "kind": "hypertele-client-config",
+                "contents": _hypertele_client_config(),
+            },
+        ]
+
+    def readme_notes(self, plan: Mapping[str, Any]) -> str:
+        return _holepunch_readme_notes(plan)
+
+    def matches_request(self, headers: Mapping[str, str], public_url: str | None) -> bool:
+        header_blob = " ".join(f"{name}:{value}" for name, value in headers.items()).lower()
+        return "holepunch" in header_blob or "hypertele" in header_blob
+
+    def audit_metadata(self, headers: Mapping[str, str], metadata: Mapping[str, Any]) -> dict[str, Any]:
+        return _drop_empty(
+            {
+                "transport": headers.get("x-snulbug-holepunch-transport")
+                or headers.get("x-snulbug-peer-transport")
+                or "hypertele",
+                "peer": headers.get("x-snulbug-holepunch-peer") or headers.get("x-snulbug-peer-key"),
+                "bridge": headers.get("x-snulbug-bridge-id"),
+                "client_bridge": _is_loopback_host(str(metadata.get("host") or "")),
+            }
+        )
+
+
+_TUNNEL_PROVIDER_REGISTRY: dict[str, TunnelProvider] = {}
+
+
+def register_tunnel_provider(provider: TunnelProvider, *, replace: bool = False) -> None:
+    """Register a tunnel provider plugin.
+
+    Plugins usually call this during package import. Built-in providers are
+    registered by snulbug itself.
+    """
+
+    name = provider.name.strip().lower()
+    if not name or name == "auto":
+        raise ValueError("tunnel provider name must be non-empty and must not be 'auto'")
+    if name in _TUNNEL_PROVIDER_REGISTRY and not replace:
+        raise ValueError(f"tunnel provider already registered: {name}")
+    _TUNNEL_PROVIDER_REGISTRY[name] = provider
+
+
+def get_tunnel_provider(name: str) -> TunnelProvider:
+    provider = _TUNNEL_PROVIDER_REGISTRY.get(name.strip().lower())
+    if provider is None:
+        raise ValueError(f"provider must be one of: {', '.join(list_tunnel_providers())}")
+    return provider
+
+
+def list_tunnel_providers() -> tuple[str, ...]:
+    return tuple(_TUNNEL_PROVIDER_REGISTRY)
+
+
+def _option_str(options: Mapping[str, Any], key: str) -> str | None:
+    value = options.get(key)
+    return str(value) if value is not None else None
+
+
+def _provider_default_url_report_lines(provider: TunnelProvider, *, title: str, note: str) -> list[str]:
+    env = provider.public_url_env
+    origin = provider.default_public_origin()
+    if env is None or origin is None:
+        return []
+    return [
+        f"## {title}",
+        "",
+        note,
+        "",
+        "```bash",
+        f"export {env}={origin}",
+        "```",
+        "",
+    ]
+
+
+for _provider in (
+    TunnelProvider(),
+    NgrokTunnelProvider(),
+    CloudflareTunnelProvider(),
+    TailscaleTunnelProvider(),
+    PinggyTunnelProvider(),
+    HolepunchTunnelProvider(),
+):
+    register_tunnel_provider(_provider)
+
+
+TUNNEL_PROVIDERS = list_tunnel_providers()
 
 _DOCTOR_REQUEST = {
     "jsonrpc": "2.0",
@@ -76,11 +608,8 @@ class TunnelAuditConfig:
     public_url: str | None = None
 
     def __post_init__(self) -> None:
-        if self.provider not in {"auto", *TUNNEL_PROVIDERS}:
-            raise ValueError(
-                "tunnel provider must be 'auto', 'generic', 'ngrok', 'cloudflare', "
-                "'tailscale', 'pinggy', or 'holepunch'"
-            )
+        if self.provider != "auto" and self.provider not in list_tunnel_providers():
+            raise ValueError(f"tunnel provider must be 'auto' or one of: {', '.join(list_tunnel_providers())}")
 
 
 def parse_tunnel_headers(values: Sequence[str] | None, *, token: str | None = None) -> dict[str, str]:
@@ -116,6 +645,7 @@ def build_tunnel_audit_metadata(
     forwarded_host = headers.get("x-forwarded-host") or headers.get("x-original-host")
     public_url = config.public_url or _public_url_from_headers(scope, headers)
     provider = config.provider if config.provider != "auto" else _infer_tunnel_provider(headers, public_url)
+    provider_plugin = get_tunnel_provider(provider)
 
     metadata: dict[str, Any] = {
         "provider": provider,
@@ -130,46 +660,9 @@ def build_tunnel_audit_metadata(
         "source_ip": _source_ip(headers, scope),
         "edge_request_id": _edge_request_id(provider, headers),
     }
-    if provider == "cloudflare":
-        metadata["cloudflare"] = _drop_empty(
-            {
-                "ray": headers.get("cf-ray"),
-                "connecting_ip": headers.get("cf-connecting-ip"),
-                "ip_country": headers.get("cf-ipcountry"),
-                "visitor": _parse_json(headers.get("cf-visitor", "")),
-                "access_authenticated_user_email": headers.get("cf-access-authenticated-user-email"),
-            }
-        )
-    elif provider == "ngrok":
-        metadata["ngrok"] = _drop_empty(
-            {
-                "request_id": headers.get("x-ngrok-request-id") or headers.get("ngrok-request-id"),
-                "trace_id": headers.get("x-ngrok-trace-id") or headers.get("ngrok-trace-id"),
-            }
-        )
-    elif provider == "tailscale":
-        metadata["tailscale"] = _drop_empty(
-            {
-                "tsnet_host": bool((metadata.get("public_host") or "").endswith(".ts.net")),
-            }
-        )
-    elif provider == "pinggy":
-        metadata["pinggy"] = _drop_empty(
-            {
-                "request_id": headers.get("x-request-id") or headers.get("x-correlation-id"),
-            }
-        )
-    elif provider == "holepunch":
-        metadata["holepunch"] = _drop_empty(
-            {
-                "transport": headers.get("x-snulbug-holepunch-transport")
-                or headers.get("x-snulbug-peer-transport")
-                or "hypertele",
-                "peer": headers.get("x-snulbug-holepunch-peer") or headers.get("x-snulbug-peer-key"),
-                "bridge": headers.get("x-snulbug-bridge-id"),
-                "client_bridge": _is_loopback_host(host),
-            }
-        )
+    provider_metadata = provider_plugin.audit_metadata(headers, metadata)
+    if provider_metadata:
+        metadata[provider] = provider_metadata
     return _drop_empty(metadata)
 
 
@@ -191,8 +684,8 @@ def init_tunnel_provider(
 ) -> dict[str, Any]:
     """Generate provider-specific tunnel setup snippets for a snulbug MCP proxy."""
 
-    if provider not in TUNNEL_PROVIDERS:
-        raise ValueError(f"provider must be one of: {', '.join(TUNNEL_PROVIDERS)}")
+    provider_plugin = get_tunnel_provider(provider)
+    provider = provider_plugin.name
     if not token_env:
         raise ValueError("token_env must not be empty")
     if provider != "ngrok" and (
@@ -224,8 +717,7 @@ def init_tunnel_provider(
             force=force,
         )
         config_path = Path(generated_quickstart["config"])
-    plan = _provider_plan(
-        provider,
+    provider_context = TunnelProviderContext(
         origin=origin,
         endpoint=endpoint,
         public_endpoint=public_endpoint,
@@ -233,9 +725,12 @@ def init_tunnel_provider(
         config_path=config_path or Path(DEFAULT_CONFIG_PATH),
         output_dir=effective_output_dir,
         doctor_command=doctor_command or _share_doctor_command(None),
-        ngrok_internal_url=ngrok_internal_url,
-        ngrok_endpoint_name=ngrok_endpoint_name,
+        options={
+            "ngrok_internal_url": ngrok_internal_url,
+            "ngrok_endpoint_name": ngrok_endpoint_name,
+        },
     )
+    plan = provider_plugin.build_plan(provider_context)
     files = _tunnel_init_files(
         provider,
         origin=origin,
@@ -243,6 +738,9 @@ def init_tunnel_provider(
         public_endpoint=public_endpoint,
         token_env=token_env,
         plan=plan,
+        config_path=config_path or Path(DEFAULT_CONFIG_PATH),
+        output_dir=effective_output_dir,
+        doctor_command=doctor_command or _share_doctor_command(None),
     )
     written_files: list[str] = []
     if generated_quickstart:
@@ -256,7 +754,7 @@ def init_tunnel_provider(
     if write:
         written_files.extend(_write_tunnel_init_files(effective_output_dir, files, force=force))
 
-    share_target = "peer bridge details" if provider == "holepunch" else "public MCP URL"
+    share_target = provider_plugin.share_target
     initial_config_missing = config_result["ok"] is not True
     next_steps = []
     if generated_quickstart:
@@ -295,7 +793,8 @@ def format_tunnel_init_report(result: Mapping[str, Any]) -> str:
     """Render provider setup as copy-pasteable Markdown."""
 
     provider = str(result.get("provider"))
-    remote_label = "Client bridge MCP URL" if provider == "holepunch" else "Public MCP URL"
+    provider_plugin = get_tunnel_provider(provider)
+    remote_label = provider_plugin.remote_label
     public_url = str(result.get("public_url") or "")
     displayed_public_url = _display_public_endpoint(provider, public_url)
     lines = [
@@ -404,8 +903,8 @@ def doctor_tunnel(
 ) -> dict[str, Any]:
     """Run tunnel-safety probes against a snulbug MCP proxy."""
 
-    if provider not in TUNNEL_PROVIDERS:
-        raise ValueError(f"provider must be one of: {', '.join(TUNNEL_PROVIDERS)}")
+    provider_plugin = get_tunnel_provider(provider)
+    provider = provider_plugin.name
     if timeout <= 0:
         raise ValueError("timeout must be positive")
     headers = dict(headers or {})
@@ -490,7 +989,8 @@ def format_tunnel_doctor_report(result: Mapping[str, Any]) -> str:
     """Render share exposure check results as readable Markdown."""
 
     provider = str(result.get("provider", "generic"))
-    remote_label = "Client bridge URL" if provider == "holepunch" else "Public URL"
+    provider_plugin = get_tunnel_provider(provider)
+    remote_label = "Client bridge URL" if provider_plugin.remote_label.startswith("Client bridge") else "Public URL"
     lines = [
         "# snulbug mcp share doctor",
         "",
@@ -557,215 +1057,12 @@ def _public_endpoint(
     hostname: str | None,
     path: str,
 ) -> str:
-    if public_url:
-        return _normalize_url(public_url, path)
-    normalized_path = _normalize_path(path)
-    if provider == "ngrok":
-        host = hostname or DEFAULT_NGROK_FORWARDING_HOST
-    elif provider == "cloudflare":
-        host = hostname or DEFAULT_CLOUDFLARE_TUNNEL_HOST
-    elif provider == "tailscale":
-        host = hostname or DEFAULT_TAILSCALE_FUNNEL_HOST
-    elif provider == "pinggy":
-        host = hostname or DEFAULT_PINGGY_FORWARDING_HOST
-    elif provider == "holepunch":
-        origin = f"http://{hostname}" if hostname else DEFAULT_HOLEPUNCH_CLIENT_ORIGIN
-        return _normalize_url(origin, path)
-    else:
-        host = hostname or DEFAULT_GENERIC_TUNNEL_HOST
-    return f"https://{host}{normalized_path}"
+    return get_tunnel_provider(provider).public_endpoint(public_url=public_url, hostname=hostname, path=path)
 
 
 def _url_origin(value: str) -> str:
     parsed = urlsplit(value)
     return urlunsplit(parsed._replace(path="", query="", fragment="")).rstrip("/")
-
-
-def _provider_plan(
-    provider: str,
-    *,
-    origin: str,
-    endpoint: str,
-    public_endpoint: str,
-    token_env: str,
-    config_path: str | Path,
-    output_dir: str | Path,
-    doctor_command: str,
-    ngrok_internal_url: str | None = None,
-    ngrok_endpoint_name: str = DEFAULT_NGROK_INTERNAL_ENDPOINT_NAME,
-) -> dict[str, Any]:
-    token = f"${{{token_env}}}"
-    bridge = None
-    output = Path(output_dir)
-    if provider == "ngrok":
-        internal_url = _ngrok_internal_endpoint_url(ngrok_internal_url)
-        public_origin = _display_public_endpoint("ngrok", _url_origin(public_endpoint))
-        agent_config_file = _shell_path(output / "ngrok-agent.yml")
-        traffic_policy_file = _shell_path(output / "ngrok-traffic-policy.yml")
-        commands = [
-            {
-                "id": "run-ngrok-agent",
-                "title": "Run the ngrok internal Agent Endpoint",
-                "description": (
-                    "Start the ngrok agent endpoint that privately forwards the ngrok Cloud Endpoint "
-                    "to the local snulbug proxy origin."
-                ),
-                "command": f"ngrok start --config {agent_config_file} --all",
-            },
-            {
-                "id": "attach-ngrok-cloud-policy",
-                "title": "Attach the Traffic Policy to your ngrok Cloud Endpoint",
-                "description": (
-                    "Create or choose the public Cloud Endpoint, then attach the generated Traffic Policy. "
-                    "The policy performs coarse MCP checks and forwards allowed traffic to the internal endpoint."
-                ),
-                "command": _shell_print_command(
-                    [
-                        f"In the ngrok dashboard, create or choose {public_origin}.",
-                        f"Attach {traffic_policy_file} as the endpoint Traffic Policy.",
-                    ]
-                ),
-            },
-        ]
-        traffic_policy = {
-            "path": traffic_policy_file,
-            "mode": "cloud-endpoint",
-            "internal_endpoint": internal_url,
-            "agent_config": agent_config_file,
-            "checks": [
-                "deny non-MCP paths",
-                "require Authorization header",
-                "require Bearer token shape",
-                "restrict HTTP methods",
-                "require JSON content type on POST",
-                "add snulbug/ngrok audit headers",
-                "forward allowed traffic to the ngrok internal Agent Endpoint",
-            ],
-        }
-        bridge = {
-            "transport": "ngrok-internal",
-            "mode": "cloud-endpoint",
-            "internal_url": internal_url,
-            "endpoint_name": ngrok_endpoint_name,
-            "agent_config": "ngrok-agent.yml",
-        }
-    elif provider == "cloudflare":
-        public_host = urlsplit(public_endpoint).hostname or DEFAULT_CLOUDFLARE_TUNNEL_HOST
-        commands = [
-            {
-                "id": "create-cloudflare-tunnel",
-                "title": "Create and route a Cloudflare Tunnel",
-                "description": "Create a named tunnel and route the public hostname to it.",
-                "command": "\n".join(
-                    [
-                        "cloudflared tunnel create snulbug-mcp",
-                        f"cloudflared tunnel route dns snulbug-mcp {public_host}",
-                    ]
-                ),
-            },
-            {
-                "id": "run-cloudflare-tunnel",
-                "title": "Run cloudflared with generated ingress config",
-                "description": "The generated config routes only the public MCP hostname to snulbug.",
-                "command": f"cloudflared tunnel --config {_shell_path(output / 'cloudflared.yml')} run snulbug-mcp",
-            },
-        ]
-        traffic_policy = None
-    elif provider == "tailscale":
-        funnel_target = _tailscale_target(origin)
-        commands = [
-            {
-                "id": "run-tailscale-funnel",
-                "title": "Expose snulbug with Tailscale Funnel",
-                "description": "Funnel exposes the snulbug proxy URL publicly; snulbug still enforces MCP policy.",
-                "command": f"sudo tailscale funnel {funnel_target}",
-            }
-        ]
-        traffic_policy = None
-    elif provider == "pinggy":
-        pinggy_target = _pinggy_target(origin)
-        commands = [
-            {
-                "id": "run-pinggy",
-                "title": "Expose snulbug with Pinggy",
-                "description": (
-                    "Point a Pinggy SSH HTTP tunnel at the snulbug proxy origin. "
-                    "Copy the HTTPS forwarding URL printed by Pinggy before running doctor."
-                ),
-                "command": f"ssh -p 443 -R0:{pinggy_target} free.pinggy.io",
-            }
-        ]
-        traffic_policy = None
-    elif provider == "holepunch":
-        origin_target = _host_port_from_origin(origin)
-        client_target = _host_port_from_origin(_url_origin(public_endpoint))
-        commands = [
-            {
-                "id": "run-hypertele-server",
-                "title": "Run the Hypertele server bridge on the snulbug machine",
-                "description": (
-                    "Expose only the local snulbug origin to allowed Holepunch peers. "
-                    "The command prints the server peer key for the client side."
-                ),
-                "command": (
-                    f"hypertele-server -l {origin_target['port']} --address {origin_target['host']} "
-                    f"-c {_shell_path(output / 'hypertele-server.json')} --private"
-                ),
-            },
-            {
-                "id": "run-hypertele-client",
-                "title": "Run the Hypertele client bridge on the MCP client machine",
-                "description": "Bind a local client-side MCP port and forward it over the private peer bridge.",
-                "command": (
-                    f"hypertele -p {client_target['port']} -c {_shell_path(output / 'hypertele-client.json')} --private"
-                ),
-            },
-        ]
-        traffic_policy = None
-        bridge = {
-            "transport": "hypertele",
-            "mode": "private",
-            "server_config": "hypertele-server.json",
-            "client_config": "hypertele-client.json",
-            "server_address": origin_target["host"],
-            "server_port": origin_target["port"],
-            "client_url": public_endpoint,
-            "client_host": client_target["host"],
-            "client_port": client_target["port"],
-        }
-    else:
-        commands = [
-            {
-                "id": "run-provider-tunnel",
-                "title": "Expose snulbug with your tunnel provider",
-                "description": "Point the tunnel at the snulbug proxy origin, not the upstream MCP server.",
-                "command": f"# Configure your tunnel provider to forward public HTTPS traffic to {origin}",
-            }
-        ]
-        traffic_policy = None
-        bridge = None
-
-    return {
-        "commands": commands,
-        "traffic_policy": traffic_policy,
-        "bridge": bridge if provider in {"holepunch", "ngrok"} else None,
-        "client": {
-            "url": public_endpoint,
-            "headers": {"Authorization": f"Bearer {token}"},
-        },
-        "doctor": {
-            "command": doctor_command,
-            "local_url": endpoint,
-            "public_url": public_endpoint,
-        },
-    }
-
-
-def _ngrok_target(origin: str) -> str:
-    parsed = urlsplit(origin)
-    if parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"} and not parsed.path:
-        return str(parsed.port or 80)
-    return origin
 
 
 def _ngrok_internal_endpoint_url(value: str | None) -> str:
@@ -813,30 +1110,11 @@ def _share_doctor_command(share_dir: str | Path | None) -> str:
 
 
 def _is_default_public_endpoint(provider: str, value: str) -> bool:
-    default_origin = _default_public_origin(provider)
-    return bool(default_origin and _url_origin(value) == default_origin)
-
-
-def _default_public_origin(provider: str) -> str | None:
-    host = DEFAULT_PUBLIC_HOSTS.get(provider)
-    if host is None:
-        return None
-    return f"https://{host}"
-
-
-def _default_public_url_display(provider: str, public_endpoint: str) -> str:
-    env = DEFAULT_PUBLIC_URL_ENVS[provider]
-    parsed = urlsplit(public_endpoint)
-    suffix = parsed.path or DEFAULT_MCP_PATH
-    if parsed.query:
-        suffix = f"{suffix}?{parsed.query}"
-    return f"${{{env}}}{suffix}"
+    return get_tunnel_provider(provider).is_default_public_endpoint(value)
 
 
 def _display_public_endpoint(provider: str, public_endpoint: str) -> str:
-    if _is_default_public_endpoint(provider, public_endpoint):
-        return _default_public_url_display(provider, public_endpoint)
-    return public_endpoint
+    return get_tunnel_provider(provider).display_public_endpoint(public_endpoint)
 
 
 def display_tunnel_public_endpoint(provider: str, public_endpoint: str) -> str:
@@ -846,45 +1124,7 @@ def display_tunnel_public_endpoint(provider: str, public_endpoint: str) -> str:
 
 
 def _default_public_url_report_lines(provider: str) -> list[str]:
-    env = DEFAULT_PUBLIC_URL_ENVS[provider]
-    origin = _default_public_origin(provider) or ""
-    title = {
-        "generic": "Public tunnel URL",
-        "ngrok": "Ngrok forwarding URL",
-        "cloudflare": "Cloudflare Tunnel URL",
-        "tailscale": "Tailscale Funnel URL",
-        "pinggy": "Pinggy forwarding URL",
-    }[provider]
-    note = {
-        "generic": "Set this to the exact public HTTPS origin printed or assigned by your tunnel provider.",
-        "ngrok": (
-            "Set this to the exact `Forwarding` HTTPS origin printed by the ngrok CLI. "
-            "Do not assume an `ngrok.app` domain; random free URLs may use `ngrok-free.dev`, "
-            "`ngrok-free.app`, or another ngrok-owned domain."
-        ),
-        "cloudflare": (
-            "Set this to the actual Cloudflare Tunnel HTTPS origin that routes to snulbug. "
-            "For named tunnels, pass `--hostname` or replace the generated placeholder in "
-            "`cloudflared.yml` before running cloudflared."
-        ),
-        "tailscale": (
-            "Set this to the public Funnel HTTPS origin for this machine, usually `https://HOST.TAILNET.ts.net`."
-        ),
-        "pinggy": (
-            "Set this to the exact Pinggy HTTPS URL printed by the SSH tunnel command. "
-            "Free Pinggy URLs commonly use a `pinggy-free.link` domain."
-        ),
-    }[provider]
-    return [
-        f"## {title}",
-        "",
-        note,
-        "",
-        "```bash",
-        f"export {env}={origin}",
-        "```",
-        "",
-    ]
+    return get_tunnel_provider(provider).default_public_url_report_lines()
 
 
 def _tunnel_init_files(
@@ -895,7 +1135,20 @@ def _tunnel_init_files(
     public_endpoint: str,
     token_env: str,
     plan: Mapping[str, Any],
+    config_path: str | Path,
+    output_dir: str | Path,
+    doctor_command: str,
 ) -> list[dict[str, str]]:
+    provider_plugin = get_tunnel_provider(provider)
+    context = TunnelProviderContext(
+        origin=origin,
+        endpoint=endpoint,
+        public_endpoint=public_endpoint,
+        token_env=token_env,
+        config_path=config_path,
+        output_dir=output_dir,
+        doctor_command=doctor_command,
+    )
     files = [
         {
             "path": "README.md",
@@ -910,47 +1163,7 @@ def _tunnel_init_files(
             ),
         }
     ]
-    if provider == "cloudflare":
-        files.append(
-            {
-                "path": "cloudflared.yml",
-                "kind": "cloudflared-config",
-                "contents": _cloudflared_config(origin, public_endpoint),
-            }
-        )
-    elif provider == "ngrok":
-        bridge = plan.get("bridge") if isinstance(plan.get("bridge"), Mapping) else {}
-        internal_url = str(bridge.get("internal_url") or DEFAULT_NGROK_INTERNAL_URL)
-        endpoint_name = str(bridge.get("endpoint_name") or DEFAULT_NGROK_INTERNAL_ENDPOINT_NAME)
-        files.append(
-            {
-                "path": "ngrok-traffic-policy.yml",
-                "kind": "ngrok-traffic-policy",
-                "contents": _ngrok_traffic_policy(public_endpoint, internal_url=internal_url),
-            }
-        )
-        files.append(
-            {
-                "path": "ngrok-agent.yml",
-                "kind": "ngrok-agent-config",
-                "contents": _ngrok_agent_config(origin, internal_url=internal_url, endpoint_name=endpoint_name),
-            }
-        )
-    elif provider == "holepunch":
-        files.extend(
-            [
-                {
-                    "path": "hypertele-server.json",
-                    "kind": "hypertele-server-config",
-                    "contents": _hypertele_server_config(),
-                },
-                {
-                    "path": "hypertele-client.json",
-                    "kind": "hypertele-client-config",
-                    "contents": _hypertele_client_config(),
-                },
-            ]
-        )
+    files.extend(provider_plugin.init_files(context, plan))
     return files
 
 
@@ -1035,12 +1248,10 @@ def _tunnel_readme(
 
 
 def _provider_readme_notes(provider: str, plan: Mapping[str, Any]) -> str:
-    if provider == "holepunch":
-        return _holepunch_readme_notes(plan)
-    if provider == "tailscale":
-        return _tailscale_readme_notes(plan)
-    if provider != "ngrok":
-        return ""
+    return get_tunnel_provider(provider).readme_notes(plan)
+
+
+def _ngrok_readme_notes(plan: Mapping[str, Any]) -> str:
     traffic_policy = plan.get("traffic_policy")
     if not isinstance(traffic_policy, Mapping):
         return ""
@@ -1433,21 +1644,14 @@ def _host_from_url(value: str | None) -> str | None:
 
 
 def _infer_tunnel_provider(headers: Mapping[str, str], public_url: str | None) -> str:
-    host = (_host_from_url(public_url) or headers.get("x-forwarded-host") or headers.get("host") or "").lower()
-    header_blob = " ".join(f"{name}:{value}" for name, value in headers.items()).lower()
     explicit_provider = headers.get("x-snulbug-tunnel-provider", "").lower()
-    if explicit_provider in TUNNEL_PROVIDERS:
+    if explicit_provider in list_tunnel_providers():
         return explicit_provider
-    if "cf-ray" in headers or "cf-connecting-ip" in headers or "cloudflare" in header_blob:
-        return "cloudflare"
-    if "ngrok" in host or "ngrok" in header_blob:
-        return "ngrok"
-    if host.endswith(".ts.net") or ".ts.net" in host:
-        return "tailscale"
-    if "pinggy" in host or "pinggy" in header_blob:
-        return "pinggy"
-    if "holepunch" in header_blob or "hypertele" in header_blob:
-        return "holepunch"
+    for provider in _TUNNEL_PROVIDER_REGISTRY.values():
+        if provider.name == "generic":
+            continue
+        if provider.matches_request(headers, public_url):
+            return provider.name
     return "generic"
 
 

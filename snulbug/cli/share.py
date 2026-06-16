@@ -30,6 +30,15 @@ CLOUDFLARE_ACCESS_PROFILES = ("access-gate", "service-token", "oauth-resource", 
 TAILSCALE_PROFILES = ("funnel-public", "serve-tailnet", "oauth-resource")
 
 
+def _tunnel_provider_help(*, include_auto: bool = False) -> str:
+    from ..tunnel import list_tunnel_providers
+
+    providers = list_tunnel_providers()
+    if include_auto:
+        providers = ("auto", *providers)
+    return ", ".join(providers)
+
+
 def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     mcp_share = mcp_subparsers.add_parser(
         "share",
@@ -864,9 +873,9 @@ def _add_quickstart_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--tunnel-provider",
-        choices=QUICKSTART_TUNNEL_PROVIDERS,
         default="auto",
-        help="provider label for tunnel-aware audit fields",
+        metavar="PROVIDER",
+        help=f"provider label for tunnel-aware audit fields; built-ins: {_tunnel_provider_help(include_auto=True)}",
     )
     parser.add_argument("--tunnel-public-url", help="public tunnel URL to include in audit fields")
     _add_cloudflare_profile_args(parser)
@@ -1023,9 +1032,9 @@ def _add_share_create_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--directory", type=Path, help="share session directory")
     parser.add_argument(
         "--provider",
-        choices=PROVIDERS,
         default="holepunch",
-        help="tunnel or peer bridge provider",
+        metavar="PROVIDER",
+        help=f"tunnel or peer bridge provider; built-ins: {_tunnel_provider_help()}",
     )
     parser.add_argument("--preset", default="tunnel-safe", help="MCP policy preset")
     parser.add_argument("--upstream", default="http://127.0.0.1:9000", help="upstream MCP HTTP server")

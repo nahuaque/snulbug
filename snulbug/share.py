@@ -47,7 +47,12 @@ from .share_session import (
     write_share_session_model,
 )
 from .tool_risk import classify_mcp_tool_risks
-from .tunnel import DEFAULT_NGROK_INTERNAL_ENDPOINT_NAME, TUNNEL_PROVIDERS, init_tunnel_provider
+from .tunnel import (
+    DEFAULT_NGROK_INTERNAL_ENDPOINT_NAME,
+    get_tunnel_provider,
+    init_tunnel_provider,
+    list_tunnel_providers,
+)
 
 DEFAULT_SHARE_PROVIDER = "holepunch"
 DEFAULT_SHARE_PRESET = "tunnel-safe"
@@ -113,8 +118,10 @@ def create_mcp_share(
 ) -> dict[str, Any]:
     """Create a bounded, ready-to-run MCP share session directory."""
 
-    if provider not in TUNNEL_PROVIDERS:
-        raise ValueError(f"provider must be one of: {', '.join(TUNNEL_PROVIDERS)}")
+    try:
+        provider = get_tunnel_provider(provider).name
+    except ValueError as exc:
+        raise ValueError(f"provider must be one of: {', '.join(list_tunnel_providers())}") from exc
     if not ttl.strip():
         raise ValueError("ttl must be non-empty")
     if not task.strip():

@@ -4,7 +4,16 @@ import json
 
 import pytest
 
-from snulbug import format_tunnel_init_report, init_tunnel_provider
+from snulbug import (
+    TunnelProvider,
+    TunnelProviderContext,
+    build_tunnel_audit_metadata,
+    format_tunnel_init_report,
+    init_tunnel_provider,
+    list_tunnel_providers,
+    register_tunnel_provider,
+)
+from snulbug import tunnel as tunnel_module
 from snulbug.simulator import main as simulator_main
 
 
@@ -341,6 +350,75 @@ def test_tunnel_init_holepunch_generates_hypertele_bridge_files(tmp_path):
     assert "Authorization: Bearer ${SNULBUG_TOKEN}" in readme_text
     assert 'tunnel_provider = "holepunch"' in readme_text
     assert "snulbug mcp share lease create" in readme_text
+
+
+def test_tunnel_provider_registry_accepts_custom_provider(tmp_path, monkeypatch, request):
+    monkeypatch.delitem(tunnel_module._TUNNEL_PROVIDER_REGISTRY, "fixture", raising=False)
+
+    class FixtureTunnelProvider(TunnelProvider):
+        name = "fixture"
+        public_url_env = "FIXTURE_TUNNEL_URL"
+        default_public_host = "fixture.example"
+
+        def build_plan(self, context: TunnelProviderContext) -> dict[str, object]:
+            return {
+                "commands": [
+                    {
+                        "id": "run-fixture",
+                        "title": "Run fixture tunnel",
+                        "description": "Fixture provider command",
+                        "command": f"fixture tunnel --to {context.origin}",
+                    }
+                ],
+                "traffic_policy": None,
+                "bridge": None,
+                "client": self.client(context),
+                "doctor": self.doctor(context),
+            }
+
+        def init_files(self, context: TunnelProviderContext, plan: dict[str, object]) -> list[dict[str, str]]:
+            return [
+                {
+                    "path": "fixture-provider.txt",
+                    "kind": "fixture-config",
+                    "contents": f"origin={context.origin}\npublic={context.public_endpoint}\n",
+                }
+            ]
+
+        def audit_metadata(self, headers: dict[str, str], metadata: dict[str, object]) -> dict[str, object]:
+            return {"request_id": headers.get("x-fixture-request-id")}
+
+    register_tunnel_provider(FixtureTunnelProvider())
+    request.addfinalizer(lambda: tunnel_module._TUNNEL_PROVIDER_REGISTRY.pop("fixture", None))
+
+    result = init_tunnel_provider(
+        provider="fixture",
+        local_url="http://127.0.0.1:8080/mcp",
+        output_dir=tmp_path,
+    )
+    report = format_tunnel_init_report(result)
+    metadata = build_tunnel_audit_metadata(
+        {
+            "type": "http",
+            "scheme": "https",
+            "path": "/mcp",
+            "headers": [
+                (b"host", b"fixture.example"),
+                (b"x-snulbug-tunnel-provider", b"fixture"),
+                (b"x-fixture-request-id", b"req-123"),
+            ],
+        }
+    )
+
+    assert "fixture" in list_tunnel_providers()
+    assert result["public_url"] == "https://fixture.example/mcp"
+    assert result["commands"][0]["command"] == "fixture tunnel --to http://127.0.0.1:8080"
+    assert "Public MCP URL: ${FIXTURE_TUNNEL_URL}/mcp" in report
+    assert (tmp_path / "fixture-provider.txt").read_text(encoding="utf-8") == (
+        "origin=http://127.0.0.1:8080\npublic=https://fixture.example/mcp\n"
+    )
+    assert metadata["provider"] == "fixture"
+    assert metadata["fixture"] == {"request_id": "req-123"}
 
 
 def test_format_tunnel_init_report_includes_commands_and_client(tmp_path, monkeypatch):
