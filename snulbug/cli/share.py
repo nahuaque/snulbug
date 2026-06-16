@@ -59,15 +59,8 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
     share_member = share_subparsers.add_parser("member", help="attach remote members to a share session")
     _add_share_member_args(share_member)
 
-    share_lab = share_subparsers.add_parser("lab", help="run the one-command local MCP policy lab")
-    share_lab.add_argument("--output-dir", type=Path, default=Path(".snulbug-lab"), help="lab artifact directory")
-    share_lab.add_argument(
-        "--force",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="overwrite the lab artifact directory",
-    )
-    add_compact_arg(share_lab)
+    share_demo = share_subparsers.add_parser("demo", help="run local share workflow demos")
+    _add_share_demo_args(share_demo)
 
     share_status = share_subparsers.add_parser("status", help="summarize a generated share session")
     share_status.add_argument("directory", type=Path, help="share session directory")
@@ -287,23 +280,6 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
         help="run auth doctor live metadata and tools/list checks",
     )
     add_compact_arg(share_auth_conformance_run)
-    share_auth_lab = share_auth_subparsers.add_parser(
-        "lab",
-        help="run a local OAuth scope + task lease auth lab",
-    )
-    share_auth_lab.add_argument(
-        "--output-dir",
-        type=Path,
-        default=Path(".snulbug-auth-lab"),
-        help="auth lab artifact directory",
-    )
-    share_auth_lab.add_argument(
-        "--force",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="overwrite the auth lab artifact directory",
-    )
-    add_compact_arg(share_auth_lab)
     share_auth_recipe = share_auth_subparsers.add_parser(
         "recipe",
         help="generate OAuth/Access provider setup guidance for an MCP share",
@@ -593,14 +569,8 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
         if command == "member":
             return _handle_share_member_command(args, parser, attach_mcp_share_member=attach_mcp_share_member)
 
-        if command == "lab":
-            from ..lab import run_mcp_lab
-
-            result = run_mcp_lab(args.output_dir, force=args.force, emit=not args.compact)
-            status = 0 if result["ok"] else 1
-            if args.compact:
-                write_generated_session_output(result, compact=True)
-            return status
+        if command == "demo":
+            return _handle_share_demo_command(args, parser)
 
         if command == "status":
             result = share_status(args.directory, timeout=args.timeout, live_checks=args.live_checks)
@@ -734,14 +704,6 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                     return status
                 parser.error(f"unknown mcp share auth conformance command: {args.auth_conformance_command}")
                 return 2
-            if args.share_auth_command == "lab":
-                from ..lab import run_mcp_auth_lab
-
-                result = run_mcp_auth_lab(args.output_dir, force=args.force, emit=not args.compact)
-                status = 0 if result["ok"] else 1
-                if args.compact:
-                    write_generated_session_output(result, compact=True)
-                return status
             if args.share_auth_command == "recipe":
                 result = generate_mcp_auth_recipe(
                     args.provider,
@@ -1313,6 +1275,58 @@ def _add_share_lease_args(parser: argparse.ArgumentParser) -> None:
     lease_revoke.add_argument("lease_id", help="lease id to revoke")
     lease_revoke.add_argument("--file", type=Path, default=Path("leases.json"), help="lease JSON file")
     add_compact_arg(lease_revoke)
+
+
+def _add_share_demo_args(parser: argparse.ArgumentParser) -> None:
+    demo_subparsers = parser.add_subparsers(dest="share_demo_command", required=True)
+
+    local_demo = demo_subparsers.add_parser("local", help="run the one-command local MCP policy lab")
+    local_demo.add_argument("--output-dir", type=Path, default=Path(".snulbug-lab"), help="lab artifact directory")
+    local_demo.add_argument(
+        "--force",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="overwrite the lab artifact directory",
+    )
+    add_compact_arg(local_demo)
+
+    auth_demo = demo_subparsers.add_parser("auth", help="run a local OAuth scope + task lease auth lab")
+    auth_demo.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path(".snulbug-auth-lab"),
+        help="auth lab artifact directory",
+    )
+    auth_demo.add_argument(
+        "--force",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="overwrite the auth lab artifact directory",
+    )
+    add_compact_arg(auth_demo)
+
+
+def _handle_share_demo_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    if args.share_demo_command == "local":
+        from ..lab import run_mcp_lab
+
+        result = run_mcp_lab(args.output_dir, force=args.force, emit=not args.compact)
+        status = 0 if result["ok"] else 1
+        if args.compact:
+            write_generated_session_output(result, compact=True)
+        return status
+
+    if args.share_demo_command == "auth":
+        from ..lab import run_mcp_auth_lab
+
+        result = run_mcp_auth_lab(args.output_dir, force=args.force, emit=not args.compact)
+        status = 0 if result["ok"] else 1
+        if args.compact:
+            write_generated_session_output(result, compact=True)
+        return status
+
+    parser.error(f"unknown mcp share demo command: {args.share_demo_command}")
+    return 2
 
 
 def _add_share_member_args(parser: argparse.ArgumentParser) -> None:

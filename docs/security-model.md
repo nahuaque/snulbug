@@ -93,7 +93,7 @@ metadata, issuer/JWKS/introspection reachability, public URL and audience
 alignment, resource indicator drift, raw-token logging safeguards, Cloudflare
 Access conflicts, and whether scope maps refer to actual discovered MCP tools.
 
-Run `uv run snulbug mcp share auth lab` to inspect the composed auth path in a
+Run `uv run snulbug mcp share demo auth` to inspect the composed auth path in a
 self-contained demo. It proves one allowed call and two denied calls across
 OAuth scopes, task leases, Lua policy, and redacted audit evidence.
 

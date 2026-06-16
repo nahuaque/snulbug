@@ -282,7 +282,7 @@ To exercise the full auth model locally without an external identity provider,
 run the auth lab:
 
 ```bash
-uv run snulbug mcp share auth lab
+uv run snulbug mcp share demo auth
 ```
 
 The lab starts a mock issuer and MCP upstream, mints demo JWTs, creates a task

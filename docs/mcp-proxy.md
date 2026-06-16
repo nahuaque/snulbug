@@ -573,7 +573,7 @@ reviewable after the session.
 You can exercise that model locally with:
 
 ```bash
-uv run snulbug mcp share auth lab
+uv run snulbug mcp share demo auth
 ```
 
 The lab writes `.snulbug-auth-lab/AUTH_LAB.md` plus the generated config,

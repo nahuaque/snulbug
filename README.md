@@ -207,7 +207,7 @@ Run the local policy lab when you want the full lifecycle without wiring a real
 server:
 
 ```bash
-uv run snulbug mcp share lab
+uv run snulbug mcp share demo local
 ```
 
 The lab creates fake MCP upstreams behind one facade, records traffic, learns a
@@ -219,7 +219,7 @@ valid OAuth subject, tenant/group identity fence, mapped MCP tool scope, active
 task lease, Lua approval, and redacted audit output.
 
 ```bash
-uv run snulbug mcp share auth lab
+uv run snulbug mcp share demo auth
 ```
 
 It writes a mock issuer, JWKS, demo tokens, lease file, proxy config, requests,
