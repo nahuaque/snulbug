@@ -7,7 +7,6 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from ..auth_recipes import AUTH_RECIPE_PROVIDERS
 from ..cli_helpers import (
     add_allow_path_arg,
     add_compact_arg,
@@ -37,6 +36,12 @@ def _tunnel_provider_help(*, include_auto: bool = False) -> str:
     if include_auto:
         providers = ("auto", *providers)
     return ", ".join(providers)
+
+
+def _auth_provider_help() -> str:
+    from ..auth_providers import list_auth_providers
+
+    return ", ".join(list_auth_providers())
 
 
 def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -146,7 +151,7 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
         "init",
         help="generate provider auth setup files for an MCP share",
     )
-    share_auth_init.add_argument("--provider", choices=AUTH_RECIPE_PROVIDERS, required=True)
+    share_auth_init.add_argument("--provider", required=True, help=f"auth provider ({_auth_provider_help()})")
     share_auth_init.add_argument(
         "--url",
         "--public-url",
@@ -293,7 +298,7 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
         "recipe",
         help="generate OAuth/Access provider setup guidance for an MCP share",
     )
-    share_auth_recipe.add_argument("--provider", choices=AUTH_RECIPE_PROVIDERS, required=True)
+    share_auth_recipe.add_argument("--provider", required=True, help=f"auth provider ({_auth_provider_help()})")
     share_auth_recipe.add_argument(
         "--url",
         "--public-url",

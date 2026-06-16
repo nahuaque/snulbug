@@ -5,13 +5,12 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-AUTH_RECIPE_PROVIDERS = (
-    "keycloak",
-    "auth0",
-    "okta",
-    "entra",
-    "cloudflare-access",
-    "github-oidc",
+from .auth_providers import (
+    AuthProvider,
+    AuthProviderRecipeContext,
+    get_auth_provider,
+    list_auth_providers,
+    register_auth_provider,
 )
 
 DEFAULT_AUTH_SCOPES = (
@@ -23,17 +22,126 @@ DEFAULT_AUTH_SCOPES = (
 
 DEFAULT_AUTH_INIT_ROOT = Path(".snulbug/auth")
 
-PROVIDER_DOCS = {
-    "keycloak": "https://www.keycloak.org/docs/latest/server_admin/#_clients",
-    "auth0": "https://auth0.com/docs/get-started/auth0-overview/create-applications",
-    "okta": "https://developer.okta.com/docs/guides/customize-authz-server/main/",
-    "entra": "https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app",
-    "cloudflare-access": (
+
+class _OAuthRecipeProvider(AuthProvider):
+    def __init__(self, *, name: str, title: str, docs: Sequence[str]) -> None:
+        self.name = name
+        self.title = title
+        self.docs = tuple(docs)
+
+    def recipe(self, context: AuthProviderRecipeContext) -> dict[str, Any]:
+        issuer = _provider_issuer(
+            self.name,
+            issuer=context.issuer,
+            domain=context.domain,
+            tenant=context.tenant,
+            realm=context.realm,
+            auth_server_id=context.auth_server_id,
+        )
+        audience = context.audience or context.public_url
+        return _oauth_provider_recipe(
+            self.name,
+            title=self.title,
+            docs=self.docs,
+            public_url=context.public_url,
+            issuer=issuer,
+            audience=audience,
+            client_id=context.client_id,
+            tenant=context.tenant,
+            domain=context.domain,
+            realm=context.realm,
+            auth_server_id=context.auth_server_id,
+            scopes=context.scopes,
+        )
+
+    def claim_context(self, claims: Mapping[str, Any]) -> Mapping[str, Any]:
+        if self.name == "keycloak":
+            from .auth_providers import KeycloakAuthProvider
+
+            return KeycloakAuthProvider().claim_context(claims)
+        if self.name == "entra":
+            from .auth_providers import EntraAuthProvider
+
+            return EntraAuthProvider().claim_context(claims)
+        return {}
+
+
+class _CloudflareAccessRecipeProvider(AuthProvider):
+    name = "cloudflare-access"
+    title = "Cloudflare Access"
+    docs = (
         "https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/"
-        "self-hosted-public-app/"
-    ),
-    "github-oidc": "https://docs.github.com/en/actions/concepts/security/openid-connect",
-}
+        "self-hosted-public-app/",
+    )
+    context_key = "cloudflare_access"
+
+    def recipe(self, context: AuthProviderRecipeContext) -> dict[str, Any]:
+        return _cloudflare_access_recipe(
+            context.public_url,
+            title=self.title,
+            docs=self.docs,
+            scopes=context.scopes,
+        )
+
+    def claim_context(self, claims: Mapping[str, Any]) -> Mapping[str, Any]:
+        from .auth_providers import CloudflareAccessAuthProvider
+
+        return CloudflareAccessAuthProvider().claim_context(claims)
+
+
+class _GitHubOidcRecipeProvider(AuthProvider):
+    name = "github-oidc"
+    title = "GitHub Actions OIDC"
+    docs = ("https://docs.github.com/en/actions/concepts/security/openid-connect",)
+    context_key = "github_actions"
+
+    def recipe(self, context: AuthProviderRecipeContext) -> dict[str, Any]:
+        return _github_oidc_recipe(
+            context.public_url,
+            title=self.title,
+            docs=self.docs,
+            issuer=context.issuer,
+            audience=context.audience,
+            scopes=context.scopes,
+        )
+
+    def claim_context(self, claims: Mapping[str, Any]) -> Mapping[str, Any]:
+        from .auth_providers import GitHubActionsOidcAuthProvider
+
+        return GitHubActionsOidcAuthProvider().claim_context(claims)
+
+
+def _register_builtin_auth_recipe_providers() -> None:
+    for provider in (
+        _OAuthRecipeProvider(
+            name="keycloak",
+            title="Keycloak",
+            docs=("https://www.keycloak.org/docs/latest/server_admin/#_clients",),
+        ),
+        _OAuthRecipeProvider(
+            name="auth0",
+            title="Auth0",
+            docs=("https://auth0.com/docs/get-started/auth0-overview/create-applications",),
+        ),
+        _OAuthRecipeProvider(
+            name="okta",
+            title="Okta",
+            docs=("https://developer.okta.com/docs/guides/customize-authz-server/main/",),
+        ),
+        _OAuthRecipeProvider(
+            name="entra",
+            title="Microsoft Entra ID",
+            docs=("https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app",),
+        ),
+        _CloudflareAccessRecipeProvider(),
+        _GitHubOidcRecipeProvider(),
+    ):
+        register_auth_provider(provider, replace=True)
+
+
+_register_builtin_auth_recipe_providers()
+AUTH_RECIPE_PROVIDERS = list_auth_providers()
+PROVIDER_DOCS = {name: provider.docs[0] for name in AUTH_RECIPE_PROVIDERS if (provider := get_auth_provider(name)).docs}
 
 
 def generate_mcp_auth_recipe(
@@ -53,38 +161,23 @@ def generate_mcp_auth_recipe(
 ) -> dict[str, Any]:
     """Generate provider-specific registration/setup guidance for an MCP share."""
 
-    normalized_provider = provider.strip().lower()
-    if normalized_provider not in AUTH_RECIPE_PROVIDERS:
-        raise ValueError(f"provider must be one of: {', '.join(AUTH_RECIPE_PROVIDERS)}")
+    provider_plugin = get_auth_provider(provider)
+    normalized_provider = provider_plugin.normalized_name
     url = _require_public_url(public_url)
-    scope_values = _unique_strings(scopes or DEFAULT_AUTH_SCOPES)
-
-    if normalized_provider == "cloudflare-access":
-        recipe = _cloudflare_access_recipe(url, scopes=scope_values)
-    elif normalized_provider == "github-oidc":
-        recipe = _github_oidc_recipe(url, issuer=issuer, audience=audience, scopes=scope_values)
-    else:
-        recipe_issuer = _provider_issuer(
-            normalized_provider,
-            issuer=issuer,
-            domain=domain,
-            tenant=tenant,
-            realm=realm,
-            auth_server_id=auth_server_id,
-        )
-        recipe_audience = audience or url
-        recipe = _oauth_provider_recipe(
-            normalized_provider,
-            public_url=url,
-            issuer=recipe_issuer,
-            audience=recipe_audience,
-            client_id=client_id,
-            tenant=tenant,
-            domain=domain,
-            realm=realm,
-            auth_server_id=auth_server_id,
-            scopes=scope_values,
-        )
+    scope_values = tuple(_unique_strings(scopes or DEFAULT_AUTH_SCOPES))
+    context = AuthProviderRecipeContext(
+        public_url=url,
+        issuer=issuer,
+        audience=audience,
+        client_id=client_id,
+        tenant=tenant,
+        domain=domain,
+        realm=realm,
+        auth_server_id=auth_server_id,
+        scopes=scope_values,
+    )
+    recipe = provider_plugin.recipe(context)
+    recipe.setdefault("provider", normalized_provider)
 
     report = format_mcp_auth_recipe_report(recipe)
     recipe["report"] = report
@@ -270,6 +363,8 @@ def format_mcp_auth_init_report(result: Mapping[str, Any]) -> str:
 def _oauth_provider_recipe(
     provider: str,
     *,
+    title: str,
+    docs: Sequence[str],
     public_url: str,
     issuer: str,
     audience: str,
@@ -295,7 +390,7 @@ def _oauth_provider_recipe(
         "ok": True,
         "kind": "snulbug.auth.recipe",
         "provider": provider,
-        "title": _provider_title(provider),
+        "title": title,
         "public_url": public_url,
         "issuer": issuer,
         "audience": audience,
@@ -325,16 +420,22 @@ def _oauth_provider_recipe(
         ),
         "commands": _auth_recipe_commands(public_url),
         "notes": _oauth_provider_notes(provider, public_url=public_url, audience=audience),
-        "docs": [PROVIDER_DOCS[provider]],
+        "docs": list(docs),
     }
 
 
-def _cloudflare_access_recipe(public_url: str, *, scopes: Sequence[str]) -> dict[str, Any]:
+def _cloudflare_access_recipe(
+    public_url: str,
+    *,
+    title: str,
+    docs: Sequence[str],
+    scopes: Sequence[str],
+) -> dict[str, Any]:
     return {
         "ok": True,
         "kind": "snulbug.auth.recipe",
         "provider": "cloudflare-access",
-        "title": "Cloudflare Access",
+        "title": title,
         "public_url": public_url,
         "scopes": list(scopes),
         "summary": (
@@ -367,13 +468,15 @@ def _cloudflare_access_recipe(public_url: str, *, scopes: Sequence[str]) -> dict
             'Use `cloudflare_access = "audit"` first if you want to observe headers before enforcing.',
             "Use snulbug leases and Lua policy for task-specific capability bounds after Access succeeds.",
         ],
-        "docs": [PROVIDER_DOCS["cloudflare-access"]],
+        "docs": list(docs),
     }
 
 
 def _github_oidc_recipe(
     public_url: str,
     *,
+    title: str,
+    docs: Sequence[str],
     issuer: str | None,
     audience: str | None,
     scopes: Sequence[str],
@@ -384,7 +487,7 @@ def _github_oidc_recipe(
         "ok": True,
         "kind": "snulbug.auth.recipe",
         "provider": "github-oidc",
-        "title": "GitHub Actions OIDC",
+        "title": title,
         "public_url": public_url,
         "issuer": recipe_issuer,
         "audience": recipe_audience,
@@ -421,7 +524,7 @@ def _github_oidc_recipe(
             "Bind the task lease to the exact workflow subject where possible; use Lua for richer workflow fences.",
             "Keep `lease_required = true` so a valid GitHub OIDC token is not enough by itself.",
         ],
-        "docs": [PROVIDER_DOCS["github-oidc"]],
+        "docs": list(docs),
     }
 
 
@@ -657,17 +760,6 @@ def _write_auth_init_file(path: Path, content: str, *, force: bool) -> None:
     if content and not content.endswith("\n"):
         content += "\n"
     path.write_text(content, encoding="utf-8")
-
-
-def _provider_title(provider: str) -> str:
-    return {
-        "keycloak": "Keycloak",
-        "auth0": "Auth0",
-        "okta": "Okta",
-        "entra": "Microsoft Entra ID",
-        "cloudflare-access": "Cloudflare Access",
-        "github-oidc": "GitHub Actions OIDC",
-    }[provider]
 
 
 def _client_suffix(client_id: str | None) -> str:

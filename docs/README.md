@@ -29,6 +29,7 @@ share create -> share run -> share status -> share policy amend -> share policy 
 - [Tunnel provider plugins](tunnel-providers.md)
 - [MCP client setup recipes](mcp-client-recipes.md)
 - [MCP auth interop recipes](mcp-auth-recipes.md)
+- [Auth provider plugins](auth-providers.md)
 - [OAuth claim-policy examples](../examples/auth_claim_patterns/README.md)
 - [Provider-aware Lua policy templates](../examples/provider_policy_templates/README.md)
 - [Codespaces and devcontainers](devcontainers.md)

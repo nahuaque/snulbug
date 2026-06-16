@@ -2,6 +2,14 @@
 
 __version__ = "0.1.1"
 
+from .auth_providers import (
+    AuthProvider,
+    AuthProviderRecipeContext,
+    auth_provider_claim_context,
+    get_auth_provider,
+    list_auth_providers,
+    register_auth_provider,
+)
 from .auth_recipes import (
     AUTH_RECIPE_PROVIDERS,
     format_mcp_auth_init_report,
@@ -308,6 +316,8 @@ __all__ = [
     "ConfirmationBroker",
     "CONTROL_EVENT_SCHEMA",
     "AUTH_RECIPE_PROVIDERS",
+    "AuthProvider",
+    "AuthProviderRecipeContext",
     "DEFAULT_FABRIC_MEMBER_REGISTRY",
     "DEFAULT_FABRIC_MEMBER_REGISTRY_KEY",
     "DEFAULT_FABRIC_MEMBER_TTL_SECONDS",
@@ -413,6 +423,7 @@ __all__ = [
     "attach_mcp_share_member",
     "auth_runtime_snapshot",
     "auth_runtime_summary",
+    "auth_provider_claim_context",
     "build_audit_event",
     "build_event_dispatcher",
     "build_fabric_audit_metadata",
@@ -492,6 +503,7 @@ __all__ = [
     "format_tunnel_doctor_report",
     "format_tunnel_init_report",
     "get_tunnel_provider",
+    "get_auth_provider",
     "generate_fabric_conformance_pack",
     "generate_auth_conformance_pack",
     "generate_mcp_preset",
@@ -521,6 +533,7 @@ __all__ = [
     "mcp_tool_digest",
     "member_upstreams",
     "list_builtin_presets",
+    "list_auth_providers",
     "list_tunnel_providers",
     "list_leases",
     "open_fabric_runtime_state_store",
@@ -536,6 +549,7 @@ __all__ = [
     "reconcile_policy_activation",
     "register_fabric_member",
     "register_discovery_provider",
+    "register_auth_provider",
     "register_tunnel_provider",
     "redact_secrets",
     "render_gateway_toml",
