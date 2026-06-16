@@ -6303,7 +6303,7 @@ def _share_member_attach_payload(
         raise ValueError(f"share member kind must be one of: {', '.join(SHARE_MEMBER_KINDS)}")
     resolved_member_id = member_id or document.get("member_id") or document.get("id")
     if not isinstance(resolved_member_id, str) or not resolved_member_id.strip():
-        raise ValueError("share attach requires --member-id or metadata member_id")
+        raise ValueError("share member attach requires --member-id or metadata member_id")
     resolved_role = str(document.get("role") or role).replace("-", "_")
     resolved_status = str(document.get("status") or status).replace("-", "_")
     resolved_ttl = float(document.get("ttl_seconds") or ttl_seconds)
@@ -6317,7 +6317,7 @@ def _share_member_attach_payload(
         **dict(_mapping(document.get("metadata"))),
         **dict(metadata or {}),
         "kind": resolved_kind,
-        "attached_by": "snulbug mcp share attach",
+        "attached_by": "snulbug mcp share member attach",
         "attached_at": _now_iso(),
     }
     for field in ("codespace", "devcontainer", "container", "holepunch"):
@@ -6420,7 +6420,7 @@ def _share_member_discovery_provider_toml(
         config_path.parent,
         registry,
     )
-    lines = ["# Remote members attached by `snulbug mcp share attach`."]
+    lines = ["# Remote members attached by `snulbug mcp share member attach`."]
     if include_table:
         lines.extend(["[mcp.fabric.discovery]", "enabled = true", ""])
     lines.extend(

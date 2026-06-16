@@ -56,8 +56,8 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
     share_lease = share_subparsers.add_parser("lease", help="create and manage task-scoped MCP capability leases")
     _add_share_lease_args(share_lease)
 
-    share_attach = share_subparsers.add_parser("attach", help="attach a remote fabric member to a share session")
-    _add_share_attach_args(share_attach)
+    share_member = share_subparsers.add_parser("member", help="attach remote members to a share session")
+    _add_share_member_args(share_member)
 
     share_codespace = share_subparsers.add_parser("codespace", help="attach GitHub Codespace MCP upstreams")
     _add_share_codespace_args(share_codespace)
@@ -593,28 +593,8 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
             write_generated_session_output(result, compact=args.compact)
             return status
 
-        if command == "attach":
-            directory = _share_directory_arg(args)
-            result = attach_mcp_share_member(
-                directory,
-                member_id=args.member_id,
-                kind=args.kind,
-                upstreams=_parse_facade_upstreams(args.upstream, option="--upstream") or [],
-                metadata_file=args.metadata_file,
-                registry=args.registry,
-                registry_key=args.registry_key,
-                role=args.role,
-                status=args.status,
-                ttl_seconds=args.ttl_seconds,
-                labels=_parse_key_values(args.label),
-                metadata=_parse_key_values(args.metadata),
-                metadata_output=args.metadata_output,
-                discovery_name=args.discovery_name,
-                update_config=args.config_update,
-            )
-            status = 0 if result["ok"] else 1
-            write_json_output(result, compact=args.compact)
-            return status
+        if command == "member":
+            return _handle_share_member_command(args, parser, attach_mcp_share_member=attach_mcp_share_member)
 
         if command == "codespace":
             return _handle_share_codespace_command(args, parser)
@@ -1339,6 +1319,45 @@ def _add_share_lease_args(parser: argparse.ArgumentParser) -> None:
     lease_revoke.add_argument("lease_id", help="lease id to revoke")
     lease_revoke.add_argument("--file", type=Path, default=Path("leases.json"), help="lease JSON file")
     add_compact_arg(lease_revoke)
+
+
+def _add_share_member_args(parser: argparse.ArgumentParser) -> None:
+    member_subparsers = parser.add_subparsers(dest="share_member_command", required=True)
+    member_attach = member_subparsers.add_parser("attach", help="attach a remote fabric member to a share session")
+    _add_share_attach_args(member_attach)
+
+
+def _handle_share_member_command(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    *,
+    attach_mcp_share_member: Any,
+) -> int:
+    if args.share_member_command == "attach":
+        directory = _share_directory_arg(args)
+        result = attach_mcp_share_member(
+            directory,
+            member_id=args.member_id,
+            kind=args.kind,
+            upstreams=_parse_facade_upstreams(args.upstream, option="--upstream") or [],
+            metadata_file=args.metadata_file,
+            registry=args.registry,
+            registry_key=args.registry_key,
+            role=args.role,
+            status=args.status,
+            ttl_seconds=args.ttl_seconds,
+            labels=_parse_key_values(args.label),
+            metadata=_parse_key_values(args.metadata),
+            metadata_output=args.metadata_output,
+            discovery_name=args.discovery_name,
+            update_config=args.config_update,
+        )
+        status = 0 if result["ok"] else 1
+        write_json_output(result, compact=args.compact)
+        return status
+
+    parser.error(f"unknown mcp share member command: {args.share_member_command}")
+    return 2
 
 
 def _add_share_attach_args(parser: argparse.ArgumentParser) -> None:

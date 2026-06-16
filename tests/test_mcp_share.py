@@ -849,6 +849,7 @@ def test_mcp_share_attach_cli_registers_container_member(tmp_path, capsys):
         [
             "mcp",
             "share",
+            "member",
             "attach",
             str(tmp_path),
             "--member-id",

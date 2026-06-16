@@ -334,11 +334,12 @@ before you reuse or hand off the share.
 
 ## Remote member attach
 
-Use `share attach` when a Codespace, devcontainer, Holepunch peer, or another
-container should become a managed upstream for an existing share session:
+Use `share member attach` when a Codespace, devcontainer, Holepunch peer, or
+another container should become a managed upstream for an existing share
+session:
 
 ```bash
-uv run snulbug mcp share attach .snulbug/shares/share-... \
+uv run snulbug mcp share member attach .snulbug/shares/share-... \
   --member-id codespace-files \
   --kind codespaces \
   --upstream files=https://NAME-9001.app.github.dev/mcp \
@@ -366,7 +367,7 @@ Remote environments can also emit JSON metadata and let the laptop consume it:
 ```
 
 ```bash
-uv run snulbug mcp share attach .snulbug/shares/share-... \
+uv run snulbug mcp share member attach .snulbug/shares/share-... \
   --metadata-file devcontainer-member.json
 ```
 
