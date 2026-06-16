@@ -24,7 +24,7 @@ def test_devcontainer_feature_manifest_defines_runtime_modes_and_member_options(
     assert options["mode"]["enum"] == ["cli", "gateway", "member-agent"]
     assert options["policy_profile"]["default"] == "tunnel-safe"
     assert options["install_source"]["enum"] == ["pypi", "github"]
-    assert options["install_source"]["default"] == "github"
+    assert options["install_source"]["default"] == "pypi"
     assert options["extras"]["default"] == "discovery"
     assert options["registry"]["default"] == ".snulbug/fabric-members.json"
     assert options["registry_key"]["default"] == "snulbug:fabric:members"

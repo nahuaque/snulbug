@@ -16,7 +16,7 @@ Use it when reviewing:
 ## Preview a Candidate Policy
 
 ```bash
-uv run snulbug mcp evidence impact \
+snulbug mcp evidence impact \
   traces/session.jsonl \
   --policy learned-policy.snulbug/policy.lua
 ```
@@ -35,7 +35,7 @@ newly blocked requests or replay failures. Use `--no-fail` for exploratory
 review:
 
 ```bash
-uv run snulbug mcp evidence impact traces/session.jsonl \
+snulbug mcp evidence impact traces/session.jsonl \
   --policy candidate-policy.snulbug/policy.lua \
   --no-fail
 ```
@@ -43,7 +43,7 @@ uv run snulbug mcp evidence impact traces/session.jsonl \
 ## Preview Lease Coverage
 
 ```bash
-uv run snulbug mcp evidence impact \
+snulbug mcp evidence impact \
   traces/session.jsonl \
   --lease leases.json
 ```
@@ -64,7 +64,7 @@ The report includes:
 ## Policy and Lease Together
 
 ```bash
-uv run snulbug mcp evidence impact \
+snulbug mcp evidence impact \
   traces/session.jsonl \
   --policy candidate-policy.snulbug/policy.lua \
   --lease leases.json \
@@ -81,7 +81,7 @@ This is the review step to run before:
 ## CI Pattern
 
 ```bash
-uv run snulbug mcp evidence impact traces/session.jsonl \
+snulbug mcp evidence impact traces/session.jsonl \
   --policy policy.snulbug/policy.lua \
   --lease leases.json \
   --report-out traces/impact-report.md
@@ -90,7 +90,7 @@ uv run snulbug mcp evidence impact traces/session.jsonl \
 Use `--compact` for machine-readable JSON:
 
 ```bash
-uv run snulbug mcp evidence impact traces/session.jsonl \
+snulbug mcp evidence impact traces/session.jsonl \
   --policy policy.snulbug/policy.lua \
   --compact
 ```

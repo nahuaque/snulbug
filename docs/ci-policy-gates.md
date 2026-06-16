@@ -11,7 +11,7 @@ readiness checks alongside normal pull-request review.
 Use this when a candidate Lua policy or policy bundle changes:
 
 ```bash
-uv run snulbug mcp evidence diff \
+snulbug mcp evidence diff \
   policy.snulbug/policy.lua \
   policy.snulbug.candidate/policy.lua \
   fixtures \
@@ -29,7 +29,7 @@ SARIF includes:
 Use this when an upstream MCP server's declared capability surface changes:
 
 ```bash
-uv run snulbug mcp policy schemas diff \
+snulbug mcp policy schemas diff \
   .snulbug/schemas/baseline.json \
   .snulbug/schemas/current.json \
   --fail-on changed \
@@ -46,7 +46,7 @@ changed, or removed schema items are emitted as warnings.
 Use this before publishing or sharing a generated MCP share session:
 
 ```bash
-uv run snulbug mcp share doctor .snulbug/shares/review \
+snulbug mcp share doctor .snulbug/shares/review \
   --no-live-checks \
   --require-conformance \
   --conformance-pack .snulbug/fabric-conformance \

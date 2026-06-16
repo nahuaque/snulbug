@@ -20,7 +20,7 @@ Use this when you want one bounded session with generated bearer auth, a
 task-scoped lease, provider setup, client config, and close-out commands:
 
 ```bash
-uv run snulbug mcp share create \
+snulbug mcp share create \
   --provider holepunch \
   --upstream http://127.0.0.1:9000 \
   --allow-tool safe_read_file \
@@ -32,9 +32,9 @@ Run the generated share, verify it, then print or copy the generated client
 config:
 
 ```bash
-uv run snulbug mcp share run .snulbug/shares/share-...
-uv run snulbug mcp share doctor .snulbug/shares/share-...
-uv run snulbug mcp share client .snulbug/shares/share-...
+snulbug mcp share run .snulbug/shares/share-...
+snulbug mcp share doctor .snulbug/shares/share-...
+snulbug mcp share client .snulbug/shares/share-...
 ```
 
 The client config contains both:
@@ -53,13 +53,13 @@ Use this when the MCP client runs on the same machine as the local MCP server.
 Create a policy and config:
 
 ```bash
-uv run snulbug mcp policy preset local-dev-safe \
+snulbug mcp policy preset local-dev-safe \
   --output policy.snulbug \
   --token local-dev-secret \
   --allow-tool safe_read_file \
   --allow-tool list_project_files
 
-uv run snulbug mcp share config init
+snulbug mcp share config init
 ```
 
 Edit `snulbug.toml` so `upstream` points at the local MCP server:
@@ -95,7 +95,7 @@ format = "text"
 Run the proxy:
 
 ```bash
-uv run snulbug mcp share run --config snulbug.toml
+snulbug mcp share run --config snulbug.toml
 ```
 
 Point the client at:
@@ -137,14 +137,14 @@ For public tunnel use, start from a bounded share session. It creates the
 config, replay/audit logs, and closeout commands together.
 
 ```bash
-uv run snulbug mcp share create \
+snulbug mcp share create \
   --provider ngrok \
   --upstream http://127.0.0.1:9000 \
   --allow-tool safe_read_file \
   --allow-tool list_project_files \
   --ttl 30m
 export SNULBUG_SHARE_TOKEN=...
-uv run snulbug mcp share run .snulbug/shares/share-...
+snulbug mcp share run .snulbug/shares/share-...
 ngrok start --config .snulbug/shares/share-.../tunnel/ngrok-agent.yml --all
 ```
 
@@ -170,9 +170,9 @@ curl -sS "${NGROK_URL}/mcp" \
 Verify the public tunnel before sharing it:
 
 ```bash
-uv run snulbug mcp share doctor .snulbug/shares/share-... \
+snulbug mcp share doctor .snulbug/shares/share-... \
   --url "${NGROK_URL}/mcp"
-uv run snulbug mcp share client .snulbug/shares/share-...
+snulbug mcp share client .snulbug/shares/share-...
 ```
 
 Point the client at:
@@ -195,14 +195,14 @@ snulbug proxy over public HTTPS; snulbug still enforces the MCP bearer token,
 policy, audit log, and optional leases.
 
 ```bash
-uv run snulbug mcp share create \
+snulbug mcp share create \
   --provider tailscale \
   --upstream http://127.0.0.1:9000 \
   --allow-tool safe_read_file \
   --allow-tool list_project_files \
   --ttl 30m
 export SNULBUG_SHARE_TOKEN=...
-uv run snulbug mcp share run .snulbug/shares/share-...
+snulbug mcp share run .snulbug/shares/share-...
 sudo tailscale funnel 8080
 export TAILSCALE_FUNNEL_URL=https://HOST.TAILNET.ts.net
 ```
@@ -218,7 +218,7 @@ x-snulbug-lease: YOUR_SHARE_LEASE_TOKEN
 Before sharing the Funnel URL, run:
 
 ```bash
-uv run snulbug mcp share doctor .snulbug/shares/share-... \
+snulbug mcp share doctor .snulbug/shares/share-... \
   --url "${TAILSCALE_FUNNEL_URL}/mcp"
 ```
 
@@ -229,14 +229,14 @@ provider-specific binary. Start snulbug first, then expose snulbug rather than
 the upstream MCP server:
 
 ```bash
-uv run snulbug mcp share create \
+snulbug mcp share create \
   --provider pinggy \
   --upstream http://127.0.0.1:9000 \
   --allow-tool safe_read_file \
   --allow-tool list_project_files \
   --ttl 30m
 export SNULBUG_SHARE_TOKEN=...
-uv run snulbug mcp share run .snulbug/shares/share-...
+snulbug mcp share run .snulbug/shares/share-...
 ssh -p 443 -R0:localhost:8080 free.pinggy.io
 export PINGGY_URL=https://YOUR-PINGGY-FORWARDING-DOMAIN
 ```
@@ -252,7 +252,7 @@ x-snulbug-lease: YOUR_SHARE_LEASE_TOKEN
 Before sharing the Pinggy URL, run:
 
 ```bash
-uv run snulbug mcp share doctor .snulbug/shares/share-... \
+snulbug mcp share doctor .snulbug/shares/share-... \
   --url "${PINGGY_URL}/mcp"
 ```
 
@@ -266,14 +266,14 @@ machine.
 On the snulbug machine:
 
 ```bash
-uv run snulbug mcp share create \
+snulbug mcp share create \
   --provider holepunch \
   --upstream http://127.0.0.1:9000 \
   --allow-tool safe_read_file \
   --allow-tool list_project_files \
   --ttl 30m
 export SNULBUG_SHARE_TOKEN=...
-uv run snulbug mcp share run .snulbug/shares/share-...
+snulbug mcp share run .snulbug/shares/share-...
 hypertele-server -l 8080 --address 127.0.0.1 \
   -c .snulbug/shares/share-.../tunnel/hypertele-server.json --private
 ```
@@ -296,7 +296,7 @@ x-snulbug-lease: YOUR_SHARE_LEASE_TOKEN
 Run doctor from a machine where the client-side bridge is listening:
 
 ```bash
-uv run snulbug mcp share doctor .snulbug/shares/share-...
+snulbug mcp share doctor .snulbug/shares/share-...
 ```
 
 For public tunnels, treat `tunnel-safe` as the recommended default. Do not expose
@@ -309,7 +309,7 @@ Run the proxy. If the config includes a `console` event sink, it prints live
 decisions:
 
 ```bash
-uv run snulbug mcp share run --config snulbug.toml
+snulbug mcp share run --config snulbug.toml
 ```
 
 The console prints one redacted decision per request, including the MCP method,
@@ -318,8 +318,8 @@ tool or target, JSON-RPC id, action, and reason code.
 After the session, inspect the captured logs:
 
 ```bash
-uv run snulbug mcp evidence inspect traces/session.jsonl
-uv run snulbug mcp evidence inspect traces/audit.jsonl --kind audit
+snulbug mcp evidence inspect traces/session.jsonl
+snulbug mcp evidence inspect traces/audit.jsonl --kind audit
 ```
 
 Replay records are redacted by default. If you need exact replay for a local
@@ -338,7 +338,7 @@ arguments.
 Start with the tools the client should actually call:
 
 ```bash
-uv run snulbug mcp policy preset local-dev-safe \
+snulbug mcp policy preset local-dev-safe \
   --output policy.snulbug \
   --token local-dev-secret \
   --allow-tool read_repo \
@@ -351,8 +351,8 @@ uv run snulbug mcp policy preset local-dev-safe \
 Validate before proxying:
 
 ```bash
-uv run snulbug bundle validate policy.snulbug
-uv run snulbug bundle test policy.snulbug
+snulbug bundle validate policy.snulbug
+snulbug bundle test policy.snulbug
 ```
 
 Denied tool calls return `reason_code = "mcp.tool_not_allowed"` and appear in
@@ -366,7 +366,7 @@ not possible, keep the proxy bound to `127.0.0.1` and avoid public tunnels.
 For a loopback-only workflow, you can use `tool-allowlist`:
 
 ```bash
-uv run snulbug mcp policy preset tool-allowlist \
+snulbug mcp policy preset tool-allowlist \
   --output policy.snulbug \
   --allow-tool safe_read_file \
   --allow-tool list_project_files
@@ -429,7 +429,7 @@ tool_prefix = "devbox."
 Run the proxy:
 
 ```bash
-uv run snulbug mcp share run --config snulbug.toml
+snulbug mcp share run --config snulbug.toml
 ```
 
 Point the client at the single facade endpoint:
@@ -452,7 +452,7 @@ The share command writes a ready-to-edit compose recipe under
 `.snulbug/shares/share-*/containers/`:
 
 ```bash
-uv run snulbug mcp share \
+snulbug mcp share \
   --provider holepunch \
   --allow-tool safe_read_file \
   --allow-tool list_project_files \

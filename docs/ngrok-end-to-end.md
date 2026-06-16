@@ -49,7 +49,7 @@ demo MCP upstream listening on http://127.0.0.1:9000/mcp
 Terminal 2:
 
 ```bash
-uv run snulbug mcp share create \
+snulbug mcp share create \
   --directory .snulbug/shares/ngrok-demo \
   --provider ngrok \
   --url "${NGROK_PUBLIC_ORIGIN}/mcp" \
@@ -93,7 +93,7 @@ before the request reaches snulbug.
 Terminal 2:
 
 ```bash
-uv run snulbug mcp share run .snulbug/shares/ngrok-demo
+snulbug mcp share run .snulbug/shares/ngrok-demo
 ```
 
 Leave this process running. Successful requests print decision lines such as
@@ -183,12 +183,12 @@ The snulbug terminal should print a blocked decision with the MCP tool name.
 ## 9. Inspect the session
 
 ```bash
-uv run snulbug mcp share status .snulbug/shares/ngrok-demo
+snulbug mcp share status .snulbug/shares/ngrok-demo
 
-uv run snulbug mcp share doctor .snulbug/shares/ngrok-demo \
+snulbug mcp share doctor .snulbug/shares/ngrok-demo \
   --url "${NGROK_PUBLIC_ORIGIN}/mcp"
 
-uv run snulbug mcp share report .snulbug/shares/ngrok-demo \
+snulbug mcp share report .snulbug/shares/ngrok-demo \
   --output .snulbug/shares/ngrok-demo/report.md \
   --force
 ```

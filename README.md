@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/snulbug.png" alt="snulbug logo" width="220">
+  <img src="https://raw.githubusercontent.com/lbruhacs/snulbug/main/assets/snulbug.png" alt="snulbug logo" width="220">
 </p>
 
 # snulbug
@@ -45,34 +45,41 @@ tokens.
 
 ## Install
 
-`snulbug` is not published on PyPI yet. Use `uv` from the source tree or install
-from GitHub.
-
-From this repository:
+Install the CLI with `uv`:
 
 ```bash
-uv sync
-uv run snulbug --help
+uv tool install "snulbug[discovery]"
+snulbug --help
 ```
 
-For contributor/dev tooling:
+For one-off use without a persistent tool install:
 
 ```bash
-uv sync --all-extras --dev
-uv run pytest
+uvx "snulbug[discovery]" --help
 ```
 
 From another `uv` project:
 
 ```bash
-uv add "snulbug[discovery] @ git+https://github.com/lbruhacs/snulbug"
+uv add "snulbug[discovery]"
 ```
 
 Add the Redis extra when you need Redis-backed policy, runtime, or member state:
 
 ```bash
-uv add "snulbug[discovery,redis] @ git+https://github.com/lbruhacs/snulbug"
+uv add "snulbug[discovery,redis]"
 ```
+
+From this repository, use source mode:
+
+```bash
+uv sync --all-extras --dev
+uv run snulbug --help
+uv run pytest
+```
+
+The examples below use the installed `snulbug` command. If you are working from
+the checkout without installing the tool, prefix commands with `uv run`.
 
 `snulbug` supports Python 3.10 through 3.13.
 
@@ -87,15 +94,15 @@ share create -> share run -> share status -> share policy amend -> share policy 
 Ask the CLI for a copy-paste version before wiring a client or harness:
 
 ```bash
-uv run snulbug mcp guide --workflow share
-uv run snulbug mcp guide --workflow learn-amend-impact --compact
+snulbug mcp guide --workflow share
+snulbug mcp guide --workflow learn-amend-impact --compact
 ```
 
 1. Create a temporary share session with generated bearer auth, a task lease,
    provider setup, client config, and close-out report commands:
 
 ```bash
-uv run snulbug mcp share create \
+snulbug mcp share create \
   --provider holepunch \
   --upstream http://127.0.0.1:9000 \
   --allow-tool safe_read_file \
@@ -107,24 +114,24 @@ uv run snulbug mcp share create \
 
 ```bash
 export SNULBUG_SHARE_TOKEN=...
-uv run snulbug mcp share run .snulbug/shares/share-...
+snulbug mcp share run .snulbug/shares/share-...
 ```
 
-Inside a generated share directory, `uv run snulbug mcp share run` is enough;
+Inside a generated share directory, `snulbug mcp share run` is enough;
 it reads `.snulbug/share/session.json` and reconciles the active config,
 policy, lease, and log paths before starting the gateway.
 
 3. Check what is happening:
 
 ```bash
-uv run snulbug mcp share status .snulbug/shares/share-...
+snulbug mcp share status .snulbug/shares/share-...
 ```
 
 4. If a legitimate request was blocked, amend the reviewed policy bundle from
    the audit log:
 
 ```bash
-uv run snulbug mcp share policy amend .snulbug/shares/share-...
+snulbug mcp share policy amend .snulbug/shares/share-...
 ```
 
 By default this uses the share audit/session log and updates the share policy
@@ -134,15 +141,15 @@ bundle in place; pass `--out` when you want a detached candidate bundle.
 
 ```bash
 export SNULBUG_BUNDLE_SECRET=...
-uv run snulbug mcp share policy promote .snulbug/shares/share-... --to proposed --key-id local-review
-uv run snulbug mcp share policy promote .snulbug/shares/share-... --to approved --key-id local-review
-uv run snulbug mcp share policy activate .snulbug/shares/share-... --key-id local-review
+snulbug mcp share policy promote .snulbug/shares/share-... --to proposed --key-id local-review
+snulbug mcp share policy promote .snulbug/shares/share-... --to approved --key-id local-review
+snulbug mcp share policy activate .snulbug/shares/share-... --key-id local-review
 ```
 
 6. Generate the closeout report from the session model and audit evidence:
 
 ```bash
-uv run snulbug mcp share report .snulbug/shares/share-... \
+snulbug mcp share report .snulbug/shares/share-... \
   --output .snulbug/shares/share-.../share-report.md
 ```
 
@@ -152,11 +159,11 @@ checks, current status, and public tunnel safety:
 
 ```bash
 PUBLIC_MCP_URL=https://YOUR-FORWARDING-DOMAIN/mcp
-uv run snulbug mcp share doctor .snulbug/shares/share-... \
+snulbug mcp share doctor .snulbug/shares/share-... \
   --url "${PUBLIC_MCP_URL}"
-uv run snulbug mcp share client .snulbug/shares/share-...
+snulbug mcp share client .snulbug/shares/share-...
 export SNULBUG_SHARE_CONTRACT_SECRET=...
-uv run snulbug mcp share contract .snulbug/shares/share-... \
+snulbug mcp share contract .snulbug/shares/share-... \
   --sign \
   --key-id local-review \
   --output .snulbug/shares/share-.../share-contract.json
@@ -165,7 +172,7 @@ uv run snulbug mcp share contract .snulbug/shares/share-... \
 To bind the live gateway to that approved contract, run with:
 
 ```bash
-uv run snulbug mcp share run .snulbug/shares/share-... \
+snulbug mcp share run .snulbug/shares/share-... \
   --require-contract .snulbug/shares/share-.../share-contract.json
 ```
 
@@ -179,7 +186,7 @@ The running gateway publishes a zero-install trust surface:
 If the share uses OAuth protected-resource mode, run the auth doctor too:
 
 ```bash
-uv run snulbug mcp share auth doctor .snulbug/shares/share-... \
+snulbug mcp share auth doctor .snulbug/shares/share-... \
   --url "${PUBLIC_MCP_URL}" \
   --token "${ACCESS_TOKEN}"
 ```
@@ -188,13 +195,13 @@ For multi-upstream facade setups, inspect the declared fabric before handing it
 to an agent:
 
 ```bash
-uv run snulbug mcp fabric status --config snulbug.toml
-uv run snulbug mcp fabric doctor --config snulbug.toml --token local-dev-secret
-uv run snulbug mcp fabric conformance generate \
+snulbug mcp fabric status --config snulbug.toml
+snulbug mcp fabric doctor --config snulbug.toml --token local-dev-secret
+snulbug mcp fabric conformance generate \
   --config snulbug.toml \
   --log traces/session.jsonl \
   --out .snulbug/fabric-conformance
-uv run snulbug mcp fabric conformance run .snulbug/fabric-conformance
+snulbug mcp fabric conformance run .snulbug/fabric-conformance
 ```
 
 See the full [local MCP policy gateway quickstart](docs/quickstart.md) for
@@ -207,7 +214,7 @@ Run the local policy lab when you want the full lifecycle without wiring a real
 server:
 
 ```bash
-uv run snulbug mcp share demo local
+snulbug mcp share demo local
 ```
 
 The lab creates fake MCP upstreams behind one facade, records traffic, learns a
@@ -219,7 +226,7 @@ valid OAuth subject, tenant/group identity fence, mapped MCP tool scope, active
 task lease, Lua approval, and redacted audit output.
 
 ```bash
-uv run snulbug mcp share demo auth
+snulbug mcp share demo auth
 ```
 
 It writes a mock issuer, JWKS, demo tokens, lease file, proxy config, requests,
@@ -238,14 +245,14 @@ validated against dev accounts. See
 For Codespaces, start the bundled mock MCP server in the Codespace terminal:
 
 ```bash
-uv run snulbug mcp share member codespace serve-demo
+snulbug mcp share member codespace serve-demo
 ```
 
 It prints the forwarded MCP URL and the matching laptop command. On the laptop,
 attach that URL to a local snulbug gateway:
 
 ```bash
-uv run snulbug mcp share member codespace attach https://YOUR-CODESPACE-9001.app.github.dev/mcp
+snulbug mcp share member codespace attach https://YOUR-CODESPACE-9001.app.github.dev/mcp
 ```
 
 `attach` generates `.snulbug/codespace-local/`, preflights the upstream with
@@ -258,14 +265,14 @@ Watch decisions while proxying. The generated config includes a console event
 sink by default:
 
 ```bash
-uv run snulbug mcp share run --config snulbug.toml
+snulbug mcp share run --config snulbug.toml
 ```
 
 Create a task-scoped lease when you want an MCP client or agent to do one
 bounded job:
 
 ```bash
-uv run snulbug mcp share lease create \
+snulbug mcp share lease create \
   --file leases.json \
   --task "Read project docs only" \
   --allow-tool safe_read_file \
@@ -284,22 +291,22 @@ too; a copied lease token alone is not enough.
 After a session, inspect the logs:
 
 ```bash
-uv run snulbug mcp evidence inspect traces/session.jsonl
-uv run snulbug mcp evidence inspect traces/audit.jsonl --kind audit
+snulbug mcp evidence inspect traces/session.jsonl
+snulbug mcp evidence inspect traces/audit.jsonl --kind audit
 ```
 
 Learn a least-privilege bundle from observed traffic:
 
 ```bash
-uv run snulbug mcp policy learn traces/session.jsonl --out learned-policy.snulbug
-uv run snulbug bundle validate learned-policy.snulbug
-uv run snulbug bundle test learned-policy.snulbug
+snulbug mcp policy learn traces/session.jsonl --out learned-policy.snulbug
+snulbug bundle validate learned-policy.snulbug
+snulbug bundle test learned-policy.snulbug
 ```
 
 Preview the blast radius before enabling a candidate policy or lease:
 
 ```bash
-uv run snulbug mcp evidence impact traces/session.jsonl \
+snulbug mcp evidence impact traces/session.jsonl \
   --policy learned-policy.snulbug/policy.lua \
   --lease leases.json \
   --report-out traces/impact-report.md
@@ -309,7 +316,7 @@ When the learned policy blocks a legitimate request, generate a candidate
 amendment instead of editing the active policy in place:
 
 ```bash
-uv run snulbug mcp policy amend \
+snulbug mcp policy amend \
   learned-policy.snulbug \
   traces/audit.jsonl \
   --out candidate-policy.snulbug

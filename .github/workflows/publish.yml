@@ -2,6 +2,15 @@ name: Publish
 
 on:
   workflow_dispatch:
+    inputs:
+      repository:
+        description: Package index to publish to
+        required: true
+        default: testpypi
+        type: choice
+        options:
+          - testpypi
+          - pypi
 
 permissions:
   contents: read
@@ -10,7 +19,7 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    environment: pypi
+    environment: ${{ inputs.repository }}
 
     steps:
       - uses: actions/checkout@v6
@@ -35,5 +44,17 @@ jobs:
       - name: Build distributions
         run: uv build
 
+      - name: Smoke test built wheel
+        run: |
+          uv run --isolated --with dist/snulbug-*.whl snulbug --help
+          uv run --isolated --with dist/snulbug-*.whl python -m snulbug --help
+
+      - name: Publish to TestPyPI
+        if: inputs.repository == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
       - name: Publish to PyPI
+        if: inputs.repository == 'pypi'
         uses: pypa/gh-action-pypi-publish@release/v1

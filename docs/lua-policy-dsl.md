@@ -288,19 +288,19 @@ replay logs, policy diffs, share reports, and CI gates. Good codes are:
 Start from a preset, record evidence, and replay before sharing:
 
 ```bash
-uv run snulbug mcp policy preset tunnel-safe --output policy.snulbug
-uv run snulbug mcp evidence record policy.snulbug/policy.lua request.json --out traces/session.jsonl
-uv run snulbug mcp evidence replay traces/session.jsonl
-uv run snulbug mcp evidence impact traces/session.jsonl --policy policy.snulbug/policy.lua
+snulbug mcp policy preset tunnel-safe --output policy.snulbug
+snulbug mcp evidence record policy.snulbug/policy.lua request.json --out traces/session.jsonl
+snulbug mcp evidence replay traces/session.jsonl
+snulbug mcp evidence impact traces/session.jsonl --policy policy.snulbug/policy.lua
 ```
 
 For share sessions, use the share workflow:
 
 ```bash
-uv run snulbug mcp share create --provider ngrok --upstream http://127.0.0.1:9000
-uv run snulbug mcp share run .snulbug/shares/share-...
-uv run snulbug mcp share status .snulbug/shares/share-...
-uv run snulbug mcp share report .snulbug/shares/share-...
+snulbug mcp share create --provider ngrok --upstream http://127.0.0.1:9000
+snulbug mcp share run .snulbug/shares/share-...
+snulbug mcp share status .snulbug/shares/share-...
+snulbug mcp share report .snulbug/shares/share-...
 ```
 
 ## More Examples

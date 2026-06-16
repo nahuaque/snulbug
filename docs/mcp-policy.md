@@ -23,7 +23,7 @@ because the schema catalog is the source artifact.
 Start with the conservative tunnel profile:
 
 ```bash
-uv run snulbug mcp policy preset tunnel-safe \
+snulbug mcp policy preset tunnel-safe \
   --output policy.snulbug \
   --token local-dev-secret \
   --allow-tool safe_read_file \
@@ -33,21 +33,21 @@ uv run snulbug mcp policy preset tunnel-safe \
 Run the proxy and capture evidence:
 
 ```bash
-uv run snulbug mcp share run --config snulbug.toml
+snulbug mcp share run --config snulbug.toml
 ```
 
 Learn a least-privilege bundle from the captured session:
 
 ```bash
-uv run snulbug mcp policy learn traces/session.jsonl --out learned-policy.snulbug
-uv run snulbug bundle validate learned-policy.snulbug
-uv run snulbug bundle test learned-policy.snulbug
+snulbug mcp policy learn traces/session.jsonl --out learned-policy.snulbug
+snulbug bundle validate learned-policy.snulbug
+snulbug bundle test learned-policy.snulbug
 ```
 
 Preview impact before switching to it:
 
 ```bash
-uv run snulbug mcp evidence impact traces/session.jsonl \
+snulbug mcp evidence impact traces/session.jsonl \
   --policy learned-policy.snulbug/policy.lua \
   --report-out traces/impact-report.md
 ```
@@ -56,7 +56,7 @@ When the learned bundle blocks a legitimate request, generate a candidate
 amendment instead of editing the active policy directly:
 
 ```bash
-uv run snulbug mcp policy amend \
+snulbug mcp policy amend \
   learned-policy.snulbug \
   traces/audit.jsonl \
   --out candidate-policy.snulbug
@@ -72,7 +72,7 @@ use the same command with the approved-confirmation source to turn those
 approvals into a reviewable candidate bundle:
 
 ```bash
-uv run snulbug mcp policy amend \
+snulbug mcp policy amend \
   learned-policy.snulbug \
   traces/session.jsonl \
   --source approved-confirmations \
@@ -82,9 +82,9 @@ uv run snulbug mcp policy amend \
 Promote only after review:
 
 ```bash
-uv run snulbug mcp policy lifecycle promote candidate-policy.snulbug --to proposed --key-id local-review
-uv run snulbug mcp policy lifecycle promote candidate-policy.snulbug --to approved --key-id local-review
-uv run snulbug mcp policy lifecycle promote candidate-policy.snulbug --to active --key-id local-review
+snulbug mcp policy lifecycle promote candidate-policy.snulbug --to proposed --key-id local-review
+snulbug mcp policy lifecycle promote candidate-policy.snulbug --to approved --key-id local-review
+snulbug mcp policy lifecycle promote candidate-policy.snulbug --to active --key-id local-review
 ```
 
 ## How to choose a source

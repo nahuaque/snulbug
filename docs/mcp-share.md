@@ -18,7 +18,7 @@ share create -> share run -> share status -> share policy amend -> share policy 
 Create the bounded session:
 
 ```bash
-uv run snulbug mcp share create \
+snulbug mcp share create \
   --provider holepunch \
   --upstream http://127.0.0.1:9000 \
   --allow-tool safe_read_file \
@@ -30,20 +30,20 @@ Run it:
 
 ```bash
 export SNULBUG_SHARE_TOKEN=...
-uv run snulbug mcp share run .snulbug/shares/share-...
+snulbug mcp share run .snulbug/shares/share-...
 ```
 
 Check live state:
 
 ```bash
-uv run snulbug mcp share status .snulbug/shares/share-...
+snulbug mcp share status .snulbug/shares/share-...
 ```
 
 If the audit log shows a legitimate blocked request, amend the reviewed policy
 bundle:
 
 ```bash
-uv run snulbug mcp share policy amend .snulbug/shares/share-...
+snulbug mcp share policy amend .snulbug/shares/share-...
 ```
 
 By default this uses the share audit/session log and updates the share policy
@@ -53,15 +53,15 @@ Then promote and activate the policy bundle:
 
 ```bash
 export SNULBUG_BUNDLE_SECRET=...
-uv run snulbug mcp share policy promote .snulbug/shares/share-... --to proposed --key-id local-review
-uv run snulbug mcp share policy promote .snulbug/shares/share-... --to approved --key-id local-review
-uv run snulbug mcp share policy activate .snulbug/shares/share-... --key-id local-review
+snulbug mcp share policy promote .snulbug/shares/share-... --to proposed --key-id local-review
+snulbug mcp share policy promote .snulbug/shares/share-... --to approved --key-id local-review
+snulbug mcp share policy activate .snulbug/shares/share-... --key-id local-review
 ```
 
 Generate the closeout report:
 
 ```bash
-uv run snulbug mcp share report .snulbug/shares/share-... \
+snulbug mcp share report .snulbug/shares/share-... \
   --output .snulbug/shares/share-.../share-report.md
 ```
 
@@ -110,14 +110,14 @@ Run the generated share:
 
 ```bash
 export SNULBUG_SHARE_TOKEN=...
-uv run snulbug mcp share run .snulbug/shares/share-...
+snulbug mcp share run .snulbug/shares/share-...
 ```
 
 Or run from inside the generated share directory:
 
 ```bash
 cd .snulbug/shares/share-...
-uv run snulbug mcp share run
+snulbug mcp share run
 ```
 
 `share run` starts the snulbug proxy from the canonical session model when
@@ -131,7 +131,7 @@ generated `tunnel/` directory.
 Before sharing `mcp-client.json`, verify the session:
 
 ```bash
-uv run snulbug mcp share doctor .snulbug/shares/share-...
+snulbug mcp share doctor .snulbug/shares/share-...
 ```
 
 `share doctor` is the pre-share readiness gate. It loads the generated config,
@@ -146,7 +146,7 @@ It also updates `.snulbug/share/session.json`, so later `status` and report
 commands see the resolved public endpoint.
 
 ```bash
-uv run snulbug mcp share doctor .snulbug/shares/share-... \
+snulbug mcp share doctor .snulbug/shares/share-... \
   --url "${PUBLIC_MCP_URL}"
 ```
 
@@ -154,7 +154,7 @@ Generate a share contract when you want a machine-readable handoff artifact for
 a reviewer, agent harness, or CI attachment:
 
 ```bash
-uv run snulbug mcp share contract .snulbug/shares/share-... \
+snulbug mcp share contract .snulbug/shares/share-... \
   --output .snulbug/shares/share-.../share-contract.json
 ```
 
@@ -167,7 +167,7 @@ HMAC signature using `SNULBUG_SHARE_CONTRACT_SECRET`:
 
 ```bash
 export SNULBUG_SHARE_CONTRACT_SECRET=...
-uv run snulbug mcp share contract .snulbug/shares/share-... \
+snulbug mcp share contract .snulbug/shares/share-... \
   --include-doctor \
   --sign \
   --key-id local-review \
@@ -178,7 +178,7 @@ uv run snulbug mcp share contract .snulbug/shares/share-... \
 Bind the live proxy to the approved contract when starting the share:
 
 ```bash
-uv run snulbug mcp share run .snulbug/shares/share-... \
+snulbug mcp share run .snulbug/shares/share-... \
   --require-contract .snulbug/shares/share-.../share-contract.signed.json
 ```
 
@@ -211,7 +211,7 @@ For OAuth protected-resource shares, run the auth-specific doctor before handing
 the URL to an MCP client:
 
 ```bash
-uv run snulbug mcp share auth doctor .snulbug/shares/share-... \
+snulbug mcp share auth doctor .snulbug/shares/share-... \
   --url "${PUBLIC_MCP_URL}" \
   --token "${ACCESS_TOKEN}"
 ```
@@ -227,7 +227,7 @@ conformance pack from the current config, discovered schemas, sample token
 references, and replay/audit evidence:
 
 ```bash
-uv run snulbug mcp share auth conformance generate .snulbug/shares/share-... \
+snulbug mcp share auth conformance generate .snulbug/shares/share-... \
   --url "${PUBLIC_MCP_URL}" \
   --schema-catalog traces/schemas.json \
   --log traces/audit.jsonl \
@@ -240,7 +240,7 @@ The pack records file fingerprints and token environment-variable names, not raw
 token values. Run it after setting the referenced token env vars:
 
 ```bash
-uv run snulbug mcp share auth conformance run .snulbug/auth-conformance
+snulbug mcp share auth conformance run .snulbug/auth-conformance
 ```
 
 The run step reloads the config, re-runs auth doctor, validates sample tokens,
@@ -258,7 +258,7 @@ To generate provider-specific setup files without implementing dynamic client
 registration inside snulbug, use:
 
 ```bash
-uv run snulbug mcp share auth init \
+snulbug mcp share auth init \
   --provider keycloak \
   --url "${PUBLIC_MCP_URL}" \
   --issuer "${ISSUER_URL}"
@@ -282,7 +282,7 @@ To exercise the full auth model locally without an external identity provider,
 run the auth lab:
 
 ```bash
-uv run snulbug mcp share demo auth
+snulbug mcp share demo auth
 ```
 
 The lab starts a mock issuer and MCP upstream, mints demo JWTs, creates a task
@@ -293,7 +293,7 @@ For fabric facade sessions, pass a generated conformance pack when you want the
 share gate to prove config, manifests, policies, and replay logs still agree:
 
 ```bash
-uv run snulbug mcp share doctor .snulbug/shares/share-... \
+snulbug mcp share doctor .snulbug/shares/share-... \
   --url "${PUBLIC_MCP_URL}" \
   --conformance-pack .snulbug/fabric-conformance \
   --require-conformance
@@ -302,13 +302,13 @@ uv run snulbug mcp share doctor .snulbug/shares/share-... \
 Inspect the generated client config without opening files by hand:
 
 ```bash
-uv run snulbug mcp share client .snulbug/shares/share-...
+snulbug mcp share client .snulbug/shares/share-...
 ```
 
 Check state later:
 
 ```bash
-uv run snulbug mcp share status .snulbug/shares/share-...
+snulbug mcp share status .snulbug/shares/share-...
 ```
 
 Status is the live "what is happening?" command. It summarizes whether the
@@ -320,7 +320,7 @@ last recording paths, and high-risk findings.
 Generate a share-session report at any point:
 
 ```bash
-uv run snulbug mcp share report .snulbug/shares/share-... \
+snulbug mcp share report .snulbug/shares/share-... \
   --output .snulbug/shares/share-.../share-report.md
 ```
 
@@ -339,7 +339,7 @@ another container should become a managed upstream for an existing share
 session:
 
 ```bash
-uv run snulbug mcp share member attach .snulbug/shares/share-... \
+snulbug mcp share member attach .snulbug/shares/share-... \
   --member-id codespace-files \
   --kind codespaces \
   --upstream files=https://NAME-9001.app.github.dev/mcp \
@@ -367,7 +367,7 @@ Remote environments can also emit JSON metadata and let the laptop consume it:
 ```
 
 ```bash
-uv run snulbug mcp share member attach .snulbug/shares/share-... \
+snulbug mcp share member attach .snulbug/shares/share-... \
   --metadata-file devcontainer-member.json
 ```
 
@@ -383,16 +383,16 @@ session model in sync:
 
 ```bash
 export SNULBUG_BUNDLE_SECRET=...
-uv run snulbug mcp share policy promote .snulbug/shares/share-... --to proposed --key-id local-review
-uv run snulbug mcp share policy promote .snulbug/shares/share-... --to approved --key-id local-review
-uv run snulbug mcp share policy activate .snulbug/shares/share-... --key-id local-review
+snulbug mcp share policy promote .snulbug/shares/share-... --to proposed --key-id local-review
+snulbug mcp share policy promote .snulbug/shares/share-... --to approved --key-id local-review
+snulbug mcp share policy activate .snulbug/shares/share-... --key-id local-review
 ```
 
 From inside a generated share directory, omit the directory:
 
 ```bash
-uv run snulbug mcp share policy promote --to proposed --key-id local-review
-uv run snulbug mcp share policy activate --key-id local-review
+snulbug mcp share policy promote --to proposed --key-id local-review
+snulbug mcp share policy activate --key-id local-review
 ```
 
 These commands call the same signed policy lifecycle machinery as
@@ -475,7 +475,7 @@ Point clients at `mcp-client.facade.json` for this facade recipe.
 The share command also works with existing tunnel providers:
 
 ```bash
-uv run snulbug mcp share create \
+snulbug mcp share create \
   --provider ngrok \
   --upstream http://127.0.0.1:9000 \
   --allow-tool safe_read_file \
@@ -502,13 +502,13 @@ Tailscale Funnel, keeps snulbug as the MCP policy boundary, and requires the
 generated bearer header plus an active task lease before `share doctor` passes:
 
 ```bash
-uv run snulbug mcp share create \
+snulbug mcp share create \
   --provider tailscale \
   --url https://dev.tailnet.ts.net/mcp \
   --allow-tool safe_read_file \
   --ttl 30m
 sudo tailscale funnel 8080
-uv run snulbug mcp share doctor .snulbug/shares/share-... \
+snulbug mcp share doctor .snulbug/shares/share-... \
   --url https://dev.tailnet.ts.net/mcp
 ```
 
@@ -518,7 +518,7 @@ doctor treats leases as a recommended task boundary instead of a public-share
 hard requirement:
 
 ```bash
-uv run snulbug mcp share create \
+snulbug mcp share create \
   --provider tailscale \
   --tailscale-profile serve-tailnet \
   --url https://dev.tailnet.ts.net/mcp
@@ -530,7 +530,7 @@ is transport, snulbug validates issuer/resource/audience/scopes, and the caller
 `Authorization` header is stripped before upstream forwarding:
 
 ```bash
-uv run snulbug mcp share create \
+snulbug mcp share create \
   --provider tailscale \
   --tailscale-profile oauth-resource \
   --url https://dev.tailnet.ts.net/mcp \
@@ -544,7 +544,7 @@ headers before upstream forwarding, and expects signed Access JWT validation to
 be configured before `share doctor` passes:
 
 ```bash
-uv run snulbug mcp share create \
+snulbug mcp share create \
   --provider cloudflare \
   --url https://mcp.example.com/mcp \
   --cloudflare-access-team-domain team.cloudflareaccess.com \
@@ -557,7 +557,7 @@ browser Access session. The generated MCP client config uses environment
 placeholders, not raw service-token secrets:
 
 ```bash
-uv run snulbug mcp share create \
+snulbug mcp share create \
   --provider cloudflare \
   --cloudflare-profile service-token \
   --url https://mcp.example.com/mcp \
@@ -578,7 +578,7 @@ Tunnel is transport, Cloudflare Access stays in audit mode, and snulbug
 validates OAuth issuer/resource/audience/scopes:
 
 ```bash
-uv run snulbug mcp share create \
+snulbug mcp share create \
   --provider cloudflare \
   --cloudflare-profile oauth-resource \
   --url https://mcp.example.com/mcp \
@@ -592,7 +592,7 @@ Use the `audit` profile to observe Cloudflare Access headers before enforcing.
 When the task is complete:
 
 ```bash
-uv run snulbug mcp share close .snulbug/shares/share-... --report --revoke
+snulbug mcp share close .snulbug/shares/share-... --report --revoke
 ```
 
 Closeout revokes the session lease, writes `session-report.md` when possible,
@@ -600,7 +600,7 @@ and marks `share.json` closed. Add `--learn` to generate a learned policy bundle
 from the share replay log during closeout:
 
 ```bash
-uv run snulbug mcp share close .snulbug/shares/share-... --learn --force
+snulbug mcp share close .snulbug/shares/share-... --learn --force
 ```
 
 Then stop the proxy and provider process. Delete the share directory when you no

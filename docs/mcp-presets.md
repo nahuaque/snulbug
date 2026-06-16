@@ -8,31 +8,31 @@ This is the detailed reference for `snulbug mcp policy preset`. Start with the
 List presets:
 
 ```bash
-uv run snulbug mcp policy preset
+snulbug mcp policy preset
 ```
 
 Copy the default local-dev policy:
 
 ```bash
-uv run snulbug mcp policy preset --output policy.snulbug
+snulbug mcp policy preset --output policy.snulbug
 ```
 
 Create the full local proxy starter instead:
 
 ```bash
-uv run snulbug mcp share quickstart
+snulbug mcp share quickstart
 ```
 
 Copy a specific preset:
 
 ```bash
-uv run snulbug mcp policy preset tool-allowlist --output policy.snulbug
+snulbug mcp policy preset tool-allowlist --output policy.snulbug
 ```
 
 Generate a tailored preset:
 
 ```bash
-uv run snulbug mcp policy preset local-dev-safe \
+snulbug mcp policy preset local-dev-safe \
   --output policy.snulbug \
   --token local-dev-secret \
   --allow-tool safe_read_file \
@@ -54,22 +54,22 @@ Options:
 Validate and test the copied bundle:
 
 ```bash
-uv run snulbug bundle validate policy.snulbug
-uv run snulbug bundle test policy.snulbug
+snulbug bundle validate policy.snulbug
+snulbug bundle test policy.snulbug
 ```
 
 Record and replay decisions while tuning the copied policy:
 
 ```bash
-uv run snulbug mcp evidence record policy.snulbug/policy.lua request.json --out traces/session.jsonl
-uv run snulbug mcp evidence replay traces/session.jsonl
+snulbug mcp evidence record policy.snulbug/policy.lua request.json --out traces/session.jsonl
+snulbug mcp evidence replay traces/session.jsonl
 ```
 
 Run the copied policy as a local reverse proxy:
 
 ```bash
-uv run snulbug mcp share config init
-uv run snulbug mcp share run \
+snulbug mcp share config init
+snulbug mcp share run \
   --config snulbug.toml
 ```
 
@@ -92,7 +92,7 @@ allows only configured safe tools, and rate-limits traffic. Use it when a client
 should inspect local context without making write-like MCP calls.
 
 ```bash
-uv run snulbug mcp policy preset read-only-local-dev --output policy.snulbug
+snulbug mcp policy preset read-only-local-dev --output policy.snulbug
 ```
 
 `no-shell-tools` requires bearer auth and blocks tool names that look like shell
@@ -100,7 +100,7 @@ or process execution, such as `shell_exec`, `run_command`, `terminal`, `bash`,
 `powershell`, `spawn`, or `system`.
 
 ```bash
-uv run snulbug mcp policy preset no-shell-tools --output policy.snulbug
+snulbug mcp policy preset no-shell-tools --output policy.snulbug
 ```
 
 `project-path-allowlist` requires bearer auth, applies a tool allowlist, and
@@ -108,7 +108,7 @@ rejects `params.arguments.path` / `params.arguments.paths` outside configured
 project paths.
 
 ```bash
-uv run snulbug mcp policy preset project-path-allowlist \
+snulbug mcp policy preset project-path-allowlist \
   --output policy.snulbug \
   --allow-tool safe_read_file \
   --allow-path README.md \
@@ -126,7 +126,7 @@ The preset is built from the reusable Lua `workspace.*` helpers documented in
 the [Lua policy reference](lua-request-api.md#workspace-firewall-helpers).
 
 ```bash
-uv run snulbug mcp policy preset workspace-firewall \
+snulbug mcp policy preset workspace-firewall \
   --output policy.snulbug \
   --allow-tool safe_read_file \
   --allow-tool list_project_files \
@@ -140,7 +140,7 @@ exposure. It requires bearer auth, rejects JSON-RPC batch requests, allows only
 configured safe tools, and rate-limits traffic.
 
 ```bash
-uv run snulbug mcp share quickstart \
+snulbug mcp share quickstart \
   --preset tunnel-safe \
   --upstream http://127.0.0.1:9000 \
   --token local-dev-secret

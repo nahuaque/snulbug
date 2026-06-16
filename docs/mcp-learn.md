@@ -16,13 +16,13 @@ least-privilege policy bundle. It is designed for the local-dev loop:
 Capture a session:
 
 ```bash
-uv run snulbug mcp share run --config snulbug.toml
+snulbug mcp share run --config snulbug.toml
 ```
 
 Generate a policy bundle:
 
 ```bash
-uv run snulbug mcp policy learn traces/session.jsonl --out learned-policy.snulbug
+snulbug mcp policy learn traces/session.jsonl --out learned-policy.snulbug
 ```
 
 The output bundle contains:
@@ -35,14 +35,14 @@ The output bundle contains:
 Validate and test the bundle:
 
 ```bash
-uv run snulbug bundle validate learned-policy.snulbug
-uv run snulbug bundle test learned-policy.snulbug
+snulbug bundle validate learned-policy.snulbug
+snulbug bundle test learned-policy.snulbug
 ```
 
 Preview the policy impact against the captured session before enabling it:
 
 ```bash
-uv run snulbug mcp evidence impact \
+snulbug mcp evidence impact \
   traces/session.jsonl \
   --policy learned-policy.snulbug/policy.lua \
   --report-out traces/impact-report.md
@@ -51,7 +51,7 @@ uv run snulbug mcp evidence impact \
 Run the proxy with the learned policy:
 
 ```bash
-uv run snulbug mcp share run \
+snulbug mcp share run \
   --config snulbug.toml \
   --policy learned-policy.snulbug/policy.lua
 ```
@@ -105,7 +105,7 @@ and generate a candidate amendment instead of editing the active policy in
 place:
 
 ```bash
-uv run snulbug mcp policy amend \
+snulbug mcp policy amend \
   learned-policy.snulbug \
   traces/audit.jsonl \
   --out candidate-policy.snulbug
@@ -128,7 +128,7 @@ confirmable reject, the user approves once or for the session, and you want to
 convert that approval into a reviewable policy change:
 
 ```bash
-uv run snulbug mcp policy amend \
+snulbug mcp policy amend \
   learned-policy.snulbug \
   traces/session.jsonl \
   --source approved-confirmations \
@@ -150,9 +150,9 @@ By default, amend mode rejects risky shell/exec-style tool names such as
 Validate and review the candidate:
 
 ```bash
-uv run snulbug bundle validate candidate-policy.snulbug
-uv run snulbug bundle test candidate-policy.snulbug
-uv run snulbug mcp evidence impact traces/session.jsonl --policy candidate-policy.snulbug/policy.lua
+snulbug bundle validate candidate-policy.snulbug
+snulbug bundle test candidate-policy.snulbug
+snulbug mcp evidence impact traces/session.jsonl --policy candidate-policy.snulbug/policy.lua
 ```
 
 If the source learned bundle points at a replayable `generated_from` record log,

@@ -12,32 +12,39 @@ MCP client
 
 ## 1. Install
 
-`snulbug` is not published on PyPI yet. Use `uv` from the source tree:
+Install the CLI with `uv`:
 
 ```bash
-uv sync
-uv run snulbug --help
+uv tool install "snulbug[discovery]"
+snulbug --help
 ```
 
-From another `uv` project, install from GitHub:
+For one-off use without a persistent tool install:
 
 ```bash
-uv add "snulbug[discovery] @ git+https://github.com/lbruhacs/snulbug"
+uvx "snulbug[discovery]" --help
 ```
 
-The commands below use `uv run` from this repository.
+From another `uv` project:
+
+```bash
+uv add "snulbug[discovery]"
+```
+
+If you are working from the source checkout instead, run `uv sync --all-extras
+--dev` and prefix CLI commands with `uv run`.
 
 For a self-describing workflow that an agentic harness can parse:
 
 ```bash
-uv run snulbug mcp guide --workflow share --compact
+snulbug mcp guide --workflow share --compact
 ```
 
 For a temporary share session, let snulbug generate the policy, random bearer
 token, task lease, provider setup, client config, and close-out commands:
 
 ```bash
-uv run snulbug mcp share create \
+snulbug mcp share create \
   --provider holepunch \
   --upstream http://127.0.0.1:9000 \
   --allow-tool safe_read_file \
@@ -49,14 +56,14 @@ The command writes a self-contained directory under `.snulbug/shares/`. Run the
 primary lifecycle from that directory:
 
 ```bash
-uv run snulbug mcp share run .snulbug/shares/share-...
-uv run snulbug mcp share status .snulbug/shares/share-...
-uv run snulbug mcp share policy amend .snulbug/shares/share-...
+snulbug mcp share run .snulbug/shares/share-...
+snulbug mcp share status .snulbug/shares/share-...
+snulbug mcp share policy amend .snulbug/shares/share-...
 export SNULBUG_BUNDLE_SECRET=...
-uv run snulbug mcp share policy promote .snulbug/shares/share-... --to proposed --key-id local-review
-uv run snulbug mcp share policy promote .snulbug/shares/share-... --to approved --key-id local-review
-uv run snulbug mcp share policy activate .snulbug/shares/share-... --key-id local-review
-uv run snulbug mcp share report .snulbug/shares/share-... \
+snulbug mcp share policy promote .snulbug/shares/share-... --to proposed --key-id local-review
+snulbug mcp share policy promote .snulbug/shares/share-... --to approved --key-id local-review
+snulbug mcp share policy activate .snulbug/shares/share-... --key-id local-review
+snulbug mcp share report .snulbug/shares/share-... \
   --output .snulbug/shares/share-.../share-report.md
 ```
 
@@ -68,7 +75,7 @@ Before handing the generated client config to an MCP client, also run
 Before wiring in a real MCP server, run the one-command lab:
 
 ```bash
-uv run snulbug mcp share demo local
+snulbug mcp share demo local
 ```
 
 It starts two fake MCP upstreams behind a single facade, records policy
@@ -81,7 +88,7 @@ Generate the policy bundle, proxy config, trace directory, and first-run
 instructions:
 
 ```bash
-uv run snulbug mcp share quickstart \
+snulbug mcp share quickstart \
   --upstream http://127.0.0.1:9000 \
   --preset tunnel-safe \
   --token local-dev-secret \
@@ -112,7 +119,7 @@ small rate limit.
 To create a similar policy manually:
 
 ```bash
-uv run snulbug mcp policy preset tunnel-safe \
+snulbug mcp policy preset tunnel-safe \
   --output policy.snulbug \
   --token local-dev-secret \
   --allow-tool safe_read_file \
@@ -124,8 +131,8 @@ uv run snulbug mcp policy preset tunnel-safe \
 Validate it before putting traffic through it:
 
 ```bash
-uv run snulbug bundle validate policy.snulbug
-uv run snulbug bundle test policy.snulbug
+snulbug bundle validate policy.snulbug
+snulbug bundle test policy.snulbug
 ```
 
 ## 5. Review proxy config
@@ -134,7 +141,7 @@ The quickstart writes `snulbug.toml`. To create only the starter config
 manually:
 
 ```bash
-uv run snulbug mcp share config init
+snulbug mcp share config init
 ```
 
 Edit `snulbug.toml` so `upstream` points at your local HTTP MCP server:
@@ -198,7 +205,7 @@ state = "sqlite:policy-state.sqlite3"
 Start your MCP server on the configured upstream port, then run:
 
 ```bash
-uv run snulbug mcp share run --config snulbug.toml
+snulbug mcp share run --config snulbug.toml
 ```
 
 Point the MCP client at:
@@ -218,14 +225,14 @@ session. The share command writes the `tunnel-safe` policy, bearer token, task
 lease, provider setup files, client config, audit paths, and closeout commands:
 
 ```bash
-uv run snulbug mcp share create \
+snulbug mcp share create \
   --provider ngrok \
   --upstream http://127.0.0.1:9000 \
   --allow-tool safe_read_file \
   --allow-tool list_project_files \
   --ttl 30m
 export SNULBUG_SHARE_TOKEN=...
-uv run snulbug mcp share run .snulbug/shares/share-...
+snulbug mcp share run .snulbug/shares/share-...
 ngrok start --config .snulbug/shares/share-.../tunnel/ngrok-agent.yml --all
 ```
 
@@ -255,9 +262,9 @@ curl -sS "${NGROK_URL}/mcp" \
 Before sharing the generated client config, verify the boundary:
 
 ```bash
-uv run snulbug mcp share doctor .snulbug/shares/share-... \
+snulbug mcp share doctor .snulbug/shares/share-... \
   --url "${NGROK_URL}/mcp"
-uv run snulbug mcp share client .snulbug/shares/share-...
+snulbug mcp share client .snulbug/shares/share-...
 ```
 
 Then point the client at the tunnel URL plus `/mcp` and keep the same bearer
@@ -309,7 +316,7 @@ Task-scoped leases are configured but optional by default. Create one when you
 want to hand an agent a temporary, narrow capability:
 
 ```bash
-uv run snulbug mcp share lease create \
+snulbug mcp share lease create \
   --file leases.json \
   --task "Read README only" \
   --allow-tool safe_read_file \
@@ -335,9 +342,9 @@ Without `confirm = true`, confirmation decisions reject by default.
 After a session, inspect the captured replay and audit logs:
 
 ```bash
-uv run snulbug mcp evidence inspect traces/session.jsonl
-uv run snulbug mcp evidence inspect traces/audit.jsonl --kind audit
-uv run snulbug mcp evidence inspect traces/audit.jsonl --kind audit --report-out traces/session-report.md
+snulbug mcp evidence inspect traces/session.jsonl
+snulbug mcp evidence inspect traces/audit.jsonl --kind audit
+snulbug mcp evidence inspect traces/audit.jsonl --kind audit --report-out traces/session-report.md
 ```
 
 Replay records and audit logs are redacted by default. Keep that default for

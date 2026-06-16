@@ -15,13 +15,13 @@ For ngrok exposure, use the share workflow so snulbug generates the public Cloud
 Endpoint Traffic Policy and private internal Agent Endpoint config:
 
 ```bash
-uv run snulbug mcp share create \
+snulbug mcp share create \
   --provider ngrok \
   --upstream http://127.0.0.1:8000 \
   --allow-tool safe_read_file
 ```
 
-Then run `uv run snulbug mcp share run ...` and follow the generated
+Then run `snulbug mcp share run ...` and follow the generated
 `tunnel/README.md`.
 
 For local, tunneled, header-authenticated, and managed stdio upstream patterns, see
@@ -38,7 +38,7 @@ The policy bundle is in `examples/bundles/mcp-gateway.snulbug`. It demonstrates:
 Test the bundle:
 
 ```bash
-uv run snulbug bundle test examples/bundles/mcp-gateway.snulbug
+snulbug bundle test examples/bundles/mcp-gateway.snulbug
 ```
 
 The core policy shape is:
@@ -53,8 +53,8 @@ end
 For a packaged starter policy, use the bundled presets:
 
 ```bash
-uv run snulbug mcp policy preset
-uv run snulbug mcp policy preset tunnel-safe --output policy.snulbug
+snulbug mcp policy preset
+snulbug mcp policy preset tunnel-safe --output policy.snulbug
 ```
 
 For a more complete policy-writing guide, see the
@@ -63,14 +63,14 @@ For a more complete policy-writing guide, see the
 Record request decisions and replay them later:
 
 ```bash
-uv run snulbug mcp evidence record policy.snulbug/policy.lua request.json --out traces/session.jsonl
-uv run snulbug mcp evidence replay traces/session.jsonl
+snulbug mcp evidence record policy.snulbug/policy.lua request.json --out traces/session.jsonl
+snulbug mcp evidence replay traces/session.jsonl
 ```
 
 Run the policy as a reverse proxy for a non-ASGI MCP server:
 
 ```bash
-uv run snulbug mcp share config init
-uv run snulbug mcp share run \
+snulbug mcp share config init
+snulbug mcp share run \
   --config snulbug.toml
 ```

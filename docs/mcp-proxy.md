@@ -3,30 +3,33 @@
 Reverse proxy mode lets `snulbug` protect a local MCP HTTP server even when the
 server is not a Python ASGI app.
 
-Install the proxy runner from this repository with `uv`:
+Install the proxy runner with `uv`:
 
 ```bash
-uv sync
-uv run snulbug --help
+uv tool install "snulbug[discovery]"
+snulbug --help
 ```
 
-Or add the current GitHub source to another `uv` project:
+Or add it to another `uv` project:
 
 ```bash
-uv add "snulbug[discovery] @ git+https://github.com/lbruhacs/snulbug"
+uv add "snulbug[discovery]"
 ```
+
+If you are working from the source checkout, run `uv sync --all-extras --dev`
+and prefix CLI commands with `uv run`.
 
 Copy a starter policy. For public tunnel use, `tunnel-safe` is the recommended
 default:
 
 ```bash
-uv run snulbug mcp policy preset tunnel-safe --output policy.snulbug
+snulbug mcp policy preset tunnel-safe --output policy.snulbug
 ```
 
 Or generate one with project-specific values:
 
 ```bash
-uv run snulbug mcp policy preset tunnel-safe \
+snulbug mcp policy preset tunnel-safe \
   --output policy.snulbug \
   --token local-dev-secret \
   --allow-tool safe_read_file \
@@ -36,13 +39,13 @@ uv run snulbug mcp policy preset tunnel-safe \
 Write a starter config:
 
 ```bash
-uv run snulbug mcp share config init
+snulbug mcp share config init
 ```
 
 Run the proxy:
 
 ```bash
-uv run snulbug mcp share run --config snulbug.toml
+snulbug mcp share run --config snulbug.toml
 ```
 
 For concrete MCP client configuration patterns, see
@@ -64,14 +67,14 @@ For public tunnel use, prefer a generated share session. It writes the policy,
 config, lease, client config, provider setup files, and doctor command together:
 
 ```bash
-uv run snulbug mcp share create \
+snulbug mcp share create \
   --provider ngrok \
   --upstream http://127.0.0.1:9000 \
   --allow-tool safe_read_file \
   --allow-tool list_project_files \
   --ttl 30m
 export SNULBUG_SHARE_TOKEN=...
-uv run snulbug mcp share run .snulbug/shares/share-...
+snulbug mcp share run .snulbug/shares/share-...
 ngrok start --config .snulbug/shares/share-.../tunnel/ngrok-agent.yml --all
 ```
 
@@ -252,7 +255,7 @@ reachable through Funnel and expects both snulbug bearer auth and an active task
 lease before `share doctor` passes:
 
 ```bash
-uv run snulbug mcp share create \
+snulbug mcp share create \
   --provider tailscale \
   --url https://dev.tailnet.ts.net/mcp \
   --allow-tool safe_read_file \
@@ -573,7 +576,7 @@ reviewable after the session.
 You can exercise that model locally with:
 
 ```bash
-uv run snulbug mcp share demo auth
+snulbug mcp share demo auth
 ```
 
 The lab writes `.snulbug-auth-lab/AUTH_LAB.md` plus the generated config,

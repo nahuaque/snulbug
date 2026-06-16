@@ -4,18 +4,22 @@
 engine can wrap FastAPI, Starlette, or any ASGI app. It can be served by
 Uvicorn, Hypercorn, Daphne, or another ASGI server.
 
-Install from this repository with `uv`:
+Install the package with `uv`:
 
 ```bash
-uv sync
+uv add snulbug
 uv run python -c "import snulbug; print(snulbug.__version__)"
 ```
 
-Or add the current GitHub source to another `uv` project:
+For CLI use outside a project:
 
 ```bash
-uv add "snulbug @ git+https://github.com/lbruhacs/snulbug"
+uv tool install snulbug
+snulbug --help
 ```
+
+If you are working from the source checkout, run `uv sync --all-extras --dev`
+and prefix CLI commands with `uv run`.
 
 Minimal policy:
 
@@ -104,7 +108,7 @@ Use the simulator to replay a JSON request fixture against a policy without
 running an ASGI server:
 
 ```bash
-uv run snulbug simulate policy.lua request.json
+snulbug simulate policy.lua request.json
 ```
 
 Example request fixture:
@@ -152,7 +156,7 @@ The downstream app can read `scope["lua_trace"]`.
 Stateful policies can be replayed with an explicit state snapshot:
 
 ```bash
-uv run snulbug simulate policy.lua request.json --state state.json
+snulbug simulate policy.lua request.json --state state.json
 ```
 
 Snapshot input:
@@ -173,7 +177,7 @@ final state.
 Compare an active policy and a draft policy against replay fixtures:
 
 ```bash
-uv run snulbug mcp evidence diff active.lua draft.lua fixtures/
+snulbug mcp evidence diff active.lua draft.lua fixtures/
 ```
 
 The command emits changed decisions and regressions. It exits non-zero when a
@@ -196,7 +200,7 @@ comparison are attached to `scope["lua_shadow_trace"]`.
 For stateful promotion gates, pass a snapshot file or a directory of snapshots:
 
 ```bash
-uv run snulbug mcp evidence diff active.lua draft.lua fixtures/ --state-snapshots snapshots/
+snulbug mcp evidence diff active.lua draft.lua fixtures/ --state-snapshots snapshots/
 ```
 
 When `--state-snapshots` points to a directory, the diff command looks for a

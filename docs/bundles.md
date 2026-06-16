@@ -14,14 +14,14 @@ policy.snulbug/
 Validate and test:
 
 ```bash
-uv run snulbug bundle validate examples/bundles/idempotency.snulbug
-uv run snulbug bundle test examples/bundles/idempotency.snulbug
+snulbug bundle validate examples/bundles/idempotency.snulbug
+snulbug bundle test examples/bundles/idempotency.snulbug
 ```
 
 Pack:
 
 ```bash
-uv run snulbug bundle pack examples/bundles/idempotency.snulbug dist/idempotency.snulbug.tar.gz
+snulbug bundle pack examples/bundles/idempotency.snulbug dist/idempotency.snulbug.tar.gz
 ```
 
 Expectations can match direct fields such as `action`, `status`, `path`, `body`, `headers`, and `context`, or nested dotted paths such as `decision.context.tenant`.
@@ -44,16 +44,16 @@ Use an HMAC secret from `SNULBUG_BUNDLE_SECRET`:
 ```bash
 export SNULBUG_BUNDLE_SECRET="replace-with-a-local-review-secret"
 
-uv run snulbug mcp policy lifecycle promote policy.snulbug --to proposed --key-id local-review
-uv run snulbug mcp policy lifecycle promote policy.snulbug --to approved --key-id local-review
-uv run snulbug mcp policy lifecycle promote policy.snulbug --to active --key-id local-review
+snulbug mcp policy lifecycle promote policy.snulbug --to proposed --key-id local-review
+snulbug mcp policy lifecycle promote policy.snulbug --to approved --key-id local-review
+snulbug mcp policy lifecycle promote policy.snulbug --to active --key-id local-review
 ```
 
 Verify before enabling a bundle:
 
 ```bash
-uv run snulbug mcp policy lifecycle verify policy.snulbug --state active
-uv run snulbug mcp policy lifecycle status policy.snulbug
+snulbug mcp policy lifecycle verify policy.snulbug --state active
+snulbug mcp policy lifecycle status policy.snulbug
 ```
 
 For managed fabrics, the controller can own the final activation step. Configure

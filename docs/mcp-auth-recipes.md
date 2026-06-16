@@ -5,7 +5,7 @@ authorization server. Instead, it can generate provider setup flows for the
 identity systems you already use:
 
 ```bash
-uv run snulbug mcp share auth init \
+snulbug mcp share auth init \
   --provider keycloak \
   --url https://mcp.example.com/mcp \
   --issuer https://idp.example.com/realms/dev
@@ -15,7 +15,7 @@ uv run snulbug mcp share auth init \
 TOML overlay, a client token request shape, and next commands:
 
 ```bash
-uv run snulbug mcp share auth init \
+snulbug mcp share auth init \
   --provider auth0 \
   --url https://mcp.example.com/mcp \
   --domain tenant.example.com \
@@ -27,7 +27,7 @@ Use `--compact` for JSON output an agent can inspect. Use `recipe` when you only
 want the Markdown guidance and do not want files:
 
 ```bash
-uv run snulbug mcp share auth recipe \
+snulbug mcp share auth recipe \
   --provider auth0 \
   --url https://mcp.example.com/mcp \
   --domain tenant.example.com \

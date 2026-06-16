@@ -47,3 +47,8 @@ jobs:
         run: |
           uv run snulbug --help
           uv run python -m snulbug --help
+
+      - name: Smoke test built wheel
+        run: |
+          uv run --isolated --with dist/snulbug-*.whl snulbug --help
+          uv run --isolated --with dist/snulbug-*.whl python -m snulbug --help

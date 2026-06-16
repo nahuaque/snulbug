@@ -20,15 +20,15 @@ fixtures.
 Capture live replay and audit logs through the proxy:
 
 ```bash
-uv run snulbug mcp share run --config snulbug.toml
+snulbug mcp share run --config snulbug.toml
 ```
 
 Inspect the session before changing policy:
 
 ```bash
-uv run snulbug mcp evidence inspect traces/session.jsonl
-uv run snulbug mcp evidence inspect traces/audit.jsonl --kind audit
-uv run snulbug mcp evidence inspect traces/audit.jsonl \
+snulbug mcp evidence inspect traces/session.jsonl
+snulbug mcp evidence inspect traces/audit.jsonl --kind audit
+snulbug mcp evidence inspect traces/audit.jsonl \
   --kind audit \
   --report-out traces/session-report.md
 ```
@@ -36,14 +36,14 @@ uv run snulbug mcp evidence inspect traces/audit.jsonl \
 Replay captured traffic after editing or replacing a policy:
 
 ```bash
-uv run snulbug mcp evidence replay traces/session.jsonl
-uv run snulbug mcp evidence replay traces/session.jsonl --script candidate.lua
+snulbug mcp evidence replay traces/session.jsonl
+snulbug mcp evidence replay traces/session.jsonl --script candidate.lua
 ```
 
 Preview candidate policy and lease impact:
 
 ```bash
-uv run snulbug mcp evidence impact traces/session.jsonl \
+snulbug mcp evidence impact traces/session.jsonl \
   --policy candidate-policy.snulbug/policy.lua \
   --lease leases.json \
   --report-out traces/impact-report.md
@@ -52,14 +52,14 @@ uv run snulbug mcp evidence impact traces/session.jsonl \
 Use fixture diffing for small policy review gates:
 
 ```bash
-uv run snulbug mcp evidence diff active.lua draft.lua fixtures/
+snulbug mcp evidence diff active.lua draft.lua fixtures/
 ```
 
 Write a reviewable Markdown diff when the policy change should go through the
 same review path as code:
 
 ```bash
-uv run snulbug mcp evidence diff active.lua draft.lua fixtures/ \
+snulbug mcp evidence diff active.lua draft.lua fixtures/ \
   --report-out traces/policy-diff.md
 ```
 
@@ -82,7 +82,7 @@ Use them for offline inspection, decision reports, and amendment workflows.
 For approval-driven amendments, prefer replay records when available:
 
 ```bash
-uv run snulbug mcp policy amend learned-policy.snulbug traces/session.jsonl \
+snulbug mcp policy amend learned-policy.snulbug traces/session.jsonl \
   --source approved-confirmations \
   --out approval-candidate.snulbug
 ```
@@ -100,20 +100,20 @@ auth-sensitive values.
 Before enabling a learned or amended policy:
 
 ```bash
-uv run snulbug mcp evidence impact traces/session.jsonl \
+snulbug mcp evidence impact traces/session.jsonl \
   --policy learned-policy.snulbug/policy.lua
 ```
 
 Before requiring task leases:
 
 ```bash
-uv run snulbug mcp evidence impact traces/session.jsonl --lease leases.json
+snulbug mcp evidence impact traces/session.jsonl --lease leases.json
 ```
 
 Before merging a hand-edited Lua policy:
 
 ```bash
-uv run snulbug mcp evidence diff active.lua draft.lua fixtures/ \
+snulbug mcp evidence diff active.lua draft.lua fixtures/ \
   --report-out traces/policy-diff.md
 ```
 
