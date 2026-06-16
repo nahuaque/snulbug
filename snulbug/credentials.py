@@ -5,12 +5,167 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-CREDENTIAL_SOURCES = {"env", "file"}
 CREDENTIAL_SCHEMES = {"bearer", "basic", "raw"}
+CREDENTIAL_SOURCES: set[str] = set()
 
 
 class CredentialResolutionError(RuntimeError):
     """Raised when a configured credential reference cannot be resolved."""
+
+
+class CredentialBroker:
+    """Extension point for resolving upstream credentials at request/probe time."""
+
+    type = ""
+
+    @property
+    def normalized_type(self) -> str:
+        return str(self.type).strip().lower()
+
+    def normalize(
+        self,
+        credential_id: str,
+        entry: Mapping[str, Any],
+        *,
+        base_dir: Path,
+        field: str,
+        resolve_relative_paths: bool = True,
+    ) -> dict[str, Any]:
+        scheme = entry.get("scheme", "bearer")
+        if scheme not in CREDENTIAL_SCHEMES:
+            raise ValueError(f"{field}.scheme must be 'bearer', 'basic', or 'raw'")
+        header = entry.get("header", "Authorization")
+        if not isinstance(header, str) or not _valid_header_name(header):
+            raise ValueError(f"{field}.header must be a valid HTTP header name")
+
+        normalized: dict[str, Any] = {
+            "id": credential_id,
+            "type": self.normalized_type,
+            "scheme": scheme,
+            "header": header,
+        }
+        normalized.update(
+            self.normalize_source(
+                entry,
+                base_dir=base_dir,
+                field=field,
+                resolve_relative_paths=resolve_relative_paths,
+            )
+        )
+        return normalized
+
+    def normalize_source(
+        self,
+        entry: Mapping[str, Any],
+        *,
+        base_dir: Path,
+        field: str,
+        resolve_relative_paths: bool,
+    ) -> Mapping[str, Any]:
+        raise NotImplementedError(f"credential broker {self.type!r} must implement normalize_source()")
+
+    def resolve(self, credential: Mapping[str, Any]) -> str:
+        raise NotImplementedError(f"credential broker {self.type!r} must implement resolve()")
+
+    def metadata(self, credential: Mapping[str, Any]) -> Mapping[str, Any]:
+        return {}
+
+
+class EnvCredentialBroker(CredentialBroker):
+    type = "env"
+
+    def normalize_source(
+        self,
+        entry: Mapping[str, Any],
+        *,
+        base_dir: Path,
+        field: str,
+        resolve_relative_paths: bool,
+    ) -> Mapping[str, Any]:
+        del base_dir, resolve_relative_paths
+        env_name = entry.get("env")
+        if not isinstance(env_name, str) or not env_name:
+            raise ValueError(f"{field}.env must be a non-empty environment variable name")
+        return {"env": env_name}
+
+    def resolve(self, credential: Mapping[str, Any]) -> str:
+        env_name = str(credential.get("env") or "")
+        value = os.environ.get(env_name)
+        if not value:
+            raise CredentialResolutionError(f"environment variable {env_name!r} is not set")
+        return value
+
+    def metadata(self, credential: Mapping[str, Any]) -> Mapping[str, Any]:
+        return {"env": credential.get("env")}
+
+
+class FileCredentialBroker(CredentialBroker):
+    type = "file"
+
+    def normalize_source(
+        self,
+        entry: Mapping[str, Any],
+        *,
+        base_dir: Path,
+        field: str,
+        resolve_relative_paths: bool,
+    ) -> Mapping[str, Any]:
+        path = entry.get("path")
+        if not isinstance(path, str | Path) or not str(path):
+            raise ValueError(f"{field}.path must be a non-empty file path")
+        credential_path = Path(path)
+        if resolve_relative_paths and not credential_path.is_absolute():
+            credential_path = base_dir / credential_path
+        return {"path": str(credential_path)}
+
+    def resolve(self, credential: Mapping[str, Any]) -> str:
+        path = Path(str(credential.get("path") or ""))
+        try:
+            value = path.read_text(encoding="utf-8").strip()
+        except FileNotFoundError as exc:
+            raise CredentialResolutionError(f"credential file does not exist: {path}") from exc
+        except OSError as exc:
+            raise CredentialResolutionError(f"credential file cannot be read: {path}: {exc}") from exc
+        if not value:
+            raise CredentialResolutionError(f"credential file is empty: {path}")
+        return value
+
+    def metadata(self, credential: Mapping[str, Any]) -> Mapping[str, Any]:
+        return {"path": credential.get("path")}
+
+
+_CREDENTIAL_BROKER_REGISTRY: dict[str, CredentialBroker] = {}
+
+
+def register_credential_broker(broker: CredentialBroker, *, replace: bool = False) -> CredentialBroker:
+    """Register an upstream credential broker plugin."""
+
+    broker_type = broker.normalized_type
+    if not broker_type:
+        raise ValueError("credential broker type is required")
+    if broker_type in _CREDENTIAL_BROKER_REGISTRY and not replace:
+        raise ValueError(f"credential broker already registered: {broker_type}")
+    _CREDENTIAL_BROKER_REGISTRY[broker_type] = broker
+    CREDENTIAL_SOURCES.clear()
+    CREDENTIAL_SOURCES.update(_CREDENTIAL_BROKER_REGISTRY)
+    return broker
+
+
+def get_credential_broker(source_type: str) -> CredentialBroker:
+    """Return a registered upstream credential broker."""
+
+    broker_type = str(source_type).strip().lower()
+    try:
+        return _CREDENTIAL_BROKER_REGISTRY[broker_type]
+    except KeyError as exc:
+        known = ", ".join(list_credential_brokers()) or "<none>"
+        raise ValueError(f"unknown credential broker {source_type!r}; known brokers: {known}") from exc
+
+
+def list_credential_brokers() -> tuple[str, ...]:
+    """Return registered credential broker types in registration order."""
+
+    return tuple(_CREDENTIAL_BROKER_REGISTRY)
 
 
 def normalize_fabric_credentials(
@@ -115,24 +270,8 @@ def credential_header(credential: Mapping[str, Any]) -> tuple[str, str]:
     """Resolve a credential reference into an HTTP header pair."""
 
     normalized = normalize_upstream_credential(credential)
-    source_type = normalized["type"]
-    if source_type == "env":
-        env_name = normalized["env"]
-        value = os.environ.get(env_name)
-        if not value:
-            raise CredentialResolutionError(f"environment variable {env_name!r} is not set")
-    elif source_type == "file":
-        path = Path(str(normalized["path"]))
-        try:
-            value = path.read_text(encoding="utf-8").strip()
-        except FileNotFoundError as exc:
-            raise CredentialResolutionError(f"credential file does not exist: {path}") from exc
-        except OSError as exc:
-            raise CredentialResolutionError(f"credential file cannot be read: {path}: {exc}") from exc
-        if not value:
-            raise CredentialResolutionError(f"credential file is empty: {path}")
-    else:  # pragma: no cover - guarded by normalization.
-        raise CredentialResolutionError(f"unsupported credential source: {source_type!r}")
+    broker = get_credential_broker(str(normalized["type"]))
+    value = broker.resolve(normalized)
     if "\r" in value or "\n" in value:
         raise CredentialResolutionError("credential value must be a single line")
     return normalized["header"], _format_secret(value, scheme=normalized["scheme"])
@@ -160,6 +299,7 @@ def credential_metadata(credential: Mapping[str, Any] | None) -> dict[str, Any]:
     if not credential:
         return {}
     normalized = normalize_upstream_credential(credential)
+    broker = get_credential_broker(str(normalized["type"]))
     return _drop_empty(
         {
             "id": normalized.get("id"),
@@ -167,8 +307,7 @@ def credential_metadata(credential: Mapping[str, Any] | None) -> dict[str, Any]:
             "source": normalized.get("type"),
             "scheme": normalized.get("scheme"),
             "header": normalized.get("header"),
-            "env": normalized.get("env") if normalized.get("type") == "env" else None,
-            "path": normalized.get("path") if normalized.get("type") == "file" else None,
+            **dict(broker.metadata(normalized)),
         }
     )
 
@@ -200,36 +339,17 @@ def _normalize_credential_entry(
             source_type = "env"
         elif entry.get("path") is not None:
             source_type = "file"
-    if source_type not in CREDENTIAL_SOURCES:
-        raise ValueError(f"{field}.type must be 'env' or 'file'")
-
-    scheme = entry.get("scheme", "bearer")
-    if scheme not in CREDENTIAL_SCHEMES:
-        raise ValueError(f"{field}.scheme must be 'bearer', 'basic', or 'raw'")
-    header = entry.get("header", "Authorization")
-    if not isinstance(header, str) or not _valid_header_name(header):
-        raise ValueError(f"{field}.header must be a valid HTTP header name")
-
-    normalized: dict[str, Any] = {
-        "id": credential_id,
-        "type": source_type,
-        "scheme": scheme,
-        "header": header,
-    }
-    if source_type == "env":
-        env_name = entry.get("env")
-        if not isinstance(env_name, str) or not env_name:
-            raise ValueError(f"{field}.env must be a non-empty environment variable name")
-        normalized["env"] = env_name
-    else:
-        path = entry.get("path")
-        if not isinstance(path, str | Path) or not str(path):
-            raise ValueError(f"{field}.path must be a non-empty file path")
-        credential_path = Path(path)
-        if resolve_relative_paths and not credential_path.is_absolute():
-            credential_path = base_dir / credential_path
-        normalized["path"] = str(credential_path)
-    return normalized
+    if source_type is None:
+        known = ", ".join(list_credential_brokers()) or "<none>"
+        raise ValueError(f"{field}.type must be one of: {known}")
+    broker = get_credential_broker(str(source_type))
+    return broker.normalize(
+        credential_id,
+        entry,
+        base_dir=base_dir,
+        field=field,
+        resolve_relative_paths=resolve_relative_paths,
+    )
 
 
 def _format_secret(value: str, *, scheme: str) -> str:
@@ -250,3 +370,7 @@ def _valid_header_name(value: str) -> bool:
 
 def _drop_empty(value: Mapping[str, Any]) -> dict[str, Any]:
     return {str(key): item for key, item in value.items() if item not in (None, "", [], {})}
+
+
+for _broker in (EnvCredentialBroker(), FileCredentialBroker()):
+    register_credential_broker(_broker, replace=True)
