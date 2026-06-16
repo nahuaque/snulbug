@@ -9,10 +9,12 @@ return function(request, context, state)
 
   return auth.require("tools/call:" .. tostring(call.tool))
     or lease.require()
+    or intent.require_max_risk("medium")
     or workspace.require_under_project({ "path", "cwd" })
     or workspace.block_secret_paths({ "path", "cwd" })
     or decision.allow("mcp.allowed", {
       tool = call.tool,
+      risk = intent.risk(),
       subject = auth.subject(),
       lease_id = lease.id()
     })
@@ -41,6 +43,7 @@ Use Lua for request-specific policy that needs a little logic:
 - block secret-looking file paths and generated directories
 - ask for one-time confirmation before a risky tool call
 - bind OAuth claims to MCP tool names and facade routes
+- gate tools by inferred capability, category, or risk instead of brittle names
 - add stable reason codes and audit context that explain the decision
 
 Prefer config when the rule is declarative:
@@ -76,6 +79,7 @@ For MCP proxy work, prefer the helper tables over raw request parsing.
 | Helper | Use It For |
 | --- | --- |
 | `mcp.*` | Parse JSON-RPC/MCP method, tool name, params, arguments, and read/write hints. |
+| `intent.*` | Gate MCP tools by schema-aware capability categories and risk level. |
 | `decision.*` | Build supported actions with consistent metadata. |
 | `cap.*` | Compact allowlists for methods, tools, path args, hosts, and command args. |
 | `workspace.*` | Local-dev filesystem safety rules for project paths, secrets, generated files, and read-only shares. |
@@ -86,6 +90,11 @@ For MCP proxy work, prefer the helper tables over raw request parsing.
 | `access.*` | Standardized denial/challenge reason builders. |
 
 See the [Lua policy reference](lua-request-api.md) for every function and field.
+
+`intent.*` uses `context.intent` when the proxy has schema/risk metadata. In
+normal proxy mode, snulbug fills that context from the cached `tools/list`
+`inputSchema` when available. In simulator or bundle tests without context,
+the helper falls back to deterministic tool-name inference.
 
 ## Core Patterns
 
@@ -146,6 +155,30 @@ end
 
 This is the public-share model: valid OAuth token, matching MCP scope, active
 task lease, and Lua policy approval.
+
+### Intent And Risk
+
+```lua
+return function(request)
+  return intent.require_max_risk("medium")
+    or intent.block_if({ "shell.exec", "secrets.access" })
+    or intent.confirm_if({ "filesystem.write", "network.egress" }, {
+      remember_key = "intent:" .. tostring(intent.name()),
+      reason_code = "mcp.confirm.intent"
+    })
+    or decision.allow("mcp.intent_allowed", {
+      tool = intent.name(),
+      risk = intent.risk(),
+      categories = intent.categories(),
+      source = intent.info().source
+    })
+end
+```
+
+Use intent guards when the policy should describe capability rather than a
+single tool name. For example: allow read-only filesystem tools, confirm
+network egress, and reject command execution even when upstreams rename tools
+or route them through a facade.
 
 ### Upstream-Aware Facade
 

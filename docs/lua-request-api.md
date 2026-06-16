@@ -67,6 +67,60 @@ Available helpers:
 `options.reason` and `options.reason_code` can override the default
 `mcp.tool_not_allowed` reason metadata.
 
+## Intent Helpers
+
+The `intent` table exposes schema-aware MCP tool capability and risk metadata.
+When the reverse proxy has seen a `tools/list` response, snulbug classifies the
+called tool using its cached `inputSchema`. Without cached schema metadata,
+helpers fall back to deterministic tool-name inference.
+
+```lua
+return function(request)
+  return intent.require_max_risk("medium")
+    or intent.confirm_if({ "filesystem.write", "network.egress" })
+    or decision.allow("mcp.intent_allowed", {
+      tool = intent.name(),
+      risk = intent.risk(),
+      categories = intent.categories()
+    })
+end
+```
+
+Available helpers:
+
+- `intent.info()`: return the current intent metadata table. Fields can include
+  `name`, `level`, `score`, `categories`, `signals`, `schema`, `source`, and
+  `confidence`.
+- `intent.name()`: current MCP tool name, or `nil` for non-tool calls.
+- `intent.category()`: first normalized category, or `nil`.
+- `intent.categories()`: normalized category list. This includes classifier
+  categories such as `command`, `mutation`, `network`, `filesystem`, `secrets`,
+  `read`, `open-schema`, and `schema-drift`, plus policy-friendly aliases such
+  as `shell.exec`, `network.egress`, `filesystem.read`,
+  `filesystem.write`, `git.read`, `git.write`, `secrets.access`, `read`, and
+  `write`.
+- `intent.risk()`: risk level, usually `low`, `medium`, or `high`.
+- `intent.risk_score()`: numeric risk score.
+- `intent.has_category(category_or_categories)`: true when any current
+  category matches. Wildcards such as `filesystem.*` are supported.
+- `intent.require_category(category_or_categories, options)`: return `nil`
+  when matched, otherwise reject with `reason_code =
+  "mcp.intent_category_denied"`.
+- `intent.require_max_risk(level, options)`: return `nil` when the current risk
+  is at or below `level`, otherwise reject with `reason_code =
+  "mcp.intent_risk_denied"`.
+- `intent.block_if(category_or_categories, options)`: reject when the current
+  intent matches one of the supplied categories. Default `reason_code` is
+  `mcp.intent_blocked`.
+- `intent.confirm_if(category_or_categories, options)`: return a confirmation
+  decision when the current intent matches one of the supplied categories.
+  Default `reason_code` is `mcp.intent_confirmation_required`.
+
+Intent decisions include sanitized context such as tool, risk, risk score,
+categories, source, confidence, and any required or blocked category. The raw
+schema document is not added to decision context unless the policy explicitly
+copies fields from `intent.info().schema`.
+
 ## Decision helpers
 
 The sandbox includes a `decision` table for building supported middleware

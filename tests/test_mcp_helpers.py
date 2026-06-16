@@ -100,6 +100,148 @@ def test_mcp_allow_tools_can_override_rejection_reason():
     }
 
 
+def test_intent_helpers_classify_tool_name_without_schema_context():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return decision.allow("test.intent", {
+            name = intent.name(),
+            risk = intent.risk(),
+            score = intent.risk_score(),
+            command = intent.has_category("command"),
+            shell = intent.has_category("shell.exec"),
+            high_or_lower = intent.require_max_risk("high") == nil
+          })
+        end
+        """
+    )
+
+    decision = script.decide(
+        {"body": '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shell_exec"}}'}
+    )
+
+    assert decision == {
+        "action": "continue",
+        "reason_code": "test.intent",
+        "context": {
+            "name": "shell_exec",
+            "risk": "high",
+            "score": 60,
+            "command": True,
+            "shell": True,
+            "high_or_lower": True,
+        },
+    }
+
+
+def test_intent_helpers_use_schema_aware_context_when_present():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          local categories = intent.categories()
+          return decision.allow("test.intent.context", {
+            name = intent.name(),
+            risk = intent.risk(),
+            score = intent.risk_score(),
+            first_category = categories[1],
+            filesystem = intent.has_category("filesystem"),
+            filesystem_read = intent.has_category("filesystem.read"),
+            source = intent.info().source,
+            property_count = #intent.info().schema.input_properties
+          })
+        end
+        """
+    )
+
+    decision = script.decide(
+        {"body": '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"safe_read_file"}}'},
+        {
+            "intent": {
+                "name": "safe_read_file",
+                "level": "medium",
+                "score": 40,
+                "categories": ["filesystem", "read"],
+                "source": "schema-cache",
+                "confidence": "high",
+                "schema": {"input_properties": ["path"]},
+            }
+        },
+    )
+
+    assert decision == {
+        "action": "continue",
+        "reason_code": "test.intent.context",
+        "context": {
+            "name": "safe_read_file",
+            "risk": "medium",
+            "score": 40,
+            "first_category": "filesystem",
+            "filesystem": True,
+            "filesystem_read": True,
+            "source": "schema-cache",
+            "property_count": 1,
+        },
+    }
+
+
+def test_intent_require_max_risk_rejects_high_risk_tools():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return intent.require_max_risk("medium")
+            or decision.allow("test.intent.allowed")
+        end
+        """
+    )
+
+    decision = script.decide(
+        {"body": '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"delete_file"}}'}
+    )
+
+    assert decision["action"] == "reject"
+    assert decision["status"] == 403
+    assert decision["reason_code"] == "mcp.intent_risk_denied"
+    assert decision["context"]["tool"] == "delete_file"
+    assert decision["context"]["risk"] == "high"
+    assert decision["context"]["max_risk"] == "medium"
+
+
+def test_intent_category_guards_and_confirmation_options():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return intent.require_category({ "filesystem.*", "git.read" })
+            or intent.confirm_if("filesystem.write", {
+              prompt = "Allow write?",
+              remember_key = "intent:" .. tostring(intent.name()),
+              reason_code = "test.intent.confirm"
+            })
+            or decision.allow("test.intent.allowed")
+        end
+        """
+    )
+
+    allowed = script.decide(
+        {"body": '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file"}}'}
+    )
+    confirmed = script.decide(
+        {"body": '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write_file"}}'}
+    )
+    rejected = script.decide(
+        {"body": '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"http_fetch"}}'}
+    )
+
+    assert allowed == {"action": "continue", "reason_code": "test.intent.allowed"}
+    assert confirmed["action"] == "confirm"
+    assert confirmed["prompt"] == "Allow write?"
+    assert confirmed["remember_key"] == "intent:write_file"
+    assert confirmed["reason_code"] == "test.intent.confirm"
+    assert confirmed["context"]["confirmation_category"] == "filesystem.write"
+    assert rejected["action"] == "reject"
+    assert rejected["reason_code"] == "mcp.intent_category_denied"
+    assert rejected["context"]["required_category"] == ["filesystem.*", "git.read"]
+
+
 def test_mcp_helpers_treat_malformed_body_as_not_mcp():
     script = compile_lua_script(
         """

@@ -628,6 +628,7 @@ return function(source, source_name, instruction_limit)
   local current_request = {}
   local current_share = {}
   local current_upstream = {}
+  local current_intent = {}
 
   local function merge_context(defaults, context)
     local merged = {}
@@ -1547,6 +1548,428 @@ return function(source, source_name, instruction_limit)
 
   safe_env.mcp = mcp
 
+  local function set_intent_context(context)
+    if type(context) == "table" and type(context.intent) == "table" then
+      current_intent = context.intent
+    else
+      current_intent = {}
+    end
+  end
+
+  local risk_order = {
+    low = 0,
+    medium = 1,
+    high = 2,
+  }
+
+  local risk_weights = {
+    low = 10,
+    medium = 30,
+    high = 60,
+  }
+
+  local intent_terms = {
+    command = {
+      "shell",
+      "exec",
+      "execute",
+      "command",
+      "terminal",
+      "subprocess",
+      "process",
+      "spawn",
+      "bash",
+      "zsh",
+      "powershell",
+      "cmd",
+      "system",
+    },
+    write = {
+      "write",
+      "edit",
+      "create",
+      "delete",
+      "remove",
+      "rename",
+      "move",
+      "patch",
+      "replace",
+      "append",
+      "mkdir",
+      "rm",
+      "save",
+      "mutate",
+      "update",
+    },
+    destructive = {
+      "delete",
+      "remove",
+      "rm",
+      "destroy",
+      "drop",
+      "wipe",
+      "kill",
+      "terminate",
+    },
+    network = {
+      "url",
+      "uri",
+      "host",
+      "http",
+      "https",
+      "fetch",
+      "request",
+      "webhook",
+      "network",
+      "download",
+    },
+    secrets = {
+      "secret",
+      "token",
+      "password",
+      "credential",
+      "apikey",
+      "api_key",
+      "private_key",
+      "ssh_key",
+    },
+    filesystem = {
+      "file",
+      "files",
+      "filesystem",
+      "path",
+      "directory",
+      "dir",
+      "read_file",
+      "list_project_files",
+    },
+    read = {
+      "list",
+      "read",
+      "get",
+      "show",
+      "status",
+      "describe",
+      "inspect",
+      "search",
+    },
+    git = {
+      "git",
+      "commit",
+      "branch",
+      "checkout",
+      "merge",
+      "push",
+      "pull",
+      "status",
+      "diff",
+    },
+  }
+
+  local function intent_contains_any(value, terms)
+    for _, term in ipairs(terms) do
+      if string.find(value, term, 1, true) ~= nil then
+        return true
+      end
+    end
+    return false
+  end
+
+  local function intent_add_category(categories, category)
+    categories[category] = true
+  end
+
+  local function intent_add_signal(signals, code, severity, reason)
+    table.insert(signals, {
+      code = code,
+      severity = severity,
+      reason = reason,
+    })
+  end
+
+  local function intent_categories_from_set(categories)
+    local result = {}
+    for category, enabled in pairs(categories) do
+      if enabled == true then
+        table.insert(result, category)
+      end
+    end
+    table.sort(result)
+    return result
+  end
+
+  local function intent_has_category_value(categories, category)
+    if type(categories) ~= "table" or type(category) ~= "string" then
+      return false
+    end
+    for _, value in ipairs(categories) do
+      if selector_matches(category, value) or selector_matches(value, category) then
+        return true
+      end
+    end
+    return false
+  end
+
+  local function intent_signal_level(score, signals)
+    local level = "low"
+    if score >= 60 then
+      level = "high"
+    elseif score >= 30 then
+      level = "medium"
+    end
+    for _, signal in ipairs(signals) do
+      local severity = signal.severity or "low"
+      if (risk_order[severity] or 0) > (risk_order[level] or 0) then
+        level = severity
+      end
+    end
+    return level
+  end
+
+  local function intent_classify_name(name)
+    name = tostring(name or "")
+    local haystack = string.gsub(string.lower(name), "-", "_")
+    local categories = {}
+    local signals = {}
+
+    if intent_contains_any(haystack, intent_terms.command) then
+      intent_add_signal(signals, "tool.shell_or_process", "high", "tool looks able to run commands")
+      intent_add_category(categories, "command")
+    end
+    if intent_contains_any(haystack, intent_terms.secrets) then
+      intent_add_signal(signals, "tool.secret_name", "high", "tool name suggests secret or credential access")
+      intent_add_category(categories, "secrets")
+    end
+    if intent_contains_any(haystack, intent_terms.destructive) then
+      intent_add_signal(signals, "tool.destructive_name", "high", "tool name suggests destructive mutation")
+      intent_add_category(categories, "mutation")
+    elseif intent_contains_any(haystack, intent_terms.write) then
+      intent_add_signal(signals, "tool.mutating_name", "medium", "tool name suggests mutation")
+      intent_add_category(categories, "mutation")
+    end
+    if intent_contains_any(haystack, intent_terms.network) then
+      intent_add_signal(signals, "tool.network_name", "medium", "tool name suggests network access")
+      intent_add_category(categories, "network")
+    end
+    if intent_contains_any(haystack, intent_terms.filesystem) then
+      intent_add_signal(signals, "tool.filesystem_name", "medium", "tool name suggests filesystem access")
+      intent_add_category(categories, "filesystem")
+    end
+    if intent_contains_any(haystack, intent_terms.read) then
+      intent_add_signal(signals, "tool.read_like_name", "low", "tool name suggests read-only or inspection use")
+      intent_add_category(categories, "read")
+    end
+    if intent_contains_any(haystack, intent_terms.git) then
+      intent_add_category(categories, "git")
+    end
+    if #signals == 0 then
+      intent_add_signal(signals, "tool.observed", "low", "tool was observed but has no obvious high-risk signal")
+      intent_add_category(categories, "unknown")
+    end
+
+    local score = 0
+    for _, signal in ipairs(signals) do
+      score = score + (risk_weights[signal.severity] or 0)
+    end
+    if score > 100 then
+      score = 100
+    end
+
+    return {
+      name = name,
+      level = intent_signal_level(score, signals),
+      score = score,
+      categories = intent_categories_from_set(categories),
+      signals = signals,
+      evidence_sources = { "name" },
+      confidence = "low",
+      source = "name",
+    }
+  end
+
+  local function intent_current_info()
+    if type(current_intent) == "table" and type(current_intent.name) == "string" then
+      return current_intent
+    end
+    local tool = mcp.tool_name(current_request) or current_upstream.tool
+    if type(tool) == "string" and tool ~= "" then
+      return intent_classify_name(tool)
+    end
+    return {}
+  end
+
+  local function intent_all_categories(info)
+    info = info or intent_current_info()
+    local categories = {}
+    if type(info.categories) == "table" then
+      for _, category in ipairs(info.categories) do
+        intent_add_category(categories, tostring(category))
+      end
+    end
+    local name = string.gsub(string.lower(tostring(info.name or "")), "-", "_")
+    if categories.command then
+      intent_add_category(categories, "shell.exec")
+    end
+    if categories.network then
+      intent_add_category(categories, "network.egress")
+    end
+    if categories.secrets then
+      intent_add_category(categories, "secrets.access")
+    end
+    if categories.filesystem and categories.mutation then
+      intent_add_category(categories, "filesystem.write")
+    elseif categories.filesystem then
+      intent_add_category(categories, "filesystem.read")
+    end
+    if categories.git and categories.mutation then
+      intent_add_category(categories, "git.write")
+    elseif categories.git then
+      intent_add_category(categories, "git.read")
+    end
+    if categories.mutation then
+      intent_add_category(categories, "write")
+    end
+    if categories.read then
+      intent_add_category(categories, "read")
+    end
+    if string.find(name, "push", 1, true) ~= nil then
+      intent_add_category(categories, "git.write")
+    end
+    return intent_categories_from_set(categories)
+  end
+
+  local function intent_context(info, details)
+    info = info or intent_current_info()
+    return merge_context({
+      tool = info.name or mcp.tool_name(current_request),
+      intent = info.name,
+      risk = info.level,
+      risk_score = info.score,
+      categories = intent_all_categories(info),
+      source = info.source,
+      confidence = info.confidence,
+    }, details)
+  end
+
+  local function intent_reject(body, reason_code, options, details)
+    options = options_table(options)
+    local decision_options = copy_options(options)
+    decision_options.reason = options.reason or body
+    decision_options.reason_code = options.reason_code or reason_code
+    decision_options.context = merge_context(intent_context(nil, details), options.context)
+    return decision.reject(options.status or 403, options.body or body, decision_options)
+  end
+
+  local intent = {}
+
+  function intent.info()
+    return intent_current_info()
+  end
+
+  function intent.name()
+    return intent_current_info().name
+  end
+
+  function intent.categories()
+    return intent_all_categories(intent_current_info())
+  end
+
+  function intent.category()
+    local categories = intent.categories()
+    return categories[1]
+  end
+
+  function intent.risk()
+    return intent_current_info().level
+  end
+
+  function intent.risk_score()
+    return intent_current_info().score
+  end
+
+  function intent.has_category(categories)
+    local actual = intent.categories()
+    if type(categories) == "table" then
+      for _, category in ipairs(categories) do
+        if intent_has_category_value(actual, category) then
+          return true
+        end
+      end
+      for category, enabled in pairs(categories) do
+        if enabled == true and intent_has_category_value(actual, category) then
+          return true
+        end
+      end
+      return false
+    end
+    return intent_has_category_value(actual, categories)
+  end
+
+  function intent.require_category(categories, options)
+    local name = intent.name()
+    if name == nil then
+      return nil
+    end
+    if intent.has_category(categories) then
+      return nil
+    end
+    return intent_reject(
+      "MCP tool intent category not allowed: " .. tostring(name),
+      "mcp.intent_category_denied",
+      options,
+      { required_category = categories }
+    )
+  end
+
+  function intent.require_max_risk(level, options)
+    local name = intent.name()
+    if name == nil then
+      return nil
+    end
+    local actual = intent.risk() or "low"
+    if (risk_order[actual] or 0) <= (risk_order[level] or -1) then
+      return nil
+    end
+    return intent_reject(
+      "MCP tool risk exceeds policy: " .. tostring(name),
+      "mcp.intent_risk_denied",
+      options,
+      { max_risk = level }
+    )
+  end
+
+  function intent.block_if(categories, options)
+    local name = intent.name()
+    if name == nil or not intent.has_category(categories) then
+      return nil
+    end
+    return intent_reject(
+      "MCP tool intent blocked: " .. tostring(name),
+      "mcp.intent_blocked",
+      options,
+      { blocked_category = categories }
+    )
+  end
+
+  function intent.confirm_if(categories, options)
+    local name = intent.name()
+    if name == nil or not intent.has_category(categories) then
+      return nil
+    end
+    options = options_table(options)
+    local prompt = options.prompt or ("Allow MCP tool " .. tostring(name) .. "?")
+    local decision_options = copy_options(options)
+    decision_options.reason = options.reason or "MCP tool requires confirmation"
+    decision_options.reason_code = options.reason_code or "mcp.intent_confirmation_required"
+    decision_options.context = merge_context(
+      intent_context(nil, { confirmation_category = categories }),
+      options.context
+    )
+    return decision.confirm(prompt, decision_options)
+  end
+
+  safe_env.intent = intent
+
   local cap = {}
 
   local function rejection(options, body, reason_code)
@@ -2201,12 +2624,14 @@ return function(source, source_name, instruction_limit)
     current_request = request
     set_share_context(context)
     set_upstream_context(context)
+    set_intent_context(context)
     local ok, result = pcall(handler, request, context, state or {})
     set_auth_context({})
     set_lease_context({})
     current_request = {}
     set_share_context({})
     set_upstream_context({})
+    set_intent_context({})
 
     if debug and debug.sethook then
       debug.sethook()

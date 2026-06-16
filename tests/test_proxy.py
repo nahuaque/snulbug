@@ -3075,6 +3075,75 @@ def test_mcp_schema_validation_allows_valid_tool_arguments(tmp_path):
     assert records[1]["metadata"]["schema_validation"]["valid"] is True
 
 
+def test_proxy_exposes_schema_aware_tool_intent_to_lua_policy(tmp_path):
+    server, seen = start_mcp_upstream(
+        {"call_endpoint": "Call endpoint"},
+        schemas={
+            "call_endpoint": {
+                "type": "object",
+                "required": ["url"],
+                "properties": {"url": {"type": "string", "format": "uri"}},
+                "additionalProperties": False,
+            }
+        },
+    )
+    policy = tmp_path / "intent-policy.lua"
+    policy.write_text(
+        """
+        return function(request, context)
+          if mcp.method(request) == "tools/list" then
+            return decision.continue()
+          end
+          return decision.respond(200, "intent", {
+            reason_code = "test.intent",
+            context = {
+              source = intent.info().source,
+              risk = intent.risk(),
+              network = intent.has_category("network"),
+              network_egress = intent.has_category("network.egress"),
+              schema_properties = #intent.info().schema.input_properties
+            }
+          })
+        end
+        """,
+        encoding="utf-8",
+    )
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+    )
+
+    try:
+        run_asgi(app, body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}')
+        sent = run_asgi(
+            app,
+            body=(
+                b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call",'
+                b'"params":{"name":"call_endpoint","arguments":{"url":"https://example.com/hook"}}}'
+            ),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    records = load_record_log(record_log)
+    assert sent[0]["status"] == 200
+    assert sent[1]["body"] == b"intent"
+    assert seen["calls"] == [{"method": "tools/list", "tool": None}]
+    assert records[1]["result"]["decision"]["reason_code"] == "test.intent"
+    assert records[1]["result"]["decision"]["context"] == {
+        "source": "schema-cache",
+        "risk": "high",
+        "network": True,
+        "network_egress": True,
+        "schema_properties": 1,
+    }
+    assert records[1]["metadata"]["intent"]["source"] == "schema-cache"
+    assert "network" in records[1]["metadata"]["intent"]["categories"]
+
+
 def test_mcp_schema_validation_warns_without_blocking(tmp_path):
     server, seen = start_mcp_upstream(
         {"read_file": "Read a file"},

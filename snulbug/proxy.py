@@ -44,12 +44,14 @@ from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
 from .recorder import append_record, build_request_record, record_audit_event
 from .response_policy import ResponsePolicyConfig, enforce_mcp_response_policy
 from .schema_policy import (
+    TOOL_SCHEMA_KEY_PREFIX,
     SchemaPolicyConfig,
     enforce_mcp_request_schema_policy,
     mcp_schema_error_response,
     observe_mcp_tool_schemas,
 )
 from .state import MemoryStateStore, PolicyStateStore, SQLiteStateStore, StateLimits
+from .tool_risk import classify_mcp_tool
 from .tunnel import TunnelAuditConfig, build_tunnel_audit_metadata
 
 HOP_BY_HOP_HEADERS = {
@@ -1800,6 +1802,41 @@ class FacadeRouteContextMiddleware:
         await self.app(child_scope, replay_receive, send)
 
 
+class McpIntentContextMiddleware:
+    """Expose schema-aware MCP tool intent/risk metadata to Lua policy context."""
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        tool_schema_store: PolicyStateStore | None = None,
+        context_scope_key: str = "lua",
+    ) -> None:
+        self.app = app
+        self.tool_schema_store = tool_schema_store
+        self.context_scope_key = context_scope_key
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        body, replay_receive = await _capture_body(receive)
+        request = _jsonrpc_request(body)
+        intent_context = _mcp_intent_context(request, self.tool_schema_store)
+        if intent_context:
+            _set_proxy_metadata(scope, {"intent": intent_context})
+            child_scope = dict(scope)
+            context = child_scope.get(self.context_scope_key)
+            lua_context = dict(context) if isinstance(context, Mapping) else {}
+            lua_context["intent"] = intent_context
+            child_scope[self.context_scope_key] = lua_context
+            await self.app(child_scope, replay_receive, send)
+            return
+
+        await self.app(scope, replay_receive, send)
+
+
 class OAuthResourceMiddleware:
     """Require OAuth bearer tokens before Lua policy and upstream calls."""
 
@@ -2130,6 +2167,11 @@ def create_proxy_application(
         state_store=effective_state_store,
         state_limits=state_limits,
         confirm_handler=confirm_handler or (ConfirmationBroker(enabled=True) if confirm else None),
+    )
+    app = McpIntentContextMiddleware(
+        app,
+        tool_schema_store=effective_state_store if schema_validation else None,
+        context_scope_key=lua_config.context_scope_key,
     )
     if facade_proxy is not None:
         app = FacadeRouteContextMiddleware(
@@ -3621,6 +3663,40 @@ def _mcp_request_metadata(request: Mapping[str, Any] | None) -> dict[str, Any]:
         if isinstance(arguments, Mapping):
             metadata["argument_keys"] = sorted(str(key) for key in arguments)
     return metadata
+
+
+def _mcp_intent_context(
+    request: Mapping[str, Any] | None,
+    tool_schema_store: PolicyStateStore | None,
+) -> dict[str, Any]:
+    if not isinstance(request, Mapping) or request.get("method") != "tools/call":
+        return {}
+    params = request.get("params")
+    if not isinstance(params, Mapping) or not isinstance(params.get("name"), str):
+        return {}
+
+    tool_name = str(params["name"])
+    tool: dict[str, Any] = {
+        "name": tool_name,
+        "evidence_sources": ["name"],
+        "confidence": "low",
+    }
+    if tool_schema_store is not None:
+        encoded = tool_schema_store.get(f"{TOOL_SCHEMA_KEY_PREFIX}{tool_name}")
+        if isinstance(encoded, str):
+            try:
+                schema = json.loads(encoded)
+            except json.JSONDecodeError:
+                tool["schema_cache_error"] = "invalid_json"
+            else:
+                if isinstance(schema, Mapping):
+                    tool["inputSchema"] = schema
+                    tool["evidence_sources"] = ["schema-cache", "name"]
+                    tool["confidence"] = "high"
+
+    intent = classify_mcp_tool(tool)
+    intent["source"] = "schema-cache" if "schema-cache" in intent.get("evidence_sources", []) else "name"
+    return intent
 
 
 async def _read_body(receive: Receive) -> bytes:

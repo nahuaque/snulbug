@@ -326,6 +326,7 @@ Request-side policy:
 - project path constraints for tool arguments
 - agent workspace firewalling with path classification and secret/generated path blocks
 - schema-aware validation of `tools/call` arguments from MCP `inputSchema`
+- schema-aware Lua intent guards for tool categories and risk levels
 - task-scoped capability leases with expiring tool/path grants
 - small stateful policies such as rate limits and idempotency keys
 
