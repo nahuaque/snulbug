@@ -681,6 +681,68 @@ def promote_mcp_share_policy(
     }
 
 
+def amend_mcp_share_policy(
+    directory: str | Path = ".",
+    *,
+    log: str | Path | None = None,
+    output: str | Path | None = None,
+    kind: str = "auto",
+    source: str = "blocked",
+    force: bool = False,
+    validate: bool = True,
+    allow_risky: bool = False,
+) -> dict[str, Any]:
+    """Propose a policy amendment from a share session and record it on the session model."""
+
+    from .learn import amend_mcp_policy
+
+    share_dir, manifest, session_model = _load_share_model_context(directory)
+    bundle = _share_policy_bundle_path(share_dir, session_model, manifest)
+    log_path = _share_policy_amend_log_path(share_dir, session_model, log)
+    output_path = _share_policy_amend_output_path(share_dir, bundle, output)
+    amendment = amend_mcp_policy(
+        bundle,
+        log_path,
+        output_path,
+        kind=kind,
+        source=source,
+        force=force or output is None,
+        validate=validate,
+        allow_risky=allow_risky,
+    )
+    record = _drop_empty_json(
+        {
+            "ok": amendment.get("ok"),
+            "source": source,
+            "bundle": str(bundle),
+            "log": str(log_path),
+            "output": str(output_path),
+            "policy": amendment.get("policy"),
+            "manifest": amendment.get("manifest"),
+            "report": amendment.get("report"),
+            "event_count": amendment.get("event_count"),
+            "candidate_event_count": amendment.get("candidate_event_count"),
+            "additions": amendment.get("additions"),
+            "capability_delta": amendment.get("capability_delta"),
+            "in_place": output is None,
+            "created_at": _now_iso(),
+        }
+    )
+    updated_model = _record_share_policy_amendment(share_dir, manifest, session_model, amendment=record)
+    return {
+        "ok": bool(amendment.get("ok")),
+        "share": str(share_dir),
+        "bundle": str(bundle),
+        "log": str(log_path),
+        "output": str(output_path),
+        "amendment": amendment,
+        "candidate": record,
+        "session_model": str(share_session_model_path(share_dir)),
+        "policy": _mapping(updated_model.get("policy")),
+        "amendments": _mapping(updated_model.get("amendments")),
+    }
+
+
 def activate_mcp_share_policy(
     directory: str | Path = ".",
     *,
@@ -6092,6 +6154,77 @@ def _share_policy_bundle_path(
     if not bundle.is_dir():
         raise FileNotFoundError(f"share policy bundle not found: {bundle}")
     return bundle
+
+
+def _share_policy_amend_log_path(
+    share_dir: Path,
+    session_model: Mapping[str, Any],
+    log: str | Path | None,
+) -> Path:
+    if log is not None:
+        return _resolve_share_path(share_dir, log)
+    evidence = _mapping(session_model.get("evidence"))
+    paths = _mapping(session_model.get("paths"))
+    for value in (
+        evidence.get("audit_log"),
+        evidence.get("record_log"),
+        paths.get("audit_log"),
+        paths.get("record_log"),
+    ):
+        if isinstance(value, str) and value:
+            path = _resolve_share_path(share_dir, value)
+            if path.is_file():
+                return path
+    raise FileNotFoundError("share policy amend requires --log or an existing audit/session log")
+
+
+def _share_policy_amend_output_path(share_dir: Path, bundle: Path, output: str | Path | None) -> Path:
+    if output is not None:
+        return _resolve_share_path(share_dir, output)
+    return bundle
+
+
+def _record_share_policy_amendment(
+    share_dir: Path,
+    manifest: Mapping[str, Any] | None,
+    session_model: Mapping[str, Any],
+    *,
+    amendment: Mapping[str, Any],
+) -> dict[str, Any]:
+    output = amendment.get("output")
+    if manifest is not None:
+        updated_manifest = json.loads(json.dumps(dict(manifest), default=str))
+        policy = dict(_mapping(updated_manifest.get("policy")))
+        policy["last_amendment"] = dict(amendment)
+        updated_manifest["policy"] = policy
+        amendments = dict(_mapping(updated_manifest.get("amendments")))
+        candidates = [dict(item) for item in _sequence(amendments.get("candidates")) if isinstance(item, Mapping)]
+        candidates.append(dict(amendment))
+        amendments["last"] = output
+        amendments["candidates"] = candidates
+        updated_manifest["amendments"] = amendments
+        updated_manifest["updated_at"] = _now_iso()
+        (share_dir / SHARE_MANIFEST).write_text(
+            json.dumps(updated_manifest, indent=2, sort_keys=True, default=str) + "\n",
+            encoding="utf-8",
+        )
+        return update_share_session_model(share_dir, manifest=updated_manifest)
+
+    model = json.loads(json.dumps(dict(session_model), default=str))
+    status = dict(_mapping(model.get("status")))
+    status["updated_at"] = _now_iso()
+    model["status"] = status
+    policy = dict(_mapping(model.get("policy")))
+    policy["last_amendment"] = dict(amendment)
+    model["policy"] = policy
+    amendments = dict(_mapping(model.get("amendments")))
+    candidates = [dict(item) for item in _sequence(amendments.get("candidates")) if isinstance(item, Mapping)]
+    candidates.append(dict(amendment))
+    amendments["last"] = output
+    amendments["candidates"] = candidates
+    model["amendments"] = amendments
+    write_share_session_model(share_dir, model, force=True)
+    return model
 
 
 def _record_share_policy_lifecycle(

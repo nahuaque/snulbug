@@ -10,7 +10,7 @@ current documented workflow.
 Build a runnable demo that exercises the primary share session loop end to end:
 
 ```text
-share create -> share run -> share status -> policy amend -> share activate -> share report
+share create -> share run -> share status -> share policy amend -> share policy activate -> share report
 ```
 
 The demo should start a mock MCP upstream, generate a share session, drive both

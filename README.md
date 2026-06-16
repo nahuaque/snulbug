@@ -81,7 +81,7 @@ uv add "snulbug[discovery,redis] @ git+https://github.com/lbruhacs/snulbug"
 The primary workflow is:
 
 ```text
-share create -> share run -> share status -> policy amend -> share activate -> share doctor -> share contract -> share report
+share create -> share run -> share status -> share policy amend -> share policy activate -> share doctor -> share contract -> share report
 ```
 
 Ask the CLI for a copy-paste version before wiring a client or harness:
@@ -124,20 +124,19 @@ uv run snulbug mcp share status .snulbug/shares/share-...
    the audit log:
 
 ```bash
-uv run snulbug mcp policy amend \
-  .snulbug/shares/share-.../policy.snulbug \
-  .snulbug/shares/share-.../traces/audit.jsonl \
-  --out .snulbug/shares/share-.../policy.snulbug \
-  --force
+uv run snulbug mcp share policy amend .snulbug/shares/share-...
 ```
+
+By default this uses the share audit/session log and updates the share policy
+bundle in place; pass `--out` when you want a detached candidate bundle.
 
 5. Promote and activate the share policy without leaving the share workflow:
 
 ```bash
 export SNULBUG_BUNDLE_SECRET=...
-uv run snulbug mcp share promote .snulbug/shares/share-... --to proposed --key-id local-review
-uv run snulbug mcp share promote .snulbug/shares/share-... --to approved --key-id local-review
-uv run snulbug mcp share activate .snulbug/shares/share-... --key-id local-review
+uv run snulbug mcp share policy promote .snulbug/shares/share-... --to proposed --key-id local-review
+uv run snulbug mcp share policy promote .snulbug/shares/share-... --to approved --key-id local-review
+uv run snulbug mcp share policy activate .snulbug/shares/share-... --key-id local-review
 ```
 
 6. Generate the closeout report from the session model and audit evidence:

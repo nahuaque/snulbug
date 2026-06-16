@@ -12,17 +12,20 @@ import pytest
 
 from snulbug import (
     activate_mcp_share_policy,
+    append_record,
     attach_mcp_share_member,
     close_mcp_share,
     create_mcp_share,
     doctor_mcp_share,
     doctor_mcp_share_auth,
     generate_auth_conformance_pack,
+    learn_mcp_policy,
     load_fabric_member_registry,
     load_mcp_proxy_config,
     load_share_contract,
     load_share_session_model,
     promote_mcp_share_policy,
+    record_policy_request,
     run_auth_conformance_pack,
     run_mcp_share,
     share_client_config,
@@ -687,11 +690,15 @@ def test_mcp_share_lifecycle_cli_promote_and_activate_from_cwd(tmp_path, capsys,
     )
     monkeypatch.chdir(tmp_path)
 
-    proposed_code = simulator_main(["mcp", "share", "promote", "--to", "proposed", "--key-id", "dev", "--compact"])
+    proposed_code = simulator_main(
+        ["mcp", "share", "policy", "promote", "--to", "proposed", "--key-id", "dev", "--compact"]
+    )
     proposed = json.loads(capsys.readouterr().out)
-    approved_code = simulator_main(["mcp", "share", "promote", "--to", "approved", "--key-id", "dev", "--compact"])
+    approved_code = simulator_main(
+        ["mcp", "share", "policy", "promote", "--to", "approved", "--key-id", "dev", "--compact"]
+    )
     approved = json.loads(capsys.readouterr().out)
-    active_code = simulator_main(["mcp", "share", "activate", "--key-id", "dev", "--compact"])
+    active_code = simulator_main(["mcp", "share", "policy", "activate", "--key-id", "dev", "--compact"])
     active = json.loads(capsys.readouterr().out)
 
     assert proposed_code == 0
@@ -701,6 +708,81 @@ def test_mcp_share_lifecycle_cli_promote_and_activate_from_cwd(tmp_path, capsys,
     assert active_code == 0
     assert active["state"] == "active"
     assert load_share_session_model(tmp_path)["policy"]["last_lifecycle"]["action"] == "activate"
+
+
+def test_mcp_share_policy_cli_amend_records_candidate_from_share_evidence(tmp_path, capsys):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["files.read_file"],
+        validate=False,
+    )
+    allow_policy = tmp_path / "allow.lua"
+    allow_policy.write_text(
+        """
+        return function(request, context, state)
+          return {
+            action = "continue",
+            reason = "observed",
+            reason_code = "test.observed"
+          }
+        end
+        """,
+        encoding="utf-8",
+    )
+    observed_log = tmp_path / "observed.jsonl"
+    append_record(
+        observed_log,
+        record_policy_request(
+            allow_policy,
+            {
+                "method": "POST",
+                "path": "/mcp",
+                "body": (
+                    '{"jsonrpc":"2.0","id":1,"method":"tools/call",'
+                    '"params":{"name":"files.read_file","arguments":{"path":"README.md"}}}'
+                ),
+            },
+            response={"status": 200},
+        ),
+    )
+    learn_mcp_policy(observed_log, tmp_path / "policy.snulbug", force=True)
+    audit_log = tmp_path / "traces" / "audit.jsonl"
+    append_record(
+        audit_log,
+        record_policy_request(
+            tmp_path / "policy.snulbug" / "policy.lua",
+            {
+                "method": "POST",
+                "path": "/mcp",
+                "body": (
+                    '{"jsonrpc":"2.0","id":2,"method":"tools/call",'
+                    '"params":{"name":"git.status","arguments":{"staged":true}}}'
+                ),
+            },
+            response={"status": 403},
+        ),
+    )
+
+    status_code = simulator_main(["mcp", "share", "policy", "amend", str(tmp_path), "--compact"])
+    payload = json.loads(capsys.readouterr().out)
+    session_model = load_share_session_model(tmp_path)
+
+    assert status_code == 0
+    assert payload["ok"] is True
+    assert payload["log"] == str(audit_log)
+    assert payload["output"] == str(tmp_path / "policy.snulbug")
+    assert payload["candidate"]["in_place"] is True
+    assert payload["candidate"]["output"] == payload["output"]
+    assert (Path(payload["output"]) / "policy.lua").is_file()
+    assert {"kind": "tool", "value": "git.status", "reason_code": "mcp.learn.tool_not_observed"} in (
+        payload["amendment"]["additions"]
+    )
+    assert session_model["amendments"]["last"] == payload["output"]
+    assert session_model["amendments"]["candidates"][0]["output"] == payload["output"]
+    assert session_model["policy"]["last_amendment"]["output"] == payload["output"]
 
 
 def test_mcp_share_attach_consumes_member_metadata_and_updates_config_session(tmp_path):

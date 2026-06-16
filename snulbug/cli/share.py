@@ -138,11 +138,8 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
     add_force_arg(share_contract, help="overwrite --output when it exists")
     add_compact_arg(share_contract)
 
-    share_promote = share_subparsers.add_parser("promote", help="promote the share policy bundle lifecycle")
-    _add_share_lifecycle_args(share_promote, include_to=True)
-
-    share_activate = share_subparsers.add_parser("activate", help="activate the share policy bundle")
-    _add_share_lifecycle_args(share_activate, include_to=False)
+    share_policy = share_subparsers.add_parser("policy", help="amend, promote, and activate the share policy")
+    _add_share_policy_args(share_policy)
 
     share_auth = share_subparsers.add_parser("auth", help="diagnose share authentication")
     share_auth_subparsers = share_auth.add_subparsers(dest="share_auth_command", required=True)
@@ -406,6 +403,7 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
     from ..quickstart import create_mcp_quickstart
     from ..share import (
         activate_mcp_share_policy,
+        amend_mcp_share_policy,
         attach_mcp_share_member,
         close_mcp_share,
         create_mcp_share,
@@ -681,38 +679,14 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
             )
             return status
 
-        if command == "promote":
-            directory = _share_directory_arg(args)
-            memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
-            result = promote_mcp_share_policy(
-                directory,
-                to_state=args.to,
-                secret=read_required_env(args.secret_env),
-                key_id=args.key_id,
-                actor=args.actor,
-                note=args.note,
-                instruction_limit=args.instruction_limit,
-                memory_limit_bytes=memory_limit,
+        if command == "policy":
+            return _handle_share_policy_command(
+                args,
+                parser,
+                activate_mcp_share_policy=activate_mcp_share_policy,
+                amend_mcp_share_policy=amend_mcp_share_policy,
+                promote_mcp_share_policy=promote_mcp_share_policy,
             )
-            status = 0 if result["ok"] else 1
-            write_json_output(result, compact=args.compact)
-            return status
-
-        if command == "activate":
-            directory = _share_directory_arg(args)
-            memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
-            result = activate_mcp_share_policy(
-                directory,
-                secret=read_required_env(args.secret_env),
-                key_id=args.key_id,
-                actor=args.actor,
-                note=args.note,
-                instruction_limit=args.instruction_limit,
-                memory_limit_bytes=memory_limit,
-            )
-            status = 0 if result["ok"] else 1
-            write_json_output(result, compact=args.compact)
-            return status
 
         if command == "auth":
             if args.share_auth_command == "init":
@@ -1221,6 +1195,114 @@ def _add_share_lifecycle_args(parser: argparse.ArgumentParser, *, include_to: bo
     parser.add_argument("--instruction-limit", type=int, default=100_000)
     parser.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
     add_compact_arg(parser)
+
+
+def _add_share_policy_args(parser: argparse.ArgumentParser) -> None:
+    policy_subparsers = parser.add_subparsers(dest="share_policy_command", required=True)
+
+    policy_amend = policy_subparsers.add_parser(
+        "amend",
+        help="propose a candidate amendment for the share policy from share evidence",
+    )
+    policy_amend.add_argument(
+        "directory",
+        nargs="?",
+        type=Path,
+        help="share session directory; defaults to cwd when .snulbug/share/session.json exists",
+    )
+    policy_amend.add_argument(
+        "--log",
+        type=Path,
+        help="JSONL replay or audit log; defaults to the share audit log when present",
+    )
+    policy_amend.add_argument(
+        "--out",
+        "--output",
+        type=Path,
+        help="candidate output policy bundle; defaults to updating the share policy bundle in place",
+    )
+    policy_amend.add_argument("--kind", choices=("auto", "record", "audit"), default="auto", help="input log type")
+    policy_amend.add_argument(
+        "--source",
+        choices=("blocked", "approved-confirmations"),
+        default="blocked",
+        help="evidence source to amend from",
+    )
+    policy_amend.add_argument(
+        "--allow-risky",
+        action="store_true",
+        help="allow risky shell/exec-style tool names into the candidate policy",
+    )
+    add_force_arg(policy_amend, help="overwrite files in the output directory")
+    add_validate_arg(policy_amend, help="validate the generated policy bundle")
+    add_compact_arg(policy_amend)
+
+    policy_promote = policy_subparsers.add_parser("promote", help="promote the share policy bundle lifecycle")
+    _add_share_lifecycle_args(policy_promote, include_to=True)
+
+    policy_activate = policy_subparsers.add_parser("activate", help="activate the share policy bundle")
+    _add_share_lifecycle_args(policy_activate, include_to=False)
+
+
+def _handle_share_policy_command(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    *,
+    activate_mcp_share_policy: Any,
+    amend_mcp_share_policy: Any,
+    promote_mcp_share_policy: Any,
+) -> int:
+    if args.share_policy_command == "amend":
+        directory = _share_directory_arg(args)
+        result = amend_mcp_share_policy(
+            directory,
+            log=args.log,
+            output=args.out,
+            kind=args.kind,
+            source=args.source,
+            force=args.force,
+            validate=args.validate,
+            allow_risky=args.allow_risky,
+        )
+        status = 0 if result["ok"] else 1
+        write_json_output(result, compact=args.compact)
+        return status
+
+    if args.share_policy_command == "promote":
+        directory = _share_directory_arg(args)
+        memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
+        result = promote_mcp_share_policy(
+            directory,
+            to_state=args.to,
+            secret=read_required_env(args.secret_env),
+            key_id=args.key_id,
+            actor=args.actor,
+            note=args.note,
+            instruction_limit=args.instruction_limit,
+            memory_limit_bytes=memory_limit,
+        )
+        status = 0 if result["ok"] else 1
+        write_json_output(result, compact=args.compact)
+        return status
+
+    if args.share_policy_command == "activate":
+        directory = _share_directory_arg(args)
+        memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
+        result = activate_mcp_share_policy(
+            directory,
+            secret=read_required_env(args.secret_env),
+            key_id=args.key_id,
+            actor=args.actor,
+            note=args.note,
+            instruction_limit=args.instruction_limit,
+            memory_limit_bytes=memory_limit,
+        )
+        status = 0 if result["ok"] else 1
+        write_json_output(result, compact=args.compact)
+        return status
+
+    parser.error(f"unknown mcp share policy command: {args.share_policy_command}")
+    return 2
 
 
 def _add_share_lease_args(parser: argparse.ArgumentParser) -> None:

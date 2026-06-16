@@ -116,9 +116,7 @@ def test_intent_helpers_classify_tool_name_without_schema_context():
         """
     )
 
-    decision = script.decide(
-        {"body": '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shell_exec"}}'}
-    )
+    decision = script.decide({"body": '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shell_exec"}}'})
 
     assert decision == {
         "action": "continue",
@@ -194,9 +192,7 @@ def test_intent_require_max_risk_rejects_high_risk_tools():
         """
     )
 
-    decision = script.decide(
-        {"body": '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"delete_file"}}'}
-    )
+    decision = script.decide({"body": '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"delete_file"}}'})
 
     assert decision["action"] == "reject"
     assert decision["status"] == 403
@@ -221,15 +217,9 @@ def test_intent_category_guards_and_confirmation_options():
         """
     )
 
-    allowed = script.decide(
-        {"body": '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file"}}'}
-    )
-    confirmed = script.decide(
-        {"body": '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write_file"}}'}
-    )
-    rejected = script.decide(
-        {"body": '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"http_fetch"}}'}
-    )
+    allowed = script.decide({"body": '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file"}}'})
+    confirmed = script.decide({"body": '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write_file"}}'})
+    rejected = script.decide({"body": '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"http_fetch"}}'})
 
     assert allowed == {"action": "continue", "reason_code": "test.intent.allowed"}
     assert confirmed["action"] == "confirm"

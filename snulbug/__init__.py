@@ -242,6 +242,7 @@ from .scaffolds import (
 from .schema_policy import SchemaPolicyConfig
 from .share import (
     activate_mcp_share_policy,
+    amend_mcp_share_policy,
     attach_mcp_share_member,
     close_mcp_share,
     create_mcp_share,
@@ -398,6 +399,7 @@ __all__ = [
     "append_audit_event",
     "append_record",
     "amend_mcp_policy",
+    "amend_mcp_share_policy",
     "analyze_mcp_impact",
     "annotate_topology_audit",
     "activate_mcp_share_policy",

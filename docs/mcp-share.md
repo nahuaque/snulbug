@@ -12,7 +12,7 @@ local MCP server without hand-wiring every control.
 The high-level session loop is:
 
 ```text
-share create -> share run -> share status -> policy amend -> share activate -> share doctor -> share contract -> share report
+share create -> share run -> share status -> share policy amend -> share policy activate -> share doctor -> share contract -> share report
 ```
 
 Create the bounded session:
@@ -43,20 +43,19 @@ If the audit log shows a legitimate blocked request, amend the reviewed policy
 bundle:
 
 ```bash
-uv run snulbug mcp policy amend \
-  .snulbug/shares/share-.../policy.snulbug \
-  .snulbug/shares/share-.../traces/audit.jsonl \
-  --out .snulbug/shares/share-.../policy.snulbug \
-  --force
+uv run snulbug mcp share policy amend .snulbug/shares/share-...
 ```
+
+By default this uses the share audit/session log and updates the share policy
+bundle in place; pass `--out` when you want a detached candidate bundle.
 
 Then promote and activate the policy bundle:
 
 ```bash
 export SNULBUG_BUNDLE_SECRET=...
-uv run snulbug mcp share promote .snulbug/shares/share-... --to proposed --key-id local-review
-uv run snulbug mcp share promote .snulbug/shares/share-... --to approved --key-id local-review
-uv run snulbug mcp share activate .snulbug/shares/share-... --key-id local-review
+uv run snulbug mcp share policy promote .snulbug/shares/share-... --to proposed --key-id local-review
+uv run snulbug mcp share policy promote .snulbug/shares/share-... --to approved --key-id local-review
+uv run snulbug mcp share policy activate .snulbug/shares/share-... --key-id local-review
 ```
 
 Generate the closeout report:
@@ -383,16 +382,16 @@ session model in sync:
 
 ```bash
 export SNULBUG_BUNDLE_SECRET=...
-uv run snulbug mcp share promote .snulbug/shares/share-... --to proposed --key-id local-review
-uv run snulbug mcp share promote .snulbug/shares/share-... --to approved --key-id local-review
-uv run snulbug mcp share activate .snulbug/shares/share-... --key-id local-review
+uv run snulbug mcp share policy promote .snulbug/shares/share-... --to proposed --key-id local-review
+uv run snulbug mcp share policy promote .snulbug/shares/share-... --to approved --key-id local-review
+uv run snulbug mcp share policy activate .snulbug/shares/share-... --key-id local-review
 ```
 
 From inside a generated share directory, omit the directory:
 
 ```bash
-uv run snulbug mcp share promote --to proposed --key-id local-review
-uv run snulbug mcp share activate --key-id local-review
+uv run snulbug mcp share policy promote --to proposed --key-id local-review
+uv run snulbug mcp share policy activate --key-id local-review
 ```
 
 These commands call the same signed policy lifecycle machinery as
