@@ -30,6 +30,7 @@ share create -> share run -> share status -> share policy amend -> share policy 
 - [Credential broker plugins](credential-brokers.md)
 - [Discovery provider plugins](discovery-providers.md)
 - [Evidence exporter plugins](evidence-exporters.md)
+- [Tool risk analyzer plugins](tool-risk-analyzers.md)
 - [MCP client setup recipes](mcp-client-recipes.md)
 - [MCP auth interop recipes](mcp-auth-recipes.md)
 - [Auth provider plugins](auth-providers.md)

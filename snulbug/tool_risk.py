@@ -67,97 +67,182 @@ class ToolRiskSignal:
         return {"code": self.code, "severity": self.severity, "reason": self.reason}
 
 
+@dataclass(frozen=True)
+class ToolRiskFinding:
+    signal: ToolRiskSignal
+    category: str
+
+
+@dataclass(frozen=True)
+class ToolRiskContext:
+    tool: str | Mapping[str, Any]
+    name: str
+    description: str
+    annotations: Mapping[str, Any]
+    input_schema: Mapping[str, Any]
+    count: int = 0
+    evidence_sources: tuple[str, ...] = ()
+    confidence: str | None = None
+    schema_hash: str | None = None
+    schema_hashes: tuple[str, ...] = ()
+    catalog_hashes: tuple[str, ...] = ()
+    catalog_paths: tuple[str, ...] = ()
+    schema_variants: int | None = None
+
+
+class ToolRiskAnalyzer:
+    """Extension point for MCP tool/schema risk classification and policy advice."""
+
+    name = ""
+
+    @property
+    def normalized_name(self) -> str:
+        return str(self.name).strip().lower()
+
+    def analyze(self, context: ToolRiskContext) -> Sequence[ToolRiskFinding]:
+        return ()
+
+    def suggest_policy(self, context: ToolRiskContext, risk: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
+        return ()
+
+    def suggest_lease(self, context: ToolRiskContext, risk: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
+        return ()
+
+
+class ToolNameRiskAnalyzer(ToolRiskAnalyzer):
+    name = "tool-name"
+
+    def analyze(self, context: ToolRiskContext) -> Sequence[ToolRiskFinding]:
+        findings: list[ToolRiskFinding] = []
+        haystack = f"{context.name} {context.description}".lower().replace("-", "_")
+        if _contains_any(haystack, SHELL_TERMS):
+            findings.append(_finding("tool.shell_or_process", "high", "tool looks able to run commands", "command"))
+        if _contains_any(haystack, SECRET_TERMS):
+            findings.append(
+                _finding("tool.secret_name", "high", "tool name suggests secret or credential access", "secrets")
+            )
+        if _contains_any(haystack, DESTRUCTIVE_TERMS):
+            findings.append(
+                _finding("tool.destructive_name", "high", "tool name suggests destructive mutation", "mutation")
+            )
+        elif _contains_any(haystack, WRITE_TERMS):
+            findings.append(_finding("tool.mutating_name", "medium", "tool name suggests mutation", "mutation"))
+        if _contains_any(haystack, NETWORK_TERMS):
+            findings.append(_finding("tool.network_name", "medium", "tool name suggests network access", "network"))
+        if _contains_any(haystack, FILESYSTEM_TERMS):
+            findings.append(
+                _finding("tool.filesystem_name", "medium", "tool name suggests filesystem access", "filesystem")
+            )
+        if _contains_any(haystack, LOW_RISK_READ_TERMS):
+            findings.append(
+                _finding("tool.read_like_name", "low", "tool name suggests read-only or inspection use", "read")
+            )
+        return findings
+
+
+class ToolAnnotationRiskAnalyzer(ToolRiskAnalyzer):
+    name = "tool-annotations"
+
+    def analyze(self, context: ToolRiskContext) -> Sequence[ToolRiskFinding]:
+        findings: list[ToolRiskFinding] = []
+        if context.annotations.get("destructiveHint") is True:
+            findings.append(
+                _finding("annotation.destructive", "high", "tool declares destructive behavior", "mutation")
+            )
+        if context.annotations.get("openWorldHint") is True:
+            findings.append(_finding("annotation.open_world", "medium", "tool may affect external systems", "network"))
+        if context.annotations.get("readOnlyHint") is True:
+            findings.append(_finding("annotation.read_only", "low", "tool declares read-only behavior", "read"))
+        return findings
+
+
+class ToolSchemaArgumentRiskAnalyzer(ToolRiskAnalyzer):
+    name = "tool-schema-arguments"
+
+    def analyze(self, context: ToolRiskContext) -> Sequence[ToolRiskFinding]:
+        findings: list[ToolRiskFinding] = []
+        for property_name, property_schema in _mapping(context.input_schema.get("properties")).items():
+            for signal, category in _schema_property_signals(str(property_name), _mapping(property_schema)):
+                findings.append(ToolRiskFinding(signal, category))
+        return findings
+
+
+class ToolSchemaShapeRiskAnalyzer(ToolRiskAnalyzer):
+    name = "tool-schema-shape"
+
+    def analyze(self, context: ToolRiskContext) -> Sequence[ToolRiskFinding]:
+        if context.input_schema and context.input_schema.get("type", "object") == "object":
+            additional_properties = context.input_schema.get("additionalProperties")
+            if additional_properties is not False:
+                return (
+                    _finding(
+                        "schema.open_arguments",
+                        "medium",
+                        "tool input schema allows undeclared arguments",
+                        "open-schema",
+                    ),
+                )
+        return ()
+
+
+class ToolSchemaDriftRiskAnalyzer(ToolRiskAnalyzer):
+    name = "tool-schema-drift"
+
+    def analyze(self, context: ToolRiskContext) -> Sequence[ToolRiskFinding]:
+        if context.schema_variants is not None and context.schema_variants > 1:
+            return (
+                _finding(
+                    "schema.variant_conflict",
+                    "high",
+                    "multiple schema variants were found for this tool",
+                    "schema-drift",
+                ),
+            )
+        return ()
+
+
+_TOOL_RISK_ANALYZER_REGISTRY: dict[str, ToolRiskAnalyzer] = {}
+
+
+def register_tool_risk_analyzer(analyzer: ToolRiskAnalyzer, *, replace: bool = False) -> ToolRiskAnalyzer:
+    """Register an MCP tool risk analyzer plugin."""
+
+    name = analyzer.normalized_name
+    if not name:
+        raise ValueError("tool risk analyzer name is required")
+    if name in _TOOL_RISK_ANALYZER_REGISTRY and not replace:
+        raise ValueError(f"tool risk analyzer already registered: {name}")
+    _TOOL_RISK_ANALYZER_REGISTRY[name] = analyzer
+    return analyzer
+
+
+def get_tool_risk_analyzer(name: str) -> ToolRiskAnalyzer:
+    """Return a registered MCP tool risk analyzer."""
+
+    normalized = str(name).strip().lower()
+    try:
+        return _TOOL_RISK_ANALYZER_REGISTRY[normalized]
+    except KeyError as exc:
+        known = ", ".join(list_tool_risk_analyzers()) or "<none>"
+        raise ValueError(f"unknown tool risk analyzer {name!r}; known analyzers: {known}") from exc
+
+
+def list_tool_risk_analyzers() -> tuple[str, ...]:
+    """Return registered analyzer names in registration order."""
+
+    return tuple(_TOOL_RISK_ANALYZER_REGISTRY)
+
+
 def classify_mcp_tool(tool: str | Mapping[str, Any], *, count: int = 0) -> dict[str, Any]:
     """Classify one MCP tool using secret-safe name/schema heuristics."""
 
-    evidence_sources: list[str] = []
-    confidence: str | None = None
-    schema_hash: str | None = None
-    schema_hashes: list[str] = []
-    catalog_hashes: list[str] = []
-    catalog_paths: list[str] = []
-    schema_variants: int | None = None
-    if isinstance(tool, Mapping):
-        name = str(tool.get("name") or tool.get("value") or "")
-        description = tool.get("description") if isinstance(tool.get("description"), str) else ""
-        annotations = _mapping(tool.get("annotations"))
-        input_schema = _mapping(tool.get("inputSchema"))
-        evidence_sources = _string_list(tool.get("evidence_sources") or tool.get("evidence"))
-        confidence = tool.get("confidence") if isinstance(tool.get("confidence"), str) else None
-        schema_hash = tool.get("schema_hash") if isinstance(tool.get("schema_hash"), str) else None
-        if schema_hash is None and isinstance(tool.get("hash"), str) and input_schema:
-            schema_hash = str(tool.get("hash"))
-        schema_hashes = _string_list(tool.get("schema_hashes"))
-        catalog_hashes = _string_list(tool.get("catalog_hashes"))
-        catalog_paths = _string_list(tool.get("catalog_paths"))
-        schema_variants = tool.get("schema_variants") if isinstance(tool.get("schema_variants"), int) else None
-    else:
-        name = str(tool)
-        description = ""
-        annotations = {}
-        input_schema = {}
+    context = _tool_risk_context(tool, count=count)
+    findings: list[ToolRiskFinding] = []
+    for analyzer in _TOOL_RISK_ANALYZER_REGISTRY.values():
+        findings.extend(analyzer.analyze(context))
 
-    signals: list[ToolRiskSignal] = []
-    categories: set[str] = set()
-    haystack = f"{name} {description}".lower().replace("-", "_")
-
-    if _contains_any(haystack, SHELL_TERMS):
-        signals.append(ToolRiskSignal("tool.shell_or_process", "high", "tool looks able to run commands"))
-        categories.add("command")
-    if _contains_any(haystack, SECRET_TERMS):
-        signals.append(ToolRiskSignal("tool.secret_name", "high", "tool name suggests secret or credential access"))
-        categories.add("secrets")
-    if _contains_any(haystack, DESTRUCTIVE_TERMS):
-        signals.append(ToolRiskSignal("tool.destructive_name", "high", "tool name suggests destructive mutation"))
-        categories.add("mutation")
-    elif _contains_any(haystack, WRITE_TERMS):
-        signals.append(ToolRiskSignal("tool.mutating_name", "medium", "tool name suggests mutation"))
-        categories.add("mutation")
-    if _contains_any(haystack, NETWORK_TERMS):
-        signals.append(ToolRiskSignal("tool.network_name", "medium", "tool name suggests network access"))
-        categories.add("network")
-    if _contains_any(haystack, FILESYSTEM_TERMS):
-        signals.append(ToolRiskSignal("tool.filesystem_name", "medium", "tool name suggests filesystem access"))
-        categories.add("filesystem")
-    if _contains_any(haystack, LOW_RISK_READ_TERMS):
-        signals.append(ToolRiskSignal("tool.read_like_name", "low", "tool name suggests read-only or inspection use"))
-        categories.add("read")
-
-    if annotations.get("destructiveHint") is True:
-        signals.append(ToolRiskSignal("annotation.destructive", "high", "tool declares destructive behavior"))
-        categories.add("mutation")
-    if annotations.get("openWorldHint") is True:
-        signals.append(ToolRiskSignal("annotation.open_world", "medium", "tool may affect external systems"))
-        categories.add("network")
-    if annotations.get("readOnlyHint") is True:
-        signals.append(ToolRiskSignal("annotation.read_only", "low", "tool declares read-only behavior"))
-        categories.add("read")
-
-    for property_name, property_schema in _mapping(input_schema.get("properties")).items():
-        for signal, category in _schema_property_signals(str(property_name), _mapping(property_schema)):
-            signals.append(signal)
-            categories.add(category)
-    if input_schema and input_schema.get("type", "object") == "object":
-        additional_properties = input_schema.get("additionalProperties")
-        if additional_properties is not False:
-            signals.append(
-                ToolRiskSignal(
-                    "schema.open_arguments",
-                    "medium",
-                    "tool input schema allows undeclared arguments",
-                )
-            )
-            categories.add("open-schema")
-    if schema_variants is not None and schema_variants > 1:
-        signals.append(
-            ToolRiskSignal(
-                "schema.variant_conflict",
-                "high",
-                "multiple schema variants were found for this tool",
-            )
-        )
-        categories.add("schema-drift")
-
+    signals = [finding.signal for finding in findings]
+    categories = {finding.category for finding in findings if finding.category}
     if not signals:
         signals.append(ToolRiskSignal("tool.observed", "low", "tool was observed but has no obvious high-risk signal"))
         categories.add("unknown")
@@ -165,27 +250,30 @@ def classify_mcp_tool(tool: str | Mapping[str, Any], *, count: int = 0) -> dict[
     score = min(100, sum(RISK_WEIGHTS.get(signal.severity, 0) for signal in signals))
     level = _risk_level(score, signals)
     result: dict[str, Any] = {
-        "name": name,
+        "name": context.name,
         "level": level,
         "score": score,
         "count": int(count or 0),
         "categories": sorted(categories),
         "signals": [signal.to_dict() for signal in signals],
     }
-    if evidence_sources:
-        result["evidence_sources"] = sorted(dict.fromkeys(evidence_sources))
-    if confidence:
-        result["confidence"] = confidence
+    if context.evidence_sources:
+        result["evidence_sources"] = sorted(dict.fromkeys(context.evidence_sources))
+    if context.confidence:
+        result["confidence"] = context.confidence
     schema = _schema_summary(
-        input_schema,
-        schema_hash=schema_hash,
-        schema_hashes=schema_hashes,
-        catalog_hashes=catalog_hashes,
-        catalog_paths=catalog_paths,
-        schema_variants=schema_variants,
+        context.input_schema,
+        schema_hash=context.schema_hash,
+        schema_hashes=context.schema_hashes,
+        catalog_hashes=context.catalog_hashes,
+        catalog_paths=context.catalog_paths,
+        schema_variants=context.schema_variants,
     )
     if schema:
         result["schema"] = schema
+    advice = _tool_risk_advice(context, result)
+    if advice:
+        result["advice"] = advice
     return result
 
 
@@ -205,6 +293,68 @@ def classify_mcp_tool_risks(tools: Sequence[Any] | Mapping[str, Any] | None) -> 
         "tools": classified,
         "top_risks": classified[:10],
     }
+
+
+def _tool_risk_context(tool: str | Mapping[str, Any], *, count: int) -> ToolRiskContext:
+    if isinstance(tool, Mapping):
+        name = str(tool.get("name") or tool.get("value") or "")
+        description = tool.get("description") if isinstance(tool.get("description"), str) else ""
+        annotations = _mapping(tool.get("annotations"))
+        input_schema = _mapping(tool.get("inputSchema"))
+        evidence_sources = tuple(_string_list(tool.get("evidence_sources") or tool.get("evidence")))
+        confidence = tool.get("confidence") if isinstance(tool.get("confidence"), str) else None
+        schema_hash = tool.get("schema_hash") if isinstance(tool.get("schema_hash"), str) else None
+        if schema_hash is None and isinstance(tool.get("hash"), str) and input_schema:
+            schema_hash = str(tool.get("hash"))
+        schema_hashes = tuple(_string_list(tool.get("schema_hashes")))
+        catalog_hashes = tuple(_string_list(tool.get("catalog_hashes")))
+        catalog_paths = tuple(_string_list(tool.get("catalog_paths")))
+        schema_variants = tool.get("schema_variants") if isinstance(tool.get("schema_variants"), int) else None
+    else:
+        name = str(tool)
+        description = ""
+        annotations = {}
+        input_schema = {}
+        evidence_sources = ()
+        confidence = None
+        schema_hash = None
+        schema_hashes = ()
+        catalog_hashes = ()
+        catalog_paths = ()
+        schema_variants = None
+    return ToolRiskContext(
+        tool=tool,
+        name=name,
+        description=description,
+        annotations=annotations,
+        input_schema=input_schema,
+        count=int(count or 0),
+        evidence_sources=evidence_sources,
+        confidence=confidence,
+        schema_hash=schema_hash,
+        schema_hashes=schema_hashes,
+        catalog_hashes=catalog_hashes,
+        catalog_paths=catalog_paths,
+        schema_variants=schema_variants,
+    )
+
+
+def _tool_risk_advice(context: ToolRiskContext, risk: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    policy_advice: list[dict[str, Any]] = []
+    lease_advice: list[dict[str, Any]] = []
+    for analyzer in _TOOL_RISK_ANALYZER_REGISTRY.values():
+        policy_advice.extend(dict(item) for item in analyzer.suggest_policy(context, risk))
+        lease_advice.extend(dict(item) for item in analyzer.suggest_lease(context, risk))
+    advice: dict[str, list[dict[str, Any]]] = {}
+    if policy_advice:
+        advice["policy"] = policy_advice
+    if lease_advice:
+        advice["lease"] = lease_advice
+    return advice
+
+
+def _finding(code: str, severity: str, reason: str, category: str) -> ToolRiskFinding:
+    return ToolRiskFinding(ToolRiskSignal(code, severity, reason), category)
 
 
 def _tool_entries(value: Sequence[Any] | Mapping[str, Any] | None) -> list[dict[str, Any]]:
@@ -324,3 +474,13 @@ def _string_list(value: Any) -> list[str]:
     if isinstance(value, str):
         return [value]
     return [str(item) for item in _sequence(value) if item is not None and str(item)]
+
+
+for _analyzer in (
+    ToolNameRiskAnalyzer(),
+    ToolAnnotationRiskAnalyzer(),
+    ToolSchemaArgumentRiskAnalyzer(),
+    ToolSchemaShapeRiskAnalyzer(),
+    ToolSchemaDriftRiskAnalyzer(),
+):
+    register_tool_risk_analyzer(_analyzer, replace=True)
