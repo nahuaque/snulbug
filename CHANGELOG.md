@@ -6,6 +6,10 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-16
+
+- Fixed PyPI/TestPyPI project metadata and README logo URLs to point at the
+  published `nahuaque/snulbug` repository.
 - Added public GitHub project metadata, CI, contribution docs, security docs, issue templates, and reference documentation.
 - Added the basic ASGI middleware example under `examples/basic`.
 - Added bundled MCP policy presets with `snulbug mcp policy preset`.

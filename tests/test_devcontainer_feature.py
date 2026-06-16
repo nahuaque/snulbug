@@ -20,7 +20,7 @@ def test_devcontainer_feature_manifest_defines_runtime_modes_and_member_options(
     options = manifest["options"]
 
     assert manifest["id"] == "snulbug"
-    assert manifest["version"] == "0.1.0"
+    assert manifest["version"] == "0.1.1"
     assert options["mode"]["enum"] == ["cli", "gateway", "member-agent"]
     assert options["policy_profile"]["default"] == "tunnel-safe"
     assert options["install_source"]["enum"] == ["pypi", "github"]
@@ -84,7 +84,7 @@ def test_codespace_local_gateway_example_documents_member_agent_flow(monkeypatch
     )
     loaded_env_config = load_mcp_proxy_config(example / "snulbug.env-gateway.toml")
 
-    feature_options = devcontainer["features"]["ghcr.io/nahuaque/snulbug/features/snulbug:0.1.0"]
+    feature_options = devcontainer["features"]["ghcr.io/nahuaque/snulbug/features/snulbug:0.1.1"]
     env_provider = env_config["mcp"]["fabric"]["discovery"]["providers"][0]
     provider = config["mcp"]["fabric"]["discovery"]["providers"][0]
 

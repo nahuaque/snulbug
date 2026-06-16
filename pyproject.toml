@@ -1,6 +1,6 @@
 [project]
 name = "snulbug"
-version = "0.1.0"
+version = "0.1.1"
 description = "A local-dev MCP policy proxy with Lua policies, replay logs, and learned least-privilege bundles"
 readme = "README.md"
 requires-python = ">=3.10"
