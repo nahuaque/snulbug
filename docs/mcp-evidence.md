@@ -63,6 +63,17 @@ snulbug mcp evidence diff active.lua draft.lua fixtures/ \
   --report-out traces/policy-diff.md
 ```
 
+Evidence commands also support exporter plugins:
+
+```bash
+snulbug mcp evidence inspect traces/session.jsonl \
+  --export markdown=traces/session-report.md \
+  --export json=traces/session-report.json
+```
+
+See [Evidence exporter plugins](evidence-exporters.md) for the Python extension
+point.
+
 The diff report now includes a capability delta for newly allowed fixtures,
 summarizing changes such as newly allowed tools, MCP path patterns, and
 tool argument shapes. For example: `newly allows 2 tools, 1 path pattern, 3

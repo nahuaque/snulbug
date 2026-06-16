@@ -8,10 +8,18 @@ from ..cli_helpers import (
     add_report_out_arg,
     add_sarif_out_arg,
     write_json_output,
-    write_report_output,
-    write_sarif_output,
 )
 from .common import read_json
+
+
+def _add_export_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--export",
+        action="append",
+        default=[],
+        metavar="FORMAT=PATH",
+        help="write an evidence export using a registered exporter; repeat for multiple exports",
+    )
 
 
 def add_mcp_evidence_command(mcp_subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -44,6 +52,7 @@ def add_mcp_evidence_command(mcp_subparsers: argparse._SubParsersAction[argparse
     )
     mcp_evidence_record.add_argument("--instruction-limit", type=int, default=100_000)
     mcp_evidence_record.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
+    _add_export_arg(mcp_evidence_record)
     add_compact_arg(mcp_evidence_record)
 
     mcp_evidence_replay = mcp_evidence_subparsers.add_parser("replay", help="replay an MCP request JSONL log")
@@ -51,6 +60,7 @@ def add_mcp_evidence_command(mcp_subparsers: argparse._SubParsersAction[argparse
     mcp_evidence_replay.add_argument("--script", type=Path, help="override policy script for all records")
     mcp_evidence_replay.add_argument("--instruction-limit", type=int, default=100_000)
     mcp_evidence_replay.add_argument("--memory-limit-bytes", type=int, default=8 * 1024 * 1024)
+    _add_export_arg(mcp_evidence_replay)
     add_compact_arg(mcp_evidence_replay)
 
     mcp_evidence_inspect = mcp_evidence_subparsers.add_parser(
@@ -73,10 +83,10 @@ def add_mcp_evidence_command(mcp_subparsers: argparse._SubParsersAction[argparse
     add_report_out_arg(mcp_evidence_inspect, help="optional Markdown session report path")
     mcp_evidence_inspect.add_argument(
         "--report-format",
-        choices=("markdown",),
         default="markdown",
-        help="session report output format",
+        help="session report output format/exporter",
     )
+    _add_export_arg(mcp_evidence_inspect)
     add_compact_arg(mcp_evidence_inspect)
 
     mcp_evidence_impact = mcp_evidence_subparsers.add_parser(
@@ -97,15 +107,15 @@ def add_mcp_evidence_command(mcp_subparsers: argparse._SubParsersAction[argparse
     add_report_out_arg(mcp_evidence_impact, help="optional Markdown impact report path")
     mcp_evidence_impact.add_argument(
         "--report-format",
-        choices=("markdown",),
         default="markdown",
-        help="impact report output format",
+        help="impact report output format/exporter",
     )
     mcp_evidence_impact.add_argument(
         "--no-fail",
         action="store_true",
         help="return exit code 0 even when impact has errors",
     )
+    _add_export_arg(mcp_evidence_impact)
     add_compact_arg(mcp_evidence_impact)
 
     mcp_evidence_diff = mcp_evidence_subparsers.add_parser(
@@ -128,15 +138,16 @@ def add_mcp_evidence_command(mcp_subparsers: argparse._SubParsersAction[argparse
     add_sarif_out_arg(mcp_evidence_diff, help="optional SARIF policy gate output path")
     mcp_evidence_diff.add_argument(
         "--report-format",
-        choices=("markdown",),
         default="markdown",
-        help="policy diff report output format",
+        help="policy diff report output format/exporter",
     )
+    _add_export_arg(mcp_evidence_diff)
     add_compact_arg(mcp_evidence_diff)
 
 
 def handle_mcp_evidence_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
-    from ..inspection import format_mcp_inspection_report, inspect_mcp_log
+    from ..evidence_exporters import export_evidence
+    from ..inspection import inspect_mcp_log
     from ..recorder import append_record, record_audit_event, record_policy_request, replay_record_log
     from ..redaction import append_audit_event
 
@@ -169,6 +180,7 @@ def handle_mcp_evidence_command(args: argparse.Namespace, parser: argparse.Argum
                 "audit": audit_event,
                 "record": recorded,
             }
+            _write_evidence_exports(args.evidence_command, result, args.export, export_evidence=export_evidence)
             status = 0
         elif args.evidence_command == "replay":
             memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
@@ -178,17 +190,20 @@ def handle_mcp_evidence_command(args: argparse.Namespace, parser: argparse.Argum
                 instruction_limit=args.instruction_limit,
                 memory_limit_bytes=memory_limit,
             )
+            _write_evidence_exports(args.evidence_command, result, args.export, export_evidence=export_evidence)
             status = 0 if result["ok"] else 1
         elif args.evidence_command == "inspect":
             result = inspect_mcp_log(args.log, kind=args.kind, top=args.top)
             if args.report_out is not None:
-                report_text = format_mcp_inspection_report(result, output_format=args.report_format)
-                write_report_output(
-                    args.report_out,
-                    report_text,
+                _write_named_evidence_export(
+                    args.evidence_command,
                     result,
-                    report_format=args.report_format,
+                    args.report_format,
+                    args.report_out,
+                    legacy_key="report_out",
+                    export_evidence=export_evidence,
                 )
+            _write_evidence_exports(args.evidence_command, result, args.export, export_evidence=export_evidence)
             status = 0
             if not args.compact:
                 from .rich_reports import write_evidence_inspect_rich
@@ -196,7 +211,7 @@ def handle_mcp_evidence_command(args: argparse.Namespace, parser: argparse.Argum
                 write_evidence_inspect_rich(result)
                 return status
         elif args.evidence_command == "impact":
-            from ..impact import analyze_mcp_impact, format_mcp_impact_report
+            from ..impact import analyze_mcp_impact
 
             memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
             result = analyze_mcp_impact(
@@ -207,13 +222,15 @@ def handle_mcp_evidence_command(args: argparse.Namespace, parser: argparse.Argum
                 memory_limit_bytes=memory_limit,
             )
             if args.report_out is not None:
-                report_text = format_mcp_impact_report(result, output_format=args.report_format)
-                write_report_output(
-                    args.report_out,
-                    report_text,
+                _write_named_evidence_export(
+                    args.evidence_command,
                     result,
-                    report_format=args.report_format,
+                    args.report_format,
+                    args.report_out,
+                    legacy_key="report_out",
+                    export_evidence=export_evidence,
                 )
+            _write_evidence_exports(args.evidence_command, result, args.export, export_evidence=export_evidence)
             status = 0 if args.no_fail or result["ok"] else 1
             if not args.compact:
                 from .rich_reports import write_evidence_impact_rich
@@ -221,7 +238,7 @@ def handle_mcp_evidence_command(args: argparse.Namespace, parser: argparse.Argum
                 write_evidence_impact_rich(result)
                 return status
         elif args.evidence_command == "diff":
-            from ..promotion import diff_policies, format_policy_diff_report
+            from ..promotion import diff_policies
 
             context = read_json(args.context) if args.context else None
             memory_limit = None if args.memory_limit_bytes <= 0 else args.memory_limit_bytes
@@ -235,17 +252,24 @@ def handle_mcp_evidence_command(args: argparse.Namespace, parser: argparse.Argum
                 memory_limit_bytes=memory_limit,
             )
             if args.report_out is not None:
-                report_text = format_policy_diff_report(result)
-                write_report_output(
-                    args.report_out,
-                    report_text,
+                _write_named_evidence_export(
+                    args.evidence_command,
                     result,
-                    report_format=args.report_format,
+                    args.report_format,
+                    args.report_out,
+                    legacy_key="report_out",
+                    export_evidence=export_evidence,
                 )
             if args.sarif_out is not None:
-                from ..sarif import sarif_for_policy_diff
-
-                write_sarif_output(args.sarif_out, sarif_for_policy_diff(result), result)
+                _write_named_evidence_export(
+                    args.evidence_command,
+                    result,
+                    "sarif",
+                    args.sarif_out,
+                    legacy_key="sarif_out",
+                    export_evidence=export_evidence,
+                )
+            _write_evidence_exports(args.evidence_command, result, args.export, export_evidence=export_evidence)
             status = 0 if args.no_fail or result["safe_to_promote"] else 1
             if not args.compact:
                 from .rich_reports import write_evidence_diff_rich
@@ -267,3 +291,28 @@ def handle_mcp_evidence_command(args: argparse.Namespace, parser: argparse.Argum
 
     write_json_output(result, compact=args.compact)
     return status
+
+
+def _write_named_evidence_export(
+    command: str,
+    result: dict,
+    exporter: str,
+    output: Path,
+    *,
+    legacy_key: str,
+    export_evidence,
+) -> None:
+    metadata = export_evidence(command, result, output, exporter=exporter)
+    result[legacy_key] = metadata["path"]
+    if legacy_key == "report_out":
+        result["report_format"] = metadata["format"]
+
+
+def _write_evidence_exports(command: str, result: dict, specs: list[str], *, export_evidence) -> None:
+    from ..evidence_exporters import parse_evidence_export_specs
+
+    exports = []
+    for spec in parse_evidence_export_specs(specs):
+        exports.append(export_evidence(command, result, spec["path"], exporter=spec["format"]))
+    if exports:
+        result["exports"] = exports
