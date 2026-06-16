@@ -103,7 +103,7 @@ def prepare_codespace_attach(
     discovery_value = json.dumps([upstream], separators=(",", ":"))
     scaffold = write_scaffold(
         ScaffoldPlan(
-            name="codespace attach",
+            name="codespace member attach",
             root=root,
             directories=[Path("."), "traces"],
             files=[
@@ -126,9 +126,9 @@ def prepare_codespace_attach(
     gateway_url = f"http://{host}:{port}/mcp"
     generated_session = session_result(
         GeneratedSession(
-            name="codespace attach",
+            name="codespace member attach",
             root=root,
-            generated_by="snulbug mcp share codespace attach",
+            generated_by="snulbug mcp share member codespace attach",
             artifacts=[
                 GeneratedArtifact("policy", policy, "policy"),
                 GeneratedArtifact("config", config, "config"),
@@ -158,7 +158,7 @@ def prepare_codespace_attach(
     )
     return {
         "ok": True,
-        "generated_by": "snulbug mcp share codespace attach",
+        "generated_by": "snulbug mcp share member codespace attach",
         "directory": str(root),
         "config": generated_session["file_map"]["config"],
         "policy": generated_session["file_map"]["policy"],
@@ -199,7 +199,7 @@ def prepare_codespace_demo(
     attach_url = public_url or local_url
     return {
         "ok": True,
-        "generated_by": "snulbug mcp share codespace serve-demo",
+        "generated_by": "snulbug mcp share member codespace serve-demo",
         "server": {
             "name": name,
             "host": host,
@@ -210,7 +210,7 @@ def prepare_codespace_demo(
             "public_url": public_url,
         },
         "tools": [tool["name"] for tool in _DEMO_TOOLS],
-        "commands": {"attach": f"uv run snulbug mcp share codespace attach {attach_url}"},
+        "commands": {"attach": f"uv run snulbug mcp share member codespace attach {attach_url}"},
         "codespaces": {
             "detected": public_url is not None,
             "url": public_url,
@@ -309,7 +309,7 @@ def format_codespace_demo_report(result: Mapping[str, Any]) -> str:
     commands = _mapping(result.get("commands"))
     ready = _mapping(result.get("ready_check"))
     lines = [
-        "# snulbug codespace serve-demo",
+        "# snulbug member codespace serve-demo",
         "",
         f"Server: `{server.get('url')}`",
         f"Local MCP URL: `{server.get('local_url')}`",
@@ -409,7 +409,7 @@ def format_codespace_attach_report(result: Mapping[str, Any]) -> str:
         extra_sections.append(("Status", "Starting the local proxy now. Press Ctrl-C to stop it."))
     if not session:
         session = {
-            "name": "codespace attach",
+            "name": "codespace member attach",
             "generated_by": result.get("generated_by"),
             "root": result.get("directory"),
             "artifacts": [
@@ -423,7 +423,7 @@ def format_codespace_attach_report(result: Mapping[str, Any]) -> str:
         }
     return format_session_report(
         session,
-        title="snulbug codespace attach",
+        title="snulbug codespace member attach",
         sections=("overview", "metadata", "files", "env", "logs", "commands", "next_steps"),
         extra_sections=extra_sections,
     )

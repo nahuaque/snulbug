@@ -59,9 +59,6 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
     share_member = share_subparsers.add_parser("member", help="attach remote members to a share session")
     _add_share_member_args(share_member)
 
-    share_codespace = share_subparsers.add_parser("codespace", help="attach GitHub Codespace MCP upstreams")
-    _add_share_codespace_args(share_codespace)
-
     share_lab = share_subparsers.add_parser("lab", help="run the one-command local MCP policy lab")
     share_lab.add_argument("--output-dir", type=Path, default=Path(".snulbug-lab"), help="lab artifact directory")
     share_lab.add_argument(
@@ -595,9 +592,6 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
 
         if command == "member":
             return _handle_share_member_command(args, parser, attach_mcp_share_member=attach_mcp_share_member)
-
-        if command == "codespace":
-            return _handle_share_codespace_command(args, parser)
 
         if command == "lab":
             from ..lab import run_mcp_lab
@@ -1325,6 +1319,8 @@ def _add_share_member_args(parser: argparse.ArgumentParser) -> None:
     member_subparsers = parser.add_subparsers(dest="share_member_command", required=True)
     member_attach = member_subparsers.add_parser("attach", help="attach a remote fabric member to a share session")
     _add_share_attach_args(member_attach)
+    member_codespace = member_subparsers.add_parser("codespace", help="work with Codespaces as share members")
+    _add_share_codespace_args(member_codespace)
 
 
 def _handle_share_member_command(
@@ -1355,6 +1351,9 @@ def _handle_share_member_command(
         status = 0 if result["ok"] else 1
         write_json_output(result, compact=args.compact)
         return status
+
+    if args.share_member_command == "codespace":
+        return _handle_share_codespace_command(args, parser)
 
     parser.error(f"unknown mcp share member command: {args.share_member_command}")
     return 2
@@ -1578,7 +1577,7 @@ def _handle_share_codespace_command(args: argparse.Namespace, parser: argparse.A
         )
         return 0 if result["ok"] else 1
 
-    parser.error(f"unknown mcp share codespace command: {args.share_codespace_command}")
+    parser.error(f"unknown mcp share member codespace command: {args.share_codespace_command}")
     return 2
 
 

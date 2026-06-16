@@ -238,14 +238,14 @@ validated against dev accounts. See
 For Codespaces, start the bundled mock MCP server in the Codespace terminal:
 
 ```bash
-uv run snulbug mcp share codespace serve-demo
+uv run snulbug mcp share member codespace serve-demo
 ```
 
 It prints the forwarded MCP URL and the matching laptop command. On the laptop,
 attach that URL to a local snulbug gateway:
 
 ```bash
-uv run snulbug mcp share codespace attach https://YOUR-CODESPACE-9001.app.github.dev/mcp
+uv run snulbug mcp share member codespace attach https://YOUR-CODESPACE-9001.app.github.dev/mcp
 ```
 
 `attach` generates `.snulbug/codespace-local/`, preflights the upstream with

@@ -51,7 +51,7 @@ def test_prepare_codespace_attach_writes_loadable_env_discovery_config(tmp_path,
     assert fabric["gateway_url"] == "http://127.0.0.1:8181/mcp"
 
     report = format_codespace_attach_report(result)
-    assert "# snulbug codespace attach" in report
+    assert "# snulbug codespace member attach" in report
     assert "## Files" in report
     assert "## Environment" in report
     assert "https://example-9001.app.github.dev/mcp" in report
@@ -78,7 +78,7 @@ def test_prepare_codespace_demo_infers_forwarded_url():
     )
     assert result["server"]["public_url"] == "https://ideal-space-9001.app.github.dev/mcp"
     assert result["commands"]["attach"] == (
-        "uv run snulbug mcp share codespace attach https://ideal-space-9001.app.github.dev/mcp"
+        "uv run snulbug mcp share member codespace attach https://ideal-space-9001.app.github.dev/mcp"
     )
     assert result["tools"] == ["safe_read_file", "list_project_files"]
 
@@ -137,7 +137,9 @@ def test_serve_codespace_demo_emits_ready_plan_and_stops_on_interrupt(monkeypatc
     assert emitted
     assert emitted[0]["serving"] is True
     assert emitted[0]["ready_check"]["ok"] is True
-    assert emitted[0]["commands"]["attach"].startswith("uv run snulbug mcp share codespace attach https://ideal-space-")
+    assert emitted[0]["commands"]["attach"].startswith(
+        "uv run snulbug mcp share member codespace attach https://ideal-space-"
+    )
     assert result["interrupted"] is True
     assert result["serving"] is False
 
@@ -149,6 +151,7 @@ def test_mcp_codespace_attach_cli_dry_run_outputs_plan(tmp_path, capsys, monkeyp
         [
             "mcp",
             "share",
+            "member",
             "codespace",
             "attach",
             "https://example-9001.app.github.dev/mcp",
@@ -165,7 +168,7 @@ def test_mcp_codespace_attach_cli_dry_run_outputs_plan(tmp_path, capsys, monkeyp
     output = json.loads(capsys.readouterr().out)
     assert status == 0
     assert output["ok"] is True
-    assert output["name"] == "codespace attach"
+    assert output["name"] == "codespace member attach"
     assert output["legacy"]["dry_run"] is True
     assert output["files"]["config"] == str(tmp_path / "snulbug.toml")
     assert output["metadata"]["gateway"]["url"] == "http://127.0.0.1:8181/mcp"
@@ -182,6 +185,7 @@ def test_mcp_codespace_serve_demo_cli_dry_run_outputs_laptop_command(capsys, mon
         [
             "mcp",
             "share",
+            "member",
             "codespace",
             "serve-demo",
             "--port",
@@ -197,7 +201,7 @@ def test_mcp_codespace_serve_demo_cli_dry_run_outputs_laptop_command(capsys, mon
     assert output["dry_run"] is True
     assert output["server"]["public_url"] == "https://ideal-space-9001.app.github.dev/mcp"
     assert output["commands"]["attach"] == (
-        "uv run snulbug mcp share codespace attach https://ideal-space-9001.app.github.dev/mcp"
+        "uv run snulbug mcp share member codespace attach https://ideal-space-9001.app.github.dev/mcp"
     )
 
 
@@ -216,6 +220,7 @@ def test_mcp_codespace_attach_cli_sets_env_and_starts_proxy(tmp_path, capsys, mo
         [
             "mcp",
             "share",
+            "member",
             "codespace",
             "attach",
             "https://example-9001.app.github.dev/mcp",

@@ -33,7 +33,7 @@ From the Codespace terminal:
 
 ```bash
 uv sync
-uv run snulbug mcp share codespace serve-demo --host 0.0.0.0 --port 9001
+uv run snulbug mcp share member codespace serve-demo --host 0.0.0.0 --port 9001
 ```
 
 Make port `9001` public or otherwise reachable from the laptop. The command
@@ -51,7 +51,7 @@ From this repo on the laptop:
 ```bash
 uv sync
 export CODESPACE_MCP_URL="https://YOUR-CODESPACE-9001.app.github.dev/mcp"
-uv run snulbug mcp share codespace attach "$CODESPACE_MCP_URL"
+uv run snulbug mcp share member codespace attach "$CODESPACE_MCP_URL"
 ```
 
 The command writes `.snulbug/codespace-local/snulbug.toml`, preflights the
@@ -101,7 +101,7 @@ Clean generated demo artifacts:
 rm -rf .snulbug/codespace-local
 ```
 
-Under the hood, `codespace attach` uses the same env discovery shape as
+Under the hood, `share member codespace attach` uses the same env discovery shape as
 `snulbug.env-gateway.toml`:
 
 ```bash
