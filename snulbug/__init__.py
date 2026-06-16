@@ -95,7 +95,14 @@ from .credentials import (
     normalize_upstream_credential,
     register_credential_broker,
 )
-from .discovery import discovery_provider_types, register_discovery_provider
+from .discovery import (
+    DiscoveryProvider,
+    ResolverDiscoveryProvider,
+    discovery_provider_types,
+    get_discovery_provider,
+    list_discovery_providers,
+    register_discovery_provider,
+)
 from .events import (
     ConsoleEventSink,
     EventDispatcher,
@@ -353,6 +360,7 @@ __all__ = [
     "DEFAULT_FABRIC_RUNTIME_STATE_KEY",
     "DEFAULT_MCP_PROTOCOL_VERSION",
     "DEFAULT_SCHEMA_POLICY_ALLOWED_PATHS",
+    "DiscoveryProvider",
     "EVENT_DISCOVERY_DEGRADED",
     "EVENT_DISCOVERY_RECOVERED",
     "EVENT_MANIFEST_CHANGED",
@@ -415,6 +423,7 @@ __all__ = [
     "RemoteJwksCache",
     "ResponsePolicyConfig",
     "ReverseProxyApp",
+    "ResolverDiscoveryProvider",
     "SCHEMA_POLICY_HIGH_RISK_ACTIONS",
     "ScaffoldFile",
     "ScaffoldPlan",
@@ -528,6 +537,7 @@ __all__ = [
     "get_tunnel_provider",
     "get_auth_provider",
     "get_credential_broker",
+    "get_discovery_provider",
     "generate_fabric_conformance_pack",
     "generate_auth_conformance_pack",
     "generate_mcp_preset",
@@ -559,6 +569,7 @@ __all__ = [
     "list_builtin_presets",
     "list_auth_providers",
     "list_credential_brokers",
+    "list_discovery_providers",
     "list_tunnel_providers",
     "list_leases",
     "open_fabric_runtime_state_store",

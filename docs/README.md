@@ -28,6 +28,7 @@ share create -> share run -> share status -> share policy amend -> share policy 
 - [End-to-end ngrok MCP gateway](ngrok-end-to-end.md)
 - [Tunnel provider plugins](tunnel-providers.md)
 - [Credential broker plugins](credential-brokers.md)
+- [Discovery provider plugins](discovery-providers.md)
 - [MCP client setup recipes](mcp-client-recipes.md)
 - [MCP auth interop recipes](mcp-auth-recipes.md)
 - [Auth provider plugins](auth-providers.md)

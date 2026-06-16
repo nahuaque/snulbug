@@ -344,9 +344,9 @@ processes whose `status` is `ready` or `running`.
 }
 ```
 
-Custom providers can also be registered from Python with
-`register_discovery_provider("my_type", resolver)`, where `resolver(provider)`
-returns raw upstream tables.
+Custom providers can also be registered from Python with a `DiscoveryProvider`
+object or `register_discovery_provider("my_type", resolver)`, where the provider
+returns raw upstream tables. See [Discovery provider plugins](discovery-providers.md).
 
 ## Status
 

@@ -19,20 +19,107 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10.
 
 DiscoveryResolver = Callable[[Mapping[str, Any]], list[Mapping[str, Any]]]
 
-DISCOVERY_PROVIDER_REGISTRY: dict[str, DiscoveryResolver] = {}
+_DISCOVERY_PROVIDER_ALIASES = {
+    "compose": "docker_compose",
+    "docker-compose": "docker_compose",
+    "docker_compose": "docker_compose",
+    "k8s": "kubernetes",
+    "dns-sd": "mdns",
+    "dns_sd": "mdns",
+    "github_codespaces": "codespaces",
+    "github-codespaces": "codespaces",
+    "process_registry": "supervisor",
+    "process-supervisor": "supervisor",
+    "process_supervisor": "supervisor",
+    "member_registry": "members",
+    "remote_members": "members",
+    "toml": "static_toml",
+}
 
 
-def register_discovery_provider(provider_type: str, resolver: DiscoveryResolver) -> None:
-    """Register a discovery provider resolver.
+class DiscoveryProvider:
+    """Extension point for resolving fabric discovery providers into upstreams."""
+
+    type = ""
+    aliases: tuple[str, ...] = ()
+
+    @property
+    def normalized_type(self) -> str:
+        return str(self.type).strip().lower()
+
+    def resolve(self, provider: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+        raise NotImplementedError(f"discovery provider {self.type!r} must implement resolve()")
+
+
+class ResolverDiscoveryProvider(DiscoveryProvider):
+    """Adapter for existing function-based discovery resolvers."""
+
+    def __init__(
+        self,
+        provider_type: str,
+        resolver: DiscoveryResolver,
+        *,
+        aliases: Sequence[str] = (),
+    ) -> None:
+        self.type = provider_type
+        self.aliases = tuple(str(alias) for alias in aliases)
+        self.resolver = resolver
+
+    def resolve(self, provider: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+        return self.resolver(provider)
+
+
+DISCOVERY_PROVIDER_REGISTRY: dict[str, DiscoveryProvider] = {}
+
+
+def register_discovery_provider(
+    provider: str | DiscoveryProvider,
+    resolver: DiscoveryResolver | None = None,
+    *,
+    replace: bool = True,
+) -> DiscoveryProvider:
+    """Register a discovery provider plugin.
 
     Resolvers receive a normalized provider table and return raw facade upstream
     tables. The normal config loader still validates duplicates, transport
     fields, manifests, and generated bridge arguments after discovery runs.
     """
 
+    if isinstance(provider, DiscoveryProvider):
+        if resolver is not None:
+            raise ValueError("resolver must not be supplied when registering a DiscoveryProvider")
+        plugin = provider
+    else:
+        if resolver is None:
+            raise ValueError("resolver is required when registering a function-based discovery provider")
+        plugin = ResolverDiscoveryProvider(provider, resolver)
+
+    provider_type = plugin.normalized_type
     if not provider_type or not isinstance(provider_type, str):
         raise ValueError("discovery provider type must be a non-empty string")
-    DISCOVERY_PROVIDER_REGISTRY[provider_type] = resolver
+    if provider_type in DISCOVERY_PROVIDER_REGISTRY and not replace:
+        raise ValueError(f"discovery provider already registered: {provider_type}")
+    DISCOVERY_PROVIDER_REGISTRY[provider_type] = plugin
+    for alias in plugin.aliases:
+        _DISCOVERY_PROVIDER_ALIASES[str(alias).strip().lower()] = provider_type
+    return plugin
+
+
+def get_discovery_provider(provider_type: str) -> DiscoveryProvider:
+    """Return a registered discovery provider plugin."""
+
+    normalized = _provider_type_alias(str(provider_type).strip().lower())
+    try:
+        return DISCOVERY_PROVIDER_REGISTRY[normalized]
+    except KeyError as exc:
+        known = ", ".join(discovery_provider_types()) or "<none>"
+        raise ValueError(f"unknown discovery provider {provider_type!r}; known providers: {known}") from exc
+
+
+def list_discovery_providers() -> tuple[str, ...]:
+    """Return registered discovery provider types in registration order."""
+
+    return tuple(DISCOVERY_PROVIDER_REGISTRY)
 
 
 def discovery_provider_types() -> tuple[str, ...]:
@@ -205,30 +292,14 @@ def _default_provider_name(provider: Mapping[str, Any], provider_type: str) -> s
 
 
 def _provider_type_alias(provider_type: str) -> str:
-    aliases = {
-        "compose": "docker_compose",
-        "docker-compose": "docker_compose",
-        "docker_compose": "docker_compose",
-        "k8s": "kubernetes",
-        "dns-sd": "mdns",
-        "dns_sd": "mdns",
-        "github_codespaces": "codespaces",
-        "github-codespaces": "codespaces",
-        "process_registry": "supervisor",
-        "process-supervisor": "supervisor",
-        "process_supervisor": "supervisor",
-        "member_registry": "members",
-        "remote_members": "members",
-        "toml": "static_toml",
-    }
-    return aliases.get(provider_type, provider_type)
+    return _DISCOVERY_PROVIDER_ALIASES.get(provider_type, provider_type)
 
 
 def _resolve_provider(provider: Mapping[str, Any]) -> dict[str, Any]:
     if not provider["enabled"]:
         return {**_provider_base(provider), "status": "disabled", "upstreams": []}
     try:
-        upstreams = DISCOVERY_PROVIDER_REGISTRY[str(provider["type"])](provider)
+        upstreams = get_discovery_provider(str(provider["type"])).resolve(provider)
     except FileNotFoundError as exc:
         if provider["required"]:
             return {**_provider_base(provider), "status": "error", "error": str(exc), "upstreams": []}

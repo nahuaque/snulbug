@@ -3,7 +3,13 @@ from __future__ import annotations
 import json
 
 from snulbug import load_mcp_proxy_config, register_fabric_member
-from snulbug.discovery import discovery_provider_types, register_discovery_provider
+from snulbug.discovery import (
+    DiscoveryProvider,
+    discovery_provider_types,
+    get_discovery_provider,
+    list_discovery_providers,
+    register_discovery_provider,
+)
 
 
 def test_static_toml_discovery_provider_reads_upstream_registry(tmp_path):
@@ -338,6 +344,32 @@ def test_custom_discovery_provider_can_be_registered(tmp_path):
     assert "unit_custom" in discovery_provider_types()
     assert result["upstreams"][0]["name"] == "custom"
     assert result["upstreams"][0]["discovery_type"] == "unit_custom"
+
+
+def test_custom_discovery_provider_object_can_be_registered_with_alias(tmp_path):
+    class UnitDiscoveryProvider(DiscoveryProvider):
+        type = "unit_object"
+        aliases = ("unit-object",)
+
+        def resolve(self, _provider):
+            return [{"name": "custom-object", "url": "http://127.0.0.1:9011/mcp"}]
+
+    register_discovery_provider(UnitDiscoveryProvider(), replace=True)
+    config = discovery_config(
+        tmp_path,
+        """
+        [[mcp.fabric.discovery.providers]]
+        name = "custom-object"
+        type = "unit-object"
+        """,
+    )
+
+    result = load_mcp_proxy_config(config)
+
+    assert "unit_object" in list_discovery_providers()
+    assert get_discovery_provider("unit-object").normalized_type == "unit_object"
+    assert result["upstreams"][0]["name"] == "custom-object"
+    assert result["upstreams"][0]["discovery_type"] == "unit_object"
 
 
 def discovery_config(tmp_path, providers: str):
