@@ -42,7 +42,8 @@ def test_devcontainer_feature_install_script_is_executable_and_installs_helpers(
     assert "snulbug-devcontainer-agent" in script
     assert "snulbug mcp fabric member agent" in script
     assert "snulbug mcp share run --config snulbug.toml" in script
-    assert "git+https://github.com/lbruhacs/snulbug" in script
+    assert 'INSTALL_SOURCE="${INSTALL_SOURCE:-pypi}"' in script
+    assert "git+https://github.com/nahuaque/snulbug" in script
     assert 'if [ -z "${SNULBUG_DEVCONTAINER_REGISTRY+x}" ]' in script
     assert "resolve_member_upstream" in script
     assert "GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN" in script
@@ -83,7 +84,7 @@ def test_codespace_local_gateway_example_documents_member_agent_flow(monkeypatch
     )
     loaded_env_config = load_mcp_proxy_config(example / "snulbug.env-gateway.toml")
 
-    feature_options = devcontainer["features"]["ghcr.io/lbruhacs/snulbug/features/snulbug:0.1.0"]
+    feature_options = devcontainer["features"]["ghcr.io/nahuaque/snulbug/features/snulbug:0.1.0"]
     env_provider = env_config["mcp"]["fabric"]["discovery"]["providers"][0]
     provider = config["mcp"]["fabric"]["discovery"]["providers"][0]
 

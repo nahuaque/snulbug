@@ -56,10 +56,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/lbruhacs/snulbug"
-Repository = "https://github.com/lbruhacs/snulbug"
-Issues = "https://github.com/lbruhacs/snulbug/issues"
-Changelog = "https://github.com/lbruhacs/snulbug/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/nahuaque/snulbug"
+Repository = "https://github.com/nahuaque/snulbug"
+Issues = "https://github.com/nahuaque/snulbug/issues"
+Changelog = "https://github.com/nahuaque/snulbug/blob/main/CHANGELOG.md"
 
 [project.scripts]
 snulbug = "snulbug.simulator:main"

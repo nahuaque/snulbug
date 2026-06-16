@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALL_SOURCE="${INSTALL_SOURCE:-github}"
+INSTALL_SOURCE="${INSTALL_SOURCE:-pypi}"
 VERSION="${VERSION:-latest}"
 GITHUB_REF="${GITHUB_REF:-main}"
 PACKAGE_SPEC="${PACKAGE_SPEC:-}"
@@ -81,7 +81,7 @@ python_package_spec() {
   fi
 
   if [ "${INSTALL_SOURCE}" = "github" ]; then
-    printf 'snulbug%s @ git+https://github.com/lbruhacs/snulbug@%s\n' "${extras_suffix}" "${GITHUB_REF}"
+    printf 'snulbug%s @ git+https://github.com/nahuaque/snulbug@%s\n' "${extras_suffix}" "${GITHUB_REF}"
     return
   fi
 

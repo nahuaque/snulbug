@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "name": "snulbug",
   "description": "Install snulbug and optional helpers for MCP policy gateways and remote fabric members in devcontainers.",
-  "documentationURL": "https://github.com/lbruhacs/snulbug/blob/main/docs/devcontainers.md",
-  "licenseURL": "https://github.com/lbruhacs/snulbug/blob/main/LICENSE",
+  "documentationURL": "https://github.com/nahuaque/snulbug/blob/main/docs/devcontainers.md",
+  "licenseURL": "https://github.com/nahuaque/snulbug/blob/main/LICENSE",
   "options": {
     "install_source": {
       "type": "string",

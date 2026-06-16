@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/lbruhacs/snulbug/main/assets/snulbug.png" alt="snulbug logo" width="220">
+  <img src="https://raw.githubusercontent.com/nahuaque/snulbug/main/assets/snulbug.png" alt="snulbug logo" width="220">
 </p>
 
 # snulbug

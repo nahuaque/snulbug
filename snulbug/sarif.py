@@ -6,7 +6,7 @@ from typing import Any
 
 SARIF_VERSION = "2.1.0"
 SARIF_SCHEMA = "https://json.schemastore.org/sarif-2.1.0.json"
-SNULBUG_INFORMATION_URI = "https://github.com/lbruhacs/snulbug"
+SNULBUG_INFORMATION_URI = "https://github.com/nahuaque/snulbug"
 
 
 def sarif_for_policy_diff(diff: Mapping[str, Any]) -> dict[str, Any]:
