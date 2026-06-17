@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from .config import load_mcp_proxy_config
 from .redaction import SECRET_REPLACEMENT, build_audit_event
 from .share import (
     approve_share_capability_request,
@@ -34,6 +35,7 @@ DEFAULT_TUNNEL_PROVIDER_CONSOLES = {
     }
 }
 DEFAULT_DECISION_TIMELINE_LIMIT = 20
+DEFAULT_AUTH_VISIBILITY_LIMIT = 50
 
 
 def build_share_console_snapshot(
@@ -54,6 +56,7 @@ def build_share_console_snapshot(
         "status": _redact_console_payload(status),
         "capability_requests": _redact_console_payload(requests),
         "decision_timeline": _redact_console_payload(_decision_timeline(share_dir, status)),
+        "auth_visibility": _redact_console_payload(_auth_visibility(share_dir, status)),
         "provider_console": _provider_console(status, timeout=timeout),
     }
 
@@ -553,6 +556,268 @@ def _decision_timeline_summary(events: Sequence[Mapping[str, Any]]) -> dict[str,
     return summary
 
 
+def _auth_visibility(share_dir: Path, status: Mapping[str, Any]) -> dict[str, Any]:
+    config = _auth_config_visibility(share_dir)
+    source = _decision_timeline_source(share_dir, status)
+    result: dict[str, Any] = {
+        "configured": bool(config),
+        "config": config,
+        "source": str(source) if source is not None else None,
+        "exists": bool(source and source.exists()),
+        "summary": {
+            "auth_events": 0,
+            "allowed": 0,
+            "denied": 0,
+            "subjects": 0,
+            "issuers": 0,
+            "tenants": 0,
+            "scope_map_events": 0,
+        },
+        "current": {},
+        "subjects": [],
+        "issuers": [],
+        "tenants": [],
+        "groups": [],
+        "scopes": [],
+        "scope_match": {},
+        "runtime": {},
+        "jwks": {},
+        "denials": {"total": 0, "reason_codes": [], "scope_denials": []},
+        "events": [],
+    }
+    if source is None or not source.exists():
+        return result
+
+    try:
+        raw_events = _recent_jsonl_events(source, DEFAULT_AUTH_VISIBILITY_LIMIT)
+    except OSError as exc:
+        result["error"] = str(exc)
+        return result
+
+    subject_counts: dict[str, int] = {}
+    issuer_counts: dict[str, int] = {}
+    tenant_counts: dict[str, int] = {}
+    group_counts: dict[str, int] = {}
+    scope_counts: dict[str, int] = {}
+    reason_counts: dict[str, int] = {}
+    scope_denial_counts: dict[str, int] = {}
+    auth_events: list[dict[str, Any]] = []
+    latest_auth: Mapping[str, Any] = {}
+    latest_scope_match: Mapping[str, Any] = {}
+    latest_runtime: Mapping[str, Any] = {}
+
+    for line, event in raw_events:
+        auth = _auth_event_metadata(event)
+        if not auth:
+            continue
+        latest_auth = auth
+        summary = result["summary"]
+        summary["auth_events"] += 1
+        if auth.get("allowed") is False:
+            summary["denied"] += 1
+            reason = str(auth.get("reason_code") or "unknown")
+            _count(reason_counts, reason)
+        else:
+            summary["allowed"] += 1
+        _count_value(subject_counts, auth.get("subject"))
+        _count_value(issuer_counts, auth.get("issuer"))
+        _count_value(tenant_counts, auth.get("tenant"))
+        for group in _string_list(auth.get("groups")):
+            _count(group_counts, group)
+        for scope in _string_list(auth.get("scopes")):
+            _count(scope_counts, scope)
+        scope_match = _auth_scope_match(auth)
+        if scope_match:
+            latest_scope_match = scope_match
+            summary["scope_map_events"] += 1
+            if scope_match.get("allowed") is False:
+                _count(scope_denial_counts, _auth_scope_denial_key(scope_match))
+        runtime = _mapping(auth.get("runtime"))
+        if runtime:
+            latest_runtime = runtime
+        auth_events.append(_auth_visibility_event(event, auth=auth, scope_match=scope_match, source=source, line=line))
+
+    result["current"] = _auth_current_visibility(latest_auth)
+    result["subjects"] = _counter_rows(subject_counts)
+    result["issuers"] = _counter_rows(issuer_counts)
+    result["tenants"] = _counter_rows(tenant_counts)
+    result["groups"] = _counter_rows(group_counts)
+    result["scopes"] = _counter_rows(scope_counts)
+    result["scope_match"] = _auth_scope_match_visibility(latest_scope_match)
+    result["runtime"] = _auth_runtime_visibility(latest_runtime)
+    result["jwks"] = _mapping(_mapping(result["runtime"].get("caches")).get("jwks"))
+    result["denials"] = {
+        "total": int(result["summary"]["denied"]),
+        "reason_codes": _counter_rows(reason_counts),
+        "scope_denials": _counter_rows(scope_denial_counts),
+    }
+    result["summary"]["subjects"] = len(subject_counts)
+    result["summary"]["issuers"] = len(issuer_counts)
+    result["summary"]["tenants"] = len(tenant_counts)
+    result["events"] = list(reversed(auth_events[-10:]))
+    return result
+
+
+def _auth_config_visibility(share_dir: Path) -> dict[str, Any]:
+    manifest_path = share_dir / "share.json"
+    if not manifest_path.is_file():
+        return {}
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    files = _mapping(_mapping(manifest).get("files"))
+    config_value = files.get("config")
+    if not isinstance(config_value, str) or not config_value:
+        return {}
+    config_path = _resolve_console_path(share_dir, config_value)
+    if not config_path.is_file():
+        return {"config": str(config_path), "exists": False}
+    try:
+        proxy_config = load_mcp_proxy_config(config_path)
+    except Exception as exc:
+        return {"config": str(config_path), "exists": True, "error": str(exc)}
+    auth = _mapping(proxy_config.get("auth"))
+    scope_map = _mapping(auth.get("scope_map"))
+    return _drop_empty(
+        {
+            "config": str(config_path),
+            "exists": True,
+            "mode": auth.get("mode"),
+            "resource": auth.get("resource"),
+            "issuer": auth.get("issuer"),
+            "audience": auth.get("audience"),
+            "required_scopes": _string_list(auth.get("required_scopes")),
+            "scope_map_count": len(scope_map),
+            "scope_map": {str(scope): _string_list(selectors) for scope, selectors in scope_map.items()},
+            "jwks_path": str(auth.get("jwks_path")) if auth.get("jwks_path") else None,
+            "jwks_url": auth.get("jwks_url"),
+            "token_validation": auth.get("token_validation"),
+        }
+    )
+
+
+def _resolve_console_path(base: Path, value: str | Path) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else base / path
+
+
+def _auth_event_metadata(event: Mapping[str, Any]) -> Mapping[str, Any]:
+    metadata = _mapping(event.get("metadata"))
+    auth = dict(_mapping(event.get("auth")) or _mapping(metadata.get("auth")))
+    access_auth = _mapping(_mapping(metadata.get("access")).get("auth"))
+    for key in ("subject", "issuer", "tenant", "client_id", "groups", "profile_id", "scopes"):
+        if auth.get(key) in (None, "", []):
+            value = access_auth.get(key)
+            if value not in (None, "", []):
+                auth[key] = value
+    return auth
+
+
+def _auth_scope_match(auth: Mapping[str, Any]) -> Mapping[str, Any]:
+    scope_match = _mapping(auth.get("scope_match"))
+    if scope_match:
+        return scope_match
+    return _mapping(auth.get("scope_map"))
+
+
+def _auth_scope_denial_key(scope_match: Mapping[str, Any]) -> str:
+    target = _mapping(scope_match.get("target"))
+    if target.get("tool"):
+        return f"tools/call:{target['tool']}"
+    selectors = _string_list(target.get("selectors"))
+    if selectors:
+        return selectors[0]
+    if target.get("method"):
+        return str(target["method"])
+    return str(scope_match.get("reason_code") or "oauth.scope_map_denied")
+
+
+def _auth_current_visibility(auth: Mapping[str, Any]) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "allowed": auth.get("allowed"),
+            "reason_code": auth.get("reason_code"),
+            "subject": auth.get("subject"),
+            "issuer": auth.get("issuer"),
+            "tenant": auth.get("tenant"),
+            "client_id": auth.get("client_id"),
+            "profile_id": auth.get("profile_id"),
+            "email": auth.get("email"),
+            "scopes": _string_list(auth.get("scopes")),
+            "groups": _string_list(auth.get("groups")),
+        }
+    )
+
+
+def _auth_scope_match_visibility(scope_match: Mapping[str, Any]) -> dict[str, Any]:
+    target = _mapping(scope_match.get("target"))
+    return _drop_empty(
+        {
+            "enabled": scope_match.get("enabled"),
+            "allowed": scope_match.get("allowed"),
+            "reason_code": scope_match.get("reason_code"),
+            "matched_scope": scope_match.get("matched_scope"),
+            "matched_selector": scope_match.get("matched_selector"),
+            "matched_request_selector": scope_match.get("matched_request_selector"),
+            "accepted_scopes": _string_list(scope_match.get("accepted_scopes")),
+            "candidate_selectors": _string_list(scope_match.get("candidate_selectors")),
+            "target_method": target.get("method"),
+            "target_tool": target.get("tool"),
+            "target_selectors": _string_list(target.get("selectors")),
+        }
+    )
+
+
+def _auth_runtime_visibility(runtime: Mapping[str, Any]) -> dict[str, Any]:
+    caches = _mapping(runtime.get("caches"))
+    return _drop_empty(
+        {
+            "caches": {str(name): dict(_mapping(cache)) for name, cache in caches.items()},
+            "decisions": dict(_mapping(runtime.get("decisions"))),
+        }
+    )
+
+
+def _auth_visibility_event(
+    event: Mapping[str, Any],
+    *,
+    auth: Mapping[str, Any],
+    scope_match: Mapping[str, Any],
+    source: Path,
+    line: int,
+) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "time": event.get("time") or event.get("recorded_at"),
+            "allowed": auth.get("allowed"),
+            "reason_code": auth.get("reason_code"),
+            "subject": auth.get("subject"),
+            "issuer": auth.get("issuer"),
+            "tenant": auth.get("tenant"),
+            "scopes": _string_list(auth.get("scopes")),
+            "groups": _string_list(auth.get("groups")),
+            "scope_match": _auth_scope_match_visibility(scope_match),
+            "source": str(source),
+            "line": line,
+        }
+    )
+
+
+def _count_value(counter: dict[str, int], value: Any) -> None:
+    if value not in (None, "", []):
+        _count(counter, str(value))
+
+
+def _count(counter: dict[str, int], value: str) -> None:
+    if value:
+        counter[value] = counter.get(value, 0) + 1
+
+
+def _counter_rows(counter: Mapping[str, int]) -> list[dict[str, Any]]:
+    return [{"value": key, "count": counter[key]} for key in sorted(counter, key=lambda item: (-counter[item], item))]
+
+
 def _redact_console_payload(value: Any) -> Any:
     if isinstance(value, Mapping):
         redacted: dict[str, Any] = {}
@@ -1049,6 +1314,10 @@ def _console_html() -> str:
         <div class="section-head"><h2>Active Leases</h2><span id="leaseSummary" class="muted"></span></div>
         <div class="section-body" id="leases"></div>
       </section>
+      <section>
+        <div class="section-head"><h2>Auth Visibility</h2><span id="authSummary" class="muted"></span></div>
+        <div class="section-body" id="authVisibility"></div>
+      </section>
       <div class="grid-two">
         <section>
           <div class="section-head"><h2>Tool Risk</h2><span id="riskSummary" class="muted"></span></div>
@@ -1143,6 +1412,7 @@ def _console_html() -> str:
       renderRequests(snapshot.capability_requests || {});
       renderRequestDrawer(snapshot.capability_requests || {});
       renderLeases(status.leases || {});
+      renderAuthVisibility(snapshot.auth_visibility || {});
       renderHealth(status, snapshot.provider_console || null);
       renderToolRisk(status);
       renderFindings(status);
@@ -1344,6 +1614,116 @@ def _console_html() -> str:
       const used = Number(lease.use_count || 0);
       if (!Number.isFinite(maxCalls)) return "unlimited";
       return `${Math.max(0, maxCalls - used)} / ${maxCalls}`;
+    }
+
+    function renderAuthVisibility(payload) {
+      const summary = payload.summary || {};
+      const current = payload.current || {};
+      const scopeMatch = payload.scope_match || {};
+      const jwks = payload.jwks || {};
+      const denials = payload.denials || {};
+      const config = payload.config || {};
+      $("authSummary").textContent =
+        `${summary.auth_events || 0} auth events, ${summary.denied || 0} denied`;
+      if (!payload.exists && !payload.configured) {
+        $("authVisibility").innerHTML = '<div class="empty">No auth config or audit metadata found yet.</div>';
+        return;
+      }
+      const currentHtml = `<div class="detail-grid">
+        ${detailRow("Subject", current.subject)}
+        ${detailRow("Issuer", current.issuer || config.issuer)}
+        ${detailRow("Scopes", listText(current.scopes || config.required_scopes))}
+        ${detailRow("Tenant", current.tenant)}
+        ${detailRow("Groups", listText(current.groups))}
+        ${detailRow("Profile", current.profile_id)}
+        ${detailRow("Scope match", scopeMatchText(scopeMatch))}
+        ${detailRow("JWKS/cache", cacheText(jwks))}
+      </div>`;
+      const configHtml = config.mode ? `<div>
+        <h2>Configured Resource</h2>
+        <div class="detail-grid">
+          ${detailRow("Mode", config.mode)}
+          ${detailRow("Resource", config.resource)}
+          ${detailRow("Audience", config.audience)}
+          ${detailRow("Scope map", config.scope_map_count)}
+          ${detailRow("Token validation", config.token_validation)}
+          ${detailRow("JWKS", config.jwks_url || config.jwks_path)}
+        </div>
+      </div>` : "";
+      const denialsHtml = `<div class="grid-two">
+        <div>
+          <h2>Denial Reasons</h2>
+          ${counterTable(denials.reason_codes || [], "Reason")}
+        </div>
+        <div>
+          <h2>Scope Denials</h2>
+          ${counterTable(denials.scope_denials || [], "Target")}
+        </div>
+      </div>`;
+      const actorsHtml = `<div class="grid-two">
+        <div>
+          <h2>Actors</h2>
+          ${counterTable(payload.subjects || [], "Subject")}
+        </div>
+        <div>
+          <h2>Scopes</h2>
+          ${counterTable(payload.scopes || [], "Scope")}
+        </div>
+      </div>`;
+      const events = payload.events || [];
+      const eventsHtml = events.length ? `<div>
+        <h2>Recent Auth Events</h2>
+        <table>
+          <thead><tr><th>Time</th><th>Decision</th><th>Subject</th><th>Scopes</th><th>Reason</th></tr></thead>
+          <tbody>${events.map((event) => (
+            `<tr>
+              <td>${esc(shortTime(event.time))}</td>
+              <td>${pill(event.allowed === false ? "denied" : "allowed")}</td>
+              <td>
+                ${esc(event.subject || "-")}
+                <div class="timeline-detail">${esc(event.tenant || event.issuer || "")}</div>
+              </td>
+              <td>${esc(listText(event.scopes))}</td>
+              <td>
+                ${esc(event.reason_code || "-")}
+                <div class="timeline-detail">${esc(scopeMatchText(event.scope_match || {}))}</div>
+              </td>
+            </tr>`
+          )).join("")}</tbody>
+        </table>
+      </div>` : "";
+      $("authVisibility").innerHTML =
+        `<div class="stack">${currentHtml}${configHtml}${denialsHtml}${actorsHtml}${eventsHtml}</div>`;
+    }
+
+    function scopeMatchText(scopeMatch) {
+      if (!scopeMatch || !Object.keys(scopeMatch).length) return "-";
+      if (scopeMatch.matched_scope || scopeMatch.matched_selector) {
+        return [scopeMatch.matched_scope, scopeMatch.matched_selector].filter(Boolean).join(" -> ");
+      }
+      if (scopeMatch.target_tool) return `${scopeMatch.reason_code || "scope"} ${scopeMatch.target_tool}`;
+      return scopeMatch.reason_code || (scopeMatch.allowed === true ? "allowed" : "denied");
+    }
+
+    function cacheText(cache) {
+      if (!cache || !Object.keys(cache).length) return "-";
+      const parts = [
+        `entries ${cache.entries || 0}`,
+        `hits ${cache.hits || 0}`,
+        `misses ${cache.misses || 0}`,
+        `failures ${cache.failures || 0}`
+      ];
+      return parts.join(", ");
+    }
+
+    function counterTable(rows, label) {
+      if (!rows.length) return '<div class="empty">No data.</div>';
+      return `<table>
+        <thead><tr><th>${esc(label)}</th><th>Count</th></tr></thead>
+        <tbody>${rows.slice(0, 8).map((row) => (
+          `<tr><td>${esc(row.value)}</td><td>${esc(row.count)}</td></tr>`
+        )).join("")}</tbody>
+      </table>`;
     }
 
     function selectRequest(id) {

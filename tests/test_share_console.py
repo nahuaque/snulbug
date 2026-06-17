@@ -120,6 +120,9 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "Active Leases" in html
     assert "renderLeases" in html
     assert "revokeLease" in html
+    assert "Auth Visibility" in html
+    assert "renderAuthVisibility" in html
+    assert "scopeMatchText" in html
     assert "Run Doctor" in html
     assert 'id="doctorPanel"' in html
     assert "renderDoctor" in html
@@ -224,6 +227,42 @@ def test_share_console_lists_and_revokes_active_leases(tmp_path):
     assert listed_lease["active"] is False
     assert "sbl_console-lease" not in json.dumps(snapshot)
     assert "sbl_console-lease" not in json.dumps(revoked)
+
+
+def test_share_console_snapshot_summarizes_auth_visibility(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    write_auth_visibility_log(tmp_path)
+
+    snapshot = build_share_console_snapshot(tmp_path)
+    auth = snapshot["auth_visibility"]
+
+    assert auth["exists"] is True
+    assert auth["summary"]["auth_events"] == 2
+    assert auth["summary"]["denied"] == 1
+    assert auth["current"]["subject"] == "user-1"
+    assert auth["current"]["issuer"] == "https://issuer.example"
+    assert auth["current"]["tenant"] == "tenant-a"
+    assert auth["current"]["scopes"] == ["mcp:tools.read"]
+    assert auth["current"]["groups"] == ["dev"]
+    assert auth["scope_match"]["allowed"] is False
+    assert auth["scope_match"]["target_tool"] == "git.push"
+    assert auth["scope_match"]["reason_code"] == "oauth.scope_map_denied"
+    assert auth["jwks"]["entries"] == 1
+    assert auth["jwks"]["hits"] == 2
+    assert auth["jwks"]["misses"] == 1
+    assert auth["denials"]["total"] == 1
+    assert {"value": "oauth.scope_map_denied", "count": 1} in auth["denials"]["reason_codes"]
+    assert {"value": "tools/call:git.push", "count": 1} in auth["denials"]["scope_denials"]
+    assert {"value": "mcp:tools.read", "count": 2} in auth["scopes"]
+    assert "share-secret" not in json.dumps(auth)
+    assert "Bearer " not in json.dumps(auth)
 
 
 def test_share_console_previews_policy_amendment_without_recording_candidate(tmp_path):
@@ -472,3 +511,74 @@ def write_capability_request_log(tmp_path: Path) -> None:
         "response": {"status": 403},
     }
     (traces / "audit.jsonl").write_text(json.dumps(event, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def write_auth_visibility_log(tmp_path: Path) -> None:
+    traces = tmp_path / "traces"
+    traces.mkdir(exist_ok=True)
+    allowed = {
+        "type": "snulbug.audit",
+        "version": 1,
+        "time": "2026-06-14T00:01:00+00:00",
+        "request": {"method": "POST", "path": "/mcp", "headers": {}},
+        "mcp": {"method": "tools/list"},
+        "decision": {"action": "continue", "allowed": True, "reason_code": "test.allowed"},
+        "auth": {
+            "allowed": True,
+            "reason_code": "oauth.allowed",
+            "subject": "user-1",
+            "issuer": "https://issuer.example",
+            "tenant": "tenant-a",
+            "groups": ["dev"],
+            "scopes": ["mcp:tools.read"],
+            "scope_map": {
+                "enabled": True,
+                "allowed": True,
+                "reason_code": "oauth.scope_map_allowed",
+                "matched_scope": "mcp:tools.read",
+                "matched_selector": "tools/list",
+                "target": {"method": "tools/list", "selectors": ["tools/list"]},
+            },
+            "runtime": {
+                "caches": {"jwks": {"entries": 1, "hits": 1, "misses": 1, "fetches": 1, "failures": 0}},
+                "decisions": {"total": 1, "allowed": 1, "reason_codes": {"oauth.allowed": 1}},
+            },
+        },
+        "response": {"status": 200},
+    }
+    denied = {
+        "type": "snulbug.audit",
+        "version": 1,
+        "time": "2026-06-14T00:02:00+00:00",
+        "request": {"method": "POST", "path": "/mcp", "headers": {}},
+        "mcp": {"method": "tools/call", "tool": "git.push"},
+        "decision": {"action": "reject", "allowed": False, "reason_code": "oauth.scope_map_denied"},
+        "auth": {
+            "allowed": False,
+            "reason_code": "oauth.scope_map_denied",
+            "subject": "user-1",
+            "issuer": "https://issuer.example",
+            "tenant": "tenant-a",
+            "groups": ["dev"],
+            "scopes": ["mcp:tools.read"],
+            "scope_map": {
+                "enabled": True,
+                "allowed": False,
+                "reason_code": "oauth.scope_map_denied",
+                "target": {"method": "tools/call", "tool": "git.push", "selectors": ["tools/call:git.push"]},
+            },
+            "runtime": {
+                "caches": {"jwks": {"entries": 1, "hits": 2, "misses": 1, "fetches": 1, "failures": 0}},
+                "decisions": {
+                    "total": 2,
+                    "allowed": 1,
+                    "denied": 1,
+                    "reason_codes": {"oauth.allowed": 1, "oauth.scope_map_denied": 1},
+                    "scope_denials": {"tools/call:git.push": 1},
+                },
+            },
+        },
+        "response": {"status": 403},
+    }
+    lines = [json.dumps(allowed, sort_keys=True), json.dumps(denied, sort_keys=True)]
+    (traces / "audit.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
