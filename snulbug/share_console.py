@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import threading
 from collections.abc import Mapping, Sequence
@@ -20,6 +21,13 @@ from .share import (
 
 DEFAULT_SHARE_CONSOLE_HOST = "127.0.0.1"
 DEFAULT_SHARE_CONSOLE_PORT = 8765
+DEFAULT_TUNNEL_PROVIDER_CONSOLES = {
+    "ngrok": {
+        "label": "ngrok local web console",
+        "url": "http://127.0.0.1:4040",
+        "description": "Inspect ngrok tunnel requests, headers, and replay details.",
+    }
+}
 
 
 def build_share_console_snapshot(
@@ -39,6 +47,7 @@ def build_share_console_snapshot(
         "share": str(share_dir),
         "status": _redact_console_payload(status),
         "capability_requests": _redact_console_payload(requests),
+        "provider_console": _provider_console(status, timeout=timeout),
     }
 
 
@@ -283,6 +292,45 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _provider_console(status: Mapping[str, Any], *, timeout: float) -> dict[str, Any] | None:
+    tunnel = _mapping(status.get("tunnel_doctor"))
+    session = _mapping(status.get("session"))
+    provider = str(tunnel.get("provider") or session.get("provider") or "").strip().lower()
+    if not provider:
+        return None
+    template = DEFAULT_TUNNEL_PROVIDER_CONSOLES.get(provider)
+    if template is None:
+        return None
+    probe = _probe_provider_console(str(template["url"]), timeout=timeout)
+    return {"provider": provider, **template, **probe}
+
+
+def _probe_provider_console(url: str, *, timeout: float) -> dict[str, Any]:
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return {"checked": False, "reachable": None, "status": None, "error": "unsupported provider console URL"}
+    conn_class = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    try:
+        connection = conn_class(
+            parsed.hostname,
+            parsed.port,
+            timeout=max(0.05, min(float(timeout or 0.25), 0.35)),
+        )
+        try:
+            connection.request("GET", path)
+            response = connection.getresponse()
+            response.read(256)
+            status = int(response.status)
+        finally:
+            connection.close()
+    except OSError as exc:
+        return {"checked": True, "reachable": False, "status": None, "error": str(exc)}
+    return {"checked": True, "reachable": status < 500, "status": status, "error": None}
+
+
 def _redact_console_payload(value: Any) -> Any:
     if isinstance(value, Mapping):
         redacted: dict[str, Any] = {}
@@ -309,6 +357,10 @@ def _redact_console_payload(value: Any) -> Any:
     if _sensitive_value(value):
         return "[REDACTED]"
     return value
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
 
 
 def _sensitive_name(value: str) -> bool:
@@ -384,6 +436,14 @@ def _console_html() -> str:
     button.danger {
       color: var(--red);
       border-color: #e5b8bb;
+    }
+    a {
+      color: var(--blue);
+      text-decoration: none;
+      font-weight: 650;
+    }
+    a:hover {
+      text-decoration: underline;
     }
     button:disabled {
       opacity: 0.55;
@@ -548,7 +608,7 @@ def _console_html() -> str:
       border-color: #efb3b8;
       background: #fff5f5;
     }
-    .warn, .pending, .unknown, .confirmed {
+    .warn, .pending, .unknown, .confirmed, .not-checked {
       color: var(--yellow);
       border-color: #ecd598;
       background: #fffaf0;
@@ -742,7 +802,7 @@ def _console_html() -> str:
       $("sharePath").textContent = text(snapshot.share || status.directory);
       renderMetrics(status);
       renderRequests(snapshot.capability_requests || {});
-      renderHealth(status);
+      renderHealth(status, snapshot.provider_console || null);
       renderToolRisk(status);
       renderFindings(status);
       renderEvidence(status);
@@ -807,28 +867,49 @@ def _console_html() -> str:
       </table>`;
     }
 
-    function renderHealth(status) {
+    function renderHealth(status, providerConsole) {
       const gateway = status.gateway || {};
       const upstreams = status.upstreams || [];
       $("healthSummary").textContent = gateway.url || "";
-      const rows = [["gateway", gateway.url, gateway.reachable, gateway.status]]
+      const rows = [["gateway", gateway.url, gateway.reachable, gateway.status, false]]
         .concat(upstreams.map((item) => [
           item.name || "upstream",
           item.url,
           item.reachable,
-          item.status || item.health
+          item.status || item.health,
+          false
         ]));
+      if (providerConsole) {
+        rows.push([
+          `${providerConsole.provider} console`,
+          providerConsole.url,
+          providerConsole.checked ? providerConsole.reachable : null,
+          providerConsole.error || providerConsole.description || providerConsole.label,
+          true
+        ]);
+      }
       $("health").innerHTML = `<table>
         <thead><tr><th>Target</th><th>URL</th><th>Reachable</th><th>Status</th></tr></thead>
-        <tbody>${rows.map(([name, url, reachable, detail]) => (
+        <tbody>${rows.map(([name, url, reachable, detail, isLink]) => (
           `<tr>
             <td>${esc(name)}</td>
-            <td>${esc(url)}</td>
-            <td>${pill(reachable === true ? "reachable" : "unknown")}</td>
+            <td>${isLink ? externalLink(url, url) : esc(url)}</td>
+            <td>${pill(healthLabel(reachable))}</td>
             <td>${esc(detail)}</td>
           </tr>`
         )).join("")}</tbody>
       </table>`;
+    }
+
+    function healthLabel(value) {
+      if (value === true) return "reachable";
+      if (value === false) return "unreachable";
+      return "not checked";
+    }
+
+    function externalLink(url, label) {
+      if (!url) return "-";
+      return `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(label || url)}</a>`;
     }
 
     function renderToolRisk(status) {

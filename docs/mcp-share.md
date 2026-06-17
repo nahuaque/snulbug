@@ -51,7 +51,10 @@ artifacts as the CLI. It shows session health, pending capability requests,
 tool risk, findings, evidence paths, and next commands. Approving a capability
 request in the console creates the same task-scoped lease as
 `share requests approve`; denying one records the same review state without
-minting a lease. Use `--port 0` to let the OS choose an available local port.
+minting a lease. When the tunnel provider has a known local inspection console,
+the Health table includes a clickable local console row and probes whether it
+is reachable; for ngrok this is `http://127.0.0.1:4040`.
+Use `--port 0` to let the OS choose an available local port.
 
 If a Lua policy returns `cap.request(...)`, snulbug records an MCP-native
 just-in-time capability request in the share evidence. Review the inbox and

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import socket
 import urllib.request
 from pathlib import Path
 
 import pytest
 
+import snulbug.share_console as share_console
 from snulbug import (
     ShareConsoleServer,
     build_share_console_snapshot,
@@ -38,6 +40,38 @@ def test_share_console_snapshot_reads_existing_share_artifacts(tmp_path):
     assert "sbl_" not in encoded
     assert snapshot["status"]["client"]["headers"]["Authorization"] == "[REDACTED]"
     assert snapshot["status"]["client"]["headers"]["x-snulbug-lease"] == "[REDACTED]"
+
+
+def test_share_console_snapshot_includes_ngrok_local_console_link(tmp_path, monkeypatch):
+    unused_port = unused_local_port()
+    monkeypatch.setitem(
+        share_console.DEFAULT_TUNNEL_PROVIDER_CONSOLES,
+        "ngrok",
+        {
+            "label": "ngrok local web console",
+            "url": f"http://127.0.0.1:{unused_port}",
+            "description": "Inspect ngrok tunnel requests, headers, and replay details.",
+        },
+    )
+    create_mcp_share(
+        tmp_path,
+        provider="ngrok",
+        public_url="https://mcp-dev.ngrok.app/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    snapshot = build_share_console_snapshot(tmp_path)
+    provider_console = snapshot["provider_console"]
+
+    assert provider_console["provider"] == "ngrok"
+    assert provider_console["label"] == "ngrok local web console"
+    assert provider_console["url"] == f"http://127.0.0.1:{unused_port}"
+    assert provider_console["checked"] is True
+    assert provider_console["reachable"] is False
+    assert provider_console["status"] is None
+    assert provider_console["error"]
 
 
 def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path):
@@ -77,6 +111,41 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert session_model["capability_requests"]["last_review"]["lease_id"] == approved["review"]["lease_id"]
 
 
+def test_share_console_serves_provider_console_metadata_for_ngrok(tmp_path, monkeypatch):
+    unused_port = unused_local_port()
+    monkeypatch.setitem(
+        share_console.DEFAULT_TUNNEL_PROVIDER_CONSOLES,
+        "ngrok",
+        {
+            "label": "ngrok local web console",
+            "url": f"http://127.0.0.1:{unused_port}",
+            "description": "Inspect ngrok tunnel requests, headers, and replay details.",
+        },
+    )
+    create_mcp_share(
+        tmp_path,
+        provider="ngrok",
+        public_url="https://mcp-dev.ngrok.app/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    server = ShareConsoleServer(directory=tmp_path, port=0)
+    server.start()
+    try:
+        html = read_text(f"{server.url}/")
+        snapshot = read_json(f"{server.url}/api/snapshot")
+    finally:
+        server.stop()
+
+    assert "providerConsole" in html
+    assert "externalLink(url, url)" in html
+    assert 'target="_blank"' in html
+    assert snapshot["provider_console"]["provider"] == "ngrok"
+    assert snapshot["provider_console"]["url"] == f"http://127.0.0.1:{unused_port}"
+    assert snapshot["provider_console"]["reachable"] is False
+
+
 def test_share_console_cli_help_exposes_console_command(capsys):
     with pytest.raises(SystemExit) as exc:
         simulator_main(["mcp", "share", "console", "--help"])
@@ -105,6 +174,12 @@ def post_json(url: str, payload: dict[str, object]) -> dict[str, object]:
     )
     with urllib.request.urlopen(request, timeout=3) as response:  # noqa: S310 - local test server.
         return json.loads(response.read().decode("utf-8"))
+
+
+def unused_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 def write_capability_request_log(tmp_path: Path) -> None:
