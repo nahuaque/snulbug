@@ -1998,6 +1998,109 @@ def test_mcp_facade_aggregates_tool_lists_with_upstream_prefixes(tmp_path):
     assert git_seen["calls"] == [{"method": "tools/list", "tool": None}]
 
 
+def test_mcp_facade_projects_tools_list_by_oauth_scope_map(tmp_path):
+    files_server, files_seen = start_mcp_upstream({"read_file": "Read a file"})
+    git_server, git_seen = start_mcp_upstream({"status": "Show git status"})
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    token = make_oauth_token(secret, scopes=["mcp:connect", "mcp:tools.read", "mcp:tool.files.read"])
+    app = create_proxy_application(
+        None,
+        policy,
+        upstreams=[
+            {"name": "files", "url": f"http://127.0.0.1:{files_server.server_port}/mcp"},
+            {"name": "git", "url": f"http://127.0.0.1:{git_server.server_port}/mcp"},
+        ],
+        record_out=record_log,
+        catalog_projection="policy-aware",
+        auth_config=oauth_auth_config(
+            jwks_path,
+            scope_map={
+                "mcp:tools.read": ["tools/list"],
+                "mcp:tool.files.read": ["tools/call:files.read_file"],
+                "mcp:tool.git.status": ["tools/call:git.status"],
+            },
+        ),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {token}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}',
+        )
+    finally:
+        files_server.shutdown()
+        files_server.server_close()
+        git_server.shutdown()
+        git_server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    record = load_record_log(record_log)[0]
+    projection = record["metadata"]["catalog_projection"]
+    assert sent[0]["status"] == 200
+    assert [tool["name"] for tool in payload["result"]["tools"]] == ["files.read_file"]
+    assert projection["projection"] == "policy-aware"
+    assert projection["original_tool_count"] == 2
+    assert projection["visible_tool_count"] == 1
+    assert projection["hidden_reason_counts"] == {"oauth.scope_map_denied": 1}
+    assert projection["hidden_tools"] == [{"name": "git.status", "reason_code": "oauth.scope_map_denied"}]
+    assert files_seen["calls"] == [{"method": "tools/list", "tool": None}]
+    assert git_seen["calls"] == [{"method": "tools/list", "tool": None}]
+
+
+def test_mcp_facade_projects_tools_list_by_active_task_lease(tmp_path):
+    files_server, files_seen = start_mcp_upstream({"read_file": "Read a file"})
+    git_server, git_seen = start_mcp_upstream({"status": "Show git status"})
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    lease_file = tmp_path / "leases.json"
+    lease = create_lease(
+        lease_file,
+        task="inspect git status",
+        allow_tools=["git.status"],
+        token="lease-token",
+    )
+    app = create_proxy_application(
+        None,
+        policy,
+        upstreams=[
+            {"name": "files", "url": f"http://127.0.0.1:{files_server.server_port}/mcp"},
+            {"name": "git", "url": f"http://127.0.0.1:{git_server.server_port}/mcp"},
+        ],
+        record_out=record_log,
+        catalog_projection="policy-aware",
+        lease_file=lease_file,
+        lease_required=True,
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            headers=[(b"x-snulbug-lease", lease["token"].encode("ascii"))],
+            body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}',
+        )
+    finally:
+        files_server.shutdown()
+        files_server.server_close()
+        git_server.shutdown()
+        git_server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    record = load_record_log(record_log)[0]
+    projection = record["metadata"]["catalog_projection"]
+    assert sent[0]["status"] == 200
+    assert [tool["name"] for tool in payload["result"]["tools"]] == ["git.status"]
+    assert record["metadata"]["lease_catalog"]["allow_tools"] == ["git.status"]
+    assert projection["hidden_reason_counts"] == {"lease.tool_not_allowed": 1}
+    assert files_seen["calls"] == [{"method": "tools/list", "tool": None}]
+    assert git_seen["calls"] == [{"method": "tools/list", "tool": None}]
+
+
 def test_mcp_facade_injects_upstream_credential_header(tmp_path, monkeypatch):
     files_server, files_seen = start_mcp_upstream({"read_file": "Read a file"})
     policy = write_policy(tmp_path, "continue")

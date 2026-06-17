@@ -24,6 +24,35 @@ class EventSink(Protocol):
     def emit(self, event: Mapping[str, Any]) -> None: ...
 
 
+class EventSinkProvider:
+    """Extension point for event sink and observability outputs."""
+
+    type = ""
+    aliases: tuple[str, ...] = ()
+
+    @property
+    def normalized_type(self) -> str:
+        return str(self.type).strip().lower()
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return (self.normalized_type, *(str(alias).strip().lower() for alias in self.aliases if str(alias).strip()))
+
+    def normalize_config(
+        self,
+        item: Mapping[str, Any],
+        *,
+        sink_type: str,
+        index: int,
+        base_dir: Path,
+    ) -> Mapping[str, Any]:
+        del sink_type, index, base_dir
+        return dict(item)
+
+    def build(self, config: Mapping[str, Any]) -> EventSink:
+        raise NotImplementedError(f"event sink provider {self.normalized_type!r} does not build sinks")
+
+
 class EventDispatcher:
     """Fan out structured snulbug events to configured sinks."""
 
@@ -136,6 +165,118 @@ class WebhookEventSink:
             self._slots.release()
 
 
+class JsonlEventSinkProvider(EventSinkProvider):
+    type = "jsonl"
+    aliases = ("audit_jsonl", "fabric_jsonl")
+
+    def normalize_config(
+        self,
+        item: Mapping[str, Any],
+        *,
+        sink_type: str,
+        index: int,
+        base_dir: Path,
+    ) -> Mapping[str, Any]:
+        return _normalize_jsonl_sink(item, sink_type=sink_type, index=index, base_dir=base_dir)
+
+    def build(self, config: Mapping[str, Any]) -> EventSink:
+        return JsonlEventSink(
+            Path(str(config["path"])),
+            events=_string_tuple(config.get("events", ["*"]), field="mcp.events.sinks.events"),
+            enabled=bool(config.get("enabled", True)),
+        )
+
+
+class ConsoleEventSinkProvider(EventSinkProvider):
+    type = "console"
+
+    def normalize_config(
+        self,
+        item: Mapping[str, Any],
+        *,
+        sink_type: str,
+        index: int,
+        base_dir: Path,
+    ) -> Mapping[str, Any]:
+        del sink_type, base_dir
+        return _normalize_console_sink(item, index=index)
+
+    def build(self, config: Mapping[str, Any]) -> EventSink:
+        return ConsoleEventSink(
+            console_stream(config.get("output", True)) or sys.stderr,
+            output_format=str(config.get("format", "text")),
+            events=_string_tuple(config.get("events", ["snulbug.audit"]), field="mcp.events.sinks.events"),
+            enabled=bool(config.get("enabled", True)),
+        )
+
+
+class WebhookEventSinkProvider(EventSinkProvider):
+    type = "webhook"
+
+    def normalize_config(
+        self,
+        item: Mapping[str, Any],
+        *,
+        sink_type: str,
+        index: int,
+        base_dir: Path,
+    ) -> Mapping[str, Any]:
+        del sink_type, base_dir
+        webhook = _normalize_webhook_sink(item, index=index, field_prefix="mcp.events.sinks")
+        return {"type": "webhook", "webhook": webhook}
+
+    def build(self, config: Mapping[str, Any]) -> EventSink:
+        webhook = config.get("webhook")
+        if not isinstance(webhook, WebhookSink):
+            raise ValueError("webhook event sink is missing normalized webhook config")
+        return WebhookEventSink(webhook)
+
+
+_EVENT_SINK_PROVIDER_REGISTRY: dict[str, EventSinkProvider] = {}
+_EVENT_SINK_PROVIDER_CANONICAL_NAMES: dict[str, str] = {}
+
+
+def register_event_sink_provider(provider: EventSinkProvider, *, replace: bool = False) -> EventSinkProvider:
+    """Register an event sink/observability provider plugin."""
+
+    name = provider.normalized_type
+    if not name:
+        raise ValueError("event sink provider type is required")
+    names = provider.names
+    if any(existing in _EVENT_SINK_PROVIDER_REGISTRY for existing in names) and not replace:
+        conflicts = ", ".join(existing for existing in names if existing in _EVENT_SINK_PROVIDER_REGISTRY)
+        raise ValueError(f"event sink provider already registered: {conflicts}")
+    for existing, canonical in list(_EVENT_SINK_PROVIDER_CANONICAL_NAMES.items()):
+        if canonical == name and existing not in names:
+            _EVENT_SINK_PROVIDER_REGISTRY.pop(existing, None)
+            _EVENT_SINK_PROVIDER_CANONICAL_NAMES.pop(existing, None)
+    for alias in names:
+        _EVENT_SINK_PROVIDER_REGISTRY[alias] = provider
+        _EVENT_SINK_PROVIDER_CANONICAL_NAMES[alias] = name
+    return provider
+
+
+def get_event_sink_provider(sink_type: str) -> EventSinkProvider:
+    normalized = str(sink_type).strip().lower()
+    try:
+        return _EVENT_SINK_PROVIDER_REGISTRY[normalized]
+    except KeyError as exc:
+        known = ", ".join(list_event_sink_providers()) or "<none>"
+        raise ValueError(f"unknown event sink provider {sink_type!r}; known providers: {known}") from exc
+
+
+def list_event_sink_providers() -> tuple[str, ...]:
+    """Return canonical event sink provider names in registration order."""
+
+    seen: set[str] = set()
+    names: list[str] = []
+    for canonical in _EVENT_SINK_PROVIDER_CANONICAL_NAMES.values():
+        if canonical not in seen:
+            seen.add(canonical)
+            names.append(canonical)
+    return tuple(names)
+
+
 def build_event_dispatcher(
     *,
     event_sinks: Sequence[Mapping[str, Any]] | None = None,
@@ -165,18 +306,13 @@ def normalize_event_sink_configs(value: Any, *, base_dir: str | Path = ".") -> l
         sink_type = item.get("type")
         if not isinstance(sink_type, str) or not sink_type:
             raise ValueError(f"mcp.events.sinks[{index}].type must be a non-empty string")
-        if sink_type in {"audit_jsonl", "fabric_jsonl", "jsonl"}:
-            normalized.append(_normalize_jsonl_sink(item, sink_type=sink_type, index=index, base_dir=base))
-        elif sink_type == "console":
-            normalized.append(_normalize_console_sink(item, index=index))
-        elif sink_type == "webhook":
-            webhook = _normalize_webhook_sink(item, index=index, field_prefix="mcp.events.sinks")
-            normalized.append({"type": "webhook", "webhook": webhook})
-        else:
+        try:
+            provider = get_event_sink_provider(sink_type)
+        except ValueError as exc:
             raise ValueError(
-                f"mcp.events.sinks[{index}].type must be 'audit_jsonl', 'fabric_jsonl', 'jsonl', "
-                "'console', or 'webhook'"
-            )
+                f"mcp.events.sinks[{index}].type must be one of: {', '.join(_event_sink_provider_names_for_error())}"
+            ) from exc
+        normalized.append(dict(provider.normalize_config(item, sink_type=sink_type, index=index, base_dir=base)))
     return normalized
 
 
@@ -339,29 +475,17 @@ def console_stream(value: bool | TextIO) -> TextIO | None:
 
 def _event_sink_from_config(config: Mapping[str, Any]) -> EventSink:
     sink_type = config.get("type")
-    if sink_type in {"audit_jsonl", "fabric_jsonl", "jsonl"}:
-        return JsonlEventSink(
-            Path(str(config["path"])),
-            events=_string_tuple(config.get("events", ["*"]), field="mcp.events.sinks.events"),
-            enabled=bool(config.get("enabled", True)),
-        )
-    if sink_type == "console":
-        return ConsoleEventSink(
-            console_stream(config.get("output", True)) or sys.stderr,
-            output_format=str(config.get("format", "text")),
-            events=_string_tuple(config.get("events", ["snulbug.audit"]), field="mcp.events.sinks.events"),
-            enabled=bool(config.get("enabled", True)),
-        )
-    if sink_type == "webhook":
-        webhook = config.get("webhook")
-        if not isinstance(webhook, WebhookSink):
-            raise ValueError("webhook event sink is missing normalized webhook config")
-        return WebhookEventSink(webhook)
-    raise ValueError(f"unsupported event sink type: {sink_type!r}")
+    if not isinstance(sink_type, str) or not sink_type:
+        raise ValueError("event sink config type must be a non-empty string")
+    return get_event_sink_provider(sink_type).build(config)
 
 
 def _has_sink_type(event_sinks: Sequence[Mapping[str, Any]], sink_type: str) -> bool:
     return any(config.get("type") == sink_type for config in event_sinks)
+
+
+def _event_sink_provider_names_for_error() -> tuple[str, ...]:
+    return tuple(_EVENT_SINK_PROVIDER_REGISTRY)
 
 
 def _normalize_jsonl_sink(
@@ -569,6 +693,10 @@ def _bool_value(value: Any, *, field: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{field} must be a boolean")
     return value
+
+
+for _provider in (JsonlEventSinkProvider(), ConsoleEventSinkProvider(), WebhookEventSinkProvider()):
+    register_event_sink_provider(_provider, replace=True)
 
 
 def _console_value(value: Any) -> str:

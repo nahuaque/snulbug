@@ -31,7 +31,13 @@ from .credentials import apply_credential_header, credential_metadata, normalize
 from .events import build_event_dispatcher, decision_console_event
 from .fabric import annotate_topology_audit, build_fabric_audit_metadata
 from .fabric_control import summarize_fabric_control_state
-from .leases import LeasePolicyConfig, enforce_mcp_lease_policy, mcp_lease_error_response, preview_mcp_lease_policy
+from .leases import (
+    LeasePolicyConfig,
+    enforce_mcp_lease_policy,
+    mcp_lease_error_response,
+    preview_mcp_lease_catalog,
+    preview_mcp_lease_policy,
+)
 from .manifests import load_manifest, verify_upstream_manifest
 from .mcp_auth import (
     OAuthResourceConfig,
@@ -51,6 +57,7 @@ from .schema_policy import (
     observe_mcp_tool_schemas,
 )
 from .state import MemoryStateStore, PolicyStateStore, SQLiteStateStore, StateLimits
+from .tool_catalog import CatalogProjectionConfig, project_mcp_tool_catalog_response
 from .tool_risk import classify_mcp_tool
 from .tunnel import TunnelAuditConfig, build_tunnel_audit_metadata
 from .upstream_transports import (
@@ -175,6 +182,8 @@ class ReverseProxyApp:
         tool_schema_store: PolicyStateStore | None = None,
         lease_policy: LeasePolicyConfig | None = None,
         upstream_credential: Mapping[str, Any] | None = None,
+        catalog_projection: CatalogProjectionConfig | None = None,
+        catalog_auth_config: Mapping[str, Any] | OAuthResourceConfig | None = None,
     ) -> None:
         parsed = urlsplit(upstream)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -187,6 +196,8 @@ class ReverseProxyApp:
         self.tool_schema_store = tool_schema_store
         self.lease_policy = lease_policy or LeasePolicyConfig()
         self.upstream_credential = upstream_credential
+        self.catalog_projection = catalog_projection or CatalogProjectionConfig()
+        self.catalog_auth_config = _catalog_auth_config(catalog_auth_config)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") == "lifespan":
@@ -263,6 +274,15 @@ class ReverseProxyApp:
             config=self.response_policy,
             tool_pin_store=self.tool_pin_store,
         )
+        lease_catalog_metadata = preview_mcp_lease_catalog(scope, config=self.lease_policy)
+        response, catalog_metadata = project_mcp_tool_catalog_response(
+            response,
+            request=request,
+            config=self.catalog_projection,
+            auth_context=_catalog_auth_context(scope),
+            auth_config=self.catalog_auth_config,
+            lease=lease_catalog_metadata,
+        )
         schema_observe_metadata = observe_mcp_tool_schemas(
             response,
             request=request,
@@ -277,6 +297,8 @@ class ReverseProxyApp:
                 "access": _composed_access_metadata(scope, lease=lease_metadata),
                 "schema_validation": _schema_metadata(schema_request_metadata, schema_observe_metadata),
                 "response_policy": response_metadata,
+                "catalog_projection": catalog_metadata,
+                "lease_catalog": lease_catalog_metadata,
             },
         )
         await _send_response(
@@ -565,6 +587,8 @@ class McpFacadeProxyApp:
         lease_policy: LeasePolicyConfig | None = None,
         health_policy: FacadeHealthPolicy | None = None,
         control_state_provider: Any = None,
+        catalog_projection: CatalogProjectionConfig | None = None,
+        catalog_auth_config: Mapping[str, Any] | OAuthResourceConfig | None = None,
     ) -> None:
         self.timeout = timeout
         self.response_policy = response_policy or ResponsePolicyConfig()
@@ -574,6 +598,8 @@ class McpFacadeProxyApp:
         self.lease_policy = lease_policy or LeasePolicyConfig()
         self.health_policy = health_policy or FacadeHealthPolicy()
         self.control_state_provider = control_state_provider
+        self.catalog_projection = catalog_projection or CatalogProjectionConfig()
+        self.catalog_auth_config = _catalog_auth_config(catalog_auth_config)
         self._health: dict[str, FacadeUpstreamHealth] = {}
         self._routes = _build_facade_route_table(upstreams, timeout=timeout, revision=1)
         self._sync_health_upstreams(self._routes)
@@ -1127,6 +1153,15 @@ class McpFacadeProxyApp:
             config=self.response_policy,
             tool_pin_store=self.tool_pin_store,
         )
+        lease_catalog_metadata = preview_mcp_lease_catalog(scope, config=self.lease_policy)
+        response, catalog_metadata = project_mcp_tool_catalog_response(
+            response,
+            request=request,
+            config=self.catalog_projection,
+            auth_context=_catalog_auth_context(scope),
+            auth_config=self.catalog_auth_config,
+            lease=lease_catalog_metadata,
+        )
         schema_observe_metadata = observe_mcp_tool_schemas(
             response,
             request=request,
@@ -1138,6 +1173,8 @@ class McpFacadeProxyApp:
             {
                 "schema_validation": schema_observe_metadata,
                 "response_policy": response_metadata,
+                "catalog_projection": catalog_metadata,
+                "lease_catalog": lease_catalog_metadata,
             },
         )
         await _send_response(
@@ -2090,6 +2127,7 @@ def create_proxy_application(
     response_block_instructions: bool = False,
     tool_pinning: bool = True,
     tool_pinning_action: str = "block",
+    catalog_projection: str = "off",
     schema_validation: bool = True,
     schema_validation_action: str = "block",
     facade_health_routing: bool = False,
@@ -2154,6 +2192,8 @@ def create_proxy_application(
         required=lease_required,
         header=lease_header,
     )
+    oauth_config = _oauth_resource_config(auth_config)
+    catalog_config = CatalogProjectionConfig(projection=catalog_projection)
     proxy = _proxy_app(
         upstream,
         upstream_credential=upstream_credential,
@@ -2166,6 +2206,8 @@ def create_proxy_application(
         lease_policy=lease_policy,
         health_policy=facade_health_policy,
         control_state_provider=fabric_control_state_provider,
+        catalog_projection=catalog_config,
+        catalog_auth_config=oauth_config,
     )
     facade_proxy = proxy if isinstance(proxy, McpFacadeProxyApp) else None
     lua_config = LuaConfig(
@@ -2198,7 +2240,6 @@ def create_proxy_application(
             config=lease_policy,
             context_scope_key=lua_config.context_scope_key,
         )
-    oauth_config = _oauth_resource_config(auth_config)
     if oauth_config.enabled:
         app = OAuthResourceMiddleware(app, config=oauth_config)
     cloudflare_access_config = CloudflareAccessConfig(
@@ -2269,6 +2310,7 @@ def run_proxy(
     response_block_instructions: bool = False,
     tool_pinning: bool = True,
     tool_pinning_action: str = "block",
+    catalog_projection: str = "off",
     schema_validation: bool = True,
     schema_validation_action: str = "block",
     facade_health_routing: bool = False,
@@ -2327,6 +2369,7 @@ def run_proxy(
         response_block_instructions=response_block_instructions,
         tool_pinning=tool_pinning,
         tool_pinning_action=tool_pinning_action,
+        catalog_projection=catalog_projection,
         schema_validation=schema_validation,
         schema_validation_action=schema_validation_action,
         facade_health_routing=facade_health_routing,
@@ -2400,6 +2443,7 @@ def proxy_config_run_kwargs(
         "response_block_instructions": proxy_config["response_block_instructions"],
         "tool_pinning": proxy_config["tool_pinning"],
         "tool_pinning_action": proxy_config["tool_pinning_action"],
+        "catalog_projection": proxy_config["catalog_projection"],
         "schema_validation": proxy_config["schema_validation"],
         "schema_validation_action": proxy_config["schema_validation_action"],
         "facade_health_routing": proxy_config["facade_health_routing"],
@@ -2478,6 +2522,8 @@ def _proxy_app(
     lease_policy: LeasePolicyConfig,
     health_policy: FacadeHealthPolicy,
     control_state_provider: Any = None,
+    catalog_projection: CatalogProjectionConfig | None = None,
+    catalog_auth_config: Mapping[str, Any] | OAuthResourceConfig | None = None,
 ) -> ASGIApp:
     if upstreams:
         return McpFacadeProxyApp(
@@ -2490,6 +2536,8 @@ def _proxy_app(
             lease_policy=lease_policy,
             health_policy=health_policy,
             control_state_provider=control_state_provider,
+            catalog_projection=catalog_projection,
+            catalog_auth_config=catalog_auth_config,
         )
     if upstream is None:
         raise ValueError("upstream is required unless facade upstreams are configured")
@@ -2502,6 +2550,8 @@ def _proxy_app(
         schema_policy=schema_policy,
         tool_schema_store=tool_schema_store,
         lease_policy=lease_policy,
+        catalog_projection=catalog_projection,
+        catalog_auth_config=catalog_auth_config,
     )
 
 
@@ -2665,6 +2715,34 @@ def _copy_jsonish(value: Any) -> Any:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _catalog_auth_context(scope: Scope) -> dict[str, Any]:
+    lua_context = scope.get("lua")
+    if isinstance(lua_context, Mapping) and isinstance(lua_context.get("auth"), Mapping):
+        return dict(lua_context["auth"])
+    state = scope.get("state")
+    proxy_metadata = state.get("snulbug_proxy") if isinstance(state, Mapping) else {}
+    if isinstance(proxy_metadata, Mapping) and isinstance(proxy_metadata.get("auth"), Mapping):
+        return dict(proxy_metadata["auth"])
+    return {}
+
+
+def _catalog_auth_config(value: Mapping[str, Any] | OAuthResourceConfig | None) -> dict[str, Any]:
+    if not isinstance(value, OAuthResourceConfig):
+        return dict(value or {})
+    return {
+        "scope_map": {scope: list(selectors) for scope, selectors in value.mapped_scopes.items()},
+        "claim_policy": _copy_jsonish(value.claim_policy or {}),
+        "profiles": {
+            str(profile.profile_id): {
+                "scope_map": {scope: list(selectors) for scope, selectors in profile.mapped_scopes.items()},
+                "claim_policy": _copy_jsonish(profile.claim_policy or {}),
+            }
+            for profile in value.profiles
+            if profile.profile_id
+        },
+    }
 
 
 def _merge_lua_auth_context(existing: Mapping[str, Any], incoming: Mapping[str, Any]) -> dict[str, Any]:

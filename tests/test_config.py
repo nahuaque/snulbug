@@ -112,6 +112,9 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         timeout_ms = 500
         retry_attempts = 1
         signing_secret_env = "SNULBUG_WEBHOOK_SECRET"
+
+        [mcp.catalog]
+        projection = "policy-aware"
         """,
         encoding="utf-8",
     )
@@ -132,6 +135,8 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
     assert result["tool_pinning_action"] == "warn"
     assert result["schema_validation"] is True
     assert result["schema_validation_action"] == "warn"
+    assert result["catalog"] == {"projection": "policy-aware"}
+    assert result["catalog_projection"] == "policy-aware"
     assert result["facade_health_routing"] is True
     assert result["facade_health_failure_threshold"] == 3
     assert result["facade_health_cooldown_seconds"] == 1.5

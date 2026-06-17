@@ -8,6 +8,7 @@ from .credentials import attach_upstream_credentials, normalize_fabric_credentia
 from .discovery import apply_fabric_discovery
 from .events import normalize_event_sink_configs
 from .gateway_templates import render_toml_array_table
+from .tool_catalog import CATALOG_PROJECTION_MODES
 from .upstream_transports import get_upstream_transport
 
 try:
@@ -101,6 +102,11 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "cloudflare_access_leeway_seconds": 60.0,
     "timeout": 30.0,
     "event_sinks": [],
+    "catalog_projection": "off",
+}
+
+DEFAULT_MCP_CATALOG_CONFIG = {
+    "projection": "off",
 }
 
 DEFAULT_MCP_FABRIC_CONFIG = {
@@ -187,6 +193,11 @@ cloudflare_access_jwks_cache_seconds = 300.0
 cloudflare_access_jwks_fetch_timeout = 5.0
 cloudflare_access_leeway_seconds = 60.0
 timeout = 30.0
+
+[mcp.catalog]
+# Optional tools/list projection. "policy-aware" hides tools the caller cannot
+# invoke under OAuth scope maps, claim policies, and task leases.
+projection = "off"
 
 [mcp.auth]
 # Optional OAuth 2.1 protected-resource mode for public MCP endpoints.
@@ -356,6 +367,9 @@ def load_mcp_proxy_config(path: str | Path) -> dict[str, Any]:
     auth = mcp.get("auth", {})
     if not isinstance(auth, Mapping):
         raise ValueError("config section [mcp.auth] must be a table")
+    catalog = mcp.get("catalog", {})
+    if not isinstance(catalog, Mapping):
+        raise ValueError("config section [mcp.catalog] must be a table")
     fabric = mcp.get("fabric", {})
     if not isinstance(fabric, Mapping):
         raise ValueError("config section [mcp.fabric] must be a table")
@@ -364,6 +378,7 @@ def load_mcp_proxy_config(path: str | Path) -> dict[str, Any]:
         proxy,
         fabric,
         auth=auth,
+        catalog=catalog,
         event_sinks=event_sinks,
         base_dir=config_path.parent,
     )
@@ -388,11 +403,15 @@ def load_mcp_fabric_config(path: str | Path) -> dict[str, Any]:
     auth = mcp.get("auth", {})
     if not isinstance(auth, Mapping):
         raise ValueError("config section [mcp.auth] must be a table")
+    catalog = mcp.get("catalog", {})
+    if not isinstance(catalog, Mapping):
+        raise ValueError("config section [mcp.catalog] must be a table")
     event_sinks = _load_event_sinks_table(mcp)
     proxy_config = _normalize_proxy_config_with_discovery(
         proxy,
         fabric,
         auth=auth,
+        catalog=catalog,
         event_sinks=event_sinks,
         base_dir=config_path.parent,
     )
@@ -409,6 +428,7 @@ def _normalize_proxy_config_with_discovery(
     fabric: Mapping[str, Any],
     *,
     auth: Mapping[str, Any] | None = None,
+    catalog: Mapping[str, Any] | None = None,
     event_sinks: Any = None,
     base_dir: Path,
 ) -> dict[str, Any]:
@@ -417,6 +437,8 @@ def _normalize_proxy_config_with_discovery(
     discovered_proxy = attach_upstream_credentials(discovered_proxy, credentials)
     proxy_config = normalize_mcp_proxy_config(discovered_proxy, base_dir=base_dir)
     proxy_config["auth"] = normalize_mcp_auth_config(auth, base_dir=base_dir)
+    proxy_config["catalog"] = normalize_mcp_catalog_config(catalog)
+    proxy_config["catalog_projection"] = proxy_config["catalog"]["projection"]
     proxy_config["discovery"] = discovery
     proxy_config["event_sinks"] = [
         *proxy_config.get("event_sinks", []),
@@ -442,6 +464,7 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         "schema_validation_action",
         "lease_header",
         "tunnel_provider",
+        "catalog_projection",
         "cloudflare_access_profile",
         "tailscale_profile",
         "cloudflare_access",
@@ -507,6 +530,8 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         raise ValueError("mcp.proxy.tool_pinning_action must be 'warn' or 'block'")
     if normalized["schema_validation_action"] not in {"warn", "block"}:
         raise ValueError("mcp.proxy.schema_validation_action must be 'warn' or 'block'")
+    if normalized["catalog_projection"] not in CATALOG_PROJECTION_MODES:
+        raise ValueError("mcp.proxy.catalog_projection must be 'off' or 'policy-aware'")
     if normalized["tunnel_provider"] not in {
         "auto",
         "generic",
@@ -586,6 +611,22 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
     normalized["facade_health_cooldown_seconds"] = float(normalized["facade_health_cooldown_seconds"])
     normalized["event_sinks"] = normalize_event_sink_configs(normalized.get("event_sinks", []), base_dir=base)
     normalized["auth"] = normalize_mcp_auth_config(normalized.get("auth", {}), base_dir=base)
+    normalized["catalog"] = normalize_mcp_catalog_config({"projection": normalized["catalog_projection"]})
+    return normalized
+
+
+def normalize_mcp_catalog_config(config: Mapping[str, Any] | None) -> dict[str, Any]:
+    if config in (None, ""):
+        config = {}
+    if not isinstance(config, Mapping):
+        raise ValueError("mcp.catalog must be a table")
+    normalized = dict(DEFAULT_MCP_CATALOG_CONFIG)
+    normalized.update({key: value for key, value in config.items() if value is not None})
+    projection = normalized.get("projection")
+    if not isinstance(projection, str):
+        raise ValueError("mcp.catalog.projection must be a string")
+    if projection not in CATALOG_PROJECTION_MODES:
+        raise ValueError("mcp.catalog.projection must be 'off' or 'policy-aware'")
     return normalized
 
 

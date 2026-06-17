@@ -153,6 +153,81 @@ def preview_mcp_lease_policy(
     return _evaluate_mcp_lease_policy(request, scope, config=config, consume=False)
 
 
+def preview_mcp_lease_catalog(
+    scope: Scope,
+    *,
+    config: LeasePolicyConfig,
+) -> dict[str, Any]:
+    """Validate a presented task lease for catalog projection without consuming it."""
+
+    auth_context = _scope_auth_context(scope)
+    metadata: dict[str, Any] = {
+        "enabled": config.lease_file is not None,
+        "required": config.required,
+        "header": config.header.lower(),
+        "checked": False,
+        "catalog_checked": False,
+        "method": "tools/list",
+        "consume": False,
+    }
+    if config.lease_file is None:
+        return metadata
+
+    token = _header_value(scope, config.header)
+    if token is None:
+        metadata["skipped"] = "missing_header"
+        if config.required:
+            metadata["reason_code"] = "lease.missing"
+            metadata["blocked"] = True
+            metadata["allowed"] = False
+        return metadata
+
+    metadata["checked"] = True
+    metadata["catalog_checked"] = True
+    try:
+        store = _load_store(config.lease_file, create_missing=False)
+    except FileNotFoundError:
+        metadata["reason_code"] = "lease.store_missing"
+        metadata["blocked"] = True
+        metadata["allowed"] = False
+        return metadata
+    except ValueError as exc:
+        metadata["reason_code"] = "lease.store_invalid"
+        metadata["error"] = str(exc)
+        metadata["blocked"] = True
+        metadata["allowed"] = False
+        return metadata
+
+    lease = _find_lease(store, token)
+    if lease is None:
+        metadata["reason_code"] = "lease.invalid"
+        metadata["blocked"] = True
+        metadata["allowed"] = False
+        return metadata
+
+    metadata.update(
+        {
+            "id": lease.get("id"),
+            "task": lease.get("task"),
+            "expires_at": lease.get("expires_at"),
+            "use_count": int(lease.get("use_count") or 0),
+            "max_calls": lease.get("max_calls"),
+            "allow_tools": list(lease.get("allow_tools", [])),
+            **_lease_auth_metadata(lease, auth_context),
+        }
+    )
+    denied_reason = _lease_catalog_denial_reason(lease, auth_context=auth_context)
+    if denied_reason is not None:
+        metadata.update(denied_reason)
+        metadata["blocked"] = True
+        metadata["allowed"] = False
+        return metadata
+
+    metadata["allowed"] = True
+    metadata["last_used_at"] = lease.get("last_used_at")
+    return metadata
+
+
 def _evaluate_mcp_lease_policy(
     request: Mapping[str, Any] | None,
     scope: Scope,
@@ -374,6 +449,26 @@ def _lease_denial_reason(
         return {"reason_code": "lease.command_not_allowed", "command": denied_commands[0]}
 
     return None
+
+
+def _lease_catalog_denial_reason(
+    lease: Mapping[str, Any],
+    *,
+    auth_context: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    now = _now()
+    revoked_at = lease.get("revoked_at")
+    if revoked_at:
+        return {"reason_code": "lease.revoked", "revoked_at": revoked_at}
+    expires_at = _parse_time(lease.get("expires_at"))
+    if expires_at is None or expires_at <= now:
+        return {"reason_code": "lease.expired"}
+
+    max_calls = lease.get("max_calls")
+    if isinstance(max_calls, int) and int(lease.get("use_count") or 0) >= max_calls:
+        return {"reason_code": "lease.max_calls_exceeded"}
+
+    return _lease_auth_denial_reason(lease, auth_context)
 
 
 def _coverage_reason(denials: Sequence[Mapping[str, Any]]) -> str:

@@ -15,6 +15,7 @@ It gives you a tight loop for agent-tool safety:
 - record redacted replay and audit logs
 - learn a least-privilege policy from observed traffic
 - amend blocked requests into reviewable candidate bundles
+- project `tools/list` into the safe tool catalog a caller can actually use
 - classify observed and schema-declared MCP tools by risk before handoff
 - use task-scoped leases for temporary tool/path grants, optionally bound to
   OAuth subject, tenant, client, group, issuer, or auth profile
@@ -342,6 +343,7 @@ Response-side policy:
 - maximum MCP response body size
 - optional blocking for instruction-like tool output
 - `tools/list` description and schema pinning to catch silent upstream changes
+- policy-aware `tools/list` projection using OAuth scopes, claim rules, and active leases
 - human confirmation for risky or otherwise blocked calls, with allow-once or session approval
 
 Workflow:
