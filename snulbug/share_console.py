@@ -34,6 +34,14 @@ DEFAULT_TUNNEL_PROVIDER_CONSOLES = {
         "description": "Inspect ngrok tunnel requests, headers, and replay details.",
     }
 }
+TUNNEL_PROVIDER_LABELS = {
+    "generic": "Generic tunnel",
+    "ngrok": "ngrok",
+    "cloudflare": "Cloudflare Tunnel",
+    "tailscale": "Tailscale Funnel",
+    "pinggy": "Pinggy",
+    "holepunch": "Holepunch / Hypertele",
+}
 DEFAULT_DECISION_TIMELINE_LIMIT = 20
 DEFAULT_AUTH_VISIBILITY_LIMIT = 50
 
@@ -49,6 +57,7 @@ def build_share_console_snapshot(
     share_dir = Path(directory)
     status = share_status(share_dir, timeout=timeout, live_checks=live_checks)
     requests = share_capability_requests(share_dir, status="all")
+    provider_console = _provider_console(status, timeout=timeout)
     return {
         "ok": bool(status.get("ok")),
         "generated_at": _now_iso(),
@@ -58,7 +67,8 @@ def build_share_console_snapshot(
         "decision_timeline": _redact_console_payload(_decision_timeline(share_dir, status)),
         "auth_visibility": _redact_console_payload(_auth_visibility(share_dir, status)),
         "tool_schema_visibility": _redact_console_payload(_tool_schema_visibility(share_dir, status)),
-        "provider_console": _provider_console(status, timeout=timeout),
+        "tunnel_provider": _redact_console_payload(_tunnel_provider_visibility(share_dir, status, provider_console)),
+        "provider_console": provider_console,
     }
 
 
@@ -362,6 +372,151 @@ def _provider_console(status: Mapping[str, Any], *, timeout: float) -> dict[str,
         return None
     probe = _probe_provider_console(str(template["url"]), timeout=timeout)
     return {"provider": provider, **template, **probe}
+
+
+def _tunnel_provider_visibility(
+    share_dir: Path,
+    status: Mapping[str, Any],
+    provider_console: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    session = _mapping(status.get("session"))
+    tunnel = _mapping(status.get("tunnel_doctor"))
+    client = _mapping(status.get("client"))
+    gateway = _mapping(status.get("gateway"))
+    config = _provider_proxy_config_visibility(share_dir, status)
+    provider = (
+        str(
+            tunnel.get("provider")
+            or session.get("provider")
+            or config.get("provider")
+            or config.get("tunnel_provider")
+            or "generic"
+        )
+        .strip()
+        .lower()
+    )
+    public_url = tunnel.get("public_url") or client.get("url") or config.get("public_url")
+    local_url = tunnel.get("local_url") or gateway.get("url") or config.get("local_url")
+    return {
+        "ok": True,
+        "provider": provider,
+        "label": TUNNEL_PROVIDER_LABELS.get(provider, provider.replace("-", " ").title()),
+        "public_url": public_url,
+        "client_url": client.get("url"),
+        "local_url": local_url,
+        "gateway_url": gateway.get("url"),
+        "config": config,
+        "auth": _provider_auth_visibility(status, config),
+        "local_console": _provider_local_console_visibility(provider, provider_console),
+        "doctor": _provider_doctor_visibility(tunnel),
+        "commands": _provider_command_rows(_mapping(status.get("commands"))),
+    }
+
+
+def _provider_proxy_config_visibility(share_dir: Path, status: Mapping[str, Any]) -> dict[str, Any]:
+    session_model = _mapping(status.get("session_model"))
+    files = _mapping(session_model.get("files"))
+    config_value = files.get("config")
+    if not isinstance(config_value, str) or not config_value:
+        return {}
+    config_path = _resolve_console_path(share_dir, config_value)
+    if not config_path.is_file():
+        return {"path": str(config_path), "exists": False}
+    try:
+        proxy_config = load_mcp_proxy_config(config_path)
+    except Exception as exc:
+        return {"path": str(config_path), "exists": True, "error": str(exc)}
+    auth = _mapping(proxy_config.get("auth"))
+    return _drop_empty(
+        {
+            "path": str(config_path),
+            "exists": True,
+            "provider": proxy_config.get("tunnel_provider"),
+            "public_url": proxy_config.get("tunnel_public_url"),
+            "auth_mode": auth.get("mode"),
+            "lease_required": proxy_config.get("lease_required"),
+            "cloudflare_access": proxy_config.get("cloudflare_access"),
+            "cloudflare_access_profile": proxy_config.get("cloudflare_access_profile"),
+            "tailscale_profile": proxy_config.get("tailscale_profile"),
+        }
+    )
+
+
+def _provider_auth_visibility(status: Mapping[str, Any], config: Mapping[str, Any]) -> dict[str, Any]:
+    session = _mapping(status.get("session"))
+    client_headers = _mapping(_mapping(status.get("client")).get("headers"))
+    header_names = sorted(str(name) for name in client_headers)
+    mode = config.get("auth_mode")
+    if not mode:
+        mode = "bearer" if any(name.lower() == "authorization" for name in header_names) else "none"
+    return _drop_empty(
+        {
+            "mode": mode,
+            "lease_required": config.get("lease_required", session.get("lease_required")),
+            "lease_header": session.get("lease_header"),
+            "client_header_names": header_names,
+            "cloudflare_access": config.get("cloudflare_access"),
+            "cloudflare_access_profile": config.get("cloudflare_access_profile")
+            or session.get("cloudflare_access_profile"),
+            "tailscale_profile": config.get("tailscale_profile") or session.get("tailscale_profile"),
+        }
+    )
+
+
+def _provider_local_console_visibility(
+    provider: str,
+    provider_console: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if provider_console:
+        return dict(provider_console)
+    return {
+        "provider": provider,
+        "configured": False,
+        "checked": False,
+        "reachable": None,
+        "label": "No default local console",
+        "description": "No standard local inspection UI is configured for this provider.",
+    }
+
+
+def _provider_doctor_visibility(tunnel: Mapping[str, Any]) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "checked": bool(tunnel.get("checked")),
+            "ok": tunnel.get("ok"),
+            "last_checked_at": tunnel.get("last_checked_at"),
+            "summary": _mapping(tunnel.get("summary")),
+            "recommendations": _string_list(tunnel.get("recommendations")),
+        }
+    )
+
+
+def _provider_command_rows(commands: Mapping[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    labels = {
+        "run": "Run snulbug",
+        "provider": "Run provider",
+        "doctor": "Run doctor",
+        "share_doctor": "Run doctor",
+        "client": "Show client config",
+        "close": "Close session",
+    }
+    for key in ("run", "provider", "doctor", "share_doctor", "client", "close"):
+        if key == "share_doctor" and commands.get("share_doctor") == commands.get("doctor"):
+            continue
+        value = commands.get(key)
+        for index, command in enumerate(_sequence(value), start=1):
+            if not isinstance(command, str) or not command.strip():
+                continue
+            if command in seen:
+                continue
+            seen.add(command)
+            label = labels.get(key, key.replace("_", " ").title())
+            if key == "provider" and len(_sequence(value)) > 1:
+                label = f"{label} {index}"
+            rows.append({"kind": key, "label": label, "command": command})
+    return rows
 
 
 def _probe_provider_console(url: str, *, timeout: float) -> dict[str, Any]:
@@ -1382,6 +1537,18 @@ def _console_html() -> str:
       white-space: pre-wrap;
       overflow-wrap: anywhere;
     }
+    .command-code {
+      display: block;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      background: #f4f6f8;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px;
+      color: #1b2733;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+    }
     .empty {
       color: var(--muted);
       padding: 16px 4px;
@@ -1460,6 +1627,10 @@ def _console_html() -> str:
     <main>
       <div id="message" class="message"></div>
       <div class="metrics" id="metrics"></div>
+      <section>
+        <div class="section-head"><h2>Tunnel Provider</h2><span id="providerSummary" class="muted"></span></div>
+        <div class="section-body" id="tunnelProvider"></div>
+      </section>
       <section>
         <div class="section-head"><h2>Live Decisions</h2><span id="decisionSummary" class="muted"></span></div>
         <div class="section-body" id="decisionTimeline"></div>
@@ -1578,13 +1749,14 @@ def _console_html() -> str:
       const status = snapshot.status || {};
       $("sharePath").textContent = text(snapshot.share || status.directory);
       renderMetrics(status);
+      renderTunnelProvider(snapshot.tunnel_provider || {});
       renderDecisionTimeline(snapshot.decision_timeline || {});
       renderRequests(snapshot.capability_requests || {});
       renderRequestDrawer(snapshot.capability_requests || {});
       renderLeases(status.leases || {});
       renderAuthVisibility(snapshot.auth_visibility || {});
       renderToolSchemaVisibility(snapshot.tool_schema_visibility || {});
-      renderHealth(status, snapshot.provider_console || null);
+      renderHealth(status);
       renderToolRisk(status);
       renderFindings(status);
       renderEvidence(status);
@@ -2137,7 +2309,11 @@ def _console_html() -> str:
     }
 
     function detailRow(label, value) {
-      return `<div class="detail-label">${esc(label)}</div><div>${esc(value)}</div>`;
+      return detailRowHtml(label, esc(value));
+    }
+
+    function detailRowHtml(label, valueHtml) {
+      return `<div class="detail-label">${esc(label)}</div><div>${valueHtml || "-"}</div>`;
     }
 
     function listText(value) {
@@ -2152,7 +2328,95 @@ def _console_html() -> str:
       return listText(value) || text(fallback, "");
     }
 
-    function renderHealth(status, providerConsole) {
+    function renderTunnelProvider(payload) {
+      const provider = payload.provider || "generic";
+      const auth = payload.auth || {};
+      const doctor = payload.doctor || {};
+      const localConsole = payload.local_console || {};
+      const commands = payload.commands || [];
+      const doctorLabel = doctor.checked
+        ? (doctor.ok === true ? "doctor passed" : "doctor needs review")
+        : "not checked";
+      const localOrigin = payload.local_url || payload.gateway_url;
+      const leaseRequired = auth.lease_required === true ? "yes" : (auth.lease_required === false ? "no" : "-");
+      $("providerSummary").textContent = `${payload.label || provider} · ${doctorLabel}`;
+      const overview = `<div class="detail-grid">
+        ${detailRow("Provider", payload.label || provider)}
+        ${detailRowHtml("Public URL", externalLink(payload.public_url, payload.public_url))}
+        ${detailRowHtml("Client URL", externalLink(payload.client_url, payload.client_url))}
+        ${detailRowHtml("Local Origin", externalLink(localOrigin, localOrigin))}
+        ${detailRow("Auth Mode", providerAuthText(auth))}
+        ${detailRow("Lease Required", leaseRequired)}
+        ${detailRowHtml("Local Console", providerConsoleHtml(localConsole))}
+        ${detailRow("Config", (payload.config || {}).path)}
+      </div>`;
+      const doctorHtml = providerDoctorHtml(doctor);
+      const commandsHtml = providerCommandsTable(commands);
+      $("tunnelProvider").innerHTML = `<div class="stack">${overview}${doctorHtml}${commandsHtml}</div>`;
+    }
+
+    function providerAuthText(auth) {
+      const parts = [auth.mode || "none"];
+      if (auth.cloudflare_access) parts.push(`cloudflare access ${auth.cloudflare_access}`);
+      if (auth.cloudflare_access_profile) parts.push(`cf profile ${auth.cloudflare_access_profile}`);
+      if (auth.tailscale_profile) parts.push(`tailscale ${auth.tailscale_profile}`);
+      const headers = auth.client_header_names || [];
+      if (headers.length) parts.push(`headers ${headers.join(", ")}`);
+      return parts.join(" · ");
+    }
+
+    function providerConsoleHtml(localConsole) {
+      if (!localConsole || localConsole.configured === false || !localConsole.url) {
+        return esc((localConsole && localConsole.description) || "No local console configured.");
+      }
+      const status = localConsole.checked ? healthLabel(localConsole.reachable) : "not checked";
+      const detail = localConsole.error || localConsole.description || localConsole.label || "";
+      return `${externalLink(localConsole.url, localConsole.label || localConsole.url)} ${pill(status)}
+        <div class="timeline-detail">${esc(detail)}</div>`;
+    }
+
+    function providerDoctorHtml(doctor) {
+      const summary = doctor.summary || {};
+      const recommendations = doctor.recommendations || [];
+      const doctorRows = [
+        ["Checked", doctor.checked ? "yes" : "no"],
+        ["Result", doctor.checked ? (doctor.ok === true ? "pass" : "fail") : "not checked"],
+        ["Last Checked", doctor.last_checked_at],
+        ["Passed", summary.passed],
+        ["Failed", summary.failed],
+        ["Warnings", summary.warnings],
+        ["Skipped", summary.skipped]
+      ];
+      const table = `<table>
+        <thead><tr><th>Doctor Field</th><th>Value</th></tr></thead>
+        <tbody>${doctorRows.map(([label, value]) => (
+          `<tr><td>${esc(label)}</td><td>${esc(value)}</td></tr>`
+        )).join("")}</tbody>
+      </table>`;
+      const recs = recommendations.length ? `<div>
+        <h2>Provider Recommendations</h2>
+        <ul class="recommendations">${recommendations.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>
+      </div>` : "";
+      return `<div><h2>Last Doctor Result</h2>${table}${recs}</div>`;
+    }
+
+    function providerCommandsTable(commands) {
+      if (!commands.length) return '<div class="empty">No generated provider commands.</div>';
+      return `<div><h2>Generated Commands</h2><table>
+        <thead><tr><th>Step</th><th>Command</th></tr></thead>
+        <tbody>${commands.map((item) => (
+          `<tr>
+            <td>
+              <strong>${esc(item.label || item.kind)}</strong>
+              <div class="timeline-detail">${esc(item.kind || "")}</div>
+            </td>
+            <td><code class="command-code">${esc(item.command)}</code></td>
+          </tr>`
+        )).join("")}</tbody>
+      </table></div>`;
+    }
+
+    function renderHealth(status) {
       const gateway = status.gateway || {};
       const upstreams = status.upstreams || [];
       $("healthSummary").textContent = gateway.url || "";
@@ -2164,15 +2428,6 @@ def _console_html() -> str:
           item.status || item.health,
           false
         ]));
-      if (providerConsole) {
-        rows.push([
-          `${providerConsole.provider} console`,
-          providerConsole.url,
-          providerConsole.checked ? providerConsole.reachable : null,
-          providerConsole.error || providerConsole.description || providerConsole.label,
-          true
-        ]);
-      }
       $("health").innerHTML = `<table>
         <thead><tr><th>Target</th><th>URL</th><th>Reachable</th><th>Status</th></tr></thead>
         <tbody>${rows.map(([name, url, reachable, detail, isLink]) => (

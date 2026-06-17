@@ -80,6 +80,7 @@ def test_share_console_snapshot_includes_ngrok_local_console_link(tmp_path, monk
 
     snapshot = build_share_console_snapshot(tmp_path)
     provider_console = snapshot["provider_console"]
+    tunnel_provider = snapshot["tunnel_provider"]
 
     assert provider_console["provider"] == "ngrok"
     assert provider_console["label"] == "ngrok local web console"
@@ -88,6 +89,65 @@ def test_share_console_snapshot_includes_ngrok_local_console_link(tmp_path, monk
     assert provider_console["reachable"] is False
     assert provider_console["status"] is None
     assert provider_console["error"]
+    assert tunnel_provider["provider"] == "ngrok"
+    assert tunnel_provider["label"] == "ngrok"
+    assert tunnel_provider["public_url"] == "https://mcp-dev.ngrok.app/mcp"
+    assert tunnel_provider["local_console"]["url"] == f"http://127.0.0.1:{unused_port}"
+    assert tunnel_provider["auth"]["mode"] == "bearer"
+    assert tunnel_provider["auth"]["lease_required"] is True
+    assert any(command["kind"] == "provider" for command in tunnel_provider["commands"])
+
+
+@pytest.mark.parametrize(
+    ("provider", "public_url"),
+    [
+        ("ngrok", "https://mcp-dev.ngrok.app/mcp"),
+        ("cloudflare", "https://mcp.example.com/mcp"),
+        ("tailscale", "https://demo.tailnet.ts.net/mcp"),
+        ("pinggy", "https://demo.pinggy-free.link/mcp"),
+        ("holepunch", "http://127.0.0.1:18080/mcp"),
+    ],
+)
+def test_share_console_snapshot_summarizes_tunnel_provider_panel(tmp_path, monkeypatch, provider, public_url):
+    if provider == "ngrok":
+        unused_port = unused_local_port()
+        monkeypatch.setitem(
+            share_console.DEFAULT_TUNNEL_PROVIDER_CONSOLES,
+            "ngrok",
+            {
+                "label": "ngrok local web console",
+                "url": f"http://127.0.0.1:{unused_port}",
+                "description": "Inspect ngrok tunnel requests, headers, and replay details.",
+            },
+        )
+    share_dir = tmp_path / provider
+    create_mcp_share(
+        share_dir,
+        provider=provider,
+        public_url=public_url,
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    snapshot = build_share_console_snapshot(share_dir)
+    panel = snapshot["tunnel_provider"]
+
+    assert panel["provider"] == provider
+    assert panel["public_url"] == public_url
+    assert panel["client_url"] == public_url
+    assert panel["auth"]["mode"] == "bearer"
+    assert panel["auth"]["lease_required"] is True
+    assert panel["doctor"]["checked"] is False
+    assert any(command["kind"] == "run" for command in panel["commands"])
+    assert any(command["kind"] == "provider" for command in panel["commands"])
+    assert any(command["kind"] == "doctor" for command in panel["commands"])
+    assert "share-secret" not in json.dumps(panel)
+    assert "Bearer " not in json.dumps(panel)
+    if provider == "ngrok":
+        assert panel["local_console"]["url"].startswith("http://127.0.0.1:")
+    else:
+        assert panel["local_console"]["configured"] is False
 
 
 def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path):
@@ -118,6 +178,9 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "snulbug share console" in html
     assert "Capability Requests" in html
     assert "Live Decisions" in html
+    assert "Tunnel Provider" in html
+    assert "renderTunnelProvider" in html
+    assert "providerCommandsTable" in html
     assert "Active Leases" in html
     assert "renderLeases" in html
     assert "revokeLease" in html
@@ -171,6 +234,7 @@ def test_share_console_runs_inline_share_doctor(tmp_path, monkeypatch):
     server.start()
     try:
         result = post_json(f"{server.url}/api/doctor", {"live_checks": False})
+        snapshot = read_json(f"{server.url}/api/snapshot")
         session_model = load_share_session_model(tmp_path)
     finally:
         server.stop()
@@ -182,6 +246,9 @@ def test_share_console_runs_inline_share_doctor(tmp_path, monkeypatch):
     assert "share-secret" not in encoded
     assert "Bearer " not in encoded
     assert session_model["health"]["share_doctor"]["ok"] is True
+    assert snapshot["tunnel_provider"]["doctor"]["checked"] is True
+    assert snapshot["tunnel_provider"]["doctor"]["ok"] is True
+    assert snapshot["tunnel_provider"]["doctor"]["summary"]["failed"] == 0
 
 
 def test_share_console_lists_and_revokes_active_leases(tmp_path):
