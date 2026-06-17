@@ -112,6 +112,9 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "snulbug share console" in html
     assert "Capability Requests" in html
     assert "Live Decisions" in html
+    assert "Run Doctor" in html
+    assert 'id="doctorPanel"' in html
+    assert "renderDoctor" in html
     assert 'id="requestDrawer"' in html
     assert "selectRequest" in html
     assert "renderRequestDrawer" in html
@@ -127,6 +130,43 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert approved["review"]["reviewer"] == "ui"
     assert after["summary"]["approved"] == 1
     assert session_model["capability_requests"]["last_review"]["lease_id"] == approved["review"]["lease_id"]
+
+
+def test_share_console_runs_inline_share_doctor(tmp_path, monkeypatch):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    def fake_doctor_tunnel(**kwargs):
+        return {
+            "ok": True,
+            "url": kwargs["url"],
+            "local_url": "http://127.0.0.1:8080/mcp",
+            "checks": [],
+            "summary": {"passed": 1, "failed": 0, "warnings": 0, "skipped": 0},
+        }
+
+    monkeypatch.setattr("snulbug.tunnel.doctor_tunnel", fake_doctor_tunnel)
+    server = ShareConsoleServer(directory=tmp_path, port=0)
+    server.start()
+    try:
+        result = post_json(f"{server.url}/api/doctor", {"live_checks": False})
+        session_model = load_share_session_model(tmp_path)
+    finally:
+        server.stop()
+
+    encoded = json.dumps(result)
+    assert result["ok"] is True
+    assert result["summary"]["failed"] == 0
+    assert any(check["id"] == "status.gateway_reachable" for check in result["checks"])
+    assert "share-secret" not in encoded
+    assert "Bearer " not in encoded
+    assert session_model["health"]["share_doctor"]["ok"] is True
 
 
 def test_share_console_serves_provider_console_metadata_for_ngrok(tmp_path, monkeypatch):

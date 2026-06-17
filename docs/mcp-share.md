@@ -46,8 +46,8 @@ snulbug mcp share status .snulbug/shares/share-...
 The console reads the same `.snulbug/share/session.json`, `leases.json`,
 `traces/audit.jsonl`, and policy artifacts as the CLI. It shows session health,
 the live decision timeline, pending capability requests with a detail drawer,
-tool risk, findings, evidence paths, and next commands. Approving a capability
-request in the console creates the same task-scoped lease as
+tool risk, findings, evidence paths, next commands, and an inline share doctor.
+Approving a capability request in the console creates the same task-scoped lease as
 `share requests approve`; denying one records the same review state without
 minting a lease. When the tunnel provider has a known local inspection console,
 the Health table includes a clickable local console row and probes whether it

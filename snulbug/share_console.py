@@ -16,6 +16,7 @@ from .redaction import SECRET_REPLACEMENT, build_audit_event
 from .share import (
     approve_share_capability_request,
     deny_share_capability_request,
+    doctor_mcp_share,
     share_capability_requests,
     share_report,
     share_status,
@@ -201,6 +202,17 @@ class ShareConsoleServer:
                 )
                 _send_json(handler, 200, result)
                 return
+            if path == "/api/doctor":
+                result = doctor_mcp_share(
+                    self.directory,
+                    timeout=self.timeout,
+                    public_url=_string_or_none(body.get("public_url") or body.get("url")),
+                    live_checks=_bool_or_default(body.get("live_checks"), self.live_checks),
+                    conformance_pack=_string_or_none(body.get("conformance_pack")),
+                    require_conformance=bool(body.get("require_conformance", False)),
+                )
+                _send_json(handler, 200, _redact_console_payload(result))
+                return
             if path == "/api/report":
                 result = share_report(
                     self.directory,
@@ -290,6 +302,16 @@ def _positive_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
+
+
+def _bool_or_default(value: Any, default: bool) -> bool:
+    if value in (None, ""):
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def _now_iso() -> str:
@@ -894,6 +916,14 @@ def _console_html() -> str:
       min-height: 20px;
       color: var(--muted);
     }
+    .stack {
+      display: grid;
+      gap: 12px;
+    }
+    .recommendations {
+      margin: 8px 0 0;
+      padding-left: 18px;
+    }
     .token {
       background: #0f1720;
       color: #e8f1f8;
@@ -971,6 +1001,7 @@ def _console_html() -> str:
         <div class="toolbar">
           <label class="auto"><input id="autoRefresh" type="checkbox" checked> Auto refresh</label>
           <button id="refreshButton" class="primary" type="button">Refresh</button>
+          <button id="doctorButton" type="button">Run Doctor</button>
           <button id="reportButton" type="button">Generate Report</button>
         </div>
       </div>
@@ -1005,6 +1036,10 @@ def _console_html() -> str:
       <section>
         <div class="section-head"><h2>Evidence And Commands</h2><span id="evidenceSummary" class="muted"></span></div>
         <div class="section-body" id="evidence"></div>
+      </section>
+      <section id="doctorPanel" hidden>
+        <div class="section-head"><h2>Share Doctor</h2><span id="doctorSummary" class="muted"></span></div>
+        <div class="section-body" id="doctorChecks"></div>
       </section>
       <section id="leasePanel" hidden>
         <div class="section-head"><h2>New Lease Header</h2></div>
@@ -1043,15 +1078,16 @@ def _console_html() -> str:
     }
 
     async function api(path, options = {}) {
+      const { allowFalse = false, ...requestOptions } = options;
       const response = await fetch(path, {
-        ...options,
+        ...requestOptions,
         headers: {
           "content-type": "application/json",
-          ...(options.headers || {})
+          ...(requestOptions.headers || {})
         }
       });
       const payload = await response.json();
-      if (!response.ok || payload.ok === false) throw new Error(payload.error || response.statusText);
+      if (!response.ok || (!allowFalse && payload.ok === false)) throw new Error(payload.error || response.statusText);
       return payload;
     }
 
@@ -1508,6 +1544,56 @@ def _console_html() -> str:
       }
     }
 
+    async function runDoctor() {
+      $("doctorButton").disabled = true;
+      $("message").textContent = "Running share doctor";
+      try {
+        const payload = await api("/api/doctor", {
+          method: "POST",
+          allowFalse: true,
+          body: JSON.stringify({ live_checks: true })
+        });
+        renderDoctor(payload);
+        $("message").textContent = payload.ok ? "Doctor passed" : "Doctor found failing checks";
+      } catch (error) {
+        $("message").textContent = `Doctor failed: ${error.message}`;
+      } finally {
+        $("doctorButton").disabled = false;
+      }
+    }
+
+    function renderDoctor(payload) {
+      const summary = payload.summary || {};
+      const checks = payload.checks || [];
+      const recommendations = payload.recommendations || [];
+      $("doctorPanel").hidden = false;
+      $("doctorSummary").textContent =
+        `${summary.passed || 0} passed, ${summary.failed || 0} failed, ` +
+        `${summary.warnings || 0} warnings, ${summary.skipped || 0} skipped`;
+      const metadata = `<div class="detail-grid">
+        ${detailRow("Result", payload.ok ? "pass" : "fail")}
+        ${detailRow("Provider", payload.provider)}
+        ${detailRow("URL", payload.url)}
+        ${detailRow("Config", payload.config)}
+      </div>`;
+      const checksHtml = checks.length ? `<table>
+        <thead><tr><th>Status</th><th>Component</th><th>Check</th><th>Message</th></tr></thead>
+        <tbody>${checks.map((check) => (
+          `<tr>
+            <td>${pill(check.status)}</td>
+            <td>${esc(check.component || "-")}</td>
+            <td>${esc(check.id || "-")}</td>
+            <td>${esc(check.message || "-")}</td>
+          </tr>`
+        )).join("")}</tbody>
+      </table>` : '<div class="empty">No doctor checks returned.</div>';
+      const recommendationsHtml = recommendations.length ? `<div>
+        <h2>Recommendations</h2>
+        <ul class="recommendations">${recommendations.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>
+      </div>` : "";
+      $("doctorChecks").innerHTML = `<div class="stack">${metadata}${checksHtml}${recommendationsHtml}</div>`;
+    }
+
     function configureRefresh() {
       if (state.timer) clearInterval(state.timer);
       state.timer = null;
@@ -1517,6 +1603,7 @@ def _console_html() -> str:
     }
 
     $("refreshButton").addEventListener("click", loadSnapshot);
+    $("doctorButton").addEventListener("click", runDoctor);
     $("reportButton").addEventListener("click", generateReport);
     $("autoRefresh").addEventListener("change", configureRefresh);
     configureRefresh();
