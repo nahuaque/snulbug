@@ -48,9 +48,9 @@ snulbug mcp share console .snulbug/shares/share-...
 The first-cut console binds to `127.0.0.1:8765` by default. It reads the same
 `.snulbug/share/session.json`, `leases.json`, `traces/audit.jsonl`, and policy
 artifacts as the CLI. It shows session health, the live decision timeline,
-pending capability requests, tool risk, findings, evidence paths, and next
-commands. Approving a capability request in the console creates the same
-task-scoped lease as
+pending capability requests with a detail drawer, tool risk, findings, evidence
+paths, and next commands. Approving a capability request in the console creates
+the same task-scoped lease as
 `share requests approve`; denying one records the same review state without
 minting a lease. When the tunnel provider has a known local inspection console,
 the Health table includes a clickable local console row and probes whether it

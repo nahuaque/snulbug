@@ -36,6 +36,7 @@ def test_share_console_snapshot_reads_existing_share_artifacts(tmp_path):
     assert snapshot["status"]["state"] == "created"
     assert snapshot["capability_requests"]["summary"]["pending"] == 1
     assert snapshot["capability_requests"]["requests"][0]["tool"] == "safe_read_file"
+    assert snapshot["capability_requests"]["requests"][0]["argument_keys"] == ["path"]
     assert timeline["exists"] is True
     assert timeline["summary"]["shown"] == 1
     assert timeline["summary"]["capability_requested"] == 1
@@ -110,6 +111,11 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "snulbug share console" in html
     assert "Capability Requests" in html
     assert "Live Decisions" in html
+    assert 'id="requestDrawer"' in html
+    assert "selectRequest" in html
+    assert "renderRequestDrawer" in html
+    assert "drawer-task" in html
+    assert "requestField" in html
     assert "renderDecisionTimeline" in html
     assert "setInterval(loadSnapshot, 2000)" in html
     assert snapshot["ok"] is True

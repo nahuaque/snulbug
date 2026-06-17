@@ -815,6 +815,74 @@ def _console_html() -> str:
     .request-actions input {
       width: 100%;
     }
+    .request-row {
+      cursor: pointer;
+    }
+    .request-row:hover {
+      background: #f7fafd;
+    }
+    .request-open {
+      min-width: 72px;
+    }
+    .drawer {
+      position: fixed;
+      z-index: 20;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: min(560px, 100vw);
+      background: var(--surface);
+      border-left: 1px solid var(--line);
+      box-shadow: -16px 0 38px rgba(15, 23, 32, 0.16);
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+    .drawer[hidden] {
+      display: none;
+    }
+    .drawer-head {
+      padding: 14px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 12px;
+      background: var(--surface-2);
+    }
+    .drawer-title {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+    .drawer-body {
+      padding: 14px;
+      overflow: auto;
+      display: grid;
+      gap: 16px;
+      align-content: start;
+    }
+    .detail-grid {
+      display: grid;
+      grid-template-columns: 132px minmax(0, 1fr);
+      gap: 8px 12px;
+    }
+    .detail-label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+    .drawer-actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .drawer-actions input {
+      width: 100%;
+    }
+    .drawer-actions .wide {
+      grid-column: 1 / -1;
+    }
     .timeline-target {
       font-weight: 680;
     }
@@ -947,9 +1015,10 @@ def _console_html() -> str:
         <div class="section-body"><div id="reportOutput" class="report-output"></div></div>
       </section>
     </main>
+    <aside id="requestDrawer" class="drawer" hidden></aside>
   </div>
   <script>
-    const state = { snapshot: null, timer: null };
+    const state = { snapshot: null, timer: null, selectedRequestId: null };
     const $ = (id) => document.getElementById(id);
 
     function text(value, fallback = "-") {
@@ -1004,6 +1073,7 @@ def _console_html() -> str:
       renderMetrics(status);
       renderDecisionTimeline(snapshot.decision_timeline || {});
       renderRequests(snapshot.capability_requests || {});
+      renderRequestDrawer(snapshot.capability_requests || {});
       renderHealth(status, snapshot.provider_console || null);
       renderToolRisk(status);
       renderFindings(status);
@@ -1102,7 +1172,7 @@ def _console_html() -> str:
         const ttl = esc(suggested.ttl || "10m");
         const maxCalls = esc(suggested.max_calls || "2");
         const reviewer = "local-review";
-        return `<tr>
+        return `<tr class="request-row" onclick="selectRequest('${id}')">
           <td>${pill(request.status)}<br><span class="muted">${id}</span></td>
           <td>
             <strong>${esc(request.tool || request.method)}</strong><br>
@@ -1111,11 +1181,19 @@ def _console_html() -> str:
           <td>${esc(auth.subject || "-")}<br><span class="muted">${esc(auth.tenant || auth.issuer || "")}</span></td>
           <td>
             <div class="request-actions">
-              <input id="ttl-${id}" value="${ttl}" aria-label="TTL">
-              <input id="calls-${id}" value="${maxCalls}" aria-label="Max calls">
-              <input id="reviewer-${id}" value="${reviewer}" aria-label="Reviewer">
-              <button class="primary" type="button" onclick="approveRequest('${id}')">Approve</button>
-              <button class="danger" type="button" onclick="denyRequest('${id}')">Deny</button>
+              <input id="ttl-${id}" value="${ttl}" aria-label="TTL" onclick="event.stopPropagation()">
+              <input id="calls-${id}" value="${maxCalls}" aria-label="Max calls" onclick="event.stopPropagation()">
+              <input id="reviewer-${id}" value="${reviewer}" aria-label="Reviewer" onclick="event.stopPropagation()">
+              <button
+                class="request-open"
+                type="button"
+                onclick="event.stopPropagation(); selectRequest('${id}')"
+              >Details</button>
+              <button
+                class="primary"
+                type="button"
+                onclick="event.stopPropagation(); approveRequest('${id}')"
+              >Approve</button>
             </div>
           </td>
         </tr>`;
@@ -1124,6 +1202,140 @@ def _console_html() -> str:
         <thead><tr><th>Status</th><th>Capability</th><th>Auth</th><th>Review</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
+    }
+
+    function selectRequest(id) {
+      state.selectedRequestId = id;
+      renderRequestDrawer((state.snapshot || {}).capability_requests || {});
+    }
+
+    function closeRequestDrawer() {
+      state.selectedRequestId = null;
+      $("requestDrawer").hidden = true;
+      $("requestDrawer").innerHTML = "";
+    }
+
+    function renderRequestDrawer(payload) {
+      const drawer = $("requestDrawer");
+      const requests = payload.requests || [];
+      if (!state.selectedRequestId) {
+        drawer.hidden = true;
+        drawer.innerHTML = "";
+        return;
+      }
+      const request = requests.find((item) => item.id === state.selectedRequestId);
+      if (!request) {
+        closeRequestDrawer();
+        return;
+      }
+      const suggested = request.suggested_lease || {};
+      const auth = request.auth || {};
+      const decision = request.decision || {};
+      const sources = request.sources || [];
+      const source = sources.length ? `${sources[0].path}:${sources[0].line}` : request.source;
+      drawer.hidden = false;
+      drawer.innerHTML = `
+        <div class="drawer-head">
+          <div class="drawer-title">
+            <h2>${esc(request.tool || request.method || "Capability request")}</h2>
+            <div class="muted">${pill(request.status)} ${esc(request.id)}</div>
+          </div>
+          <button type="button" onclick="closeRequestDrawer()">Close</button>
+        </div>
+        <div class="drawer-body">
+          <div class="detail-grid">
+            ${detailRow("Task", request.task || suggested.task)}
+            ${detailRow("Method", request.method)}
+            ${detailRow("Tool", request.tool)}
+            ${detailRow("Argument keys", listText(request.argument_keys))}
+            ${detailRow("Reason code", request.reason_code || decision.reason_code)}
+            ${detailRow("Observations", request.observations)}
+            ${detailRow("First seen", request.first_seen_at)}
+            ${detailRow("Last seen", request.last_seen_at)}
+            ${detailRow("Source", source)}
+          </div>
+          <div>
+            <h2>Auth</h2>
+            <div class="detail-grid">
+              ${detailRow("Subject", auth.subject)}
+              ${detailRow("Tenant", auth.tenant)}
+              ${detailRow("Issuer", auth.issuer)}
+              ${detailRow("Client", auth.client_id)}
+              ${detailRow("Groups", listText(auth.groups))}
+              ${detailRow("Profile", auth.profile_id)}
+            </div>
+          </div>
+          <div>
+            <h2>Suggested Lease</h2>
+            <div class="detail-grid">
+              ${detailRow("TTL", suggested.ttl)}
+              ${detailRow("Max calls", suggested.max_calls)}
+              ${detailRow("Tools", listText(suggested.allow_tools))}
+              ${detailRow("Paths", listText(suggested.allow_paths))}
+              ${detailRow("Hosts", listText(suggested.allow_hosts))}
+              ${detailRow("Commands", listText(suggested.allow_commands))}
+            </div>
+          </div>
+          <div>
+            <h2>Review</h2>
+            <div class="drawer-actions">
+              <input class="wide" id="drawer-task-${esc(request.id)}" value="${esc(
+                suggested.task || request.task || "Temporary MCP access"
+              )}" aria-label="Task">
+              <input id="drawer-ttl-${esc(request.id)}" value="${esc(suggested.ttl || "10m")}" aria-label="TTL">
+              <input id="drawer-calls-${esc(request.id)}" value="${esc(
+                suggested.max_calls || "2"
+              )}" aria-label="Max calls">
+              <input class="wide" id="drawer-tools-${esc(request.id)}" value="${esc(
+                listTextOr(suggested.allow_tools, request.tool)
+              )}" aria-label="Allowed tools">
+              <input class="wide" id="drawer-paths-${esc(request.id)}" value="${esc(
+                listText(suggested.allow_paths)
+              )}" aria-label="Allowed paths">
+              <input class="wide" id="drawer-hosts-${esc(request.id)}" value="${esc(
+                listText(suggested.allow_hosts)
+              )}" aria-label="Allowed hosts">
+              <input class="wide" id="drawer-commands-${esc(request.id)}" value="${esc(
+                listText(suggested.allow_commands)
+              )}" aria-label="Allowed commands">
+              <input id="drawer-reviewer-${esc(request.id)}" value="local-review" aria-label="Reviewer">
+              <label class="auto"><input id="drawer-bind-${esc(request.id)}" type="checkbox" checked> Bind auth</label>
+              <input
+                class="wide"
+                id="drawer-deny-${esc(request.id)}"
+                value=""
+                aria-label="Deny reason"
+                placeholder="Deny reason"
+              >
+              <button
+                class="primary"
+                type="button"
+                onclick="approveRequest('${esc(request.id)}', 'drawer')"
+              >Approve</button>
+              <button
+                class="danger"
+                type="button"
+                onclick="denyRequest('${esc(request.id)}', 'drawer')"
+              >Deny</button>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    function detailRow(label, value) {
+      return `<div class="detail-label">${esc(label)}</div><div>${esc(value)}</div>`;
+    }
+
+    function listText(value) {
+      if (Array.isArray(value)) return value.filter(Boolean).join(", ");
+      if (value && typeof value === "object") {
+        return Object.keys(value).filter((key) => value[key]).join(", ");
+      }
+      return text(value, "");
+    }
+
+    function listTextOr(value, fallback) {
+      return listText(value) || text(fallback, "");
     }
 
     function renderHealth(status, providerConsole) {
@@ -1232,37 +1444,58 @@ def _console_html() -> str:
       </table>`;
     }
 
-    async function approveRequest(id) {
+    async function approveRequest(id, source = "") {
       try {
         const payload = await api(`/api/requests/${encodeURIComponent(id)}/approve`, {
           method: "POST",
           body: JSON.stringify({
-            ttl: $(`ttl-${id}`).value,
-            max_calls: $(`calls-${id}`).value,
-            reviewer: $(`reviewer-${id}`).value,
-            bind_auth: true
+            task: requestField(id, "task", source, ""),
+            ttl: requestField(id, "ttl", source, "10m"),
+            max_calls: requestField(id, "calls", source, "2"),
+            allow_tools: requestField(id, "tools", source, ""),
+            allow_paths: requestField(id, "paths", source, ""),
+            allow_hosts: requestField(id, "hosts", source, ""),
+            allow_commands: requestField(id, "commands", source, ""),
+            reviewer: requestField(id, "reviewer", source, "local-review"),
+            bind_auth: requestChecked(id, "bind", source, true)
           })
         });
         $("leaseOutput").textContent = payload.retry_header || JSON.stringify(payload.headers, null, 2);
         $("leasePanel").hidden = false;
+        state.selectedRequestId = id;
         await loadSnapshot();
       } catch (error) {
         $("message").textContent = `Approve failed: ${error.message}`;
       }
     }
 
-    async function denyRequest(id) {
-      const reason = window.prompt("Reason");
+    async function denyRequest(id, source = "") {
+      const reason = source ? requestField(id, "deny", source, "") : window.prompt("Reason");
       if (reason === null) return;
       try {
         await api(`/api/requests/${encodeURIComponent(id)}/deny`, {
           method: "POST",
-          body: JSON.stringify({ reason, reviewer: "local-review" })
+          body: JSON.stringify({ reason, reviewer: requestField(id, "reviewer", source, "local-review") })
         });
+        state.selectedRequestId = id;
         await loadSnapshot();
       } catch (error) {
         $("message").textContent = `Deny failed: ${error.message}`;
       }
+    }
+
+    function requestField(id, name, source, fallback) {
+      const prefix = source ? `${source}-` : "";
+      const element = $(`${prefix}${name}-${id}`);
+      if (!element) return fallback;
+      return element.value;
+    }
+
+    function requestChecked(id, name, source, fallback) {
+      const prefix = source ? `${source}-` : "";
+      const element = $(`${prefix}${name}-${id}`);
+      if (!element) return fallback;
+      return Boolean(element.checked);
     }
 
     async function generateReport() {
