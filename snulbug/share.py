@@ -974,6 +974,25 @@ def approve_share_capability_request(
     }
 
 
+def revoke_mcp_share_lease(
+    directory: str | Path = ".",
+    *,
+    lease_id: str,
+) -> dict[str, Any]:
+    """Revoke a task lease using the lease store configured for a share session."""
+
+    from .leases import revoke_lease
+
+    share_dir, manifest, session_model = _load_share_model_context(directory)
+    lease_file = _share_capability_lease_file(share_dir, session_model, manifest)
+    result = revoke_lease(lease_file, lease_id)
+    return {
+        **result,
+        "share": str(share_dir),
+        "lease_file": str(lease_file),
+    }
+
+
 def deny_share_capability_request(
     directory: str | Path = ".",
     *,

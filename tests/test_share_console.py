@@ -12,8 +12,10 @@ from snulbug import (
     ShareConsoleServer,
     append_record,
     build_share_console_snapshot,
+    create_lease,
     create_mcp_share,
     learn_mcp_policy,
+    list_leases,
     load_share_session_model,
     record_policy_request,
 )
@@ -115,6 +117,9 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "snulbug share console" in html
     assert "Capability Requests" in html
     assert "Live Decisions" in html
+    assert "Active Leases" in html
+    assert "renderLeases" in html
+    assert "revokeLease" in html
     assert "Run Doctor" in html
     assert 'id="doctorPanel"' in html
     assert "renderDoctor" in html
@@ -170,6 +175,55 @@ def test_share_console_runs_inline_share_doctor(tmp_path, monkeypatch):
     assert "share-secret" not in encoded
     assert "Bearer " not in encoded
     assert session_model["health"]["share_doctor"]["ok"] is True
+
+
+def test_share_console_lists_and_revokes_active_leases(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    created = create_lease(
+        tmp_path / "leases.json",
+        task="Read README for issue triage",
+        allow_tools=["files.read_file", "git.status"],
+        allow_subjects=["user-1"],
+        allow_tenants=["tenant-a"],
+        ttl="30m",
+        max_calls=3,
+        token="sbl_console-lease",
+    )
+    lease_id = created["lease"]["id"]
+    server = ShareConsoleServer(directory=tmp_path, port=0)
+    server.start()
+    try:
+        snapshot = read_json(f"{server.url}/api/snapshot")
+        revoked = post_json(f"{server.url}/api/leases/{lease_id}/revoke", {})
+        after = read_json(f"{server.url}/api/snapshot")
+    finally:
+        server.stop()
+
+    before_lease = next(item for item in snapshot["status"]["leases"]["leases"] if item["id"] == lease_id)
+    after_lease = next(item for item in after["status"]["leases"]["leases"] if item["id"] == lease_id)
+    listed = list_leases(tmp_path / "leases.json")
+    listed_lease = next(item for item in listed["leases"] if item["id"] == lease_id)
+
+    assert before_lease["active"] is True
+    assert before_lease["task"] == "Read README for issue triage"
+    assert before_lease["allow_subjects"] == ["user-1"]
+    assert before_lease["allow_tenants"] == ["tenant-a"]
+    assert before_lease["allow_tools"] == ["files.read_file", "git.status"]
+    assert before_lease["max_calls"] == 3
+    assert before_lease["use_count"] == 0
+    assert revoked["ok"] is True
+    assert revoked["lease"]["active"] is False
+    assert after_lease["active"] is False
+    assert listed_lease["active"] is False
+    assert "sbl_console-lease" not in json.dumps(snapshot)
+    assert "sbl_console-lease" not in json.dumps(revoked)
 
 
 def test_share_console_previews_policy_amendment_without_recording_candidate(tmp_path):

@@ -18,6 +18,7 @@ from .share import (
     deny_share_capability_request,
     doctor_mcp_share,
     preview_mcp_share_policy_amendment,
+    revoke_mcp_share_lease,
     share_capability_requests,
     share_report,
     share_status,
@@ -202,6 +203,12 @@ class ShareConsoleServer:
                     reviewer=_string_or_none(body.get("reviewer")),
                 )
                 _send_json(handler, 200, result)
+                return
+            lease_prefix = "/api/leases/"
+            if path.startswith(lease_prefix) and path.endswith("/revoke"):
+                lease_id = unquote(path[len(lease_prefix) : -len("/revoke")])
+                result = revoke_mcp_share_lease(self.directory, lease_id=lease_id)
+                _send_json(handler, 200, _redact_console_payload(result))
                 return
             if path == "/api/doctor":
                 result = doctor_mcp_share(
@@ -1038,6 +1045,10 @@ def _console_html() -> str:
           <div class="section-body" id="health"></div>
         </section>
       </div>
+      <section>
+        <div class="section-head"><h2>Active Leases</h2><span id="leaseSummary" class="muted"></span></div>
+        <div class="section-body" id="leases"></div>
+      </section>
       <div class="grid-two">
         <section>
           <div class="section-head"><h2>Tool Risk</h2><span id="riskSummary" class="muted"></span></div>
@@ -1131,6 +1142,7 @@ def _console_html() -> str:
       renderDecisionTimeline(snapshot.decision_timeline || {});
       renderRequests(snapshot.capability_requests || {});
       renderRequestDrawer(snapshot.capability_requests || {});
+      renderLeases(status.leases || {});
       renderHealth(status, snapshot.provider_console || null);
       renderToolRisk(status);
       renderFindings(status);
@@ -1202,6 +1214,13 @@ def _console_html() -> str:
       return date.toLocaleTimeString();
     }
 
+    function shortDateTime(value) {
+      if (!value) return "-";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return date.toLocaleString();
+    }
+
     function decisionTarget(event) {
       if (event.tool) return event.tool;
       if (event.mcp_method) return event.mcp_method;
@@ -1259,6 +1278,72 @@ def _console_html() -> str:
         <thead><tr><th>Status</th><th>Capability</th><th>Auth</th><th>Review</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
+    }
+
+    function renderLeases(payload) {
+      const leases = payload.leases || [];
+      const active = leases.filter((lease) => lease.active === true);
+      $("leaseSummary").textContent =
+        `${active.length} active, ${Math.max(0, leases.length - active.length)} inactive`;
+      if (!active.length) {
+        $("leases").innerHTML = '<div class="empty">No active task leases.</div>';
+        return;
+      }
+      $("leases").innerHTML = `<table>
+        <thead><tr>
+          <th>Subject</th><th>Task</th><th>Allowed Tools</th><th>Expiry</th><th>Remaining Calls</th><th>Action</th>
+        </tr></thead>
+        <tbody>${active.map((lease) => {
+          const id = esc(lease.id);
+          return `<tr>
+            <td>
+              ${esc(leaseSubject(lease))}
+              <div class="timeline-detail">${esc(leaseAuthDetail(lease))}</div>
+            </td>
+            <td>
+              ${esc(lease.task || "-")}
+              <div class="timeline-detail">${esc(lease.id || "")}</div>
+            </td>
+            <td>${esc(listText(lease.allow_tools) || "-")}</td>
+            <td>
+              ${esc(shortDateTime(lease.expires_at))}
+              <div class="timeline-detail">${esc(
+                lease.last_used_at ? `last used ${shortDateTime(lease.last_used_at)}` : ""
+              )}</div>
+            </td>
+            <td>
+              ${esc(remainingCalls(lease))}
+              <div class="timeline-detail">${esc(lease.last_tool || "")}</div>
+            </td>
+            <td><button class="danger" type="button" onclick="revokeLease('${id}')">Revoke</button></td>
+          </tr>`;
+        }).join("")}</tbody>
+      </table>`;
+    }
+
+    function leaseSubject(lease) {
+      if ((lease.allow_subjects || []).length) return (lease.allow_subjects || []).join(", ");
+      if ((lease.allow_groups || []).length) return `group: ${(lease.allow_groups || []).join(", ")}`;
+      if ((lease.allow_tenants || []).length) return `tenant: ${(lease.allow_tenants || []).join(", ")}`;
+      if ((lease.allow_client_ids || []).length) return `client: ${(lease.allow_client_ids || []).join(", ")}`;
+      if ((lease.allow_auth_profiles || []).length) return `profile: ${(lease.allow_auth_profiles || []).join(", ")}`;
+      return lease.auth_bound ? "auth-bound" : "unbound";
+    }
+
+    function leaseAuthDetail(lease) {
+      const parts = [];
+      if ((lease.allow_tenants || []).length) parts.push(`tenant ${listText(lease.allow_tenants)}`);
+      if ((lease.allow_issuers || []).length) parts.push(`issuer ${listText(lease.allow_issuers)}`);
+      if ((lease.allow_groups || []).length) parts.push(`groups ${listText(lease.allow_groups)}`);
+      return parts.join("; ");
+    }
+
+    function remainingCalls(lease) {
+      if (lease.max_calls === null || lease.max_calls === undefined || lease.max_calls === "") return "unlimited";
+      const maxCalls = Number(lease.max_calls);
+      const used = Number(lease.use_count || 0);
+      if (!Number.isFinite(maxCalls)) return "unlimited";
+      return `${Math.max(0, maxCalls - used)} / ${maxCalls}`;
     }
 
     function selectRequest(id) {
@@ -1538,6 +1623,17 @@ def _console_html() -> str:
         await loadSnapshot();
       } catch (error) {
         $("message").textContent = `Deny failed: ${error.message}`;
+      }
+    }
+
+    async function revokeLease(id) {
+      if (!window.confirm(`Revoke lease ${id}?`)) return;
+      try {
+        await api(`/api/leases/${encodeURIComponent(id)}/revoke`, { method: "POST" });
+        $("message").textContent = `Revoked lease ${id}`;
+        await loadSnapshot();
+      } catch (error) {
+        $("message").textContent = `Revoke failed: ${error.message}`;
       }
     }
 
