@@ -120,8 +120,9 @@ snulbug mcp share run .snulbug/shares/share-...
 ```
 
 Inside a generated share directory, `snulbug mcp share run` is enough;
-it reads `.snulbug/share/session.json` and reconciles the active config,
-policy, lease, and log paths before starting the gateway.
+it reads `.snulbug/share/session.json`, reconciles the active config,
+policy, lease, and log paths, and starts the local share console before
+starting the gateway. Pass `--no-console` when you only want the proxy.
 
 3. Check what is happening:
 
@@ -129,13 +130,8 @@ policy, lease, and log paths before starting the gateway.
 snulbug mcp share status .snulbug/shares/share-...
 ```
 
-For a human review loop, run the local share console:
-
-```bash
-snulbug mcp share console .snulbug/shares/share-...
-```
-
-It opens a local-only web control room over the same share session model,
+The run command also opens a local-only web control room over the same share
+session model at `http://127.0.0.1:8765` by default. It shows the
 capability-request inbox with a detail drawer, live decision timeline, lease
 store, audit logs, risk summary, findings, and report generator used by the
 CLI. For providers with known local inspection UIs, the Health table includes a

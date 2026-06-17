@@ -33,29 +33,25 @@ export SNULBUG_SHARE_TOKEN=...
 snulbug mcp share run .snulbug/shares/share-...
 ```
 
+`share run` starts the local share console automatically at
+`http://127.0.0.1:8765` before starting the proxy. Use `--no-console` to disable
+it, or `--console-port 0` to let the OS choose an available local port.
+
 Check live state:
 
 ```bash
 snulbug mcp share status .snulbug/shares/share-...
 ```
 
-Run the local web console when a human is actively reviewing a share:
-
-```bash
-snulbug mcp share console .snulbug/shares/share-...
-```
-
-The first-cut console binds to `127.0.0.1:8765` by default. It reads the same
-`.snulbug/share/session.json`, `leases.json`, `traces/audit.jsonl`, and policy
-artifacts as the CLI. It shows session health, the live decision timeline,
-pending capability requests with a detail drawer, tool risk, findings, evidence
-paths, and next commands. Approving a capability request in the console creates
-the same task-scoped lease as
+The console reads the same `.snulbug/share/session.json`, `leases.json`,
+`traces/audit.jsonl`, and policy artifacts as the CLI. It shows session health,
+the live decision timeline, pending capability requests with a detail drawer,
+tool risk, findings, evidence paths, and next commands. Approving a capability
+request in the console creates the same task-scoped lease as
 `share requests approve`; denying one records the same review state without
 minting a lease. When the tunnel provider has a known local inspection console,
 the Health table includes a clickable local console row and probes whether it
 is reachable; for ngrok this is `http://127.0.0.1:4040`.
-Use `--port 0` to let the OS choose an available local port.
 
 If a Lua policy returns `cap.request(...)`, snulbug records an MCP-native
 just-in-time capability request in the share evidence. Review the inbox and

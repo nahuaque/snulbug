@@ -14,6 +14,7 @@ from snulbug import (
     create_mcp_share,
     load_share_session_model,
 )
+from snulbug.cli.share import _start_share_run_console, _stop_share_run_console
 from snulbug.simulator import main as simulator_main
 
 
@@ -163,14 +164,42 @@ def test_share_console_serves_provider_console_metadata_for_ngrok(tmp_path, monk
     assert snapshot["provider_console"]["reachable"] is False
 
 
-def test_share_console_cli_help_exposes_console_command(capsys):
+def test_share_run_help_exposes_automatic_console_controls(capsys):
     with pytest.raises(SystemExit) as exc:
-        simulator_main(["mcp", "share", "console", "--help"])
+        simulator_main(["mcp", "share", "run", "--help"])
     output = capsys.readouterr().out
 
     assert exc.value.code == 0
-    assert "run a local web console" in output
-    assert "--live-checks" in output
+    assert "--no-console" in output
+    assert "--console-port" in output
+    assert "local share web console" in output
+
+
+def test_share_run_console_starts_as_sidecar(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    args = share_run_args(console_port=0)
+    server = _start_share_run_console(tmp_path, args)
+    try:
+        assert server is not None
+        html = read_text(f"{server.url}/")
+    finally:
+        _stop_share_run_console(server)
+
+    assert "snulbug share console" in html
+    assert "Capability Requests" in html
+
+
+def test_share_run_console_respects_no_console(tmp_path):
+    args = share_run_args(no_console=True)
+
+    assert _start_share_run_console(tmp_path, args) is None
 
 
 def read_text(url: str) -> str:
@@ -197,6 +226,26 @@ def unused_local_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def share_run_args(
+    *,
+    no_console: bool = False,
+    dry_run: bool = False,
+    console_port: int = 8765,
+) -> object:
+    return type(
+        "ShareRunArgs",
+        (),
+        {
+            "no_console": no_console,
+            "dry_run": dry_run,
+            "console_host": "127.0.0.1",
+            "console_port": console_port,
+            "console_timeout": 1.0,
+            "console_live_checks": False,
+        },
+    )()
 
 
 def write_capability_request_log(tmp_path: Path) -> None:

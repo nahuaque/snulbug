@@ -90,22 +90,6 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
     )
     add_compact_arg(share_status)
 
-    share_console = share_subparsers.add_parser(
-        "console",
-        help="run a local web console for a share session",
-        description="run a local web console for a share session",
-    )
-    share_console.add_argument("directory", nargs="?", type=Path, help="share session directory")
-    share_console.add_argument("--host", default="127.0.0.1", help="console bind host")
-    share_console.add_argument("--port", type=int, default=8765, help="console bind port")
-    share_console.add_argument("--timeout", type=float, default=1.0, help="live check timeout in seconds")
-    share_console.add_argument(
-        "--live-checks",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="probe the local gateway and configured upstreams on console refresh",
-    )
-
     share_report = share_subparsers.add_parser("report", help="write or print a generated share session report")
     share_report.add_argument("directory", type=Path, help="share session directory")
     share_report.add_argument("--output", "--out", type=Path, help="write report to this Markdown path")
@@ -552,13 +536,17 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
             if directory is None:
                 parser.error("mcp share run requires a share directory or --config")
                 return 2
-            result = run_mcp_share(
-                directory,
-                dry_run=args.dry_run,
-                require_contract=args.require_contract,
-            )
-            if result is not None:
-                write_json_output(result, compact=args.compact)
+            console_server = _start_share_run_console(directory, args)
+            try:
+                result = run_mcp_share(
+                    directory,
+                    dry_run=args.dry_run,
+                    require_contract=args.require_contract,
+                )
+                if result is not None:
+                    write_json_output(result, compact=args.compact)
+            finally:
+                _stop_share_run_console(console_server)
             return 0
 
         if command == "config":
@@ -627,23 +615,6 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
 
                 write_share_status_rich(result)
             return status
-
-        if command == "console":
-            directory = args.directory
-            if directory is None and share_session_model_path(Path.cwd()).is_file():
-                directory = Path.cwd()
-            if directory is None:
-                parser.error("mcp share console requires a share directory")
-                return 2
-            from ..share_console import run_share_console
-
-            return run_share_console(
-                directory,
-                host=args.host,
-                port=args.port,
-                timeout=args.timeout,
-                live_checks=args.live_checks,
-            )
 
         if command == "report":
             result = share_report(
@@ -1169,6 +1140,25 @@ def _add_share_run_args(parser: argparse.ArgumentParser) -> None:
         type=float,
         default=None,
         help="fabric hot-reload polling interval in seconds",
+    )
+    parser.add_argument(
+        "--no-console",
+        action="store_true",
+        help="do not start the local share web console while the proxy runs",
+    )
+    parser.add_argument("--console-host", default="127.0.0.1", help="local share console bind host")
+    parser.add_argument("--console-port", type=int, default=8765, help="local share console bind port")
+    parser.add_argument(
+        "--console-timeout",
+        type=float,
+        default=1.0,
+        help="share console live check timeout in seconds",
+    )
+    parser.add_argument(
+        "--console-live-checks",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="probe the local gateway and configured upstreams from the share console",
     )
     add_compact_arg(parser)
 
@@ -1784,6 +1774,66 @@ def _has_proxy_run_args(args: argparse.Namespace) -> bool:
     )
 
 
+def _share_run_console_directory(args: argparse.Namespace, directory: Path | None = None) -> Path | None:
+    if getattr(args, "no_console", False) or getattr(args, "dry_run", False):
+        return None
+    if directory is not None:
+        return Path(directory)
+    config = getattr(args, "config", None)
+    if config is None:
+        return None
+    from ..share_session import share_session_model_path
+
+    config_dir = Path(config).parent
+    if share_session_model_path(config_dir).is_file():
+        return config_dir
+    return None
+
+
+def _start_share_run_console(directory: Path | None, args: argparse.Namespace) -> Any:
+    console_dir = _share_run_console_directory(args, directory)
+    if console_dir is None:
+        return None
+    from ..share_console import DEFAULT_SHARE_CONSOLE_PORT, ShareConsoleServer
+
+    host = str(getattr(args, "console_host", "127.0.0.1"))
+    port = int(getattr(args, "console_port", DEFAULT_SHARE_CONSOLE_PORT))
+    timeout = float(getattr(args, "console_timeout", 1.0))
+    live_checks = bool(getattr(args, "console_live_checks", True))
+    server = ShareConsoleServer(
+        directory=console_dir,
+        host=host,
+        port=port,
+        timeout=timeout,
+        live_checks=live_checks,
+    )
+    try:
+        server.start()
+    except OSError as exc:
+        if port != DEFAULT_SHARE_CONSOLE_PORT:
+            raise
+        sys.stderr.write(f"snulbug share console port {port} unavailable: {exc}; retrying with a dynamic port\n")
+        server = ShareConsoleServer(
+            directory=console_dir,
+            host=host,
+            port=0,
+            timeout=timeout,
+            live_checks=live_checks,
+        )
+        try:
+            server.start()
+        except OSError as retry_exc:
+            sys.stderr.write(f"snulbug share console disabled: {retry_exc}\n")
+            return None
+    print(f"snulbug share console: {server.url}", flush=True)
+    return server
+
+
+def _stop_share_run_console(server: Any) -> None:
+    if server is not None:
+        server.stop()
+
+
 def _run_proxy_from_share_args(args: argparse.Namespace) -> int:
     from ..config import (
         load_mcp_fabric_config,
@@ -1825,15 +1875,19 @@ def _run_proxy_from_share_args(args: argparse.Namespace) -> int:
             proxy_config = normalize_mcp_proxy_config(overrides)
             fabric_config = normalize_mcp_fabric_config({}, proxy_config=proxy_config)
         share_contract = load_share_contract(args.require_contract) if args.require_contract is not None else None
-        run_mcp_proxy_config(
-            proxy_config,
-            fabric_config,
-            runner=run_proxy,
-            share_contract=share_contract,
-            fabric_reload_config=args.config if args.reload_fabric else None,
-            fabric_reload_interval=args.fabric_reload_interval or 2.0,
-            fabric_reload_overrides=overrides if args.reload_fabric else None,
-        )
+        console_server = _start_share_run_console(None, args)
+        try:
+            run_mcp_proxy_config(
+                proxy_config,
+                fabric_config,
+                runner=run_proxy,
+                share_contract=share_contract,
+                fabric_reload_config=args.config if args.reload_fabric else None,
+                fabric_reload_interval=args.fabric_reload_interval or 2.0,
+                fabric_reload_overrides=overrides if args.reload_fabric else None,
+            )
+        finally:
+            _stop_share_run_console(console_server)
     except Exception as exc:
         sys.stderr.write(f"snulbug share run failed: {exc}\n")
         return 1
