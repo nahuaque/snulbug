@@ -136,10 +136,11 @@ snulbug mcp share console .snulbug/shares/share-...
 ```
 
 It opens a local-only web control room over the same share session model,
-capability-request inbox, lease store, audit logs, risk summary, findings, and
-report generator used by the CLI. For providers with known local inspection
-UIs, the Health table includes a clickable local console row and probes whether
-it is reachable; ngrok appears as `http://127.0.0.1:4040`.
+capability-request inbox, live decision timeline, lease store, audit logs, risk
+summary, findings, and report generator used by the CLI. For providers with
+known local inspection UIs, the Health table includes a clickable local console
+row and probes whether it is reachable; ngrok appears as
+`http://127.0.0.1:4040`.
 
 4. If a legitimate request asks for a temporary capability, review it and mint
    a normal task-scoped lease:

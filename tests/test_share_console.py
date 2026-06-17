@@ -29,15 +29,23 @@ def test_share_console_snapshot_reads_existing_share_artifacts(tmp_path):
     write_capability_request_log(tmp_path)
 
     snapshot = build_share_console_snapshot(tmp_path)
+    timeline = snapshot["decision_timeline"]
 
     assert snapshot["ok"] is True
     assert snapshot["share"] == str(tmp_path)
     assert snapshot["status"]["state"] == "created"
     assert snapshot["capability_requests"]["summary"]["pending"] == 1
     assert snapshot["capability_requests"]["requests"][0]["tool"] == "safe_read_file"
+    assert timeline["exists"] is True
+    assert timeline["summary"]["shown"] == 1
+    assert timeline["summary"]["capability_requested"] == 1
+    assert timeline["events"][0]["outcome"] == "capability_requested"
+    assert timeline["events"][0]["tool"] == "safe_read_file"
+    assert timeline["events"][0]["auth_subject"] == "user-1"
     encoded = json.dumps(snapshot)
     assert "share-secret" not in encoded
     assert "sbl_" not in encoded
+    assert "timeline-secret" not in encoded
     assert snapshot["status"]["client"]["headers"]["Authorization"] == "[REDACTED]"
     assert snapshot["status"]["client"]["headers"]["x-snulbug-lease"] == "[REDACTED]"
 
@@ -101,6 +109,9 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
 
     assert "snulbug share console" in html
     assert "Capability Requests" in html
+    assert "Live Decisions" in html
+    assert "renderDecisionTimeline" in html
+    assert "setInterval(loadSnapshot, 2000)" in html
     assert snapshot["ok"] is True
     assert "share-secret" not in json.dumps(snapshot)
     assert "sbl_" not in json.dumps(snapshot)
@@ -194,6 +205,7 @@ def write_capability_request_log(tmp_path: Path) -> None:
         "decision": {
             "action": "reject",
             "allowed": False,
+            "reason": "Bearer timeline-secret",
             "reason_code": "mcp.docs_capability_requested",
         },
         "metadata": {

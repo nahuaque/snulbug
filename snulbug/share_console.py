@@ -3,6 +3,7 @@ from __future__ import annotations
 import http.client
 import json
 import threading
+from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from .redaction import SECRET_REPLACEMENT, build_audit_event
 from .share import (
     approve_share_capability_request,
     deny_share_capability_request,
@@ -28,6 +30,7 @@ DEFAULT_TUNNEL_PROVIDER_CONSOLES = {
         "description": "Inspect ngrok tunnel requests, headers, and replay details.",
     }
 }
+DEFAULT_DECISION_TIMELINE_LIMIT = 20
 
 
 def build_share_console_snapshot(
@@ -47,6 +50,7 @@ def build_share_console_snapshot(
         "share": str(share_dir),
         "status": _redact_console_payload(status),
         "capability_requests": _redact_console_payload(requests),
+        "decision_timeline": _redact_console_payload(_decision_timeline(share_dir, status)),
         "provider_console": _provider_console(status, timeout=timeout),
     }
 
@@ -331,6 +335,181 @@ def _probe_provider_console(url: str, *, timeout: float) -> dict[str, Any]:
     return {"checked": True, "reachable": status < 500, "status": status, "error": None}
 
 
+def _decision_timeline(
+    share_dir: Path,
+    status: Mapping[str, Any],
+    *,
+    limit: int = DEFAULT_DECISION_TIMELINE_LIMIT,
+) -> dict[str, Any]:
+    source = _decision_timeline_source(share_dir, status)
+    result: dict[str, Any] = {
+        "source": str(source) if source is not None else None,
+        "source_kind": _mapping(status.get("traffic")).get("source_kind"),
+        "exists": bool(source and source.exists()),
+        "limit": limit,
+        "events": [],
+        "summary": {
+            "shown": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "confirmed": 0,
+            "capability_requested": 0,
+            "redacted": 0,
+            "upstream_failed": 0,
+        },
+    }
+    if source is None or not source.exists():
+        return result
+    try:
+        events = [
+            _decision_timeline_item(event, source=source, line=line)
+            for line, event in _recent_jsonl_events(source, limit)
+        ]
+    except OSError as exc:
+        result["error"] = str(exc)
+        return result
+    items = [item for item in events if item is not None]
+    result["events"] = list(reversed(items))
+    result["summary"] = _decision_timeline_summary(result["events"])
+    return result
+
+
+def _decision_timeline_source(share_dir: Path, status: Mapping[str, Any]) -> Path | None:
+    traffic = _mapping(status.get("traffic"))
+    for value in (
+        traffic.get("source"),
+        _mapping(_mapping(status.get("recordings")).get("audit_log")).get("path"),
+        _mapping(_mapping(status.get("recordings")).get("record_log")).get("path"),
+    ):
+        if value in (None, ""):
+            continue
+        path = Path(str(value))
+        if path.is_absolute():
+            return path
+        if path.exists():
+            return path
+        return share_dir / path
+    return None
+
+
+def _recent_jsonl_events(path: Path, limit: int) -> list[tuple[int, dict[str, Any]]]:
+    lines: deque[tuple[int, str]] = deque(maxlen=max(limit * 4, limit))
+    with path.open("r", encoding="utf-8") as file:
+        for line_number, line in enumerate(file, start=1):
+            stripped = line.strip()
+            if stripped:
+                lines.append((line_number, stripped))
+    events: list[tuple[int, dict[str, Any]]] = []
+    for line_number, line in lines:
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(value, Mapping):
+            continue
+        event = build_audit_event(value) if value.get("type") == "snulbug.request_record" else dict(value)
+        events.append((line_number, event))
+    return events[-limit:]
+
+
+def _decision_timeline_item(event: Mapping[str, Any], *, source: Path, line: int) -> dict[str, Any] | None:
+    decision = _mapping(event.get("decision"))
+    mcp = _mapping(event.get("mcp"))
+    request = _mapping(event.get("request"))
+    response = _mapping(event.get("response"))
+    metadata = _mapping(event.get("metadata"))
+    if not decision and not mcp and not request:
+        return None
+    confirmation = _mapping(decision.get("confirmation"))
+    auth = _timeline_auth(event)
+    facade = _mapping(event.get("facade")) or _mapping(metadata.get("facade"))
+    topology = _mapping(event.get("topology")) or _mapping(metadata.get("topology"))
+    response_policy = _mapping(metadata.get("response_policy"))
+    item = {
+        "time": event.get("time") or event.get("recorded_at"),
+        "outcome": _timeline_outcome(event, decision=decision),
+        "action": decision.get("action"),
+        "allowed": decision.get("allowed"),
+        "status": response.get("status") or decision.get("status"),
+        "reason_code": decision.get("reason_code"),
+        "reason": decision.get("reason"),
+        "http_method": request.get("method"),
+        "path": request.get("path"),
+        "mcp_method": mcp.get("method"),
+        "tool": mcp.get("tool") or mcp.get("target"),
+        "request_id": mcp.get("request_id"),
+        "auth_subject": auth.get("subject"),
+        "auth_tenant": auth.get("tenant"),
+        "auth_issuer": auth.get("issuer"),
+        "auth_profile": auth.get("profile_id"),
+        "upstream": facade.get("upstream") or topology.get("upstream") or metadata.get("upstream"),
+        "source_ip": _mapping(event.get("tunnel")).get("source_ip")
+        or _mapping(metadata.get("tunnel")).get("source_ip"),
+        "confirmed": bool(confirmation),
+        "confirmation_approved": confirmation.get("approved"),
+        "redacted": _event_has_redaction_marker(event),
+        "response_redacted": response_policy.get("redacted"),
+        "source": str(source),
+        "line": line,
+    }
+    return _drop_empty(item)
+
+
+def _timeline_auth(event: Mapping[str, Any]) -> Mapping[str, Any]:
+    metadata = _mapping(event.get("metadata"))
+    auth = dict(_mapping(event.get("auth")) or _mapping(metadata.get("auth")))
+    access_auth = _mapping(_mapping(metadata.get("access")).get("auth"))
+    for key in ("subject", "issuer", "tenant", "client_id", "groups", "profile_id"):
+        if auth.get(key) in (None, "", []):
+            value = access_auth.get(key)
+            if value not in (None, "", []):
+                auth[key] = value
+    return auth
+
+
+def _timeline_outcome(event: Mapping[str, Any], *, decision: Mapping[str, Any]) -> str:
+    metadata = _mapping(event.get("metadata"))
+    response = _mapping(event.get("response"))
+    confirmation = _mapping(decision.get("confirmation"))
+    capability = _mapping(metadata.get("capability_request")) or _mapping(
+        _mapping(decision.get("context")).get("capability_request")
+    )
+    if capability:
+        return "capability_requested"
+    if confirmation:
+        return "confirmed" if confirmation.get("approved") is True else "blocked"
+    if decision.get("allowed") is False:
+        return "blocked"
+    status = response.get("status") or decision.get("status")
+    if isinstance(status, int) and status >= 500:
+        return "upstream_failed"
+    response_policy = _mapping(metadata.get("response_policy"))
+    if response_policy.get("redacted") is True:
+        return "redacted"
+    return "allowed"
+
+
+def _decision_timeline_summary(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    summary = {
+        "shown": len(events),
+        "allowed": 0,
+        "blocked": 0,
+        "confirmed": 0,
+        "capability_requested": 0,
+        "redacted": 0,
+        "upstream_failed": 0,
+    }
+    for event in events:
+        outcome = str(event.get("outcome") or "")
+        if outcome in {"allowed", "blocked", "capability_requested", "upstream_failed"}:
+            summary[outcome] += 1
+        if event.get("confirmed"):
+            summary["confirmed"] += 1
+        if event.get("redacted") or event.get("response_redacted"):
+            summary["redacted"] += 1
+    return summary
+
+
 def _redact_console_payload(value: Any) -> Any:
     if isinstance(value, Mapping):
         redacted: dict[str, Any] = {}
@@ -361,6 +540,17 @@ def _redact_console_payload(value: Any) -> Any:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _drop_empty(value: Mapping[str, Any]) -> dict[str, Any]:
+    return {str(key): item for key, item in value.items() if item not in ({}, [], None, "")}
+
+
+def _event_has_redaction_marker(event: Mapping[str, Any]) -> bool:
+    try:
+        return SECRET_REPLACEMENT in json.dumps(event, sort_keys=True, default=str)
+    except TypeError:
+        return False
 
 
 def _sensitive_name(value: str) -> bool:
@@ -625,6 +815,13 @@ def _console_html() -> str:
     .request-actions input {
       width: 100%;
     }
+    .timeline-target {
+      font-weight: 680;
+    }
+    .timeline-detail {
+      color: var(--muted);
+      margin-top: 2px;
+    }
     .message {
       min-height: 20px;
       color: var(--muted);
@@ -713,6 +910,10 @@ def _console_html() -> str:
     <main>
       <div id="message" class="message"></div>
       <div class="metrics" id="metrics"></div>
+      <section>
+        <div class="section-head"><h2>Live Decisions</h2><span id="decisionSummary" class="muted"></span></div>
+        <div class="section-body" id="decisionTimeline"></div>
+      </section>
       <div class="grid-two">
         <section>
           <div class="section-head"><h2>Capability Requests</h2><span id="requestSummary" class="muted"></span></div>
@@ -801,6 +1002,7 @@ def _console_html() -> str:
       const status = snapshot.status || {};
       $("sharePath").textContent = text(snapshot.share || status.directory);
       renderMetrics(status);
+      renderDecisionTimeline(snapshot.decision_timeline || {});
       renderRequests(snapshot.capability_requests || {});
       renderHealth(status, snapshot.provider_console || null);
       renderToolRisk(status);
@@ -825,6 +1027,63 @@ def _console_html() -> str:
       $("metrics").innerHTML = metrics.map(([label, value]) => (
         `<div class="metric"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`
       )).join("");
+    }
+
+    function renderDecisionTimeline(payload) {
+      const summary = payload.summary || {};
+      const events = payload.events || [];
+      $("decisionSummary").textContent =
+        `${summary.shown || 0} shown, ${summary.allowed || 0} allowed, ${summary.blocked || 0} blocked`;
+      if (!payload.exists) {
+        $("decisionTimeline").innerHTML = `<div class="empty">No audit log found yet.</div>`;
+        return;
+      }
+      if (!events.length) {
+        $("decisionTimeline").innerHTML = `<div class="empty">No decisions recorded yet.</div>`;
+        return;
+      }
+      $("decisionTimeline").innerHTML = `<table>
+        <thead><tr><th>Time</th><th>Outcome</th><th>Request</th><th>Subject</th><th>Status</th><th>Reason</th></tr></thead>
+        <tbody>${events.map((event) => (
+          `<tr>
+            <td>${esc(shortTime(event.time))}</td>
+            <td>${pill(event.outcome)}</td>
+            <td>
+              <div class="timeline-target">${esc(decisionTarget(event))}</div>
+              <div class="timeline-detail">${esc(decisionDetail(event))}</div>
+            </td>
+            <td>
+              ${esc(event.auth_subject || "-")}
+              <div class="timeline-detail">${esc(
+                event.auth_tenant || event.auth_profile || event.auth_issuer || ""
+              )}</div>
+            </td>
+            <td>${esc(event.status || "-")}</td>
+            <td>
+              ${esc(event.reason_code || "-")}
+              <div class="timeline-detail">${esc(event.upstream || event.source_ip || event.reason || "")}</div>
+            </td>
+          </tr>`
+        )).join("")}</tbody>
+      </table>`;
+    }
+
+    function shortTime(value) {
+      if (!value) return "-";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return date.toLocaleTimeString();
+    }
+
+    function decisionTarget(event) {
+      if (event.tool) return event.tool;
+      if (event.mcp_method) return event.mcp_method;
+      return event.path || "-";
+    }
+
+    function decisionDetail(event) {
+      const parts = [event.mcp_method, event.http_method, event.path].filter(Boolean);
+      return parts.join(" ");
     }
 
     function renderRequests(payload) {
@@ -1020,7 +1279,7 @@ def _console_html() -> str:
       if (state.timer) clearInterval(state.timer);
       state.timer = null;
       if ($("autoRefresh").checked) {
-        state.timer = setInterval(loadSnapshot, 5000);
+        state.timer = setInterval(loadSnapshot, 2000);
       }
     }
 
