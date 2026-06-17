@@ -38,6 +38,13 @@ from .scaffolds import (
     session_result,
     write_scaffold,
 )
+from .share_doctor import (
+    ShareDoctorCheck,
+    ShareDoctorCheckResult,
+    ShareDoctorContext,
+    register_share_doctor_check,
+    run_share_doctor_checks,
+)
 from .share_session import (
     SHARE_SESSION_MODEL_PATH,
     build_share_session_model,
@@ -895,6 +902,202 @@ def format_share_report(result: Mapping[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+class ShareStatusDoctorCheck(ShareDoctorCheck):
+    name = "status"
+    component = "status"
+
+    def run(self, context: ShareDoctorContext) -> ShareDoctorCheckResult:
+        checks: list[dict[str, Any]] = []
+        _add_share_status_checks(checks, context.status, live_checks=context.live_checks)
+        return ShareDoctorCheckResult(checks=checks)
+
+
+class ShareConfigDoctorCheck(ShareDoctorCheck):
+    name = "config"
+    component = "config"
+
+    def run(self, context: ShareDoctorContext) -> ShareDoctorCheckResult:
+        from .config import load_mcp_fabric_config, load_mcp_proxy_config
+
+        checks: list[dict[str, Any]] = []
+        recommendations: list[str] = []
+        try:
+            context.proxy_config = load_mcp_proxy_config(context.config_path)
+            _add_share_doctor_check(
+                checks,
+                "config.proxy_loaded",
+                True,
+                f"loaded proxy config {context.config_path}",
+                component="config",
+                details={"config": str(context.config_path)},
+            )
+        except Exception as exc:
+            context.proxy_config = None
+            _add_share_doctor_check(
+                checks,
+                "config.proxy_loaded",
+                False,
+                f"failed to load proxy config: {exc}",
+                component="config",
+                details={"config": str(context.config_path)},
+            )
+            recommendations.append("Fix the generated snulbug.toml before sharing this MCP endpoint.")
+        try:
+            context.fabric_config = load_mcp_fabric_config(context.config_path)
+            _add_share_doctor_check(
+                checks,
+                "config.fabric_loaded",
+                True,
+                f"loaded fabric config {context.config_path}",
+                component="config",
+                details={"config": str(context.config_path)},
+            )
+        except Exception as exc:
+            context.fabric_config = None
+            _add_share_doctor_check(
+                checks,
+                "config.fabric_loaded",
+                False,
+                f"failed to load fabric config: {exc}",
+                component="config",
+                details={"config": str(context.config_path)},
+            )
+        return ShareDoctorCheckResult(checks=checks, recommendations=recommendations)
+
+
+class SharePolicyDoctorCheck(ShareDoctorCheck):
+    name = "policy"
+    component = "policy"
+
+    def run(self, context: ShareDoctorContext) -> ShareDoctorCheckResult:
+        result = _share_policy_doctor_checks(context.share_dir, context.proxy_config, context.status)
+        return ShareDoctorCheckResult(
+            checks=result["checks"],
+            recommendations=result["recommendations"],
+            artifacts={"policy": result["result"]},
+        )
+
+
+class ShareCloudflareDoctorCheck(ShareDoctorCheck):
+    name = "cloudflare"
+    component = "cloudflare"
+
+    def run(self, context: ShareDoctorContext) -> ShareDoctorCheckResult:
+        result = _share_cloudflare_profile_doctor_checks(context.proxy_config, context.manifest)
+        return ShareDoctorCheckResult(
+            checks=result["checks"],
+            recommendations=result["recommendations"],
+            artifacts={"cloudflare": result["result"]},
+        )
+
+
+class ShareTailscaleDoctorCheck(ShareDoctorCheck):
+    name = "tailscale"
+    component = "tailscale"
+
+    def run(self, context: ShareDoctorContext) -> ShareDoctorCheckResult:
+        result = _share_tailscale_profile_doctor_checks(
+            context.proxy_config,
+            context.manifest,
+            context.status,
+            public_url=context.url,
+        )
+        return ShareDoctorCheckResult(
+            checks=result["checks"],
+            recommendations=result["recommendations"],
+            artifacts={"tailscale": result["result"]},
+        )
+
+
+class ShareFabricDoctorCheck(ShareDoctorCheck):
+    name = "fabric"
+    component = "fabric"
+
+    def run(self, context: ShareDoctorContext) -> ShareDoctorCheckResult:
+        checks: list[dict[str, Any]] = []
+        recommendations: list[str] = []
+        fabric = None
+        if context.fabric_config is not None:
+            from .fabric import doctor_fabric
+
+            fabric = doctor_fabric(
+                context.config_path,
+                headers=context.headers,
+                timeout=context.timeout,
+                probe_gateway=False,
+                probe_upstreams=False,
+            )
+            _extend_component_checks(checks, fabric.get("checks", []), component="fabric", prefix="fabric")
+            recommendations.extend(str(item) for item in _sequence(fabric.get("recommendations")))
+        else:
+            _add_share_doctor_check(
+                checks,
+                "fabric.doctor",
+                None,
+                "fabric doctor skipped because fabric config did not load",
+                component="fabric",
+            )
+        return ShareDoctorCheckResult(
+            checks=checks,
+            recommendations=recommendations,
+            artifacts={"fabric": fabric},
+        )
+
+
+class ShareConformanceDoctorCheck(ShareDoctorCheck):
+    name = "conformance"
+    component = "conformance"
+
+    def run(self, context: ShareDoctorContext) -> ShareDoctorCheckResult:
+        conformance = _run_share_conformance_doctor(
+            context.conformance_pack,
+            headers=context.headers,
+            timeout=context.timeout,
+            require_conformance=context.require_conformance,
+        )
+        return ShareDoctorCheckResult(
+            checks=conformance["checks"],
+            recommendations=conformance["recommendations"],
+            artifacts={"conformance": conformance["result"]},
+        )
+
+
+class ShareTunnelDoctorCheck(ShareDoctorCheck):
+    name = "tunnel"
+    component = "tunnel"
+
+    def run(self, context: ShareDoctorContext) -> ShareDoctorCheckResult:
+        from .tunnel import doctor_tunnel
+
+        tunnel = doctor_tunnel(
+            provider=context.provider,
+            url=context.url,
+            config=context.config_path,
+            headers=context.headers,
+            timeout=context.timeout,
+        )
+        checks: list[dict[str, Any]] = []
+        _extend_component_checks(checks, tunnel.get("checks", []), component="tunnel", prefix="tunnel")
+        return ShareDoctorCheckResult(
+            checks=checks,
+            recommendations=[str(item) for item in _sequence(tunnel.get("recommendations"))],
+            artifacts={"tunnel": tunnel, "tunnel_doctor": tunnel},
+        )
+
+
+for _share_doctor_check in (
+    ShareStatusDoctorCheck(),
+    ShareConfigDoctorCheck(),
+    SharePolicyDoctorCheck(),
+    ShareCloudflareDoctorCheck(),
+    ShareTailscaleDoctorCheck(),
+    ShareFabricDoctorCheck(),
+    ShareConformanceDoctorCheck(),
+    ShareTunnelDoctorCheck(),
+):
+    register_share_doctor_check(_share_doctor_check, replace=True)
+
+
 def doctor_mcp_share(
     directory: str | Path,
     *,
@@ -906,9 +1109,7 @@ def doctor_mcp_share(
 ) -> dict[str, Any]:
     """Run a unified readiness gate against a generated share session."""
 
-    from .config import load_mcp_fabric_config, load_mcp_proxy_config
-    from .fabric import doctor_fabric
-    from .tunnel import doctor_tunnel, parse_tunnel_headers
+    from .tunnel import parse_tunnel_headers
 
     share_dir = Path(directory)
     manifest = load_mcp_share(share_dir)
@@ -930,120 +1131,46 @@ def doctor_mcp_share(
         url = public_url or client.get("url")
     config_path = _resolve_share_path(share_dir, config)
     doctor_headers = parse_tunnel_headers([f"{key}: {value}" for key, value in headers.items()])
-    checks: list[dict[str, Any]] = []
-    recommendations: list[str] = []
-
     status = share_status(share_dir, timeout=timeout, live_checks=live_checks)
-    _add_share_status_checks(checks, status, live_checks=live_checks)
-
-    proxy_config: dict[str, Any] | None = None
-    fabric_config: dict[str, Any] | None = None
-    try:
-        proxy_config = load_mcp_proxy_config(config_path)
-        _add_share_doctor_check(
-            checks,
-            "config.proxy_loaded",
-            True,
-            f"loaded proxy config {config_path}",
-            component="config",
-            details={"config": str(config_path)},
-        )
-    except Exception as exc:
-        _add_share_doctor_check(
-            checks,
-            "config.proxy_loaded",
-            False,
-            f"failed to load proxy config: {exc}",
-            component="config",
-            details={"config": str(config_path)},
-        )
-        recommendations.append("Fix the generated snulbug.toml before sharing this MCP endpoint.")
-    try:
-        fabric_config = load_mcp_fabric_config(config_path)
-        _add_share_doctor_check(
-            checks,
-            "config.fabric_loaded",
-            True,
-            f"loaded fabric config {config_path}",
-            component="config",
-            details={"config": str(config_path)},
-        )
-    except Exception as exc:
-        _add_share_doctor_check(
-            checks,
-            "config.fabric_loaded",
-            False,
-            f"failed to load fabric config: {exc}",
-            component="config",
-            details={"config": str(config_path)},
-        )
-
-    policy = _share_policy_doctor_checks(share_dir, proxy_config, status)
-    checks.extend(policy["checks"])
-    recommendations.extend(policy["recommendations"])
-    cloudflare_profile = _share_cloudflare_profile_doctor_checks(proxy_config, manifest)
-    checks.extend(cloudflare_profile["checks"])
-    recommendations.extend(cloudflare_profile["recommendations"])
-    tailscale_profile = _share_tailscale_profile_doctor_checks(proxy_config, manifest, status, public_url=str(url))
-    checks.extend(tailscale_profile["checks"])
-    recommendations.extend(tailscale_profile["recommendations"])
-
-    fabric = None
-    if fabric_config is not None:
-        fabric = doctor_fabric(
-            config_path,
-            headers=doctor_headers,
-            timeout=timeout,
-            probe_gateway=False,
-            probe_upstreams=False,
-        )
-        _extend_component_checks(checks, fabric.get("checks", []), component="fabric", prefix="fabric")
-        recommendations.extend(str(item) for item in _sequence(fabric.get("recommendations")))
-    else:
-        _add_share_doctor_check(
-            checks,
-            "fabric.doctor",
-            None,
-            "fabric doctor skipped because fabric config did not load",
-            component="fabric",
-        )
-
-    conformance = _run_share_conformance_doctor(
-        conformance_pack,
+    context = ShareDoctorContext(
+        share_dir=share_dir,
+        manifest=manifest,
+        session=session,
+        client=client,
+        config_path=config_path,
+        provider=str(provider),
+        url=str(url),
         headers=doctor_headers,
         timeout=timeout,
+        live_checks=live_checks,
+        status=status,
+        conformance_pack=conformance_pack,
         require_conformance=require_conformance,
     )
-    checks.extend(conformance["checks"])
-    recommendations.extend(conformance["recommendations"])
-
-    tunnel = doctor_tunnel(
-        provider=str(provider),
-        url=url,
-        config=config_path,
-        headers=doctor_headers,
-        timeout=timeout,
-    )
-    _extend_component_checks(checks, tunnel.get("checks", []), component="tunnel", prefix="tunnel")
-    recommendations.extend(str(item) for item in _sequence(tunnel.get("recommendations")))
+    doctor_run = run_share_doctor_checks(context)
+    checks = doctor_run["checks"]
+    artifacts = _mapping(doctor_run.get("artifacts"))
+    tunnel = _mapping(artifacts.get("tunnel"))
 
     summary = _share_doctor_summary(checks)
     result = {
         "ok": summary["failed"] == 0,
         "share": str(share_dir),
         "provider": provider,
-        "url": tunnel.get("url"),
+        "url": tunnel.get("url") or url,
         "local_url": tunnel.get("local_url"),
         "config": str(config_path),
         "checks": checks,
         "summary": summary,
-        "recommendations": _unique_strings(recommendations),
+        "recommendations": _unique_strings(doctor_run["recommendations"]),
+        "doctor_plugins": doctor_run["plugins"],
+        "doctor_artifacts": artifacts,
         "status": status,
-        "policy": policy["result"],
-        "cloudflare": cloudflare_profile["result"],
-        "tailscale": tailscale_profile["result"],
-        "fabric": fabric,
-        "conformance": conformance["result"],
+        "policy": artifacts.get("policy"),
+        "cloudflare": artifacts.get("cloudflare"),
+        "tailscale": artifacts.get("tailscale"),
+        "fabric": artifacts.get("fabric"),
+        "conformance": artifacts.get("conformance"),
         "tunnel": tunnel,
         "tunnel_doctor": tunnel,
     }

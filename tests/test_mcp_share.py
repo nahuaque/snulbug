@@ -11,6 +11,9 @@ import jwt
 import pytest
 
 from snulbug import (
+    ShareDoctorCheck,
+    ShareDoctorCheckResult,
+    ShareDoctorContext,
     activate_mcp_share_policy,
     append_record,
     attach_mcp_share_member,
@@ -20,12 +23,14 @@ from snulbug import (
     doctor_mcp_share_auth,
     generate_auth_conformance_pack,
     learn_mcp_policy,
+    list_share_doctor_checks,
     load_fabric_member_registry,
     load_mcp_proxy_config,
     load_share_contract,
     load_share_session_model,
     promote_mcp_share_policy,
     record_policy_request,
+    register_share_doctor_check,
     run_auth_conformance_pack,
     run_mcp_share,
     share_client_config,
@@ -315,6 +320,80 @@ def test_create_mcp_share_cloudflare_access_gate_profile_defaults_to_safe_jwt_va
     assert proxy_config["cloudflare_access_audience"] is None
     assert doctor["ok"] is False
     assert checks["cloudflare.access_gate.jwt_config"]["status"] == "fail"
+
+
+def test_mcp_share_doctor_builtin_checks_are_registered():
+    assert list_share_doctor_checks()[:8] == (
+        "status",
+        "config",
+        "policy",
+        "cloudflare",
+        "tailscale",
+        "fabric",
+        "conformance",
+        "tunnel",
+    )
+
+
+def test_mcp_share_doctor_runs_custom_check_plugin(tmp_path, monkeypatch):
+    share_dir = tmp_path / "plugin-share"
+    create_mcp_share(
+        share_dir,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    class FixtureShareDoctorCheck(ShareDoctorCheck):
+        name = "fixture-share-check"
+        component = "fixture"
+
+        def run(self, context: ShareDoctorContext) -> ShareDoctorCheckResult:
+            if context.share_dir.name != "plugin-share":
+                return ShareDoctorCheckResult()
+            return ShareDoctorCheckResult(
+                checks=[
+                    {
+                        "id": "fixture.context_loaded",
+                        "status": "pass",
+                        "message": "fixture check saw loaded share doctor context",
+                        "component": "fixture",
+                        "details": {
+                            "provider": context.provider,
+                            "config_loaded": context.proxy_config is not None,
+                        },
+                    }
+                ],
+                recommendations=["Review fixture share doctor output."],
+                artifacts={"fixture": {"provider": context.provider, "url": context.url}},
+            )
+
+    def fake_doctor_tunnel(**kwargs):
+        return {
+            "ok": True,
+            "url": kwargs["url"],
+            "local_url": "http://127.0.0.1:8080/mcp",
+            "checks": [],
+            "summary": {"passed": 1, "failed": 0, "warnings": 0, "skipped": 0},
+        }
+
+    register_share_doctor_check(FixtureShareDoctorCheck(), replace=True)
+    monkeypatch.setattr("snulbug.tunnel.doctor_tunnel", fake_doctor_tunnel)
+
+    result = doctor_mcp_share(share_dir, live_checks=False)
+    checks = {check["id"]: check for check in result["checks"]}
+
+    assert result["ok"] is True
+    assert checks["fixture.context_loaded"]["status"] == "pass"
+    assert checks["fixture.context_loaded"]["details"]["config_loaded"] is True
+    assert "fixture-share-check" in [plugin["name"] for plugin in result["doctor_plugins"]]
+    assert result["doctor_artifacts"]["fixture"] == {
+        "provider": "generic",
+        "url": "https://mcp.example.test/mcp",
+    }
+    assert "Review fixture share doctor output." in result["recommendations"]
 
 
 def test_mcp_share_cloudflare_service_token_profile_writes_client_headers_and_doctor_checks(
