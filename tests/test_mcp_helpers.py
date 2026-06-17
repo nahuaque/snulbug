@@ -1113,6 +1113,49 @@ def test_capability_guards_carry_confirmation_options():
     }
 
 
+def test_capability_request_builds_confirm_decision_with_suggested_lease():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return cap.request(request, {
+            task = "Read project docs",
+            ttl = "10m",
+            max_calls = 2,
+            allow_paths = { "README.md", "docs" },
+            remember_key = "cap:" .. tostring(mcp.tool_name(request)),
+            reason_code = "mcp.docs_capability_requested"
+          })
+        end
+        """
+    )
+
+    decision = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","id":1,"method":"tools/call",'
+                '"params":{"name":"safe_read_file","arguments":{"path":"README.md"}}}'
+            )
+        }
+    )
+
+    assert decision["action"] == "confirm"
+    assert decision["reason_code"] == "mcp.docs_capability_requested"
+    assert decision["remember_key"] == "cap:safe_read_file"
+    request = decision["capability_request"]
+    assert request["schema"] == "snulbug.capability_request.v1"
+    assert request["kind"] == "task_lease"
+    assert request["method"] == "tools/call"
+    assert request["tool"] == "safe_read_file"
+    assert request["argument_keys"] == ["path"]
+    assert request["suggested_lease"] == {
+        "task": "Read project docs",
+        "ttl": "10m",
+        "max_calls": 2,
+        "allow_tools": ["safe_read_file"],
+        "allow_paths": ["README.md", "docs"],
+    }
+
+
 def test_capability_guards_reject_parent_path_traversal():
     script = compile_lua_script(
         """

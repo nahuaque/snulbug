@@ -217,6 +217,12 @@ from .mcp_auth import (
     verify_jwt,
     verify_token,
 )
+from .mcp_capabilities import (
+    CAPABILITY_ERROR_CODE,
+    CAPABILITY_REQUEST_SCHEMA,
+    capability_request_from_decision,
+    mcp_capability_error_response,
+)
 from .mcp_schema_policy import (
     DEFAULT_SCHEMA_POLICY_ALLOWED_PATHS,
     MCP_SCHEMA_POLICY_SCHEMA,
@@ -402,6 +408,8 @@ __all__ = [
     "ConsoleEventSinkProvider",
     "ConfirmationBroker",
     "CONTROL_EVENT_SCHEMA",
+    "CAPABILITY_ERROR_CODE",
+    "CAPABILITY_REQUEST_SCHEMA",
     "CredentialBroker",
     "CredentialResolutionError",
     "AUTH_RECIPE_PROVIDERS",
@@ -564,6 +572,7 @@ __all__ = [
     "compare_decisions",
     "classify_mcp_tool",
     "classify_mcp_tool_risks",
+    "capability_request_from_decision",
     "copy_builtin_preset",
     "codespace_forwarded_url",
     "create_lease",
@@ -743,6 +752,7 @@ __all__ = [
     "normalize_event_sink_configs",
     "oauth_bearer_challenge",
     "oauth_resource_metadata_url",
+    "mcp_capability_error_response",
     "holepunch_bridge_args",
     "promote_bundle_lifecycle",
     "promote_mcp_share_policy",

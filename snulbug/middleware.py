@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlencode
 
+from .mcp_capabilities import (
+    capability_request_metadata,
+    mcp_capability_error_response,
+)
 from .policy_backoff import (
     PolicyBackoffConfig,
     PolicyDenyBackoff,
@@ -256,7 +260,10 @@ class LuaMiddleware:
         execution: LuaDecisionTrace,
     ) -> None:
         confirmation = await self._confirm(decision, request, child_scope)
-        final_decision = _confirm_final_decision(decision, confirmation)
+        capability_metadata = capability_request_metadata(decision, request, confirmation)
+        if capability_metadata is not None:
+            _attach_capability_request(child_scope, capability_metadata)
+        final_decision = _confirm_final_decision(decision, confirmation, request=request)
         if self.config.trace:
             _attach_trace_with_decision(
                 child_scope,
@@ -576,6 +583,12 @@ def _attach_policy_backoff(scope: Scope, metadata: Mapping[str, Any]) -> None:
         state["snulbug_policy_backoff"] = dict(metadata)
 
 
+def _attach_capability_request(scope: Scope, metadata: Mapping[str, Any]) -> None:
+    state = scope.get("state")
+    if isinstance(state, dict):
+        state["snulbug_capability_request"] = dict(metadata)
+
+
 def _normalize_confirmation_result(result: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(result, Mapping):
         raise LuaDecisionError("confirm handler must return a table/object")
@@ -593,7 +606,12 @@ def _normalize_confirmation_result(result: Mapping[str, Any]) -> dict[str, Any]:
     return confirmation
 
 
-def _confirm_final_decision(decision: Mapping[str, Any], confirmation: Mapping[str, Any]) -> dict[str, Any]:
+def _confirm_final_decision(
+    decision: Mapping[str, Any],
+    confirmation: Mapping[str, Any],
+    *,
+    request: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     final = dict(decision)
     final["confirmation"] = dict(confirmation)
     if confirmation["approved"]:
@@ -606,6 +624,12 @@ def _confirm_final_decision(decision: Mapping[str, Any], confirmation: Mapping[s
     final["action"] = "reject"
     final["status"] = int(confirmation.get("status", decision.get("status", 403)))
     final["body"] = confirmation.get("body", decision.get("body", "confirmation denied"))
+    if request is not None:
+        capability_response = mcp_capability_error_response(request, final, confirmation)
+        if capability_response is not None:
+            final["status"] = capability_response["status"]
+            final["headers"] = capability_response["headers"]
+            final["body"] = capability_response["body"].decode("utf-8")
     return final
 
 

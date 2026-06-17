@@ -880,6 +880,23 @@ return decision.reject(403, "blocked by policy", {
 })
 ```
 
+For just-in-time lease workflows, use `cap.request(...)`. It is still a
+confirmation decision, so approval goes through the same live broker. When
+confirmation is unavailable or denied, snulbug returns an MCP JSON-RPC error
+with `error.data.capability_request` and a suggested task lease instead of a
+plain HTTP rejection:
+
+```lua
+return cap.request(request, {
+  task = "Read project docs",
+  ttl = "10m",
+  max_calls = 2,
+  allow_paths = { "README.md", "docs" },
+  remember_key = "cap:" .. tostring(mcp.tool_name(request)),
+  reason_code = "mcp.docs_capability_requested"
+})
+```
+
 Timeouts, non-interactive stdin, and disabled confirmation all reject the
 request. Replay and audit records include the confirmation result.
 

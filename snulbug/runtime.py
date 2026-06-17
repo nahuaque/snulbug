@@ -469,6 +469,7 @@ return function(source, source_name, instruction_limit)
     copy_option(result, options, "reason_code")
     copy_option(result, options, "context")
     copy_option(result, options, "headers")
+    copy_option(result, options, "capability_request")
     return result
   end
 
@@ -1972,6 +1973,64 @@ return function(source, source_name, instruction_limit)
 
   local cap = {}
 
+  local function option_list(options, key)
+    local value = options[key]
+    if value == nil then
+      return {}
+    end
+    if type(value) == "table" then
+      return value
+    end
+    return { value }
+  end
+
+  local function optional_list(options, key)
+    local values = option_list(options, key)
+    if #values == 0 then
+      return nil
+    end
+    return values
+  end
+
+  local function capability_task(call, options)
+    if options.task ~= nil then
+      return options.task
+    end
+    if call.tool ~= nil then
+      return "Temporary MCP access for " .. tostring(call.tool)
+    end
+    if call.method ~= nil then
+      return "Temporary MCP access for " .. tostring(call.method)
+    end
+    return "Temporary MCP access"
+  end
+
+  local function capability_request(call, options)
+    local allow_tools = option_list(options, "allow_tools")
+    if #allow_tools == 0 and call.tool ~= nil then
+      allow_tools = { call.tool }
+    end
+    local task = capability_task(call, options)
+    return {
+      schema = "snulbug.capability_request.v1",
+      kind = options.kind or "task_lease",
+      task = task,
+      method = call.method,
+      tool = call.tool,
+      argument_keys = mcp.arg_keys(call),
+      reason_code = options.reason_code or "mcp.capability_request",
+      suggested_lease = {
+        task = task,
+        ttl = options.ttl or "30m",
+        max_calls = options.max_calls,
+        allow_tools = allow_tools,
+        allow_paths = optional_list(options, "allow_paths"),
+        allow_hosts = optional_list(options, "allow_hosts"),
+        allow_commands = optional_list(options, "allow_commands"),
+      },
+    }
+  end
+
   local function rejection(options, body, reason_code)
     options = options_table(options)
     local decision_options = copy_options(options)
@@ -1986,6 +2045,24 @@ return function(source, source_name, instruction_limit)
 
   function cap.allowed(value, allowed)
     return value_allowed(value, allowed)
+  end
+
+  function cap.request(request, options)
+    options = options_table(options)
+    local call = mcp.call(request or current_request)
+    local request_details = capability_request(call, options)
+    local prompt = options.prompt
+      or ("Request temporary MCP capability for " .. tostring(call.tool or call.method or "this request") .. "?")
+    local decision_options = copy_options(options)
+    decision_options.reason = options.reason or "MCP capability requires approval"
+    decision_options.reason_code = options.reason_code or "mcp.capability_request"
+    decision_options.capability_request = request_details
+    decision_options.context = merge_context({
+      capability_request = request_details,
+      tool = call.tool,
+      method = call.method,
+    }, options.context)
+    return decision.confirm(prompt, decision_options)
   end
 
   function cap.method(request_or_method, allowed, options)

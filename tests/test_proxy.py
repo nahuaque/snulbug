@@ -1957,6 +1957,69 @@ def test_confirmable_reject_fails_closed_without_handler(tmp_path):
     assert records[0]["result"]["decision"]["confirmation"]["reason_code"] == "confirm.unavailable"
 
 
+def test_capability_request_returns_mcp_jsonrpc_error_without_parallel_approval(tmp_path):
+    server, seen = start_upstream()
+    policy = tmp_path / "jit-capability-policy.lua"
+    policy.write_text(
+        """
+        return function(request, context, state)
+          return cap.request(request, {
+            task = "Read project docs",
+            ttl = "10m",
+            max_calls = 2,
+            allow_paths = { "README.md", "docs" },
+            remember_key = "cap:" .. tostring(mcp.tool_name(request)),
+            reason_code = "mcp.docs_capability_requested",
+            body = "temporary capability required"
+          })
+        end
+        """,
+        encoding="utf-8",
+    )
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(f"http://127.0.0.1:{server.server_port}", policy, record_out=record_log)
+
+    try:
+        sent = run_asgi(
+            app,
+            body=(
+                b'{"jsonrpc":"2.0","id":"cap-1","method":"tools/call",'
+                b'"params":{"name":"safe_read_file","arguments":{"path":"README.md"}}}'
+            ),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    records = load_record_log(record_log)
+    data = payload["error"]["data"]
+    assert sent[0]["status"] == 200
+    assert (b"content-type", b"application/json") in sent[0]["headers"]
+    assert payload["jsonrpc"] == "2.0"
+    assert payload["id"] == "cap-1"
+    assert payload["error"]["code"] == -32001
+    assert payload["error"]["message"] == "temporary capability required"
+    assert data["type"] == "snulbug.capability_request"
+    assert data["confirmation"]["reason_code"] == "confirm.unavailable"
+    assert data["approval"]["mechanism"] == "snulbug.confirm"
+    assert data["approval"]["lease_mechanism"] == "snulbug.task_lease"
+    assert data["capability_request"]["tool"] == "safe_read_file"
+    assert data["capability_request"]["argument_keys"] == ["path"]
+    assert data["capability_request"]["suggested_lease"] == {
+        "allow_paths": ["README.md", "docs"],
+        "allow_tools": ["safe_read_file"],
+        "max_calls": 2,
+        "task": "Read project docs",
+        "ttl": "10m",
+    }
+    assert seen["count"] == 0
+    assert records[0]["result"]["action"] == "reject"
+    assert records[0]["result"]["decision"]["confirmation"]["reason_code"] == "confirm.unavailable"
+    assert records[0]["metadata"]["capability_request"]["requested"] is True
+    assert records[0]["metadata"]["capability_request"]["capability_request"]["tool"] == "safe_read_file"
+
+
 def test_confirm_broker_can_cache_session_approval(tmp_path):
     server, seen = start_upstream()
     policy = write_confirm_policy(tmp_path)

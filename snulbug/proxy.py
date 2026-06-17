@@ -3802,6 +3802,9 @@ def _record_metadata(
     policy_backoff = state.get("snulbug_policy_backoff") if isinstance(state, Mapping) else None
     if isinstance(policy_backoff, Mapping):
         metadata["policy_backoff"] = dict(policy_backoff)
+    capability_request = state.get("snulbug_capability_request") if isinstance(state, Mapping) else None
+    if isinstance(capability_request, Mapping):
+        metadata["capability_request"] = dict(capability_request)
     reload_metadata = state.get("snulbug_fabric_reload") if isinstance(state, Mapping) else None
     if isinstance(reload_metadata, Mapping):
         metadata["fabric_reload"] = dict(reload_metadata)

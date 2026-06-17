@@ -335,6 +335,7 @@ Request-side policy:
 - schema-aware validation of `tools/call` arguments from MCP `inputSchema`
 - schema-aware Lua intent guards for tool categories and risk levels
 - task-scoped capability leases with expiring tool/path grants
+- MCP-native just-in-time capability requests that suggest normal task leases
 - small stateful policies such as rate limits and idempotency keys
 - state-backed exponential backoff for repeated equivalent policy denies
 

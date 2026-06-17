@@ -149,6 +149,9 @@ Available builders:
 - `decision.redirect(location, options)`: build a redirect.
 - `decision.rate_limit(key, limit, window, options)`: invoke configured bounded policy state.
 - `decision.confirm(prompt, options)`: ask the live decision console for approval.
+  If `options.capability_request` is present and confirmation is denied or
+  unavailable, snulbug returns an MCP JSON-RPC error with structured
+  `error.data.capability_request`.
 
 `options` can include `reason`, `reason_code`, `context`, and `headers` where
 the underlying action supports them. Confirmation options such as `prompt`,
@@ -329,6 +332,10 @@ Available guards:
 - `cap.path(path, allowed_paths, options)`: allow non-absolute, non-traversing relative paths under listed roots.
 - `cap.host(url_or_host, allowed_hosts, options)`: allow listed hosts, including `*.example.com` suffix entries.
 - `cap.command(command, allowed_commands, options)`: allow shell-like command strings by first token.
+- `cap.request(request, options)`: build a confirmation-backed, MCP-native
+  just-in-time capability request. It suggests a normal snulbug task lease
+  using `allow_tools`, `allow_paths`, `allow_hosts`, `allow_commands`, `ttl`,
+  `max_calls`, and `task`.
 
 Every `cap.*` rejection and `mcp.allow_tools` supports confirmation options:
 
@@ -339,6 +346,20 @@ return cap.tool(request, { "files.read_file" }, {
   remember_key = "tool:" .. tostring(mcp.tool_name(request)),
   timeout_seconds = 30,
   reason_code = "mcp.policy.tool_rejected"
+})
+```
+
+Use `cap.request` when the right next step is a lease review rather than a
+hard deny:
+
+```lua
+return cap.request(request, {
+  task = "Read project docs",
+  ttl = "10m",
+  max_calls = 2,
+  allow_paths = { "README.md", "docs" },
+  remember_key = "cap:" .. tostring(mcp.tool_name(request)),
+  reason_code = "mcp.docs_capability_requested"
 })
 ```
 
