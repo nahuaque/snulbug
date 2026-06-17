@@ -10,9 +10,12 @@ import pytest
 import snulbug.share_console as share_console
 from snulbug import (
     ShareConsoleServer,
+    append_record,
     build_share_console_snapshot,
     create_mcp_share,
+    learn_mcp_policy,
     load_share_session_model,
+    record_policy_request,
 )
 from snulbug.cli.share import _start_share_run_console, _stop_share_run_console
 from snulbug.simulator import main as simulator_main
@@ -167,6 +170,85 @@ def test_share_console_runs_inline_share_doctor(tmp_path, monkeypatch):
     assert "share-secret" not in encoded
     assert "Bearer " not in encoded
     assert session_model["health"]["share_doctor"]["ok"] is True
+
+
+def test_share_console_previews_policy_amendment_without_recording_candidate(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["files.read_file"],
+        validate=False,
+    )
+    allow_policy = tmp_path / "allow.lua"
+    allow_policy.write_text(
+        """
+        return function(request, context, state)
+          return {
+            action = "continue",
+            reason = "observed",
+            reason_code = "test.observed"
+          }
+        end
+        """,
+        encoding="utf-8",
+    )
+    observed_log = tmp_path / "observed.jsonl"
+    append_record(
+        observed_log,
+        record_policy_request(
+            allow_policy,
+            {
+                "method": "POST",
+                "path": "/mcp",
+                "body": (
+                    '{"jsonrpc":"2.0","id":1,"method":"tools/call",'
+                    '"params":{"name":"files.read_file","arguments":{"path":"README.md"}}}'
+                ),
+            },
+            response={"status": 200},
+        ),
+    )
+    learn_mcp_policy(observed_log, tmp_path / "policy.snulbug", force=True)
+    audit_log = tmp_path / "traces" / "audit.jsonl"
+    append_record(
+        audit_log,
+        record_policy_request(
+            tmp_path / "policy.snulbug" / "policy.lua",
+            {
+                "method": "POST",
+                "path": "/mcp",
+                "body": (
+                    '{"jsonrpc":"2.0","id":2,"method":"tools/call",'
+                    '"params":{"name":"git.status","arguments":{"staged":true}}}'
+                ),
+            },
+            response={"status": 403},
+        ),
+    )
+    server = ShareConsoleServer(directory=tmp_path, port=0)
+    server.start()
+    try:
+        html = read_text(f"{server.url}/")
+        result = post_json(f"{server.url}/api/policy/amend-preview", {"source": "blocked", "validate": True})
+        session_model = load_share_session_model(tmp_path)
+    finally:
+        server.stop()
+
+    assert "Preview Amendment" in html
+    assert 'id="amendPreviewPanel"' in html
+    assert "renderAmendmentPreview" in html
+    assert result["ok"] is True
+    assert result["preview"]["preview"] is True
+    assert result["preview"]["candidate_event_count"] == 1
+    assert result["amendment"]["capability_delta"]["summary"]["newly_allowed_tools"] == 1
+    assert {"kind": "tool", "value": "git.status", "reason_code": "mcp.learn.tool_not_observed"} in (
+        result["amendment"]["additions"]
+    )
+    assert "Capability delta: newly allows 1 tool" in result["report_text"]
+    assert (Path(result["output"]) / "policy.lua").is_file()
+    assert session_model.get("amendments", {}).get("candidates", []) == []
 
 
 def test_share_console_serves_provider_console_metadata_for_ngrok(tmp_path, monkeypatch):

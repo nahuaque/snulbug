@@ -760,6 +760,69 @@ def amend_mcp_share_policy(
     }
 
 
+def preview_mcp_share_policy_amendment(
+    directory: str | Path = ".",
+    *,
+    log: str | Path | None = None,
+    output: str | Path | None = None,
+    kind: str = "auto",
+    source: str = "blocked",
+    force: bool = True,
+    validate: bool = True,
+    allow_risky: bool = False,
+) -> dict[str, Any]:
+    """Generate a reviewable share policy amendment preview without recording it."""
+
+    from .learn import amend_mcp_policy
+
+    share_dir, manifest, session_model = _load_share_model_context(directory)
+    bundle = _share_policy_bundle_path(share_dir, session_model, manifest)
+    log_path = _share_policy_amend_log_path(share_dir, session_model, log)
+    output_path = _share_policy_amend_preview_output_path(share_dir, output)
+    amendment = amend_mcp_policy(
+        bundle,
+        log_path,
+        output_path,
+        kind=kind,
+        source=source,
+        force=force,
+        validate=validate,
+        allow_risky=allow_risky,
+    )
+    preview = _drop_empty_json(
+        {
+            "ok": amendment.get("ok"),
+            "source": source,
+            "bundle": str(bundle),
+            "log": str(log_path),
+            "output": str(output_path),
+            "policy": amendment.get("policy"),
+            "manifest": amendment.get("manifest"),
+            "report": amendment.get("report"),
+            "event_count": amendment.get("event_count"),
+            "candidate_event_count": amendment.get("candidate_event_count"),
+            "additions": amendment.get("additions"),
+            "rejected": amendment.get("rejected"),
+            "ignored": amendment.get("ignored"),
+            "capability_delta": amendment.get("capability_delta"),
+            "created_at": _now_iso(),
+            "preview": True,
+        }
+    )
+    report_path = Path(str(amendment.get("report") or ""))
+    return {
+        "ok": bool(amendment.get("ok")),
+        "share": str(share_dir),
+        "bundle": str(bundle),
+        "log": str(log_path),
+        "output": str(output_path),
+        "amendment": amendment,
+        "preview": preview,
+        "report_text": report_path.read_text(encoding="utf-8") if report_path.is_file() else "",
+        "session_model": str(share_session_model_path(share_dir)),
+    }
+
+
 def activate_mcp_share_policy(
     directory: str | Path = ".",
     *,
@@ -6808,6 +6871,12 @@ def _share_policy_amend_output_path(share_dir: Path, bundle: Path, output: str |
     if output is not None:
         return _resolve_share_path(share_dir, output)
     return bundle
+
+
+def _share_policy_amend_preview_output_path(share_dir: Path, output: str | Path | None) -> Path:
+    if output is not None:
+        return _resolve_share_path(share_dir, output)
+    return share_dir / ".snulbug" / "share" / "previews" / "policy-amendment.snulbug"
 
 
 def _record_share_policy_amendment(

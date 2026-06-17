@@ -17,6 +17,7 @@ from .share import (
     approve_share_capability_request,
     deny_share_capability_request,
     doctor_mcp_share,
+    preview_mcp_share_policy_amendment,
     share_capability_requests,
     share_report,
     share_status,
@@ -210,6 +211,19 @@ class ShareConsoleServer:
                     live_checks=_bool_or_default(body.get("live_checks"), self.live_checks),
                     conformance_pack=_string_or_none(body.get("conformance_pack")),
                     require_conformance=bool(body.get("require_conformance", False)),
+                )
+                _send_json(handler, 200, _redact_console_payload(result))
+                return
+            if path == "/api/policy/amend-preview":
+                result = preview_mcp_share_policy_amendment(
+                    self.directory,
+                    log=_string_or_none(body.get("log")),
+                    output=_string_or_none(body.get("output")),
+                    kind=_string_or_none(body.get("kind")) or "auto",
+                    source=_string_or_none(body.get("source")) or "blocked",
+                    force=_bool_or_default(body.get("force"), True),
+                    validate=_bool_or_default(body.get("validate"), True),
+                    allow_risky=bool(body.get("allow_risky", False)),
                 )
                 _send_json(handler, 200, _redact_console_payload(result))
                 return
@@ -1002,6 +1016,7 @@ def _console_html() -> str:
           <label class="auto"><input id="autoRefresh" type="checkbox" checked> Auto refresh</label>
           <button id="refreshButton" class="primary" type="button">Refresh</button>
           <button id="doctorButton" type="button">Run Doctor</button>
+          <button id="amendPreviewButton" type="button">Preview Amendment</button>
           <button id="reportButton" type="button">Generate Report</button>
         </div>
       </div>
@@ -1040,6 +1055,12 @@ def _console_html() -> str:
       <section id="doctorPanel" hidden>
         <div class="section-head"><h2>Share Doctor</h2><span id="doctorSummary" class="muted"></span></div>
         <div class="section-body" id="doctorChecks"></div>
+      </section>
+      <section id="amendPreviewPanel" hidden>
+        <div class="section-head">
+          <h2>Policy Amendment Preview</h2><span id="amendPreviewSummary" class="muted"></span>
+        </div>
+        <div class="section-body" id="amendPreview"></div>
       </section>
       <section id="leasePanel" hidden>
         <div class="section-head"><h2>New Lease Header</h2></div>
@@ -1594,6 +1615,75 @@ def _console_html() -> str:
       $("doctorChecks").innerHTML = `<div class="stack">${metadata}${checksHtml}${recommendationsHtml}</div>`;
     }
 
+    async function previewAmendment() {
+      $("amendPreviewButton").disabled = true;
+      $("message").textContent = "Generating policy amendment preview";
+      try {
+        const payload = await api("/api/policy/amend-preview", {
+          method: "POST",
+          allowFalse: true,
+          body: JSON.stringify({ source: "blocked", validate: true })
+        });
+        renderAmendmentPreview(payload);
+        $("message").textContent = payload.ok
+          ? "Amendment preview generated"
+          : "Amendment preview has validation issues";
+      } catch (error) {
+        $("message").textContent = `Preview failed: ${error.message}`;
+      } finally {
+        $("amendPreviewButton").disabled = false;
+      }
+    }
+
+    function renderAmendmentPreview(payload) {
+      const amendment = payload.amendment || {};
+      const preview = payload.preview || {};
+      const delta = amendment.capability_delta || preview.capability_delta || {};
+      const summary = delta.summary || {};
+      const additions = amendment.additions || preview.additions || [];
+      const rejected = amendment.rejected || preview.rejected || [];
+      $("amendPreviewPanel").hidden = false;
+      $("amendPreviewSummary").textContent =
+        `${summary.newly_allowed_tools || 0} tools, ` +
+        `${summary.newly_allowed_path_patterns || 0} paths, ` +
+        `${summary.newly_allowed_argument_shapes || 0} argument shapes`;
+      const metadata = `<div class="detail-grid">
+        ${detailRow("Result", payload.ok ? "valid" : "needs review")}
+        ${detailRow("Events", amendment.candidate_event_count || preview.candidate_event_count || 0)}
+        ${detailRow("Output", payload.output)}
+        ${detailRow("Log", payload.log)}
+      </div>`;
+      const additionsHtml = additions.length ? `<table>
+        <thead><tr><th>Kind</th><th>Value</th><th>Parent</th><th>Reason</th></tr></thead>
+        <tbody>${additions.map((item) => (
+          `<tr>
+            <td>${esc(item.kind || "-")}</td>
+            <td>${esc(item.value || "-")}</td>
+            <td>${esc(item.parent || "-")}</td>
+            <td>${esc(item.reason_code || "-")}</td>
+          </tr>`
+        )).join("")}</tbody>
+      </table>` : '<div class="empty">No policy additions found in current evidence.</div>';
+      const rejectedHtml = rejected.length ? `<div>
+        <h2>Rejected</h2>
+        <table>
+          <thead><tr><th>Kind</th><th>Value</th><th>Reason</th></tr></thead>
+          <tbody>${rejected.map((item) => (
+            `<tr>
+              <td>${esc(item.kind || "-")}</td>
+              <td>${esc(item.value || "-")}</td>
+              <td>${esc(item.reason || item.reason_code || "-")}</td>
+            </tr>`
+          )).join("")}</tbody>
+        </table>
+      </div>` : "";
+      const reportHtml = payload.report_text ? `<div>
+        <h2>AMEND.md</h2>
+        <div class="report-output">${esc(payload.report_text)}</div>
+      </div>` : "";
+      $("amendPreview").innerHTML = `<div class="stack">${metadata}${additionsHtml}${rejectedHtml}${reportHtml}</div>`;
+    }
+
     function configureRefresh() {
       if (state.timer) clearInterval(state.timer);
       state.timer = null;
@@ -1604,6 +1694,7 @@ def _console_html() -> str:
 
     $("refreshButton").addEventListener("click", loadSnapshot);
     $("doctorButton").addEventListener("click", runDoctor);
+    $("amendPreviewButton").addEventListener("click", previewAmendment);
     $("reportButton").addEventListener("click", generateReport);
     $("autoRefresh").addEventListener("change", configureRefresh);
     configureRefresh();
