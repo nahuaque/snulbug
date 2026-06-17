@@ -135,14 +135,21 @@ def _workflows() -> dict[str, dict[str, Any]]:
                             "export SNULBUG_SHARE_TOKEN=...",
                             "uv run snulbug mcp share run .snulbug/shares/share-*",
                             "uv run snulbug mcp share doctor .snulbug/shares/share-*",
+                            "uv run snulbug mcp share console .snulbug/shares/share-*",
                             "uv run snulbug mcp share client .snulbug/shares/share-*",
                             "(cd .snulbug/shares/share-*/tunnel && \\",
                             "  hypertele-server -l 8080 --address 127.0.0.1 -c hypertele-server.json --private)",
                         ]
                     ),
                     "requires": ["generated share directory", "local MCP upstream is listening"],
-                    "produces": ["live decision console", "redacted replay log", "redacted audit log", "client config"],
-                    "success_signals": ["proxy listens locally", "share doctor passes"],
+                    "produces": [
+                        "live decision console",
+                        "local web console",
+                        "redacted replay log",
+                        "redacted audit log",
+                        "client config",
+                    ],
+                    "success_signals": ["proxy listens locally", "share doctor passes", "console loads locally"],
                     "next": "Share mcp-client.json only after share doctor passes.",
                 },
                 {

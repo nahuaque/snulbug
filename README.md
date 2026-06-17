@@ -129,6 +129,16 @@ policy, lease, and log paths before starting the gateway.
 snulbug mcp share status .snulbug/shares/share-...
 ```
 
+For a human review loop, run the local share console:
+
+```bash
+snulbug mcp share console .snulbug/shares/share-...
+```
+
+It opens a local-only web control room over the same share session model,
+capability-request inbox, lease store, audit logs, risk summary, findings, and
+report generator used by the CLI.
+
 4. If a legitimate request asks for a temporary capability, review it and mint
    a normal task-scoped lease:
 

@@ -90,6 +90,22 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
     )
     add_compact_arg(share_status)
 
+    share_console = share_subparsers.add_parser(
+        "console",
+        help="run a local web console for a share session",
+        description="run a local web console for a share session",
+    )
+    share_console.add_argument("directory", nargs="?", type=Path, help="share session directory")
+    share_console.add_argument("--host", default="127.0.0.1", help="console bind host")
+    share_console.add_argument("--port", type=int, default=8765, help="console bind port")
+    share_console.add_argument("--timeout", type=float, default=1.0, help="live check timeout in seconds")
+    share_console.add_argument(
+        "--live-checks",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="probe the local gateway and configured upstreams on console refresh",
+    )
+
     share_report = share_subparsers.add_parser("report", help="write or print a generated share session report")
     share_report.add_argument("directory", type=Path, help="share session directory")
     share_report.add_argument("--output", "--out", type=Path, help="write report to this Markdown path")
@@ -611,6 +627,23 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
 
                 write_share_status_rich(result)
             return status
+
+        if command == "console":
+            directory = args.directory
+            if directory is None and share_session_model_path(Path.cwd()).is_file():
+                directory = Path.cwd()
+            if directory is None:
+                parser.error("mcp share console requires a share directory")
+                return 2
+            from ..share_console import run_share_console
+
+            return run_share_console(
+                directory,
+                host=args.host,
+                port=args.port,
+                timeout=args.timeout,
+                live_checks=args.live_checks,
+            )
 
         if command == "report":
             result = share_report(

@@ -328,6 +328,13 @@ from .share import (
     share_report,
     share_status,
 )
+from .share_console import (
+    DEFAULT_SHARE_CONSOLE_HOST,
+    DEFAULT_SHARE_CONSOLE_PORT,
+    ShareConsoleServer,
+    build_share_console_snapshot,
+    run_share_console,
+)
 from .share_doctor import (
     ShareDoctorCheck,
     ShareDoctorCheckResult,
@@ -435,6 +442,8 @@ __all__ = [
     "DEFAULT_FABRIC_RUNTIME_STATE",
     "DEFAULT_FABRIC_RUNTIME_STATE_KEY",
     "DEFAULT_MCP_PROTOCOL_VERSION",
+    "DEFAULT_SHARE_CONSOLE_HOST",
+    "DEFAULT_SHARE_CONSOLE_PORT",
     "DEFAULT_SCHEMA_POLICY_ALLOWED_PATHS",
     "DiscoveryProvider",
     "EvidenceExportContext",
@@ -518,6 +527,7 @@ __all__ = [
     "ScaffoldPlan",
     "SchemaPolicyConfig",
     "SchemaPolicyOptions",
+    "ShareConsoleServer",
     "ShareDoctorCheck",
     "ShareDoctorCheckResult",
     "ShareDoctorContext",
@@ -568,6 +578,7 @@ __all__ = [
     "build_mcp_schema_catalog",
     "build_mcp_tool_snapshot",
     "build_share_session_model",
+    "build_share_console_snapshot",
     "build_tunnel_audit_metadata",
     "bundle_lifecycle_digest",
     "clear_fabric_control_actions",
@@ -730,6 +741,7 @@ __all__ = [
     "run_fabric_data_plane",
     "run_mcp_proxy_config",
     "run_mcp_share",
+    "run_share_console",
     "run_proxy",
     "sarif_for_policy_diff",
     "sarif_for_schema_diff",
