@@ -57,6 +57,7 @@ def build_share_console_snapshot(
         "capability_requests": _redact_console_payload(requests),
         "decision_timeline": _redact_console_payload(_decision_timeline(share_dir, status)),
         "auth_visibility": _redact_console_payload(_auth_visibility(share_dir, status)),
+        "tool_schema_visibility": _redact_console_payload(_tool_schema_visibility(share_dir, status)),
         "provider_console": _provider_console(status, timeout=timeout),
     }
 
@@ -316,6 +317,14 @@ def _string_list(value: Any) -> list[str]:
     if isinstance(value, Sequence) and not isinstance(value, bytes | bytearray):
         return [str(item).strip() for item in value if str(item).strip()]
     return [str(value)]
+
+
+def _sequence(value: Any) -> Sequence[Any]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        return value
+    return [value]
 
 
 def _positive_int(value: Any) -> int | None:
@@ -818,6 +827,161 @@ def _counter_rows(counter: Mapping[str, int]) -> list[dict[str, Any]]:
     return [{"value": key, "count": counter[key]} for key in sorted(counter, key=lambda item: (-counter[item], item))]
 
 
+def _tool_schema_visibility(share_dir: Path, status: Mapping[str, Any]) -> dict[str, Any]:
+    tool_risks = _mapping(status.get("tool_risks"))
+    schemas = _mapping(status.get("schemas"))
+    source = _decision_timeline_source(share_dir, status)
+    tools = [_tool_schema_row(tool) for tool in _sequence(tool_risks.get("tools")) if isinstance(tool, Mapping)]
+    drift_alerts = _tool_schema_drift_alerts(share_dir, status, tools=tools)
+    schema_source_count = int(schemas.get("source_count", 0) or 0)
+    schema_tool_count = int(schemas.get("tool_count", 0) or 0)
+    return {
+        "ok": bool(tools or drift_alerts or schema_source_count or schema_tool_count),
+        "source": str(source) if source is not None else None,
+        "summary": {
+            "tool_count": len(tools),
+            "catalog_count": int(schemas.get("catalog_count", 0) or 0),
+            "schema_tool_count": schema_tool_count,
+            "schema_errors": int(schemas.get("errors", 0) or 0),
+            "high_risk": int(_mapping(tool_risks.get("summary")).get("high", 0) or 0),
+            "medium_risk": int(_mapping(tool_risks.get("summary")).get("medium", 0) or 0),
+            "low_risk": int(_mapping(tool_risks.get("summary")).get("low", 0) or 0),
+            "drift_alerts": len(drift_alerts),
+        },
+        "schemas": {
+            "catalog_count": int(schemas.get("catalog_count", 0) or 0),
+            "source_count": schema_source_count,
+            "tool_count": schema_tool_count,
+            "errors": int(schemas.get("errors", 0) or 0),
+            "sources": [dict(_mapping(source_item)) for source_item in _sequence(schemas.get("sources"))],
+        },
+        "tools": tools,
+        "drift_alerts": drift_alerts,
+    }
+
+
+def _tool_schema_row(tool: Mapping[str, Any]) -> dict[str, Any]:
+    schema = _mapping(tool.get("schema"))
+    signals = [
+        str(_mapping(signal).get("code")) for signal in _sequence(tool.get("signals")) if _mapping(signal).get("code")
+    ]
+    drift_signals = [signal for signal in signals if "drift" in signal or "variant" in signal]
+    return _drop_empty(
+        {
+            "name": tool.get("name"),
+            "risk": tool.get("level"),
+            "score": tool.get("score"),
+            "count": tool.get("count"),
+            "categories": _string_list(tool.get("categories")),
+            "signals": signals,
+            "drift_signals": drift_signals,
+            "evidence_sources": _string_list(tool.get("evidence_sources")),
+            "schema_hash": schema.get("tool_hash"),
+            "schema_hashes": _string_list(schema.get("tool_hashes")),
+            "catalog_hashes": _string_list(schema.get("catalog_hashes")),
+            "catalog_paths": _string_list(schema.get("catalog_paths")),
+            "schema_variants": schema.get("variants"),
+            "properties": _string_list(schema.get("input_properties")),
+            "required": _string_list(schema.get("required")),
+            "additional_properties": schema.get("additional_properties"),
+        }
+    )
+
+
+def _tool_schema_drift_alerts(
+    share_dir: Path,
+    status: Mapping[str, Any],
+    *,
+    tools: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    alerts: list[dict[str, Any]] = []
+    for tool in tools:
+        if int(tool.get("schema_variants") or 0) > 1:
+            alerts.append(
+                _drop_empty(
+                    {
+                        "kind": "schema_variants",
+                        "tool": tool.get("name"),
+                        "severity": "high",
+                        "message": "multiple schema variants discovered for this tool",
+                        "schema_hashes": tool.get("schema_hashes"),
+                    }
+                )
+            )
+        for signal in _string_list(tool.get("drift_signals")):
+            alerts.append(
+                _drop_empty(
+                    {
+                        "kind": signal,
+                        "tool": tool.get("name"),
+                        "severity": "high",
+                        "message": "schema drift risk signal",
+                    }
+                )
+            )
+    source = _decision_timeline_source(share_dir, status)
+    if source is None or not source.exists():
+        return alerts
+    try:
+        events = _recent_jsonl_events(source, DEFAULT_AUTH_VISIBILITY_LIMIT)
+    except OSError:
+        return alerts
+    for line, event in events:
+        response_policy = _event_response_policy(event)
+        tool_pinning = _mapping(response_policy.get("tool_pinning"))
+        for item in _sequence(tool_pinning.get("changed")):
+            changed = _mapping(item)
+            alerts.append(
+                _drop_empty(
+                    {
+                        "kind": "tool_pinning_changed",
+                        "tool": changed.get("tool"),
+                        "severity": "high" if response_policy.get("reason_code") else "medium",
+                        "message": "pinned tool description or schema changed",
+                        "previous_hash": changed.get("previous_hash") or changed.get("old_hash"),
+                        "current_hash": changed.get("current_hash") or changed.get("new_hash"),
+                        "source": str(source),
+                        "line": line,
+                    }
+                )
+            )
+        for item in _sequence(tool_pinning.get("pinned")):
+            pinned = _mapping(item)
+            if pinned.get("tool"):
+                alerts.append(
+                    _drop_empty(
+                        {
+                            "kind": "tool_pinning_observed",
+                            "tool": pinned.get("tool"),
+                            "severity": "info",
+                            "message": "tool description/schema pinned from tools/list",
+                            "current_hash": pinned.get("hash") or pinned.get("current_hash"),
+                            "source": str(source),
+                            "line": line,
+                        }
+                    )
+                )
+        reason_code = response_policy.get("reason_code")
+        if reason_code in {"response.tool_description_changed", "response.tool_schema_changed"}:
+            alerts.append(
+                _drop_empty(
+                    {
+                        "kind": str(reason_code),
+                        "severity": "high",
+                        "message": response_policy.get("reason") or str(reason_code),
+                        "source": str(source),
+                        "line": line,
+                    }
+                )
+            )
+    return alerts[-20:]
+
+
+def _event_response_policy(event: Mapping[str, Any]) -> Mapping[str, Any]:
+    metadata = _mapping(event.get("metadata"))
+    return _mapping(event.get("response_policy")) or _mapping(metadata.get("response_policy"))
+
+
 def _redact_console_payload(value: Any) -> Any:
     if isinstance(value, Mapping):
         redacted: dict[str, Any] = {}
@@ -1318,6 +1482,12 @@ def _console_html() -> str:
         <div class="section-head"><h2>Auth Visibility</h2><span id="authSummary" class="muted"></span></div>
         <div class="section-body" id="authVisibility"></div>
       </section>
+      <section>
+        <div class="section-head">
+          <h2>Tool And Schema Changes</h2><span id="toolSchemaSummary" class="muted"></span>
+        </div>
+        <div class="section-body" id="toolSchemaVisibility"></div>
+      </section>
       <div class="grid-two">
         <section>
           <div class="section-head"><h2>Tool Risk</h2><span id="riskSummary" class="muted"></span></div>
@@ -1413,6 +1583,7 @@ def _console_html() -> str:
       renderRequestDrawer(snapshot.capability_requests || {});
       renderLeases(status.leases || {});
       renderAuthVisibility(snapshot.auth_visibility || {});
+      renderToolSchemaVisibility(snapshot.tool_schema_visibility || {});
       renderHealth(status, snapshot.provider_console || null);
       renderToolRisk(status);
       renderFindings(status);
@@ -1724,6 +1895,127 @@ def _console_html() -> str:
           `<tr><td>${esc(row.value)}</td><td>${esc(row.count)}</td></tr>`
         )).join("")}</tbody>
       </table>`;
+    }
+
+    function renderToolSchemaVisibility(payload) {
+      const summary = payload.summary || {};
+      const schemas = payload.schemas || {};
+      const tools = payload.tools || [];
+      const alerts = payload.drift_alerts || [];
+      $("toolSchemaSummary").textContent =
+        `${summary.tool_count || 0} tools, ${summary.drift_alerts || 0} drift alerts`;
+      if (!payload.ok && !tools.length) {
+        $("toolSchemaVisibility").innerHTML = '<div class="empty">No discovered tool schema data yet.</div>';
+        return;
+      }
+      const schemaHtml = `<div>
+        <h2>Schema Catalogs</h2>
+        ${schemaCatalogTable(schemas.sources || [])}
+      </div>`;
+      const alertsHtml = `<div>
+        <h2>Drift Alerts</h2>
+        ${toolSchemaAlertTable(alerts)}
+      </div>`;
+      const toolsHtml = `<div>
+        <h2>Discovered Tools</h2>
+        ${toolSchemaTable(tools)}
+      </div>`;
+      $("toolSchemaVisibility").innerHTML = `<div class="stack">${schemaHtml}${alertsHtml}${toolsHtml}</div>`;
+    }
+
+    function schemaCatalogTable(sources) {
+      if (!sources.length) return '<div class="empty">No schema catalogs loaded.</div>';
+      return `<table>
+        <thead><tr><th>Source</th><th>Tools</th><th>Hash</th><th>Status</th></tr></thead>
+        <tbody>${sources.map((source) => (
+          `<tr>
+            <td>
+              ${esc(source.label || source.source || "catalog")}
+              <div class="timeline-detail">${esc(source.path || "")}</div>
+            </td>
+            <td>${esc(source.tool_count || 0)}</td>
+            <td>${esc(shortHash(source.hash))}</td>
+            <td>${source.error ? pill("fail") : pill(source.loaded ? "loaded" : "missing")}</td>
+          </tr>`
+        )).join("")}</tbody>
+      </table>`;
+    }
+
+    function toolSchemaAlertTable(alerts) {
+      if (!alerts.length) return '<div class="empty">No schema drift or tool pinning alerts.</div>';
+      return `<table>
+        <thead><tr><th>Severity</th><th>Tool</th><th>Kind</th><th>Hash</th><th>Message</th></tr></thead>
+        <tbody>${alerts.map((alert) => (
+          `<tr>
+            <td>${pill(alert.severity || "info")}</td>
+            <td>${esc(alert.tool || "-")}</td>
+            <td>${esc(alert.kind || "-")}</td>
+            <td>${esc(hashTransition(alert))}</td>
+            <td>
+              ${esc(alert.message || "-")}
+              <div class="timeline-detail">${esc(alert.source ? `${alert.source}:${alert.line || ""}` : "")}</div>
+            </td>
+          </tr>`
+        )).join("")}</tbody>
+      </table>`;
+    }
+
+    function toolSchemaTable(tools) {
+      if (!tools.length) return '<div class="empty">No discovered tools.</div>';
+      return `<table>
+        <thead><tr>
+          <th>Tool</th><th>Risk</th><th>Pinned Schema Hashes</th>
+          <th>Catalog Hashes</th><th>Drift</th><th>Observed</th>
+        </tr></thead>
+        <tbody>${tools.map((tool) => (
+          `<tr>
+            <td>
+              <strong>${esc(tool.name || "-")}</strong>
+              <div class="timeline-detail">${esc(listText(tool.categories))}</div>
+            </td>
+            <td>${pill(tool.risk || "unknown")}</td>
+            <td>
+              ${esc(hashList(tool.schema_hashes || tool.schema_hash))}
+              <div class="timeline-detail">${esc(schemaShapeText(tool))}</div>
+            </td>
+            <td>${esc(hashList(tool.catalog_hashes))}</td>
+            <td>
+              ${esc(tool.schema_variants ? `${tool.schema_variants} variants` : "none")}
+              <div class="timeline-detail">${esc(listText(tool.drift_signals))}</div>
+            </td>
+            <td>
+              ${esc(tool.count || 0)}
+              <div class="timeline-detail">${esc(listText(tool.evidence_sources))}</div>
+            </td>
+          </tr>`
+        )).join("")}</tbody>
+      </table>`;
+    }
+
+    function shortHash(value) {
+      if (!value) return "-";
+      const textValue = String(value);
+      return textValue.length > 16 ? `${textValue.slice(0, 12)}...` : textValue;
+    }
+
+    function hashList(value) {
+      const values = Array.isArray(value) ? value : (value ? [value] : []);
+      return values.length ? values.map(shortHash).join(", ") : "-";
+    }
+
+    function hashTransition(alert) {
+      if (alert.previous_hash || alert.current_hash) {
+        return `${shortHash(alert.previous_hash)} -> ${shortHash(alert.current_hash)}`;
+      }
+      return shortHash(alert.current_hash || alert.previous_hash);
+    }
+
+    function schemaShapeText(tool) {
+      const parts = [];
+      if ((tool.required || []).length) parts.push(`required ${listText(tool.required)}`);
+      if ((tool.properties || []).length) parts.push(`props ${listText(tool.properties)}`);
+      if (tool.additional_properties !== undefined) parts.push(`additional ${tool.additional_properties}`);
+      return parts.join("; ");
     }
 
     function selectRequest(id) {

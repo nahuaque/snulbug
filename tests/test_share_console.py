@@ -11,6 +11,7 @@ import snulbug.share_console as share_console
 from snulbug import (
     ShareConsoleServer,
     append_record,
+    build_mcp_schema_catalog,
     build_share_console_snapshot,
     create_lease,
     create_mcp_share,
@@ -123,6 +124,9 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "Auth Visibility" in html
     assert "renderAuthVisibility" in html
     assert "scopeMatchText" in html
+    assert "Tool And Schema Changes" in html
+    assert "renderToolSchemaVisibility" in html
+    assert "schemaCatalogTable" in html
     assert "Run Doctor" in html
     assert 'id="doctorPanel"' in html
     assert "renderDoctor" in html
@@ -263,6 +267,39 @@ def test_share_console_snapshot_summarizes_auth_visibility(tmp_path):
     assert {"value": "mcp:tools.read", "count": 2} in auth["scopes"]
     assert "share-secret" not in json.dumps(auth)
     assert "Bearer " not in json.dumps(auth)
+
+
+def test_share_console_snapshot_summarizes_tool_schema_changes(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["run_command"],
+        validate=False,
+    )
+    write_tool_schema_change_artifacts(tmp_path)
+
+    snapshot = build_share_console_snapshot(tmp_path)
+    visibility = snapshot["tool_schema_visibility"]
+    tools = {tool["name"]: tool for tool in visibility["tools"]}
+    alert_kinds = {alert["kind"] for alert in visibility["drift_alerts"]}
+
+    assert visibility["summary"]["catalog_count"] == 2
+    assert visibility["summary"]["schema_tool_count"] == 1
+    assert visibility["summary"]["drift_alerts"] >= 2
+    assert visibility["schemas"]["source_count"] >= 2
+    assert "run_command" in tools
+    assert tools["run_command"]["risk"] == "high"
+    assert tools["run_command"]["schema_variants"] == 2
+    assert len(tools["run_command"]["schema_hashes"]) == 2
+    assert tools["run_command"]["catalog_hashes"]
+    assert "schema.variant_conflict" in tools["run_command"]["drift_signals"]
+    assert "schema_variants" in alert_kinds
+    assert "tool_pinning_changed" in alert_kinds
+    assert "response.tool_description_changed" in alert_kinds
+    assert "share-secret" not in json.dumps(visibility)
+    assert "Bearer " not in json.dumps(visibility)
 
 
 def test_share_console_previews_policy_amendment_without_recording_candidate(tmp_path):
@@ -582,3 +619,85 @@ def write_auth_visibility_log(tmp_path: Path) -> None:
     }
     lines = [json.dumps(allowed, sort_keys=True), json.dumps(denied, sort_keys=True)]
     (traces / "audit.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_tool_schema_change_artifacts(tmp_path: Path) -> None:
+    first = build_mcp_schema_catalog(
+        {
+            "tools/list": {
+                "result": {
+                    "tools": [
+                        {
+                            "name": "run_command",
+                            "description": "Run a shell command",
+                            "inputSchema": {
+                                "type": "object",
+                                "required": ["command"],
+                                "properties": {"command": {"type": "string"}},
+                                "additionalProperties": False,
+                            },
+                        }
+                    ]
+                }
+            }
+        },
+        methods=("tools/list",),
+        label="baseline",
+    )
+    second = build_mcp_schema_catalog(
+        {
+            "tools/list": {
+                "result": {
+                    "tools": [
+                        {
+                            "name": "run_command",
+                            "description": "Run a shell command with cwd",
+                            "inputSchema": {
+                                "type": "object",
+                                "required": ["command", "cwd"],
+                                "properties": {
+                                    "command": {"type": "string"},
+                                    "cwd": {"type": "string"},
+                                },
+                                "additionalProperties": False,
+                            },
+                        }
+                    ]
+                }
+            }
+        },
+        methods=("tools/list",),
+        label="current",
+    )
+    traces = tmp_path / "traces"
+    traces.mkdir(exist_ok=True)
+    (traces / "schemas.json").write_text(json.dumps(first, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    schemas = tmp_path / "schemas"
+    schemas.mkdir(exist_ok=True)
+    (schemas / "current.json").write_text(json.dumps(second, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    event = {
+        "type": "snulbug.audit",
+        "version": 1,
+        "time": "2026-06-14T00:04:00+00:00",
+        "request": {"method": "POST", "path": "/mcp", "headers": {}},
+        "mcp": {"method": "tools/list"},
+        "decision": {"action": "continue", "allowed": False, "reason_code": "response.tool_description_changed"},
+        "metadata": {
+            "response_policy": {
+                "checked": True,
+                "reason_code": "response.tool_description_changed",
+                "reason": "pinned tool descriptions changed",
+                "tool_pinning": {
+                    "changed": [
+                        {
+                            "tool": "run_command",
+                            "previous_hash": first["surfaces"]["tools"][0]["hash"],
+                            "current_hash": second["surfaces"]["tools"][0]["hash"],
+                        }
+                    ]
+                },
+            }
+        },
+        "response": {"status": 200},
+    }
+    (traces / "audit.jsonl").write_text(json.dumps(event, sort_keys=True) + "\n", encoding="utf-8")

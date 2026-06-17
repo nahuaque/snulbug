@@ -49,13 +49,15 @@ the live decision timeline, pending capability requests with a detail drawer,
 active leases with subject/task/tool/expiry/call-limit detail and revoke
 buttons, OAuth/auth visibility with subject, issuer, scopes, tenant, groups,
 scope-map matches, JWKS/cache state, and denial counts, tool risk, findings,
-evidence paths, next commands, an inline share doctor, and a policy amendment
+evidence paths, next commands, an inline share doctor, a policy amendment
 preview that renders the same candidate delta and `AMEND.md` the CLI would
-generate. Approving a capability request in the console creates the same
-task-scoped lease as `share requests approve`; denying one records the same
-review state without minting a lease. When the tunnel provider has a known local
-inspection console, the Health table includes a clickable local console row and
-probes whether it is reachable; for ngrok this is `http://127.0.0.1:4040`.
+generate, and a tool/schema change panel with discovered tools, risk levels,
+pinned schema hashes, schema-catalog sources, and drift alerts. Approving a
+capability request in the console creates the same task-scoped lease as
+`share requests approve`; denying one records the same review state without
+minting a lease. When the tunnel provider has a known local inspection console,
+the Health table includes a clickable local console row and probes whether it
+is reachable; for ngrok this is `http://127.0.0.1:4040`.
 
 If a Lua policy returns `cap.request(...)`, snulbug records an MCP-native
 just-in-time capability request in the share evidence. Review the inbox and

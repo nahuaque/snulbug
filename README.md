@@ -135,9 +135,11 @@ session model at `http://127.0.0.1:8765` by default. It shows the
 capability-request inbox with a detail drawer, live decision timeline, active
 lease store with revoke controls, auth visibility for OAuth subjects/scopes and
 JWKS cache health, audit logs, risk summary, findings, inline share doctor,
-policy amendment preview, and report generator used by the CLI. For providers
-with known local inspection UIs, the Health table includes a clickable local
-console row and probes whether it is reachable; ngrok appears as
+policy amendment preview, a tool/schema change panel with discovered tools,
+risk levels, pinned schema hashes, and drift alerts, and report generator used
+by the CLI. For providers with known local inspection UIs, the Health table
+includes a clickable local console row and probes whether it is reachable;
+ngrok appears as
 `http://127.0.0.1:4040`.
 
 4. If a legitimate request asks for a temporary capability, review it and mint
