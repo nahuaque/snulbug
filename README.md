@@ -17,6 +17,7 @@ It gives you a tight loop for agent-tool safety:
 - amend blocked requests into reviewable candidate bundles
 - project `tools/list` into the safe tool catalog a caller can actually use
 - classify observed and schema-declared MCP tools by risk before handoff
+- review MCP-native capability requests and approve them into normal task leases
 - use task-scoped leases for temporary tool/path grants, optionally bound to
   OAuth subject, tenant, client, group, issuer, or auth profile
 - turn OAuth identity into MCP-specific tool permissions
@@ -89,7 +90,7 @@ the checkout without installing the tool, prefix commands with `uv run`.
 The primary workflow is:
 
 ```text
-share create -> share run -> share status -> share policy amend -> share policy activate -> share doctor -> share contract -> share report
+share create -> share run -> share status -> share requests approve -> share policy amend -> share policy activate -> share doctor -> share contract -> share report
 ```
 
 Ask the CLI for a copy-paste version before wiring a client or harness:
@@ -128,7 +129,18 @@ policy, lease, and log paths before starting the gateway.
 snulbug mcp share status .snulbug/shares/share-...
 ```
 
-4. If a legitimate request was blocked, amend the reviewed policy bundle from
+4. If a legitimate request asks for a temporary capability, review it and mint
+   a normal task-scoped lease:
+
+```bash
+snulbug mcp share requests list .snulbug/shares/share-...
+snulbug mcp share requests approve cap_... \
+  --directory .snulbug/shares/share-... \
+  --ttl 10m \
+  --max-calls 2
+```
+
+5. If a legitimate request needs a permanent policy change, amend the reviewed policy bundle from
    the audit log:
 
 ```bash
@@ -138,7 +150,7 @@ snulbug mcp share policy amend .snulbug/shares/share-...
 By default this uses the share audit/session log and updates the share policy
 bundle in place; pass `--out` when you want a detached candidate bundle.
 
-5. Promote and activate the share policy without leaving the share workflow:
+6. Promote and activate the share policy without leaving the share workflow:
 
 ```bash
 export SNULBUG_BUNDLE_SECRET=...
@@ -147,7 +159,7 @@ snulbug mcp share policy promote .snulbug/shares/share-... --to approved --key-i
 snulbug mcp share policy activate .snulbug/shares/share-... --key-id local-review
 ```
 
-6. Generate the closeout report from the session model and audit evidence:
+7. Generate the closeout report from the session model and audit evidence:
 
 ```bash
 snulbug mcp share report .snulbug/shares/share-... \

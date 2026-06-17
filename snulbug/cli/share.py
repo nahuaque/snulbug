@@ -70,6 +70,9 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
     share_lease = share_subparsers.add_parser("lease", help="create and manage task-scoped MCP capability leases")
     _add_share_lease_args(share_lease)
 
+    share_requests = share_subparsers.add_parser("requests", help="review MCP just-in-time capability requests")
+    _add_share_request_args(share_requests)
+
     share_member = share_subparsers.add_parser("member", help="attach remote members to a share session")
     _add_share_member_args(share_member)
 
@@ -391,9 +394,11 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
     from ..share import (
         activate_mcp_share_policy,
         amend_mcp_share_policy,
+        approve_share_capability_request,
         attach_mcp_share_member,
         close_mcp_share,
         create_mcp_share,
+        deny_share_capability_request,
         doctor_mcp_share,
         doctor_mcp_share_auth,
         format_share_auth_conformance_report,
@@ -401,6 +406,7 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
         promote_mcp_share_policy,
         run_auth_conformance_pack,
         run_mcp_share,
+        share_capability_requests,
         share_client_config,
         share_contract,
         share_report,
@@ -579,6 +585,15 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
             status = 0 if result["ok"] else 1
             write_generated_session_output(result, compact=args.compact)
             return status
+
+        if command == "requests":
+            return _handle_share_requests_command(
+                args,
+                parser,
+                share_capability_requests=share_capability_requests,
+                approve_share_capability_request=approve_share_capability_request,
+                deny_share_capability_request=deny_share_capability_request,
+            )
 
         if command == "member":
             return _handle_share_member_command(args, parser, attach_mcp_share_member=attach_mcp_share_member)
@@ -1289,6 +1304,110 @@ def _add_share_lease_args(parser: argparse.ArgumentParser) -> None:
     lease_revoke.add_argument("lease_id", help="lease id to revoke")
     lease_revoke.add_argument("--file", type=Path, default=Path("leases.json"), help="lease JSON file")
     add_compact_arg(lease_revoke)
+
+
+def _add_share_request_args(parser: argparse.ArgumentParser) -> None:
+    request_subparsers = parser.add_subparsers(dest="share_requests_command", required=True)
+
+    requests_list = request_subparsers.add_parser("list", help="list observed MCP capability requests")
+    requests_list.add_argument("directory", nargs="?", type=Path, help="share session directory")
+    requests_list.add_argument(
+        "--status",
+        choices=("pending", "approved", "denied", "all"),
+        default="pending",
+        help="request review status to show",
+    )
+    requests_list.add_argument("--log", type=Path, help="audit or replay JSONL log override")
+    add_compact_arg(requests_list)
+
+    requests_approve = request_subparsers.add_parser(
+        "approve",
+        help="approve a capability request by minting a task-scoped lease",
+    )
+    requests_approve.add_argument("request_id", help="capability request id from `share requests list`")
+    requests_approve.add_argument("--directory", "-d", type=Path, help="share session directory")
+    requests_approve.add_argument("--log", type=Path, help="audit or replay JSONL log override")
+    requests_approve.add_argument("--ttl", help="lease TTL override, such as 10m or 1h")
+    requests_approve.add_argument("--max-calls", type=int, help="maximum allowed tools/call uses")
+    requests_approve.add_argument("--task", help="human-readable lease task override")
+    requests_approve.add_argument("--allow-tool", action="append", default=[], help="additional allowed MCP tool")
+    add_allow_path_arg(requests_approve, help="additional allowed path or path prefix")
+    requests_approve.add_argument("--allow-host", action="append", default=[], help="additional allowed URL host")
+    requests_approve.add_argument("--allow-command", action="append", default=[], help="additional allowed command")
+    requests_approve.add_argument(
+        "--bind-auth",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="bind the lease to observed OAuth subject, issuer, tenant, client, groups, and auth profile",
+    )
+    requests_approve.add_argument("--reviewer", help="reviewer label to record in the request inbox")
+    add_compact_arg(requests_approve)
+
+    requests_deny = request_subparsers.add_parser("deny", help="deny a capability request")
+    requests_deny.add_argument("request_id", help="capability request id from `share requests list`")
+    requests_deny.add_argument("--directory", "-d", type=Path, help="share session directory")
+    requests_deny.add_argument("--log", type=Path, help="audit or replay JSONL log override")
+    requests_deny.add_argument("--reason", help="review reason")
+    requests_deny.add_argument("--reviewer", help="reviewer label to record in the request inbox")
+    add_compact_arg(requests_deny)
+
+
+def _handle_share_requests_command(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    *,
+    share_capability_requests: Any,
+    approve_share_capability_request: Any,
+    deny_share_capability_request: Any,
+) -> int:
+    if args.share_requests_command == "list":
+        directory = args.directory
+        if directory is None:
+            directory = Path.cwd()
+        result = share_capability_requests(
+            directory,
+            status=args.status,
+            log=args.log,
+        )
+        status = 0 if result["ok"] else 1
+        write_json_output(result, compact=args.compact)
+        return status
+
+    if args.share_requests_command == "approve":
+        directory = args.directory or Path.cwd()
+        result = approve_share_capability_request(
+            directory,
+            request_id=args.request_id,
+            ttl=args.ttl,
+            max_calls=args.max_calls,
+            task=args.task,
+            allow_tools=args.allow_tool or (),
+            allow_paths=args.allow_path or (),
+            allow_hosts=args.allow_host or (),
+            allow_commands=args.allow_command or (),
+            bind_auth=args.bind_auth,
+            reviewer=args.reviewer,
+            log=args.log,
+        )
+        status = 0 if result["ok"] else 1
+        write_generated_session_output(result, compact=args.compact)
+        return status
+
+    if args.share_requests_command == "deny":
+        directory = args.directory or Path.cwd()
+        result = deny_share_capability_request(
+            directory,
+            request_id=args.request_id,
+            reason=args.reason,
+            reviewer=args.reviewer,
+            log=args.log,
+        )
+        status = 0 if result["ok"] else 1
+        write_json_output(result, compact=args.compact)
+        return status
+
+    parser.error(f"unknown mcp share requests command: {args.share_requests_command}")
+    return 2
 
 
 def _add_share_demo_args(parser: argparse.ArgumentParser) -> None:

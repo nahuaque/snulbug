@@ -16,9 +16,11 @@ from snulbug import (
     ShareDoctorContext,
     activate_mcp_share_policy,
     append_record,
+    approve_share_capability_request,
     attach_mcp_share_member,
     close_mcp_share,
     create_mcp_share,
+    deny_share_capability_request,
     doctor_mcp_share,
     doctor_mcp_share_auth,
     generate_auth_conformance_pack,
@@ -33,6 +35,7 @@ from snulbug import (
     register_share_doctor_check,
     run_auth_conformance_pack,
     run_mcp_share,
+    share_capability_requests,
     share_client_config,
     share_contract,
     share_report,
@@ -1017,6 +1020,126 @@ def test_mcp_share_status_and_report_summarize_session_evidence(tmp_path):
     assert "share-secret" not in report["report"]
     assert "sbl_" not in report["report"]
     assert (tmp_path / "share-report.md").is_file()
+
+
+def test_mcp_share_capability_requests_promote_to_auth_bound_lease(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    write_share_capability_audit_log(tmp_path)
+
+    listing = share_capability_requests(tmp_path)
+    request = listing["requests"][0]
+    approved = approve_share_capability_request(
+        tmp_path,
+        request_id=request["id"],
+        reviewer="dev",
+        ttl="15m",
+    )
+    lease_store = json.loads((tmp_path / "leases.json").read_text(encoding="utf-8"))
+    lease = lease_store["leases"][-1]
+    listed_after = share_capability_requests(tmp_path, status="all")
+    status = share_status(tmp_path, live_checks=False)
+    session_model = load_share_session_model(tmp_path)
+
+    assert listing["summary"]["pending"] == 1
+    assert request["status"] == "pending"
+    assert request["tool"] == "safe_read_file"
+    assert request["auth"]["subject"] == "user-1"
+    assert approved["ok"] is True
+    assert approved["review"]["status"] == "approved"
+    assert approved["review"]["lease_id"] == lease["id"]
+    assert approved["headers"]["x-snulbug-lease"].startswith("sbl_")
+    assert approved["retry_header"].startswith('-H "x-snulbug-lease: sbl_')
+    assert lease["task"] == "Read project docs"
+    assert lease["allow_tools"] == ["safe_read_file"]
+    assert lease["allow_paths"] == ["README.md", "docs"]
+    assert lease["allow_subjects"] == ["user-1"]
+    assert lease["allow_issuers"] == ["https://issuer.example"]
+    assert lease["allow_tenants"] == ["tenant-a"]
+    assert lease["allow_client_ids"] == ["client-1"]
+    assert lease["allow_groups"] == ["dev"]
+    assert lease["allow_auth_profiles"] == ["tenant-a"]
+    assert lease["max_calls"] == 2
+    assert listed_after["summary"]["approved"] == 1
+    assert listed_after["requests"][0]["status"] == "approved"
+    assert status["capability_requests"]["approved"] == 1
+    assert session_model["capability_requests"]["last_review"]["lease_id"] == lease["id"]
+    assert "sbl_" not in json.dumps(session_model)
+
+
+def test_mcp_share_capability_requests_can_be_denied_without_creating_lease(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    write_share_capability_audit_log(tmp_path)
+    request_id = share_capability_requests(tmp_path)["requests"][0]["id"]
+    before = json.loads((tmp_path / "leases.json").read_text(encoding="utf-8"))
+
+    denied = deny_share_capability_request(
+        tmp_path,
+        request_id=request_id,
+        reason="outside demo task",
+        reviewer="dev",
+    )
+    after = json.loads((tmp_path / "leases.json").read_text(encoding="utf-8"))
+    listing = share_capability_requests(tmp_path, status="all")
+
+    assert denied["ok"] is True
+    assert denied["review"]["status"] == "denied"
+    assert denied["review"]["reason"] == "outside demo task"
+    assert after["leases"] == before["leases"]
+    assert listing["summary"]["denied"] == 1
+    assert listing["requests"][0]["status"] == "denied"
+
+
+def test_mcp_share_requests_cli_lists_and_approves_from_share_session(tmp_path, capsys, monkeypatch):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    write_share_capability_audit_log(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    list_code = simulator_main(["mcp", "share", "requests", "list", "--compact"])
+    listing = json.loads(capsys.readouterr().out)
+    request_id = listing["requests"][0]["id"]
+    approve_code = simulator_main(
+        [
+            "mcp",
+            "share",
+            "requests",
+            "approve",
+            request_id,
+            "--ttl",
+            "20m",
+            "--reviewer",
+            "cli",
+            "--compact",
+        ]
+    )
+    approved = json.loads(capsys.readouterr().out)
+
+    assert list_code == 0
+    assert listing["summary"]["pending"] == 1
+    assert approve_code == 0
+    assert approved["ok"] is True
+    assert approved["headers"]["x-snulbug-lease"].startswith("sbl_")
+    assert approved["review"]["reviewer"] == "cli"
 
 
 def test_mcp_share_tool_risks_use_schema_catalog_metadata(tmp_path):
@@ -2115,3 +2238,62 @@ def write_share_audit_log(tmp_path):
         "".join(json.dumps(event, sort_keys=True) + "\n" for event in events),
         encoding="utf-8",
     )
+
+
+def write_share_capability_audit_log(tmp_path):
+    traces = tmp_path / "traces"
+    traces.mkdir(exist_ok=True)
+    event = {
+        "type": "snulbug.audit",
+        "version": 1,
+        "time": "2026-06-14T00:03:00+00:00",
+        "request": {"method": "POST", "path": "/mcp", "headers": {}},
+        "mcp": {"method": "tools/call", "tool": "safe_read_file"},
+        "decision": {
+            "action": "reject",
+            "allowed": False,
+            "reason_code": "mcp.docs_capability_requested",
+            "confirmation": {
+                "approved": False,
+                "mode": "denied",
+                "reason_code": "confirm.unavailable",
+            },
+        },
+        "metadata": {
+            "auth": {
+                "subject": "user-1",
+                "issuer": "https://issuer.example",
+                "tenant": "tenant-a",
+                "client_id": "client-1",
+                "groups": ["dev"],
+                "profile_id": "tenant-a",
+            },
+            "capability_request": {
+                "requested": True,
+                "reason_code": "mcp.docs_capability_requested",
+                "capability_request": {
+                    "schema": "snulbug.capability_request.v1",
+                    "kind": "task_lease",
+                    "task": "Read project docs",
+                    "reason_code": "mcp.docs_capability_requested",
+                    "method": "tools/call",
+                    "tool": "safe_read_file",
+                    "argument_keys": ["path"],
+                    "suggested_lease": {
+                        "task": "Read project docs",
+                        "ttl": "10m",
+                        "max_calls": 2,
+                        "allow_tools": ["safe_read_file"],
+                        "allow_paths": ["README.md", "docs"],
+                    },
+                },
+                "confirmation": {
+                    "approved": False,
+                    "mode": "denied",
+                    "reason_code": "confirm.unavailable",
+                },
+            },
+        },
+        "response": {"status": 403},
+    }
+    (traces / "audit.jsonl").write_text(json.dumps(event, sort_keys=True) + "\n", encoding="utf-8")

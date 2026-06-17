@@ -12,7 +12,7 @@ local MCP server without hand-wiring every control.
 The high-level session loop is:
 
 ```text
-share create -> share run -> share status -> share policy amend -> share policy activate -> share doctor -> share contract -> share report
+share create -> share run -> share status -> share requests approve -> share policy amend -> share policy activate -> share doctor -> share contract -> share report
 ```
 
 Create the bounded session:
@@ -37,6 +37,29 @@ Check live state:
 
 ```bash
 snulbug mcp share status .snulbug/shares/share-...
+```
+
+If a Lua policy returns `cap.request(...)`, snulbug records an MCP-native
+just-in-time capability request in the share evidence. Review the inbox and
+approve the request into a normal task lease when the grant should be temporary:
+
+```bash
+snulbug mcp share requests list .snulbug/shares/share-...
+snulbug mcp share requests approve cap_... \
+  --directory .snulbug/shares/share-... \
+  --ttl 10m \
+  --max-calls 2
+```
+
+Approval writes the existing `leases.json` store and prints the
+`x-snulbug-lease` header to retry with. When auth metadata was observed, the
+lease is bound to the requesting subject, issuer, tenant, client id, groups, and
+auth profile by default. Deny requests without minting a lease:
+
+```bash
+snulbug mcp share requests deny cap_... \
+  --directory .snulbug/shares/share-... \
+  --reason "outside this task"
 ```
 
 If the audit log shows a legitimate blocked request, amend the reviewed policy
@@ -102,7 +125,9 @@ commands. `.snulbug/share/session.json` is the canonical control-plane session
 model. It records the current share state, provider/public URL, local gateway
 config, upstreams, policy bundle and active policy path, lease store, replay and
 audit logs, reports, last health summary, and policy amendment/lifecycle
-pointers without duplicating bearer or lease tokens.
+pointers without duplicating bearer or lease tokens. It also records the last
+capability-request review summary, while the review store lives at
+`.snulbug/share/capability-requests.json`.
 
 ## Session lifecycle
 

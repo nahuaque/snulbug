@@ -146,6 +146,31 @@ def _workflows() -> dict[str, dict[str, Any]]:
                     "next": "Share mcp-client.json only after share doctor passes.",
                 },
                 {
+                    "id": "review-capability-requests",
+                    "title": "Review temporary capability requests",
+                    "command": "\n".join(
+                        [
+                            "snulbug mcp share requests list .snulbug/shares/share-*",
+                            "snulbug mcp share requests approve cap_... \\",
+                            "  --directory .snulbug/shares/share-* \\",
+                            "  --ttl 10m \\",
+                            "  --max-calls 2",
+                            "snulbug mcp share requests deny cap_... \\",
+                            "  --directory .snulbug/shares/share-* \\",
+                            '  --reason "outside this task"',
+                        ]
+                    ),
+                    "requires": ["running or recorded share traffic with MCP-native capability requests"],
+                    "produces": ["review state", "optional task-scoped lease"],
+                    "success_signals": [
+                        "approved requests print x-snulbug-lease",
+                        "denied requests do not mint leases",
+                    ],
+                    "next": (
+                        "Retry approved calls with the printed lease header, or amend policy for permanent changes."
+                    ),
+                },
+                {
                     "id": "close-share",
                     "title": "Close and report when done",
                     "command": "\n".join(

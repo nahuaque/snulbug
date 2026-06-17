@@ -80,6 +80,7 @@ SHARE_CONTRACT_SCHEMA = "snulbug.share-contract.v1"
 SHARE_CONTRACT_VERSION = 1
 SHARE_CONTRACT_SIGNATURE_FIELD = "snulbug_signature"
 SHARE_CONTRACT_ALGORITHM = "hmac-sha256"
+CAPABILITY_REQUEST_REVIEW_PATH = Path(".snulbug") / "share" / "capability-requests.json"
 
 
 def create_mcp_share(
@@ -448,6 +449,7 @@ def share_status(
     gateway = _share_gateway_status(share_dir, manifest, session_model, timeout=timeout, live_checks=live_checks)
     upstreams = _share_upstream_statuses(share_dir, manifest, timeout=timeout, live_checks=live_checks)
     traffic = _share_traffic_summary(share_dir, session_model)
+    capability_requests = share_capability_requests(share_dir, status="all")
     schema_catalogs = _share_schema_catalog_context(share_dir, manifest, session_model)
     tool_risks = classify_mcp_tool_risks(_share_tool_risk_inputs(traffic.get("tools"), schema_catalogs))
     tool_risks["schema_catalogs"] = _share_schema_catalog_status(schema_catalogs)
@@ -486,6 +488,7 @@ def share_status(
         "amendments": amendments,
         "contract": contract,
         "traffic": traffic,
+        "capability_requests": capability_requests["summary"],
         "tool_risks": tool_risks,
         "schemas": _share_schema_catalog_status(schema_catalogs),
         "recordings": recordings,
@@ -782,6 +785,173 @@ def activate_mcp_share_policy(
     )
     result["activation"] = result.get("promotion")
     return result
+
+
+def share_capability_requests(
+    directory: str | Path = ".",
+    *,
+    status: str = "pending",
+    log: str | Path | None = None,
+) -> dict[str, Any]:
+    """List MCP-native just-in-time capability requests observed in share evidence."""
+
+    if status not in {"pending", "approved", "denied", "all"}:
+        raise ValueError("status must be one of pending, approved, denied, all")
+    share_dir, _manifest, session_model = _load_share_model_context(directory)
+    reviews = _load_capability_request_reviews(share_dir)
+    requests = _observed_capability_requests(share_dir, session_model, log=log)
+    reviewed_requests = _mapping(reviews.get("requests"))
+    for request_id, review in reviewed_requests.items():
+        if request_id not in requests and isinstance(review, Mapping):
+            stored_request = _mapping(review.get("request"))
+            if stored_request:
+                requests[str(request_id)] = dict(stored_request)
+    merged = []
+    for request_id, request in sorted(requests.items(), key=lambda item: str(item[1].get("last_seen_at") or "")):
+        review = _mapping(reviewed_requests.get(request_id))
+        request_status = str(review.get("status") or "pending")
+        if status != "all" and request_status != status:
+            continue
+        merged.append(_drop_empty_json({**request, "status": request_status, "review": review or None}))
+
+    summary = _capability_request_summary(
+        [request for request in requests.values()],
+        reviews=reviewed_requests,
+        store_path=_capability_request_review_path(share_dir),
+    )
+    return {
+        "ok": True,
+        "share": str(share_dir),
+        "status": status,
+        "summary": summary,
+        "requests": merged,
+        "store": str(_capability_request_review_path(share_dir)),
+        "session_model": str(share_session_model_path(share_dir)),
+    }
+
+
+def approve_share_capability_request(
+    directory: str | Path = ".",
+    *,
+    request_id: str,
+    ttl: str | None = None,
+    max_calls: int | None = None,
+    task: str | None = None,
+    allow_tools: Sequence[str] = (),
+    allow_paths: Sequence[str] = (),
+    allow_hosts: Sequence[str] = (),
+    allow_commands: Sequence[str] = (),
+    bind_auth: bool = True,
+    reviewer: str | None = None,
+    log: str | Path | None = None,
+) -> dict[str, Any]:
+    """Approve a JIT capability request by creating a normal task-scoped lease."""
+
+    share_dir, manifest, session_model = _load_share_model_context(directory)
+    requests = share_capability_requests(share_dir, status="all", log=log)
+    request = next((item for item in requests["requests"] if item.get("id") == request_id), None)
+    if not isinstance(request, Mapping):
+        raise ValueError(f"capability request not found: {request_id}")
+    suggested = _mapping(request.get("suggested_lease"))
+    lease_file = _share_capability_lease_file(share_dir, session_model, manifest)
+    lease_header = _share_capability_lease_header(session_model, manifest)
+    auth = _mapping(request.get("auth"))
+    lease = create_lease(
+        lease_file,
+        task=task or str(suggested.get("task") or request.get("task") or "Temporary MCP access"),
+        allow_tools=_merge_string_lists(
+            _string_list(suggested.get("allow_tools")) or _string_list(request.get("tool")),
+            allow_tools,
+        ),
+        allow_paths=_merge_string_lists(_string_list(suggested.get("allow_paths")), allow_paths),
+        allow_hosts=_merge_string_lists(_string_list(suggested.get("allow_hosts")), allow_hosts),
+        allow_commands=_merge_string_lists(_string_list(suggested.get("allow_commands")), allow_commands),
+        allow_subjects=_string_list(auth.get("subject")) if bind_auth else (),
+        allow_issuers=_string_list(auth.get("issuer")) if bind_auth else (),
+        allow_tenants=_string_list(auth.get("tenant")) if bind_auth else (),
+        allow_client_ids=_string_list(auth.get("client_id")) if bind_auth else (),
+        allow_groups=_string_list(auth.get("groups")) if bind_auth else (),
+        allow_auth_profiles=_string_list(auth.get("profile_id")) if bind_auth else (),
+        ttl=ttl or str(suggested.get("ttl") or "30m"),
+        max_calls=max_calls if max_calls is not None else _positive_int(suggested.get("max_calls")),
+    )
+    review = _drop_empty_json(
+        {
+            "status": "approved",
+            "request_id": request_id,
+            "reviewed_at": _now_iso(),
+            "reviewer": reviewer,
+            "lease_id": _mapping(lease.get("lease")).get("id"),
+            "lease_file": str(lease_file),
+            "lease_header": lease_header,
+            "bind_auth": bind_auth,
+            "auth_bound": bool(bind_auth and auth),
+            "request": _capability_request_review_snapshot(request),
+        }
+    )
+    reviews = _record_capability_request_review(share_dir, request_id, review)
+    session_model = _record_share_capability_request_review(
+        share_dir,
+        session_model,
+        review=review,
+        reviews=reviews,
+    )
+    token = str(lease.get("token"))
+    return {
+        "ok": True,
+        "share": str(share_dir),
+        "request": request,
+        "review": review,
+        "lease": lease,
+        "headers": {lease_header: token},
+        "retry_header": f'-H "{lease_header}: {token}"',
+        "store": str(_capability_request_review_path(share_dir)),
+        "session_model": str(share_session_model_path(share_dir)),
+        "capability_requests": _mapping(session_model.get("capability_requests")),
+    }
+
+
+def deny_share_capability_request(
+    directory: str | Path = ".",
+    *,
+    request_id: str,
+    reason: str | None = None,
+    reviewer: str | None = None,
+    log: str | Path | None = None,
+) -> dict[str, Any]:
+    """Deny a JIT capability request and persist the review state."""
+
+    share_dir, _manifest, session_model = _load_share_model_context(directory)
+    requests = share_capability_requests(share_dir, status="all", log=log)
+    request = next((item for item in requests["requests"] if item.get("id") == request_id), None)
+    if not isinstance(request, Mapping):
+        raise ValueError(f"capability request not found: {request_id}")
+    review = _drop_empty_json(
+        {
+            "status": "denied",
+            "request_id": request_id,
+            "reviewed_at": _now_iso(),
+            "reviewer": reviewer,
+            "reason": reason,
+            "request": _capability_request_review_snapshot(request),
+        }
+    )
+    reviews = _record_capability_request_review(share_dir, request_id, review)
+    session_model = _record_share_capability_request_review(
+        share_dir,
+        session_model,
+        review=review,
+        reviews=reviews,
+    )
+    return {
+        "ok": True,
+        "share": str(share_dir),
+        "request": request,
+        "review": review,
+        "store": str(_capability_request_review_path(share_dir)),
+        "session_model": str(share_session_model_path(share_dir)),
+        "capability_requests": _mapping(session_model.get("capability_requests")),
+    }
 
 
 def attach_mcp_share_member(
@@ -6229,6 +6399,328 @@ def run_mcp_share(
     else:
         _update_share_session_runtime(share_dir, session_model, runtime=runtime)
     run_mcp_proxy_config(proxy_config, fabric_config, share_contract=contract)
+    return None
+
+
+def _observed_capability_requests(
+    share_dir: Path,
+    session_model: Mapping[str, Any],
+    *,
+    log: str | Path | None = None,
+) -> dict[str, dict[str, Any]]:
+    requests: dict[str, dict[str, Any]] = {}
+    for path in _share_capability_log_paths(share_dir, session_model, log=log):
+        if not path.is_file():
+            continue
+        with path.open("r", encoding="utf-8") as file:
+            for line_number, line in enumerate(file, start=1):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    raw_event = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(raw_event, Mapping):
+                    continue
+                event = build_audit_event(raw_event) if raw_event.get("type") == "snulbug.request_record" else raw_event
+                request = _capability_request_from_event(event, source=path, line=line_number)
+                if request is None:
+                    continue
+                existing = requests.get(request["id"])
+                if existing is None:
+                    requests[request["id"]] = request
+                    continue
+                existing["observations"] = int(existing.get("observations") or 1) + 1
+                existing["last_seen_at"] = request.get("last_seen_at") or existing.get("last_seen_at")
+                sources = [dict(item) for item in _sequence(existing.get("sources")) if isinstance(item, Mapping)]
+                sources.extend(item for item in _sequence(request.get("sources")) if isinstance(item, Mapping))
+                existing["sources"] = sources
+    return requests
+
+
+def _capability_request_from_event(
+    event: Mapping[str, Any],
+    *,
+    source: Path,
+    line: int,
+) -> dict[str, Any] | None:
+    metadata = _mapping(event.get("metadata"))
+    envelope = _mapping(metadata.get("capability_request"))
+    capability = _mapping(envelope.get("capability_request"))
+    if not capability:
+        decision = _mapping(event.get("decision"))
+        capability = _mapping(_mapping(decision.get("context")).get("capability_request"))
+    if not capability:
+        return None
+    mcp = _mapping(event.get("mcp"))
+    decision = _mapping(event.get("decision"))
+    auth = _capability_request_auth(event)
+    suggested = _mapping(capability.get("suggested_lease"))
+    tool = capability.get("tool") or mcp.get("tool") or mcp.get("target")
+    method = capability.get("method") or mcp.get("method")
+    request = _drop_empty_json(
+        {
+            "task": capability.get("task") or suggested.get("task"),
+            "reason_code": capability.get("reason_code") or envelope.get("reason_code") or decision.get("reason_code"),
+            "method": method,
+            "tool": tool,
+            "argument_keys": _string_list(capability.get("argument_keys")),
+            "suggested_lease": suggested,
+            "auth": auth,
+        }
+    )
+    request_id = _capability_request_id(request)
+    return _drop_empty_json(
+        {
+            "id": request_id,
+            "status": "pending",
+            "first_seen_at": event.get("time") or event.get("recorded_at"),
+            "last_seen_at": event.get("time") or event.get("recorded_at"),
+            "observations": 1,
+            "source": str(source),
+            "sources": [{"path": str(source), "line": line}],
+            "mcp": {"method": method, "tool": tool},
+            "decision": {
+                "reason_code": decision.get("reason_code"),
+                "confirmation": decision.get("confirmation"),
+            },
+            **request,
+        }
+    )
+
+
+def _capability_request_auth(event: Mapping[str, Any]) -> dict[str, Any]:
+    metadata = _mapping(event.get("metadata"))
+    auth = dict(_mapping(event.get("auth")) or _mapping(metadata.get("auth")))
+    access_auth = _mapping(_mapping(metadata.get("access")).get("auth"))
+    for key in ("subject", "issuer", "tenant", "client_id", "groups", "profile_id"):
+        if auth.get(key) in (None, "", []):
+            value = access_auth.get(key)
+            if value not in (None, "", []):
+                auth[key] = value
+    return _drop_empty_json(
+        {
+            "subject": auth.get("subject"),
+            "issuer": auth.get("issuer"),
+            "tenant": auth.get("tenant"),
+            "client_id": auth.get("client_id"),
+            "groups": _string_list(auth.get("groups")),
+            "profile_id": auth.get("profile_id"),
+        }
+    )
+
+
+def _capability_request_id(request: Mapping[str, Any]) -> str:
+    identity = {
+        "reason_code": request.get("reason_code"),
+        "method": request.get("method"),
+        "tool": request.get("tool"),
+        "suggested_lease": request.get("suggested_lease"),
+        "auth": request.get("auth"),
+    }
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    return f"cap_{digest[:12]}"
+
+
+def _share_capability_log_paths(
+    share_dir: Path,
+    session_model: Mapping[str, Any],
+    *,
+    log: str | Path | None = None,
+) -> list[Path]:
+    if log is not None:
+        return [_resolve_share_path(share_dir, log)]
+    evidence = _mapping(session_model.get("evidence"))
+    paths = _mapping(session_model.get("paths"))
+    candidates = [
+        evidence.get("audit_log"),
+        paths.get("audit_log"),
+        "traces/audit.jsonl",
+        evidence.get("record_log"),
+        paths.get("record_log"),
+        "traces/session.jsonl",
+    ]
+    result: list[Path] = []
+    seen: set[str] = set()
+    for value in candidates:
+        if not isinstance(value, str) or not value:
+            continue
+        path = _resolve_share_path(share_dir, value)
+        key = str(path)
+        if key not in seen:
+            result.append(path)
+            seen.add(key)
+    return result
+
+
+def _capability_request_review_path(share_dir: Path) -> Path:
+    return share_dir / CAPABILITY_REQUEST_REVIEW_PATH
+
+
+def _load_capability_request_reviews(share_dir: Path) -> dict[str, Any]:
+    path = _capability_request_review_path(share_dir)
+    if not path.is_file():
+        return {"version": 1, "requests": {}}
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, Mapping):
+        raise ValueError(f"capability request review store must be a JSON object: {path}")
+    requests = loaded.get("requests")
+    if not isinstance(requests, Mapping):
+        requests = {}
+    return {"version": int(loaded.get("version", 1)), "requests": dict(requests)}
+
+
+def _write_capability_request_reviews(share_dir: Path, reviews: Mapping[str, Any]) -> Path:
+    path = _capability_request_review_path(share_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(dict(reviews), indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    return path
+
+
+def _record_capability_request_review(
+    share_dir: Path,
+    request_id: str,
+    review: Mapping[str, Any],
+) -> dict[str, Any]:
+    reviews = _load_capability_request_reviews(share_dir)
+    request_reviews = dict(_mapping(reviews.get("requests")))
+    request_reviews[request_id] = dict(review)
+    reviews["requests"] = request_reviews
+    reviews["updated_at"] = _now_iso()
+    _write_capability_request_reviews(share_dir, reviews)
+    return reviews
+
+
+def _record_share_capability_request_review(
+    share_dir: Path,
+    session_model: Mapping[str, Any],
+    *,
+    review: Mapping[str, Any],
+    reviews: Mapping[str, Any],
+) -> dict[str, Any]:
+    model = json.loads(json.dumps(dict(session_model), default=str))
+    status = dict(_mapping(model.get("status")))
+    status["updated_at"] = _now_iso()
+    model["status"] = status
+    capability = dict(_mapping(model.get("capability_requests")))
+    capability["store"] = str(_capability_request_review_path(share_dir))
+    capability["last_review"] = dict(review)
+    capability["summary"] = _capability_request_review_summary(reviews)
+    model["capability_requests"] = capability
+    write_share_session_model(share_dir, model, force=True)
+    return model
+
+
+def _capability_request_summary(
+    requests: Sequence[Mapping[str, Any]],
+    *,
+    reviews: Mapping[str, Any],
+    store_path: Path,
+) -> dict[str, Any]:
+    counts: Counter[str] = Counter()
+    known_ids: set[str] = set()
+    for request in requests:
+        request_id = str(request.get("id") or "")
+        if request_id:
+            known_ids.add(request_id)
+        review = _mapping(reviews.get(request_id))
+        counts[str(review.get("status") or request.get("status") or "pending")] += 1
+    for request_id, review in reviews.items():
+        if str(request_id) not in known_ids:
+            counts[str(_mapping(review).get("status") or "pending")] += 1
+    return {
+        "store": str(store_path),
+        "total": sum(counts.values()),
+        "pending": counts.get("pending", 0),
+        "approved": counts.get("approved", 0),
+        "denied": counts.get("denied", 0),
+    }
+
+
+def _capability_request_review_summary(reviews: Mapping[str, Any]) -> dict[str, Any]:
+    request_reviews = _mapping(reviews.get("requests"))
+    counts = Counter(str(_mapping(review).get("status") or "pending") for review in request_reviews.values())
+    return {
+        "reviewed": len(request_reviews),
+        "approved": counts.get("approved", 0),
+        "denied": counts.get("denied", 0),
+        "updated_at": reviews.get("updated_at"),
+    }
+
+
+def _capability_request_review_snapshot(request: Mapping[str, Any]) -> dict[str, Any]:
+    return _drop_empty_json(
+        {
+            "id": request.get("id"),
+            "task": request.get("task"),
+            "reason_code": request.get("reason_code"),
+            "method": request.get("method"),
+            "tool": request.get("tool"),
+            "argument_keys": request.get("argument_keys"),
+            "suggested_lease": request.get("suggested_lease"),
+            "auth": request.get("auth"),
+            "source": request.get("source"),
+            "observations": request.get("observations"),
+        }
+    )
+
+
+def _share_capability_lease_file(
+    share_dir: Path,
+    session_model: Mapping[str, Any],
+    manifest: Mapping[str, Any] | None,
+) -> Path:
+    files = _mapping(manifest.get("files")) if manifest is not None else {}
+    lease = _mapping(session_model.get("lease"))
+    paths = _mapping(session_model.get("paths"))
+    value = lease.get("file") or paths.get("lease_file") or files.get("lease_file") or "leases.json"
+    return _resolve_share_path(share_dir, value)
+
+
+def _share_capability_lease_header(
+    session_model: Mapping[str, Any],
+    manifest: Mapping[str, Any] | None,
+) -> str:
+    session = _mapping(manifest.get("session")) if manifest is not None else {}
+    lease = _mapping(session_model.get("lease"))
+    return str(lease.get("header") or session.get("lease_header") or "x-snulbug-lease")
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, Mapping):
+        return [str(key) for key, enabled in value.items() if enabled is True and str(key)]
+    if isinstance(value, Sequence) and not isinstance(value, bytes | bytearray):
+        return [str(item) for item in value if str(item)]
+    return []
+
+
+def _merge_string_lists(*values: Any) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for item in _string_list(value):
+            if item not in seen:
+                result.append(item)
+                seen.add(item)
+    return result
+
+
+def _positive_int(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = int(value)
+        except ValueError:
+            return None
+        return parsed if parsed > 0 else None
     return None
 
 
