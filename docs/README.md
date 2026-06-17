@@ -18,6 +18,7 @@ share create -> share run -> share status -> share policy amend -> share policy 
 - [Policy bundles](bundles.md)
 - [Schema workflow: discover, diff, generate policy](mcp-schemas.md)
 - [Policy-aware tool catalog projection](tool-catalog-projection.md)
+- [Policy deny backoff](policy-deny-backoff.md)
 - [Evidence workflow: record, replay, inspect, impact, diff](mcp-evidence.md)
 - [CI policy gates and SARIF output](ci-policy-gates.md)
 - [Reverse proxy and live recording](mcp-proxy.md)

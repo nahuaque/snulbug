@@ -336,6 +336,7 @@ Request-side policy:
 - schema-aware Lua intent guards for tool categories and risk levels
 - task-scoped capability leases with expiring tool/path grants
 - small stateful policies such as rate limits and idempotency keys
+- state-backed exponential backoff for repeated equivalent policy denies
 
 Response-side policy:
 
@@ -376,6 +377,7 @@ Start with:
 - [MCP CLI guide for agents and harnesses](docs/mcp-guide.md)
 - [MCP policy workflow: preset, learn, amend, lifecycle](docs/mcp-policy.md)
 - [MCP schema workflow: discover, diff, generate policy](docs/mcp-schemas.md)
+- [Policy deny backoff](docs/policy-deny-backoff.md)
 - [MCP evidence workflow: record, replay, inspect, impact, diff](docs/mcp-evidence.md)
 - [CI policy gates and SARIF output](docs/ci-policy-gates.md)
 - [MCP reverse proxy](docs/mcp-proxy.md)

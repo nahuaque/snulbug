@@ -115,6 +115,18 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
 
         [mcp.catalog]
         projection = "policy-aware"
+
+        [mcp.policy_backoff]
+        enabled = true
+        base_seconds = 1.5
+        factor = 3.0
+        max_seconds = 20
+        window_seconds = 120
+        jitter = false
+        status = 429
+        reason_codes = ["mcp.*"]
+        exclude_reason_codes = ["oauth.invalid_token"]
+        key_fields = ["client.ip", "mcp.tool", "decision.reason_code"]
         """,
         encoding="utf-8",
     )
@@ -137,6 +149,18 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
     assert result["schema_validation_action"] == "warn"
     assert result["catalog"] == {"projection": "policy-aware"}
     assert result["catalog_projection"] == "policy-aware"
+    assert result["policy_backoff"] == {
+        "enabled": True,
+        "base_seconds": 1.5,
+        "factor": 3.0,
+        "max_seconds": 20.0,
+        "window_seconds": 120.0,
+        "jitter": False,
+        "status": 429,
+        "reason_codes": ["mcp.*"],
+        "exclude_reason_codes": ["oauth.invalid_token"],
+        "key_fields": ["client.ip", "mcp.tool", "decision.reason_code"],
+    }
     assert result["facade_health_routing"] is True
     assert result["facade_health_failure_threshold"] == 3
     assert result["facade_health_cooldown_seconds"] == 1.5

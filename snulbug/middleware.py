@@ -9,6 +9,12 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlencode
 
+from .policy_backoff import (
+    PolicyBackoffConfig,
+    PolicyDenyBackoff,
+    policy_backoff_active_decision,
+    policy_backoff_headers,
+)
 from .promotion import compare_decisions
 from .runtime import (
     CompiledLuaScript,
@@ -71,6 +77,7 @@ class LuaMiddleware:
         state_limits: StateLimits | None = None,
         state_key_prefix: str = "",
         confirm_handler: ConfirmHandler | None = None,
+        policy_backoff_config: PolicyBackoffConfig | None = None,
     ) -> None:
         self.app = app
         self.config = config or LuaConfig()
@@ -80,6 +87,11 @@ class LuaMiddleware:
         self.state_limits = state_limits or StateLimits()
         self.state_key_prefix = state_key_prefix
         self.confirm_handler = confirm_handler
+        self.policy_backoff = PolicyDenyBackoff(
+            policy_backoff_config,
+            store=state_store,
+            key_prefix=state_key_prefix,
+        )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http":
@@ -95,6 +107,26 @@ class LuaMiddleware:
                 return
 
         request = _scope_to_request(child_scope, body if self.config.read_body else None)
+        preflight_backoff = self.policy_backoff.preflight(request, child_scope)
+        if preflight_backoff.get("active"):
+            decision = policy_backoff_active_decision(preflight_backoff)
+            if self.config.trace:
+                _attach_synthetic_trace(
+                    child_scope,
+                    self.config.trace_scope_key,
+                    decision,
+                    body_read=self.config.read_body,
+                    policy_backoff=preflight_backoff,
+                )
+            _attach_policy_backoff(child_scope, preflight_backoff)
+            await _send_response(
+                send,
+                status=int(decision["status"]),
+                headers=policy_backoff_headers(preflight_backoff, include_retry_after=True),
+                body=_body_bytes(decision["body"]),
+            )
+            return
+
         script = self._script(child_scope)
         context = child_scope.get(self.config.context_scope_key, {})
         policy_state = self._state_for_request()
@@ -147,7 +179,10 @@ class LuaMiddleware:
             return
 
         if action == "challenge":
+            backoff = self._record_policy_backoff(request, child_scope, decision)
             status, headers, body_bytes = _challenge_response(decision)
+            if backoff.get("recorded"):
+                headers.extend(policy_backoff_headers(backoff, include_retry_after=False))
             await _send_response(send, status=status, headers=headers, body=body_bytes)
             return
 
@@ -178,6 +213,10 @@ class LuaMiddleware:
             status = int(decision.get("status", 403 if action == "reject" else 200))
             body_bytes = _body_bytes(decision.get("body", ""))
             headers = _decision_headers(decision.get("headers"))
+            if action == "reject":
+                backoff = self._record_policy_backoff(request, child_scope, decision)
+                if backoff.get("recorded"):
+                    headers.extend(policy_backoff_headers(backoff, include_retry_after=False))
             await _send_response(send, status=status, headers=headers, body=body_bytes)
             return
 
@@ -234,7 +273,25 @@ class LuaMiddleware:
         status = int(final_decision.get("status", 403))
         body_bytes = _body_bytes(final_decision.get("body", "confirmation denied"))
         headers = _decision_headers(final_decision.get("headers"))
+        backoff = self._record_policy_backoff(request, child_scope, final_decision)
+        if backoff.get("recorded"):
+            headers.extend(policy_backoff_headers(backoff, include_retry_after=False))
         await _send_response(send, status=status, headers=headers, body=body_bytes)
+
+    def _record_policy_backoff(
+        self,
+        request: Mapping[str, Any],
+        scope: Scope,
+        decision: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        backoff = self.policy_backoff.record_deny(request, scope, decision)
+        if backoff.get("enabled"):
+            _attach_policy_backoff(scope, backoff)
+            if self.config.trace:
+                trace = scope.get(self.config.trace_scope_key)
+                if isinstance(trace, dict):
+                    trace["policy_backoff"] = backoff
+        return backoff
 
     def _coerce_script(self, script: str | Path | CompiledLuaScript | ScriptLoader) -> ScriptLoader:
         if isinstance(script, CompiledLuaScript):
@@ -486,6 +543,37 @@ def _attach_trace_with_decision(
     state = scope.get("state")
     if isinstance(state, dict):
         state[key] = payload
+
+
+def _attach_synthetic_trace(
+    scope: Scope,
+    key: str,
+    decision: Mapping[str, Any],
+    *,
+    body_read: bool,
+    policy_backoff: Mapping[str, Any] | None = None,
+) -> None:
+    payload = {
+        "action": decision["action"],
+        "decision": dict(decision),
+        "body_read": body_read,
+        "duration_ms": 0.0,
+        "instruction_count": 0,
+        "scopes": [],
+    }
+    if policy_backoff is not None:
+        payload["policy_backoff"] = dict(policy_backoff)
+    scope[key] = payload
+
+    state = scope.get("state")
+    if isinstance(state, dict):
+        state[key] = payload
+
+
+def _attach_policy_backoff(scope: Scope, metadata: Mapping[str, Any]) -> None:
+    state = scope.get("state")
+    if isinstance(state, dict):
+        state["snulbug_policy_backoff"] = dict(metadata)
 
 
 def _normalize_confirmation_result(result: Mapping[str, Any]) -> dict[str, Any]:

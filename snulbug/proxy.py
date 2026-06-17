@@ -47,6 +47,7 @@ from .mcp_auth import (
     protected_resource_metadata,
 )
 from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
+from .policy_backoff import PolicyBackoffConfig
 from .recorder import append_record, build_request_record, record_audit_event
 from .response_policy import ResponsePolicyConfig, enforce_mcp_response_policy
 from .schema_policy import (
@@ -2164,6 +2165,7 @@ def create_proxy_application(
     fabric_control_state_provider: Any = None,
     confirm: bool = False,
     confirm_handler: Any = None,
+    policy_backoff_config: Mapping[str, Any] | PolicyBackoffConfig | None = None,
 ) -> ASGIApp:
     """Create an ASGI app that applies Lua policy before proxying to an upstream."""
 
@@ -2222,6 +2224,7 @@ def create_proxy_application(
         state_store=effective_state_store,
         state_limits=state_limits,
         confirm_handler=confirm_handler or (ConfirmationBroker(enabled=True) if confirm else None),
+        policy_backoff_config=_policy_backoff_config(policy_backoff_config),
     )
     app = McpIntentContextMiddleware(
         app,
@@ -2345,6 +2348,7 @@ def run_proxy(
     fabric_reload_overrides: Mapping[str, Any] | None = None,
     fabric_control_state_provider: Any = None,
     confirm: bool = False,
+    policy_backoff_config: Mapping[str, Any] | PolicyBackoffConfig | None = None,
 ) -> None:
     """Run the reverse proxy with uvicorn."""
 
@@ -2404,6 +2408,7 @@ def run_proxy(
         fabric_reload_overrides=fabric_reload_overrides,
         fabric_control_state_provider=fabric_control_state_provider,
         confirm=confirm,
+        policy_backoff_config=policy_backoff_config,
     )
     uvicorn.run(app, host=host, port=port)
 
@@ -2473,6 +2478,7 @@ def proxy_config_run_kwargs(
         "topology_audit": effective_topology_audit,
         "share_contract": share_contract,
         "event_sinks": proxy_config["event_sinks"],
+        "policy_backoff_config": proxy_config.get("policy_backoff", {}),
         "fabric_reload_config": fabric_reload_config,
         "fabric_reload_interval": fabric_reload_interval,
         "fabric_reload_overrides": fabric_reload_overrides,
@@ -2560,6 +2566,27 @@ def _oauth_resource_config(value: Mapping[str, Any] | OAuthResourceConfig | None
         return value
     normalized = normalize_mcp_auth_config(value or {})
     return _oauth_resource_config_from_normalized(normalized)
+
+
+def _policy_backoff_config(value: Mapping[str, Any] | PolicyBackoffConfig | None) -> PolicyBackoffConfig:
+    if isinstance(value, PolicyBackoffConfig):
+        return value
+    config = dict(value or {})
+    defaults = PolicyBackoffConfig()
+    return PolicyBackoffConfig(
+        enabled=bool(config.get("enabled", defaults.enabled)),
+        base_seconds=float(config.get("base_seconds", defaults.base_seconds)),
+        factor=float(config.get("factor", defaults.factor)),
+        max_seconds=float(config.get("max_seconds", defaults.max_seconds)),
+        window_seconds=float(config.get("window_seconds", defaults.window_seconds)),
+        jitter=bool(config.get("jitter", defaults.jitter)),
+        status=int(config.get("status", defaults.status)),
+        reason_codes=tuple(str(item) for item in config.get("reason_codes", defaults.reason_codes)),
+        exclude_reason_codes=tuple(
+            str(item) for item in config.get("exclude_reason_codes", defaults.exclude_reason_codes)
+        ),
+        key_fields=tuple(str(item) for item in config.get("key_fields", defaults.key_fields)),
+    )
 
 
 def _oauth_resource_config_from_normalized(normalized: Mapping[str, Any]) -> OAuthResourceConfig:
@@ -3772,6 +3799,9 @@ def _record_metadata(
             scope,
             lease=_mapping(metadata.get("lease") or metadata.get("lease_preview")),
         )
+    policy_backoff = state.get("snulbug_policy_backoff") if isinstance(state, Mapping) else None
+    if isinstance(policy_backoff, Mapping):
+        metadata["policy_backoff"] = dict(policy_backoff)
     reload_metadata = state.get("snulbug_fabric_reload") if isinstance(state, Mapping) else None
     if isinstance(reload_metadata, Mapping):
         metadata["fabric_reload"] = dict(reload_metadata)

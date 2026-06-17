@@ -767,6 +767,31 @@ Use warn mode while introducing the proxy to an existing workflow by setting
 Schema snapshots live in the configured state adapter. Use SQLite if you want
 learned schemas to survive proxy restarts.
 
+## Policy Deny Backoff
+
+Enable policy deny backoff when repeated equivalent denies should cool down
+quickly instead of rerunning Lua and hitting the full proxy path every time:
+
+```toml
+[mcp.proxy]
+state = "sqlite:policy-state.sqlite3"
+
+[mcp.policy_backoff]
+enabled = true
+base_seconds = 2
+factor = 2.0
+max_seconds = 60
+window_seconds = 300
+reason_codes = ["mcp.*", "oauth.scope_map_denied", "lease.tool_not_allowed"]
+exclude_reason_codes = ["oauth.invalid_token", "cloudflare_access.*"]
+```
+
+The first selected Lua `reject` or `challenge` records a cooldown in policy
+state. Matching requests during the cooldown return `429` with `Retry-After`
+before Lua runs and before any upstream is reached. See
+[Policy deny backoff](policy-deny-backoff.md) for key fields, headers, and audit
+metadata.
+
 ## Response Controls
 
 Request policy runs before upstream calls. The proxy also applies MCP-aware

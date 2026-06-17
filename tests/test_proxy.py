@@ -105,6 +105,57 @@ def test_reverse_proxy_forwards_allowed_request_to_upstream(tmp_path):
     assert audit["decision"]["reason_code"] == "test.allowed"
 
 
+def test_reverse_proxy_records_policy_deny_backoff_metadata(tmp_path):
+    server, seen = start_upstream()
+    policy = tmp_path / "policy.lua"
+    policy.write_text(
+        """
+        return function(request, context, state)
+          return {
+            action = "reject",
+            status = 403,
+            body = "blocked",
+            reason_code = "mcp.tool_not_allowed"
+          }
+        end
+        """,
+        encoding="utf-8",
+    )
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/api",
+        policy,
+        record_out=record_log,
+        policy_backoff_config={
+            "enabled": True,
+            "base_seconds": 10,
+            "factor": 2.0,
+            "max_seconds": 60,
+            "window_seconds": 300,
+            "jitter": False,
+        },
+    )
+    body = b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shell.exec"}}'
+
+    try:
+        first = run_asgi(app, body=body)
+        second = run_asgi(app, body=body)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    records = load_record_log(record_log)
+    assert first[0]["status"] == 403
+    assert second[0]["status"] == 429
+    assert seen["count"] == 0
+    assert records[0]["metadata"]["policy_backoff"]["recorded"] is True
+    assert records[0]["metadata"]["policy_backoff"]["count"] == 1
+    assert records[0]["result"]["decision"]["reason_code"] == "mcp.tool_not_allowed"
+    assert records[1]["metadata"]["policy_backoff"]["active"] is True
+    assert records[1]["metadata"]["policy_backoff"]["original_reason_code"] == "mcp.tool_not_allowed"
+    assert records[1]["result"]["decision"]["reason_code"] == "policy.backoff_active"
+
+
 def test_reverse_proxy_exposes_share_contract_and_records_digest_metadata(tmp_path):
     server, _seen = start_upstream()
     policy = write_policy(tmp_path, "continue")

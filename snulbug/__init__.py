@@ -56,6 +56,7 @@ from .config import (
     load_mcp_proxy_config,
     normalize_mcp_auth_config,
     normalize_mcp_catalog_config,
+    normalize_mcp_policy_backoff_config,
     write_sample_config,
 )
 from .confirm import ConfirmationBroker
@@ -254,6 +255,7 @@ from .mcp_tools import (
 )
 from .middleware import LuaConfig, LuaMiddleware
 from .policy_activation import POLICY_ACTIVATION_MODES, reconcile_policy_activation
+from .policy_backoff import PolicyBackoffConfig, PolicyDenyBackoff
 from .presets import McpPolicyOptions, copy_builtin_preset, generate_mcp_preset, list_builtin_presets
 from .promotion import compare_decisions, diff_policies, format_policy_diff_report
 from .proxy import (
@@ -488,6 +490,8 @@ __all__ = [
     "McpFacadeProxyApp",
     "OAuthDecision",
     "OAuthResourceConfig",
+    "PolicyBackoffConfig",
+    "PolicyDenyBackoff",
     "PolicyFabricRuntimeStateStore",
     "POLICY_ACTIVATION_MODES",
     "RedisStateStore",
@@ -733,6 +737,7 @@ __all__ = [
     "normalize_fabric_credentials",
     "normalize_mcp_auth_config",
     "normalize_mcp_catalog_config",
+    "normalize_mcp_policy_backoff_config",
     "normalize_mcp_schema_methods",
     "normalize_upstream_credential",
     "normalize_event_sink_configs",

@@ -8,6 +8,11 @@ from .credentials import attach_upstream_credentials, normalize_fabric_credentia
 from .discovery import apply_fabric_discovery
 from .events import normalize_event_sink_configs
 from .gateway_templates import render_toml_array_table
+from .policy_backoff import (
+    DEFAULT_POLICY_BACKOFF_EXCLUDE_REASON_CODES,
+    DEFAULT_POLICY_BACKOFF_KEY_FIELDS,
+    DEFAULT_POLICY_BACKOFF_REASON_CODES,
+)
 from .tool_catalog import CATALOG_PROJECTION_MODES
 from .upstream_transports import get_upstream_transport
 
@@ -109,6 +114,19 @@ DEFAULT_MCP_CATALOG_CONFIG = {
     "projection": "off",
 }
 
+DEFAULT_MCP_POLICY_BACKOFF_CONFIG = {
+    "enabled": False,
+    "base_seconds": 2.0,
+    "factor": 2.0,
+    "max_seconds": 60.0,
+    "window_seconds": 300.0,
+    "jitter": True,
+    "status": 429,
+    "reason_codes": list(DEFAULT_POLICY_BACKOFF_REASON_CODES),
+    "exclude_reason_codes": list(DEFAULT_POLICY_BACKOFF_EXCLUDE_REASON_CODES),
+    "key_fields": list(DEFAULT_POLICY_BACKOFF_KEY_FIELDS),
+}
+
 DEFAULT_MCP_FABRIC_CONFIG = {
     "name": "local-dev",
     "description": "",
@@ -198,6 +216,29 @@ timeout = 30.0
 # Optional tools/list projection. "policy-aware" hides tools the caller cannot
 # invoke under OAuth scope maps, claim policies, and task leases.
 projection = "off"
+
+[mcp.policy_backoff]
+# Optional exponential backoff for repeated equivalent Lua policy denies.
+enabled = false
+base_seconds = 2
+factor = 2.0
+max_seconds = 60
+window_seconds = 300
+jitter = true
+status = 429
+reason_codes = ["mcp.*", "oauth.scope_map_denied", "lease.tool_not_allowed"]
+exclude_reason_codes = ["oauth.invalid_token", "cloudflare_access.*"]
+key_fields = [
+  "auth.subject",
+  "auth.client_id",
+  "auth.tenant",
+  "lease.id",
+  "mcp.method",
+  "mcp.tool",
+  "mcp.target",
+  "upstream.name",
+  "decision.reason_code",
+]
 
 [mcp.auth]
 # Optional OAuth 2.1 protected-resource mode for public MCP endpoints.
@@ -370,6 +411,9 @@ def load_mcp_proxy_config(path: str | Path) -> dict[str, Any]:
     catalog = mcp.get("catalog", {})
     if not isinstance(catalog, Mapping):
         raise ValueError("config section [mcp.catalog] must be a table")
+    policy_backoff = mcp.get("policy_backoff", {})
+    if not isinstance(policy_backoff, Mapping):
+        raise ValueError("config section [mcp.policy_backoff] must be a table")
     fabric = mcp.get("fabric", {})
     if not isinstance(fabric, Mapping):
         raise ValueError("config section [mcp.fabric] must be a table")
@@ -379,6 +423,7 @@ def load_mcp_proxy_config(path: str | Path) -> dict[str, Any]:
         fabric,
         auth=auth,
         catalog=catalog,
+        policy_backoff=policy_backoff,
         event_sinks=event_sinks,
         base_dir=config_path.parent,
     )
@@ -406,12 +451,16 @@ def load_mcp_fabric_config(path: str | Path) -> dict[str, Any]:
     catalog = mcp.get("catalog", {})
     if not isinstance(catalog, Mapping):
         raise ValueError("config section [mcp.catalog] must be a table")
+    policy_backoff = mcp.get("policy_backoff", {})
+    if not isinstance(policy_backoff, Mapping):
+        raise ValueError("config section [mcp.policy_backoff] must be a table")
     event_sinks = _load_event_sinks_table(mcp)
     proxy_config = _normalize_proxy_config_with_discovery(
         proxy,
         fabric,
         auth=auth,
         catalog=catalog,
+        policy_backoff=policy_backoff,
         event_sinks=event_sinks,
         base_dir=config_path.parent,
     )
@@ -429,6 +478,7 @@ def _normalize_proxy_config_with_discovery(
     *,
     auth: Mapping[str, Any] | None = None,
     catalog: Mapping[str, Any] | None = None,
+    policy_backoff: Mapping[str, Any] | None = None,
     event_sinks: Any = None,
     base_dir: Path,
 ) -> dict[str, Any]:
@@ -439,6 +489,7 @@ def _normalize_proxy_config_with_discovery(
     proxy_config["auth"] = normalize_mcp_auth_config(auth, base_dir=base_dir)
     proxy_config["catalog"] = normalize_mcp_catalog_config(catalog)
     proxy_config["catalog_projection"] = proxy_config["catalog"]["projection"]
+    proxy_config["policy_backoff"] = normalize_mcp_policy_backoff_config(policy_backoff)
     proxy_config["discovery"] = discovery
     proxy_config["event_sinks"] = [
         *proxy_config.get("event_sinks", []),
@@ -612,6 +663,7 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
     normalized["event_sinks"] = normalize_event_sink_configs(normalized.get("event_sinks", []), base_dir=base)
     normalized["auth"] = normalize_mcp_auth_config(normalized.get("auth", {}), base_dir=base)
     normalized["catalog"] = normalize_mcp_catalog_config({"projection": normalized["catalog_projection"]})
+    normalized["policy_backoff"] = normalize_mcp_policy_backoff_config(normalized.get("policy_backoff"))
     return normalized
 
 
@@ -627,6 +679,46 @@ def normalize_mcp_catalog_config(config: Mapping[str, Any] | None) -> dict[str, 
         raise ValueError("mcp.catalog.projection must be a string")
     if projection not in CATALOG_PROJECTION_MODES:
         raise ValueError("mcp.catalog.projection must be 'off' or 'policy-aware'")
+    return normalized
+
+
+def normalize_mcp_policy_backoff_config(config: Mapping[str, Any] | None) -> dict[str, Any]:
+    if config in (None, ""):
+        config = {}
+    if not isinstance(config, Mapping):
+        raise ValueError("mcp.policy_backoff must be a table")
+    normalized = dict(DEFAULT_MCP_POLICY_BACKOFF_CONFIG)
+    normalized.update({key: value for key, value in config.items() if value is not None})
+    if not isinstance(normalized.get("enabled"), bool):
+        raise ValueError("mcp.policy_backoff.enabled must be a boolean")
+    if not isinstance(normalized.get("jitter"), bool):
+        raise ValueError("mcp.policy_backoff.jitter must be a boolean")
+    for field in ("base_seconds", "factor", "max_seconds", "window_seconds"):
+        value = normalized.get(field)
+        if not isinstance(value, int | float) or float(value) <= 0:
+            raise ValueError(f"mcp.policy_backoff.{field} must be a positive number")
+        normalized[field] = float(value)
+    if normalized["factor"] < 1:
+        raise ValueError("mcp.policy_backoff.factor must be at least 1")
+    status = normalized.get("status")
+    if not isinstance(status, int) or status < 400 or status > 599:
+        raise ValueError("mcp.policy_backoff.status must be an HTTP error status")
+    normalized["reason_codes"] = _normalize_string_list(
+        normalized.get("reason_codes"),
+        field="policy_backoff.reason_codes",
+    )
+    normalized["exclude_reason_codes"] = _normalize_string_list(
+        normalized.get("exclude_reason_codes"),
+        field="policy_backoff.exclude_reason_codes",
+    )
+    normalized["key_fields"] = _normalize_string_list(
+        normalized.get("key_fields"),
+        field="policy_backoff.key_fields",
+    )
+    if not normalized["reason_codes"]:
+        raise ValueError("mcp.policy_backoff.reason_codes must not be empty")
+    if not normalized["key_fields"]:
+        raise ValueError("mcp.policy_backoff.key_fields must not be empty")
     return normalized
 
 

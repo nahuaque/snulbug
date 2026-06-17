@@ -6,7 +6,15 @@ from typing import Any
 
 import pytest
 
-from snulbug import LuaConfig, LuaDecisionError, LuaMiddleware, LuaRuntimeError, MemoryStateStore, simulate_policy
+from snulbug import (
+    LuaConfig,
+    LuaDecisionError,
+    LuaMiddleware,
+    LuaRuntimeError,
+    MemoryStateStore,
+    PolicyBackoffConfig,
+    simulate_policy,
+)
 from snulbug.simulator import main as simulator_main
 
 
@@ -190,6 +198,79 @@ def test_lua_rate_limit_requires_state_store():
 
     with pytest.raises(LuaDecisionError, match="requires a configured state_store"):
         run_asgi(middleware)
+
+
+def test_lua_policy_deny_backoff_short_circuits_active_cooldown():
+    state = MemoryStateStore()
+    middleware = LuaMiddleware(
+        app,
+        """
+        return function(request, context, state)
+          state.incr("lua_runs", 1, { ttl = 60 })
+          return {
+            action = "reject",
+            status = 403,
+            body = "blocked",
+            reason_code = "mcp.tool_not_allowed"
+          }
+        end
+        """,
+        config=LuaConfig(read_body=True, trace=True),
+        state_store=state,
+        policy_backoff_config=PolicyBackoffConfig(
+            enabled=True,
+            base_seconds=10,
+            factor=2,
+            max_seconds=60,
+            window_seconds=300,
+            jitter=False,
+            key_fields=("client.ip", "mcp.method", "mcp.tool", "decision.reason_code"),
+        ),
+    )
+    body = b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shell.exec"}}'
+
+    first = run_asgi(middleware, body=body)
+    second = run_asgi(middleware, body=body)
+
+    assert first[0]["status"] == 403
+    assert first[1]["body"] == b"blocked"
+    assert (b"x-snulbug-backoff-count", b"1") in first[0]["headers"]
+    assert (b"x-snulbug-backoff-retry-after", b"10") in first[0]["headers"]
+    assert second[0]["status"] == 429
+    assert (b"retry-after", b"10") in second[0]["headers"]
+    assert (b"x-snulbug-backoff-count", b"1") in second[0]["headers"]
+    assert b"policy deny backoff active" in second[1]["body"]
+    assert state.get("lua_runs") == "1"
+
+
+def test_lua_policy_deny_backoff_ignores_unselected_reason_code():
+    state = MemoryStateStore()
+    middleware = LuaMiddleware(
+        app,
+        """
+        return function(request, context, state)
+          state.incr("lua_runs", 1, { ttl = 60 })
+          return {
+            action = "reject",
+            status = 401,
+            body = "invalid token",
+            reason_code = "oauth.invalid_token"
+          }
+        end
+        """,
+        config=LuaConfig(read_body=True, trace=True),
+        state_store=state,
+        policy_backoff_config=PolicyBackoffConfig(enabled=True, jitter=False),
+    )
+    body = b'{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+
+    first = run_asgi(middleware, body=body)
+    second = run_asgi(middleware, body=body)
+
+    assert first[0]["status"] == 401
+    assert second[0]["status"] == 401
+    assert not any(header[0] == b"x-snulbug-backoff-count" for header in second[0]["headers"])
+    assert state.get("lua_runs") == "2"
 
 
 def test_lua_can_rewrite_request_and_replay_body():
