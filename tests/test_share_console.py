@@ -327,13 +327,23 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "Share Readiness" in html
     assert "renderReadinessGate" in html
     assert "readinessChecksTable" in html
+    assert "setShowAllReadiness" in html
+    assert "Show all" in html
+    assert "passing checks hidden" in html
     assert "copyReadinessAttestation" in html
     assert "captureScrollState" in html
     assert "restoreScrollState" in html
     assert "scrollPreserveSelectors" in html
+    assert "details[data-state-key]" in html
+    assert "element.open = Boolean" in html
     assert "Policy Visibility" in html
     assert "renderPolicyVisibility" in html
     assert "policySourceHtml" in html
+    assert "policyRecentDecisionsDetails" in html
+    assert 'data-state-key="policy-recent-decisions"' in html
+    assert 'data-state-key="policy-source"' in html
+    assert "<summary>Recent Decisions" in html
+    assert "<summary>${esc(sourceLabel)}</summary>" in html
     assert "language-lua" in html
     assert "/assets/prism.js" in html
     assert "/assets/prism.css" in html
@@ -344,6 +354,7 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "Tunnel Provider" in html
     assert "renderTunnelProvider" in html
     assert "providerCommandsTable" in html
+    assert 'data-state-key="provider-generated-commands"' in html
     assert "Download Report" in html
     assert "/api/report/download" in html
     assert "downloadReport" in html

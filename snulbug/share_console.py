@@ -2762,7 +2762,7 @@ def _console_html() -> str:
   </div>
   <script src="/assets/prism.js"></script>
   <script>
-    const state = { snapshot: null, timer: null, selectedRequestId: null };
+    const state = { snapshot: null, timer: null, selectedRequestId: null, showAllReadiness: false };
     const scrollPreserveSelectors = [
       ".policy-source",
       "#reportOutput",
@@ -2825,6 +2825,10 @@ def _console_html() -> str:
       return {
         windowX: window.scrollX,
         windowY: window.scrollY,
+        details: Array.from(document.querySelectorAll("details[data-state-key]")).map((element) => ({
+          key: element.dataset.stateKey,
+          open: element.open
+        })),
         elements: scrollPreserveSelectors.map((selector) => {
           const element = document.querySelector(selector);
           return element ? { selector, left: element.scrollLeft, top: element.scrollTop } : null;
@@ -2835,6 +2839,14 @@ def _console_html() -> str:
     function restoreScrollState(scrollState) {
       if (!scrollState) return;
       const restore = () => {
+        const detailsOpenByKey = new Map(
+          (scrollState.details || []).map((item) => [item.key, item.open])
+        );
+        document.querySelectorAll("details[data-state-key]").forEach((element) => {
+          const key = element.dataset.stateKey;
+          if (!detailsOpenByKey.has(key)) return;
+          element.open = Boolean(detailsOpenByKey.get(key));
+        });
         (scrollState.elements || []).forEach((item) => {
           const element = document.querySelector(item.selector);
           if (!element) return;
@@ -2918,21 +2930,48 @@ def _console_html() -> str:
         <h2>Next Steps</h2>
         <ul class="recommendations">${recommendations.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>
       </div>` : "";
-      const attestationHtml = `<details class="compact-details">
+      const attestationHtml = `<details class="compact-details" data-state-key="readiness-attestation">
         <summary>Readiness Attestation</summary>
         <div class="details-body stack">
           <button type="button" onclick="copyReadinessAttestation()">Copy Attestation</button>
           <div class="console-output">${esc(JSON.stringify(attestation, null, 2))}</div>
         </div>
       </details>`;
+      const filterHtml = `<label class="auto">
+        <input
+          id="showAllReadiness"
+          type="checkbox"
+          ${state.showAllReadiness ? "checked" : ""}
+          onchange="setShowAllReadiness(this.checked)"
+        > Show all
+      </label>`;
       $("shareReadiness").innerHTML =
-        `<div class="stack">${overview}${readinessChecksTable(checks)}${recommendationsHtml}${attestationHtml}</div>`;
+        `<div class="stack">${overview}${filterHtml}${readinessChecksTable(checks)}` +
+        `${recommendationsHtml}${attestationHtml}</div>`;
+    }
+
+    function setShowAllReadiness(value) {
+      state.showAllReadiness = Boolean(value);
+      renderReadinessGate(((state.snapshot || {}).readiness_gate) || {});
     }
 
     function readinessChecksTable(checks) {
+      const visibleChecks = state.showAllReadiness
+        ? checks
+        : checks.filter((check) => check.status === "warn" || check.status === "fail");
+      const hiddenPasses = checks.length - visibleChecks.length;
+      if (!visibleChecks.length) {
+        const message = state.showAllReadiness
+          ? "No readiness checks available."
+          : `No warnings or failures. ${hiddenPasses} passing checks hidden.`;
+        return `<div class="empty">${esc(message)}</div>`;
+      }
+      const hiddenHtml = !state.showAllReadiness && hiddenPasses
+        ? `<div class="timeline-detail">${esc(`${hiddenPasses} passing checks hidden`)}</div>`
+        : "";
       return `<table>
         <thead><tr><th>Status</th><th>Component</th><th>Check</th><th>Message</th></tr></thead>
-        <tbody>${checks.map((check) => (
+        <tbody>${visibleChecks.map((check) => (
           `<tr>
             <td>${pill(check.status)}</td>
             <td>${esc(check.component || "-")}</td>
@@ -2940,7 +2979,7 @@ def _console_html() -> str:
             <td>${esc(check.message || "-")}</td>
           </tr>`
         )).join("")}</tbody>
-      </table>`;
+      </table>${hiddenHtml}`;
     }
 
     function contractText(contract) {
@@ -2995,10 +3034,7 @@ def _console_html() -> str:
           <h2>Observed Reason Codes</h2>
           ${counterTable(reasons.summary || [], "Reason code")}
         </div>
-        <div>
-          <h2>Recent Decisions</h2>
-          ${policyReasonTable(reasons.recent || [])}
-        </div>
+        ${policyRecentDecisionsDetails(reasons.recent || [])}
       </div>`;
       const sourceHtml = policySourceHtml(source);
       $("policyVisibility").innerHTML =
@@ -3055,21 +3091,32 @@ def _console_html() -> str:
       </table>`;
     }
 
+    function policyRecentDecisionsDetails(rows) {
+      const count = rows.length || 0;
+      return `<details class="compact-details" data-state-key="policy-recent-decisions">
+        <summary>Recent Decisions (${count})</summary>
+        <div class="details-body">${policyReasonTable(rows)}</div>
+      </details>`;
+    }
+
     function policySourceHtml(source) {
       if (!source.displayable) {
-        return `<div>
-          <h2>Lua Source</h2>
-          <div class="empty">${esc(source.reason || "Source is not displayable.")}</div>
-        </div>`;
+        return `<details class="compact-details" data-state-key="policy-source">
+          <summary>Lua Source</summary>
+          <div class="details-body"><div class="empty">${esc(source.reason || "Source is not displayable.")}</div></div>
+        </details>`;
       }
       const notice = source.redacted
         ? '<div class="timeline-detail">Secrets have been redacted before rendering.</div>'
         : "";
-      return `<div>
-        <h2>Lua Source</h2>
+      const sourceLabel = `Lua Source (${source.line_count || 0} lines)`;
+      return `<details class="compact-details" data-state-key="policy-source">
+        <summary>${esc(sourceLabel)}</summary>
+        <div class="details-body stack">
         ${notice}
         <pre class="policy-source language-lua"><code class="language-lua">${esc(source.source || "")}</code></pre>
-      </div>`;
+        </div>
+      </details>`;
     }
 
     function renderDecisionTimeline(payload) {
@@ -3720,7 +3767,7 @@ def _console_html() -> str:
 
     function providerCommandsTable(commands) {
       if (!commands.length) return '<div class="empty">No generated provider commands.</div>';
-      return `<details class="compact-details">
+      return `<details class="compact-details" data-state-key="provider-generated-commands">
         <summary>Generated Commands (${commands.length})</summary>
         <div class="details-body"><table>
         <thead><tr><th>Step</th><th>Command</th></tr></thead>
