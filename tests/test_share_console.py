@@ -177,6 +177,16 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
         server.stop()
 
     assert "snulbug share console" in html
+    assert 'class="section-nav"' in html
+    assert 'class="toolbar-group"' in html
+    assert 'class="overview-grid"' in html
+    assert 'aria-live="polite"' in html
+    assert 'href="#providerSection"' in html
+    assert 'id="decisionsSection"' in html
+    assert 'id="requestsSection"' in html
+    assert 'id="leasesSection"' in html
+    assert 'id="schemaSection"' in html
+    assert 'id="evidenceSection"' in html
     assert "Capability Requests" in html
     assert "Live Decisions" in html
     assert "Tunnel Provider" in html

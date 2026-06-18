@@ -1263,11 +1263,16 @@ def _console_html() -> str:
     * {
       box-sizing: border-box;
     }
+    html {
+      scroll-behavior: smooth;
+      scroll-padding-top: 124px;
+    }
     body {
       margin: 0;
       background: var(--bg);
       color: var(--text);
       font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      overflow-x: hidden;
     }
     button, input, select {
       font: inherit;
@@ -1322,15 +1327,23 @@ def _console_html() -> str:
       position: sticky;
       top: 0;
       z-index: 5;
+      width: 100%;
+      max-width: 100vw;
+      overflow-x: clip;
     }
     .topbar {
-      max-width: 1320px;
+      max-width: min(1320px, 100vw);
+      width: 100%;
+      min-width: 0;
       margin: 0 auto;
-      padding: 14px 20px;
+      padding: 12px 20px 10px;
       display: grid;
       grid-template-columns: minmax(180px, 1fr) auto;
       gap: 16px;
       align-items: center;
+    }
+    .topbar > *, .toolbar {
+      min-width: 0;
     }
     h1 {
       margin: 0;
@@ -1345,10 +1358,20 @@ def _console_html() -> str:
     }
     .toolbar {
       display: flex;
-      gap: 8px;
+      gap: 10px;
       align-items: center;
       flex-wrap: wrap;
       justify-content: flex-end;
+    }
+    .toolbar-group {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfd;
     }
     .auto {
       display: inline-flex;
@@ -1357,11 +1380,42 @@ def _console_html() -> str:
       color: var(--muted);
       white-space: nowrap;
     }
+    .section-nav {
+      max-width: min(1320px, 100vw);
+      width: 100%;
+      min-width: 0;
+      margin: 0 auto;
+      padding: 0 20px 10px;
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+    .section-nav a {
+      flex: 0 0 auto;
+      min-height: 30px;
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 0 10px;
+      background: #fbfcfd;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    .section-nav a:hover {
+      color: var(--blue);
+      border-color: #9ec2df;
+      text-decoration: none;
+    }
     main {
-      max-width: 1320px;
+      max-width: min(1320px, 100vw);
+      min-width: 0;
       width: 100%;
       margin: 0 auto;
-      padding: 18px 20px 28px;
+      padding: 16px 20px 28px;
       display: grid;
       gap: 16px;
     }
@@ -1378,7 +1432,7 @@ def _console_html() -> str:
     }
     .metric {
       padding: 12px;
-      min-height: 82px;
+      min-height: 70px;
       display: grid;
       align-content: space-between;
     }
@@ -1389,12 +1443,13 @@ def _console_html() -> str:
       letter-spacing: 0;
     }
     .metric strong {
-      font-size: 24px;
+      font-size: 21px;
       line-height: 1.1;
       overflow-wrap: anywhere;
     }
     section {
       overflow: hidden;
+      scroll-margin-top: 124px;
     }
     .section-head {
       padding: 12px 14px;
@@ -1412,6 +1467,12 @@ def _console_html() -> str:
     }
     .section-body {
       padding: 14px;
+    }
+    .overview-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+      gap: 16px;
+      align-items: start;
     }
     .grid-two {
       display: grid;
@@ -1565,6 +1626,25 @@ def _console_html() -> str:
       margin: 8px 0 0;
       padding-left: 18px;
     }
+    details.compact-details {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfd;
+      overflow: hidden;
+    }
+    details.compact-details summary {
+      min-height: 40px;
+      padding: 10px 12px;
+      cursor: pointer;
+      color: var(--text);
+      font-weight: 720;
+      list-style-position: inside;
+    }
+    details.compact-details .details-body {
+      border-top: 1px solid var(--line);
+      padding: 12px;
+      background: var(--surface);
+    }
     .token {
       background: #0f1720;
       color: #e8f1f8;
@@ -1602,7 +1682,7 @@ def _console_html() -> str:
       .metrics {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
-      .grid-two, .topbar {
+      .grid-two, .overview-grid, .topbar {
         grid-template-columns: 1fr;
       }
       .toolbar {
@@ -1613,9 +1693,12 @@ def _console_html() -> str:
       }
     }
     @media (max-width: 560px) {
-      main, .topbar {
+      main, .topbar, .section-nav {
         padding-left: 12px;
         padding-right: 12px;
+      }
+      .toolbar-group {
+        width: 100%;
       }
       .metrics {
         grid-template-columns: 1fr;
@@ -1651,61 +1734,77 @@ def _console_html() -> str:
           <h1>snulbug share console</h1>
           <div id="sharePath" class="subtitle">Loading share session</div>
         </div>
-        <div class="toolbar">
-          <label class="auto"><input id="autoRefresh" type="checkbox" checked> Auto refresh</label>
-          <button id="refreshButton" class="primary" type="button">Refresh</button>
-          <button id="doctorButton" type="button">Run Doctor</button>
-          <button id="amendPreviewButton" type="button">Preview Amendment</button>
-          <button id="reportButton" type="button">Download Report</button>
+        <div class="toolbar" aria-label="Console actions">
+          <div class="toolbar-group" aria-label="Refresh controls">
+            <label class="auto"><input id="autoRefresh" type="checkbox" checked> Auto refresh</label>
+            <button id="refreshButton" class="primary" type="button">Refresh</button>
+          </div>
+          <div class="toolbar-group" aria-label="Session actions">
+            <button id="doctorButton" type="button">Run Doctor</button>
+            <button id="amendPreviewButton" type="button">Preview Amendment</button>
+            <button id="reportButton" type="button">Download Report</button>
+          </div>
         </div>
       </div>
+      <nav class="section-nav" aria-label="Console sections">
+        <a href="#providerSection">Provider</a>
+        <a href="#decisionsSection">Decisions</a>
+        <a href="#requestsSection">Requests</a>
+        <a href="#leasesSection">Leases</a>
+        <a href="#authSection">Auth</a>
+        <a href="#schemaSection">Schemas</a>
+        <a href="#riskSection">Risk</a>
+        <a href="#evidenceSection">Evidence</a>
+      </nav>
     </header>
     <main>
-      <div id="message" class="message"></div>
+      <div id="message" class="message" aria-live="polite"></div>
       <div class="metrics" id="metrics"></div>
-      <section>
-        <div class="section-head"><h2>Tunnel Provider</h2><span id="providerSummary" class="muted"></span></div>
-        <div class="section-body" id="tunnelProvider"></div>
-      </section>
-      <section>
-        <div class="section-head"><h2>Live Decisions</h2><span id="decisionSummary" class="muted"></span></div>
-        <div class="section-body" id="decisionTimeline"></div>
-      </section>
-      <div class="grid-two">
-        <section>
-          <div class="section-head"><h2>Capability Requests</h2><span id="requestSummary" class="muted"></span></div>
-          <div class="section-body" id="requests"></div>
+      <div class="overview-grid">
+        <section id="providerSection">
+          <div class="section-head"><h2>Tunnel Provider</h2><span id="providerSummary" class="muted"></span></div>
+          <div class="section-body" id="tunnelProvider"></div>
         </section>
-        <section>
+        <section id="healthSection">
           <div class="section-head"><h2>Health</h2><span id="healthSummary" class="muted"></span></div>
           <div class="section-body" id="health"></div>
         </section>
       </div>
-      <section>
-        <div class="section-head"><h2>Active Leases</h2><span id="leaseSummary" class="muted"></span></div>
-        <div class="section-body" id="leases"></div>
+      <section id="decisionsSection">
+        <div class="section-head"><h2>Live Decisions</h2><span id="decisionSummary" class="muted"></span></div>
+        <div class="section-body" id="decisionTimeline"></div>
       </section>
-      <section>
+      <div class="grid-two">
+        <section id="requestsSection">
+          <div class="section-head"><h2>Capability Requests</h2><span id="requestSummary" class="muted"></span></div>
+          <div class="section-body" id="requests"></div>
+        </section>
+        <section id="leasesSection">
+          <div class="section-head"><h2>Active Leases</h2><span id="leaseSummary" class="muted"></span></div>
+          <div class="section-body" id="leases"></div>
+        </section>
+      </div>
+      <section id="authSection">
         <div class="section-head"><h2>Auth Visibility</h2><span id="authSummary" class="muted"></span></div>
         <div class="section-body" id="authVisibility"></div>
       </section>
-      <section>
+      <section id="schemaSection">
         <div class="section-head">
           <h2>Tool And Schema Changes</h2><span id="toolSchemaSummary" class="muted"></span>
         </div>
         <div class="section-body" id="toolSchemaVisibility"></div>
       </section>
       <div class="grid-two">
-        <section>
+        <section id="riskSection">
           <div class="section-head"><h2>Tool Risk</h2><span id="riskSummary" class="muted"></span></div>
           <div class="section-body" id="toolRisk"></div>
         </section>
-        <section>
+        <section id="findingsSection">
           <div class="section-head"><h2>Findings</h2><span id="findingSummary" class="muted"></span></div>
           <div class="section-body" id="findings"></div>
         </section>
       </div>
-      <section>
+      <section id="evidenceSection">
         <div class="section-head"><h2>Evidence And Commands</h2><span id="evidenceSummary" class="muted"></span></div>
         <div class="section-body" id="evidence"></div>
       </section>
@@ -2438,7 +2537,9 @@ def _console_html() -> str:
 
     function providerCommandsTable(commands) {
       if (!commands.length) return '<div class="empty">No generated provider commands.</div>';
-      return `<div><h2>Generated Commands</h2><table>
+      return `<details class="compact-details">
+        <summary>Generated Commands (${commands.length})</summary>
+        <div class="details-body"><table>
         <thead><tr><th>Step</th><th>Command</th></tr></thead>
         <tbody>${commands.map((item) => (
           `<tr>
@@ -2449,7 +2550,7 @@ def _console_html() -> str:
             <td><code class="command-code">${esc(item.command)}</code></td>
           </tr>`
         )).join("")}</tbody>
-      </table></div>`;
+      </table></div></details>`;
     }
 
     function renderHealth(status) {
