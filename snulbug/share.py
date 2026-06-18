@@ -446,6 +446,7 @@ def share_status(
         if isinstance(value, str) and key != "manifest"
     }
     session_model = session_model or build_share_session_model(manifest, directory=share_dir)
+    public_gateway = _share_public_gateway_status(manifest, session_model, timeout=timeout, live_checks=live_checks)
     gateway = _share_gateway_status(share_dir, manifest, session_model, timeout=timeout, live_checks=live_checks)
     upstreams = _share_upstream_statuses(share_dir, manifest, timeout=timeout, live_checks=live_checks)
     traffic = _share_traffic_summary(share_dir, session_model)
@@ -480,6 +481,7 @@ def share_status(
         "commands": manifest.get("commands", {}),
         "session_model": session_model,
         "session_model_path": str(model_path),
+        "public_gateway": public_gateway,
         "gateway": gateway,
         "upstreams": upstreams,
         "tunnel_doctor": tunnel,
@@ -4899,6 +4901,39 @@ def _share_gateway_status(
     if not result["checked"]:
         return result
     client = _mapping(manifest.get("client"))
+    headers = _mapping(client.get("headers"))
+    probe = _probe_mcp_url(str(url), headers=headers, timeout=timeout)
+    result.update(probe)
+    return result
+
+
+def _share_public_gateway_status(
+    manifest: Mapping[str, Any],
+    session_model: Mapping[str, Any],
+    *,
+    timeout: float,
+    live_checks: bool,
+) -> dict[str, Any]:
+    tunnel = _mapping(session_model.get("tunnel"))
+    client = _mapping(manifest.get("client"))
+    provider = str(tunnel.get("provider") or "").strip()
+    url = tunnel.get("public_url") or tunnel.get("client_url") or client.get("url")
+    default_endpoint = False
+    if provider and isinstance(url, str) and url:
+        try:
+            default_endpoint = get_tunnel_provider(provider).is_default_public_endpoint(url)
+        except ValueError:
+            default_endpoint = False
+    configured = isinstance(url, str) and bool(url) and not default_endpoint
+    result: dict[str, Any] = {
+        "configured": configured,
+        "url": url if configured else None,
+        "provider": provider or tunnel.get("provider"),
+        "checked": bool(live_checks and configured),
+        "reachable": None,
+    }
+    if not result["checked"]:
+        return result
     headers = _mapping(client.get("headers"))
     probe = _probe_mcp_url(str(url), headers=headers, timeout=timeout)
     result.update(probe)

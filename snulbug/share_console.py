@@ -3473,6 +3473,11 @@ def _console_html() -> str:
       border-color: #9ec2df;
       background: #f2f8fd;
     }
+    .target-kind.tunnel {
+      color: var(--yellow);
+      border-color: #e7cf8a;
+      background: #fff9e8;
+    }
     .target-kind.upstream {
       color: var(--green);
       border-color: #a7d8bf;
@@ -5275,9 +5280,19 @@ def _console_html() -> str:
     }
 
     function renderHealth(status) {
+      const publicGateway = status.public_gateway || {};
       const gateway = status.gateway || {};
       const upstreams = status.upstreams || [];
-      const rows = [
+      const publicRows = publicGateway.configured ? [{
+        kind: "tunnel",
+        label: "public tunnel",
+        detail: `${publicGateway.provider || "tunnel"} URL exposed to MCP clients`,
+        url: publicGateway.url,
+        checked: publicGateway.checked,
+        reachable: publicGateway.reachable,
+        status: publicGateway.status || publicGateway.error || publicGateway.health
+      }] : [];
+      const rows = publicRows.concat([
         {
           kind: "gateway",
           label: "snulbug gateway",
@@ -5287,7 +5302,7 @@ def _console_html() -> str:
           reachable: gateway.reachable,
           status: gateway.status || gateway.error || gateway.health
         }
-      ].concat(upstreams.map((item) => ({
+      ]).concat(upstreams.map((item) => ({
         kind: "upstream",
         label: item.name || "upstream",
         detail: "Upstream MCP server behind snulbug",

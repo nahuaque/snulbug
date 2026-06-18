@@ -470,8 +470,10 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "Run Doctor" in html
     assert "Run health check" in html
     assert "runHealthCheck" in html
+    assert "public tunnel" in html
     assert "snulbug gateway" in html
     assert "Upstream MCP server behind snulbug" in html
+    assert ".target-kind.tunnel" in html
     assert ".target-kind.gateway" in html
     assert ".target-kind.upstream" in html
     assert 'class="target-kind ${esc(row.kind)}"' in html
@@ -628,7 +630,11 @@ def test_share_console_runs_manual_health_check(tmp_path, monkeypatch):
         server.stop()
 
     assert snapshot["status"]["gateway"]["checked"] is False
+    assert snapshot["status"]["public_gateway"]["configured"] is True
+    assert snapshot["status"]["public_gateway"]["checked"] is False
     assert snapshot["status"]["upstreams"][0]["checked"] is False
+    assert health["public_gateway"]["checked"] is True
+    assert health["public_gateway"]["reachable"] is True
     assert health["gateway"]["checked"] is True
     assert health["gateway"]["reachable"] is True
     assert health["upstreams"][0]["checked"] is True
@@ -636,7 +642,12 @@ def test_share_console_runs_manual_health_check(tmp_path, monkeypatch):
     readiness_checks = {check["id"]: check for check in health["readiness_gate"]["checks"]}
     assert readiness_checks["gateway.reachable"]["status"] == "pass"
     assert readiness_checks["upstreams.reachable"]["status"] == "pass"
-    assert [call[0] for call in calls] == ["http://127.0.0.1:8080/mcp", "http://127.0.0.1:9000"]
+    assert [call[0] for call in calls] == [
+        "https://mcp.example.test/mcp",
+        "http://127.0.0.1:8080/mcp",
+        "http://127.0.0.1:9000",
+    ]
+    assert {key.lower(): value for key, value in calls[0][1].items()}["authorization"] == "Bearer share-secret"
     assert "share-secret" not in json.dumps(health)
 
 
