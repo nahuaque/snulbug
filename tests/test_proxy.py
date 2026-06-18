@@ -1826,6 +1826,31 @@ def test_reverse_proxy_writes_live_decision_console_json(tmp_path):
     assert event["trace"]["instruction_count"] == 0
 
 
+def test_reverse_proxy_does_not_record_internal_share_status_probe(tmp_path):
+    policy = write_policy(tmp_path, "continue")
+    audit_log = tmp_path / "audit.jsonl"
+    console = io.StringIO()
+    app = create_proxy_application(
+        "http://127.0.0.1:9",
+        policy,
+        timeout=0.05,
+        event_dispatcher=event_dispatcher(audit_log=audit_log, console=console),
+    )
+
+    run_asgi(
+        app,
+        path="/mcp",
+        headers=[
+            (b"user-agent", b"snulbug-share-status"),
+            (b"x-snulbug-internal-probe", b"share-status"),
+        ],
+        body=b'{"jsonrpc":"2.0","id":"snulbug-share-status","method":"tools/list","params":{}}',
+    )
+
+    assert not audit_log.exists()
+    assert console.getvalue() == ""
+
+
 def test_confirm_action_rejects_closed_without_handler(tmp_path):
     server, seen = start_upstream()
     policy = write_confirm_policy(tmp_path)

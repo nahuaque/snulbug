@@ -89,6 +89,7 @@ class ConsoleEventSink:
     output_format: str = "text"
     events: tuple[str, ...] = ("snulbug.audit",)
     enabled: bool = True
+    include_internal: bool = False
 
     def __post_init__(self) -> None:
         if self.output_format not in {"text", "json"}:
@@ -96,6 +97,8 @@ class ConsoleEventSink:
 
     def emit(self, event: Mapping[str, Any]) -> None:
         if not _event_matches(event, self.events, enabled=self.enabled):
+            return
+        if not self.include_internal and _is_internal_probe_event(event):
             return
         if self.output_format == "json":
             line = json.dumps(_jsonish(event), sort_keys=True, separators=(",", ":"))
@@ -207,6 +210,7 @@ class ConsoleEventSinkProvider(EventSinkProvider):
             output_format=str(config.get("format", "text")),
             events=_string_tuple(config.get("events", ["snulbug.audit"]), field="mcp.events.sinks.events"),
             enabled=bool(config.get("enabled", True)),
+            include_internal=bool(config.get("include_internal", False)),
         )
 
 
@@ -516,12 +520,18 @@ def _normalize_console_sink(item: Mapping[str, Any], *, index: int) -> dict[str,
     output_format = item.get("format", "text")
     if output_format not in {"text", "json"}:
         raise ValueError(f"mcp.events.sinks[{index}].format must be 'text' or 'json'")
-    return {
+    normalized = {
         "type": "console",
         "format": output_format,
         "events": _string_tuple(item.get("events", ["snulbug.audit"]), field=f"mcp.events.sinks[{index}].events"),
         "enabled": _bool_value(item.get("enabled", True), field=f"mcp.events.sinks[{index}].enabled"),
     }
+    if "include_internal" in item:
+        normalized["include_internal"] = _bool_value(
+            item.get("include_internal", False),
+            field=f"mcp.events.sinks[{index}].include_internal",
+        )
+    return normalized
 
 
 def _normalize_webhook_sink(
@@ -587,6 +597,11 @@ def _event_matches(event: Mapping[str, Any], events: Sequence[str], *, enabled: 
         return False
     names = event_names(event)
     return "*" in events or any(event_name in names for event_name in events)
+
+
+def _is_internal_probe_event(event: Mapping[str, Any]) -> bool:
+    metadata = event.get("metadata") if isinstance(event.get("metadata"), Mapping) else {}
+    return isinstance(metadata.get("internal_probe"), Mapping)
 
 
 def _audit_event_names(event: Mapping[str, Any]) -> set[str]:

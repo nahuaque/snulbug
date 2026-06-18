@@ -80,6 +80,9 @@ SHARE_CONTRACT_WELL_KNOWN_PATH = "/.well-known/snulbug/share-contract"
 SHARE_CONTRACT_DIGEST_WELL_KNOWN_PATH = "/.well-known/snulbug/share-contract.sha256"
 SHARE_SUMMARY_WELL_KNOWN_PATH = "/.well-known/snulbug/share"
 SHARE_TRUST_PAGE_PATH = "/snulbug"
+INTERNAL_SHARE_STATUS_PROBE = "share-status"
+INTERNAL_SHARE_STATUS_REQUEST_ID = "snulbug-share-status"
+INTERNAL_SHARE_STATUS_USER_AGENT = "snulbug-share-status"
 
 
 @dataclass(frozen=True)
@@ -1649,12 +1652,15 @@ class ProxyRecorderMiddleware:
             await send(message)
 
         await self.app(scope, replay_receive, recording_send)
+        if _internal_probe_metadata(scope, body):
+            return
+        metadata = _record_metadata(scope, tunnel_audit=self.tunnel_audit, topology_audit=self.topology_audit)
         record = build_request_record(
             self.policy,
             _scope_to_record_request(scope, body),
             _trace_result(scope),
             response=response,
-            metadata=_record_metadata(scope, tunnel_audit=self.tunnel_audit, topology_audit=self.topology_audit),
+            metadata=metadata,
             redact=self.redact_records,
         )
         if self.record_out is not None:
@@ -2410,7 +2416,7 @@ def run_proxy(
         confirm=confirm,
         policy_backoff_config=policy_backoff_config,
     )
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=host, port=port, access_log=False)
 
 
 def proxy_config_run_kwargs(
@@ -3817,6 +3823,35 @@ def _record_metadata(
     if topology_metadata:
         metadata["topology"] = topology_metadata
     return metadata
+
+
+def _internal_probe_metadata(scope: Scope, body: bytes) -> dict[str, Any] | None:
+    headers = _headers_to_mapping(scope.get("headers", []))
+    marker = _single_header(headers.get("x-snulbug-internal-probe"))
+    user_agent = _single_header(headers.get("user-agent"))
+    if marker != INTERNAL_SHARE_STATUS_PROBE and user_agent != INTERNAL_SHARE_STATUS_USER_AGENT:
+        return None
+    request = _jsonrpc_request(body)
+    if not isinstance(request, Mapping):
+        return None
+    if request.get("id") != INTERNAL_SHARE_STATUS_REQUEST_ID or request.get("method") != "tools/list":
+        return None
+    return {
+        "kind": INTERNAL_SHARE_STATUS_PROBE,
+        "request_id": INTERNAL_SHARE_STATUS_REQUEST_ID,
+        "method": "tools/list",
+        "user_agent": user_agent,
+    }
+
+
+def _single_header(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        for item in value:
+            if isinstance(item, str):
+                return item
+    return None
 
 
 def _ensure_scope_state(scope: Scope) -> dict[str, Any]:

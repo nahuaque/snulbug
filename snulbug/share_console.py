@@ -701,23 +701,28 @@ def _decision_timeline_source(share_dir: Path, status: Mapping[str, Any]) -> Pat
 
 
 def _recent_jsonl_events(path: Path, limit: int) -> list[tuple[int, dict[str, Any]]]:
-    lines: deque[tuple[int, str]] = deque(maxlen=max(limit * 4, limit))
+    events: deque[tuple[int, dict[str, Any]]] = deque(maxlen=limit)
     with path.open("r", encoding="utf-8") as file:
         for line_number, line in enumerate(file, start=1):
             stripped = line.strip()
-            if stripped:
-                lines.append((line_number, stripped))
-    events: list[tuple[int, dict[str, Any]]] = []
-    for line_number, line in lines:
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(value, Mapping):
-            continue
-        event = build_audit_event(value) if value.get("type") == "snulbug.request_record" else dict(value)
-        events.append((line_number, event))
-    return events[-limit:]
+            if not stripped:
+                continue
+            try:
+                value = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(value, Mapping):
+                continue
+            event = build_audit_event(value) if value.get("type") == "snulbug.request_record" else dict(value)
+            if _event_is_internal_probe(event):
+                continue
+            events.append((line_number, event))
+    return list(events)
+
+
+def _event_is_internal_probe(event: Mapping[str, Any]) -> bool:
+    metadata = _mapping(event.get("metadata"))
+    return isinstance(metadata.get("internal_probe"), Mapping)
 
 
 def _decision_timeline_item(event: Mapping[str, Any], *, source: Path, line: int) -> dict[str, Any] | None:

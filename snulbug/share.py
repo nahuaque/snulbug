@@ -6242,6 +6242,7 @@ def _probe_mcp_url(url: str, *, headers: Mapping[str, Any], timeout: float) -> d
     request_headers = {
         "accept": "application/json",
         "content-type": "application/json",
+        "x-snulbug-internal-probe": "share-status",
         "user-agent": "snulbug-share-status",
         **{str(key): str(value) for key, value in headers.items()},
     }

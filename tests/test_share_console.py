@@ -126,6 +126,41 @@ def test_share_console_compacts_repeated_live_decisions(tmp_path):
     assert compacted[0]["latest_line"] == 3
 
 
+def test_share_console_ignores_internal_status_probes_in_live_decisions(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    traces = tmp_path / "traces"
+    traces.mkdir(exist_ok=True)
+    probe = upstream_failure_event(1)
+    probe["metadata"] = {
+        **dict(probe["metadata"]),
+        "internal_probe": {"kind": "share-status"},
+    }
+    real_event = upstream_failure_event(3)
+    (traces / "audit.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(real_event, sort_keys=True),
+                *[json.dumps(probe, sort_keys=True) for _index in range(30)],
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    snapshot = build_share_console_snapshot(tmp_path)
+    timeline = snapshot["decision_timeline"]
+
+    assert timeline["summary"]["shown"] == 1
+    assert timeline["events"][0]["line"] == 1
+
+
 def test_share_console_readiness_digest_ignores_refresh_and_live_traffic_churn(tmp_path, monkeypatch):
     create_mcp_share(
         tmp_path,

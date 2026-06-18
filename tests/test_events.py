@@ -38,6 +38,23 @@ def test_event_dispatcher_fans_out_same_event_to_jsonl_and_console(tmp_path):
     assert json.loads(console.getvalue()) == event
 
 
+def test_console_event_sink_suppresses_internal_probe_events_by_default():
+    event = {
+        "type": "snulbug.audit",
+        "request": {"method": "POST", "path": "/mcp"},
+        "decision": {"action": "continue", "allowed": True},
+        "metadata": {"internal_probe": {"kind": "share-status"}},
+    }
+    quiet_console = io.StringIO()
+    verbose_console = io.StringIO()
+
+    ConsoleEventSink(quiet_console).emit(event)
+    ConsoleEventSink(verbose_console, include_internal=True).emit(event)
+
+    assert quiet_console.getvalue() == ""
+    assert "decision=continue" in verbose_console.getvalue()
+
+
 def test_normalize_event_sink_configs_resolves_paths_and_webhooks(tmp_path):
     sinks = normalize_event_sink_configs(
         [
