@@ -3881,7 +3881,8 @@ def _console_html() -> str:
         return;
       }
       const readiness = activeReadinessGate(snapshot);
-      renderMetrics(status, readiness);
+      const metricStatus = state.liveHealthStatus || status;
+      renderMetrics(metricStatus, readiness);
       renderReadinessGate(readiness);
       renderPolicyVisibility(snapshot.policy_visibility || {});
       renderTunnelProvider(snapshot.tunnel_provider || {});
@@ -5598,7 +5599,7 @@ def _console_html() -> str:
         });
         state.liveHealthReadiness = payload.readiness_gate || null;
         if (state.liveHealthReadiness) {
-          renderMetrics((state.snapshot || {}).status || {}, state.liveHealthReadiness);
+          renderMetrics(state.liveHealthStatus || (state.snapshot || {}).status || {}, state.liveHealthReadiness);
           renderReadinessGate(state.liveHealthReadiness);
         }
         $("message").textContent = "Readiness reviewed";
@@ -5736,13 +5737,16 @@ def _console_html() -> str:
         state.liveHealthShare = ((state.snapshot || {}).share || payload.directory || null);
         renderHealth(payload);
         if (state.liveHealthReadiness) {
-          renderMetrics((state.snapshot || {}).status || payload, state.liveHealthReadiness);
+          renderMetrics(payload, state.liveHealthReadiness);
           renderReadinessGate(state.liveHealthReadiness);
         }
         const gateway = payload.gateway || {};
         const upstreams = payload.upstreams || [];
-        const checked = [gateway].concat(upstreams).filter((item) => item.checked).length;
-        const reachable = [gateway].concat(upstreams).filter((item) => item.reachable === true).length;
+        const publicGateway = payload.public_gateway || {};
+        const publicTargets = publicGateway.configured ? [publicGateway] : [];
+        const targets = publicTargets.concat([gateway]).concat(upstreams);
+        const checked = targets.filter((item) => item.checked).length;
+        const reachable = targets.filter((item) => item.reachable === true).length;
         $("message").textContent = `Health checked: ${reachable}/${checked} reachable`;
       } catch (error) {
         $("message").textContent = `Health check failed: ${error.message}`;
