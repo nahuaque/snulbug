@@ -9,6 +9,7 @@ from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from errno import ECONNABORTED, ECONNRESET, EPIPE
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from time import monotonic
@@ -161,10 +162,20 @@ class ShareConsoleServer:
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
-                console._handle_get(self)
+                try:
+                    console._handle_get(self)
+                except Exception as exc:
+                    if _is_client_disconnect(exc):
+                        return
+                    raise
 
             def do_POST(self) -> None:
-                console._handle_post(self)
+                try:
+                    console._handle_post(self)
+                except Exception as exc:
+                    if _is_client_disconnect(exc):
+                        return
+                    raise
 
             def log_message(self, format: str, *args: Any) -> None:
                 return
@@ -236,7 +247,7 @@ class ShareConsoleServer:
                 return
             _send(handler, 404, b"not found\n", content_type="text/plain; charset=utf-8")
         except Exception as exc:
-            _send_error(handler, exc)
+            _handle_handler_exception(handler, exc)
 
     def _handle_post(self, handler: BaseHTTPRequestHandler) -> None:
         parsed = urlsplit(handler.path)
@@ -313,7 +324,7 @@ class ShareConsoleServer:
                 return
             _send(handler, 404, b"not found\n", content_type="text/plain; charset=utf-8")
         except Exception as exc:
-            _send_error(handler, exc)
+            _handle_handler_exception(handler, exc)
 
     def snapshot(self) -> dict[str, Any]:
         return build_share_console_snapshot(
@@ -338,6 +349,23 @@ def _send_error(handler: BaseHTTPRequestHandler, exc: Exception) -> None:
             "error_type": type(exc).__name__,
         },
     )
+
+
+def _handle_handler_exception(handler: BaseHTTPRequestHandler, exc: Exception) -> None:
+    if _is_client_disconnect(exc):
+        return
+    try:
+        _send_error(handler, exc)
+    except Exception as send_exc:
+        if _is_client_disconnect(send_exc):
+            return
+        raise
+
+
+def _is_client_disconnect(exc: BaseException) -> bool:
+    if isinstance(exc, BrokenPipeError | ConnectionResetError | ConnectionAbortedError):
+        return True
+    return isinstance(exc, OSError) and exc.errno in {EPIPE, ECONNRESET, ECONNABORTED}
 
 
 def _send(handler: BaseHTTPRequestHandler, status: int, body: bytes, *, content_type: str) -> None:

@@ -161,6 +161,35 @@ def test_share_console_ignores_internal_status_probes_in_live_decisions(tmp_path
     assert timeline["events"][0]["line"] == 1
 
 
+def test_share_console_ignores_client_disconnect_while_sending_error():
+    class BrokenPipeHandler:
+        called = False
+
+        def send_response(self, status):
+            self.called = True
+            raise BrokenPipeError()
+
+    handler = BrokenPipeHandler()
+
+    share_console._handle_handler_exception(handler, ValueError("boom"))
+
+    assert handler.called is True
+
+
+def test_share_console_ignores_client_disconnect_without_error_response():
+    class Handler:
+        called = False
+
+        def send_response(self, status):
+            self.called = True
+
+    handler = Handler()
+
+    share_console._handle_handler_exception(handler, BrokenPipeError())
+
+    assert handler.called is False
+
+
 def test_share_console_readiness_digest_ignores_refresh_and_live_traffic_churn(tmp_path, monkeypatch):
     create_mcp_share(
         tmp_path,
