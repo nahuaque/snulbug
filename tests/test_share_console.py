@@ -453,6 +453,9 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "providerCommandsTable" in html
     assert "Copy bearer token" in html
     assert "copyBearerToken" in html
+    assert "bearerCopyStatus" in html
+    assert "setBearerCopyFeedback" in html
+    assert "Copied to clipboard" in html
     assert "x-snulbug-console-secret" in html
     assert "Enter the snulbug share console secret" in html
     assert 'data-state-key="provider-generated-commands"' in html

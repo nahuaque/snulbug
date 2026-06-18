@@ -3539,6 +3539,22 @@ def _console_html() -> str:
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
+      align-items: center;
+    }
+    .copy-status {
+      min-height: 34px;
+      display: inline-flex;
+      align-items: center;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .copy-status.ok {
+      color: var(--green);
+      font-weight: 720;
+    }
+    .copy-status.fail {
+      color: var(--red);
+      font-weight: 720;
     }
     .review-list {
       display: grid;
@@ -5327,7 +5343,8 @@ def _console_html() -> str:
       const controls = [esc(providerAuthText(auth))];
       if ((auth.mode || "") === "bearer") {
         controls.push(
-          '<button type="button" onclick="copyBearerToken()">Copy bearer token</button>'
+          '<button id="copyBearerTokenButton" type="button" onclick="copyBearerToken()">Copy bearer token</button>' +
+          '<span id="bearerCopyStatus" class="copy-status" role="status" aria-live="polite"></span>'
         );
       }
       return `<div class="review-actions">${controls.join("")}</div>`;
@@ -5705,9 +5722,30 @@ def _console_html() -> str:
       return entered || "";
     }
 
+    function setBearerCopyFeedback(message, kind = "") {
+      const status = $("bearerCopyStatus");
+      if (status) {
+        status.textContent = message || "";
+        status.className = `copy-status ${kind}`.trim();
+      }
+      const button = $("copyBearerTokenButton");
+      if (button) {
+        button.textContent = kind === "pending" ? "Copying..." : (kind === "ok" ? "Copied" : "Copy bearer token");
+        button.disabled = kind === "pending";
+      }
+      if (message && kind === "ok") {
+        window.setTimeout(() => {
+          const current = $("bearerCopyStatus");
+          if (current && current.textContent === message) setBearerCopyFeedback("");
+        }, 2500);
+      }
+    }
+
     async function copyBearerToken() {
+      setBearerCopyFeedback("Copying...", "pending");
       const secret = consoleSecret();
       if (!secret) {
+        setBearerCopyFeedback("Console secret required", "fail");
         $("message").textContent = "Console secret required to copy bearer token";
         return;
       }
@@ -5719,11 +5757,13 @@ def _console_html() -> str:
         });
         if (!navigator.clipboard) throw new Error("clipboard unavailable");
         await navigator.clipboard.writeText(payload.token || "");
+        setBearerCopyFeedback("Copied to clipboard", "ok");
         $("message").textContent = "Copied bearer token";
       } catch (error) {
         if (String(error.message || "").includes("console secret")) {
           if (window.sessionStorage) window.sessionStorage.removeItem("snulbug-console-secret");
         }
+        setBearerCopyFeedback("Copy failed", "fail");
         $("message").textContent = `Copy bearer token failed: ${error.message}`;
       }
     }
