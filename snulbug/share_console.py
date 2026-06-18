@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
 import threading
@@ -58,16 +59,30 @@ def build_share_console_snapshot(
     status = share_status(share_dir, timeout=timeout, live_checks=live_checks)
     requests = share_capability_requests(share_dir, status="all")
     provider_console = _provider_console(status, timeout=timeout)
+    decision_timeline = _decision_timeline(share_dir, status)
+    auth_visibility = _auth_visibility(share_dir, status)
+    tool_schema_visibility = _tool_schema_visibility(share_dir, status)
+    tunnel_provider = _tunnel_provider_visibility(share_dir, status, provider_console)
+    readiness_gate = _share_readiness_gate(
+        share_dir,
+        status,
+        capability_requests=requests,
+        decision_timeline=decision_timeline,
+        auth_visibility=auth_visibility,
+        tool_schema_visibility=tool_schema_visibility,
+        tunnel_provider=tunnel_provider,
+    )
     return {
         "ok": bool(status.get("ok")),
         "generated_at": _now_iso(),
         "share": str(share_dir),
         "status": _redact_console_payload(status),
         "capability_requests": _redact_console_payload(requests),
-        "decision_timeline": _redact_console_payload(_decision_timeline(share_dir, status)),
-        "auth_visibility": _redact_console_payload(_auth_visibility(share_dir, status)),
-        "tool_schema_visibility": _redact_console_payload(_tool_schema_visibility(share_dir, status)),
-        "tunnel_provider": _redact_console_payload(_tunnel_provider_visibility(share_dir, status, provider_console)),
+        "decision_timeline": _redact_console_payload(decision_timeline),
+        "auth_visibility": _redact_console_payload(auth_visibility),
+        "tool_schema_visibility": _redact_console_payload(tool_schema_visibility),
+        "tunnel_provider": _redact_console_payload(tunnel_provider),
+        "readiness_gate": _redact_console_payload(readiness_gate),
         "provider_console": provider_console,
     }
 
@@ -1168,6 +1183,552 @@ def _tool_schema_drift_alerts(
     return alerts[-20:]
 
 
+def _share_readiness_gate(
+    share_dir: Path,
+    status: Mapping[str, Any],
+    *,
+    capability_requests: Mapping[str, Any],
+    decision_timeline: Mapping[str, Any],
+    auth_visibility: Mapping[str, Any],
+    tool_schema_visibility: Mapping[str, Any],
+    tunnel_provider: Mapping[str, Any],
+) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+    session = _mapping(status.get("session"))
+    gateway = _mapping(status.get("gateway"))
+    upstreams = [_mapping(item) for item in _sequence(status.get("upstreams")) if isinstance(item, Mapping)]
+    tunnel = _mapping(status.get("tunnel_doctor"))
+    provider_auth = _mapping(tunnel_provider.get("auth"))
+    policy = _mapping(status.get("policy"))
+    leases = _mapping(status.get("leases"))
+    findings = [_mapping(item) for item in _sequence(status.get("findings")) if isinstance(item, Mapping)]
+    traffic = _mapping(status.get("traffic"))
+    contract = _mapping(status.get("contract"))
+    tool_summary = _mapping(_mapping(status.get("tool_risks")).get("summary"))
+    schema_summary = _mapping(tool_schema_visibility.get("summary"))
+    public_url = (
+        tunnel.get("public_url") or tunnel_provider.get("public_url") or _mapping(status.get("client")).get("url")
+    )
+
+    state = status.get("state")
+    _add_readiness_check(
+        checks,
+        "share.state",
+        "pass" if state in {"verified", "running", "active"} else "warn",
+        "share",
+        (
+            "share session has been verified"
+            if state in {"verified", "running", "active"}
+            else "share session has not been verified yet"
+        ),
+        details={"state": state, "directory": str(share_dir)},
+    )
+    _add_readiness_check(
+        checks,
+        "gateway.reachable",
+        _readiness_reachability_status(gateway),
+        "gateway",
+        _readiness_reachability_message("local gateway", gateway),
+        details={"url": gateway.get("url"), "checked": gateway.get("checked"), "reachable": gateway.get("reachable")},
+    )
+    _add_readiness_check(
+        checks,
+        "upstreams.reachable",
+        _readiness_upstream_status(upstreams),
+        "upstreams",
+        _readiness_upstream_message(upstreams),
+        details={
+            "count": len(upstreams),
+            "checked": sum(1 for upstream in upstreams if upstream.get("checked")),
+            "unreachable": [
+                upstream.get("name") or upstream.get("url")
+                for upstream in upstreams
+                if upstream.get("checked") and upstream.get("reachable") is not True
+            ],
+        },
+    )
+    public_url_status, public_url_message = _readiness_public_url(public_url)
+    _add_readiness_check(
+        checks,
+        "tunnel.public_url",
+        public_url_status,
+        "tunnel",
+        public_url_message,
+        details={"provider": tunnel_provider.get("provider") or tunnel.get("provider"), "public_url": public_url},
+    )
+    _add_readiness_check(
+        checks,
+        "tunnel.doctor",
+        _readiness_tunnel_doctor_status(tunnel),
+        "tunnel",
+        _readiness_tunnel_doctor_message(tunnel),
+        details={
+            "checked": tunnel.get("checked"),
+            "ok": tunnel.get("ok"),
+            "summary": tunnel.get("summary"),
+            "last_checked_at": tunnel.get("last_checked_at"),
+        },
+    )
+    auth_mode = provider_auth.get("mode")
+    _add_readiness_check(
+        checks,
+        "auth.configured",
+        "pass" if auth_mode and auth_mode != "none" else "fail",
+        "auth",
+        f"auth mode is {auth_mode}" if auth_mode and auth_mode != "none" else "no client auth mode is configured",
+        details={"mode": auth_mode, "client_header_names": provider_auth.get("client_header_names")},
+    )
+    lease_required = provider_auth.get("lease_required", session.get("lease_required"))
+    active_lease_count = int(leases.get("active_count") or 0)
+    _add_readiness_check(
+        checks,
+        "leases.active",
+        _readiness_lease_status(lease_required, active_lease_count),
+        "leases",
+        _readiness_lease_message(lease_required, active_lease_count),
+        details={"required": lease_required, "active_count": active_lease_count, "file": leases.get("file")},
+    )
+    _add_readiness_check(
+        checks,
+        "policy.active",
+        _readiness_policy_status(policy),
+        "policy",
+        _readiness_policy_message(policy),
+        details={
+            "path": policy.get("path"),
+            "bundle": policy.get("bundle"),
+            "lifecycle_state": policy.get("lifecycle_state"),
+        },
+    )
+    request_summary = _mapping(capability_requests.get("summary")) or _mapping(status.get("capability_requests"))
+    pending_requests = int(request_summary.get("pending") or 0)
+    _add_readiness_check(
+        checks,
+        "capability_requests.pending",
+        "warn" if pending_requests else "pass",
+        "review",
+        f"{pending_requests} pending capability requests need review"
+        if pending_requests
+        else "no pending capability requests",
+        details={"pending": pending_requests, "summary": request_summary},
+    )
+    finding_counts = _finding_severity_counts(findings)
+    _add_readiness_check(
+        checks,
+        "findings.severity",
+        "fail" if finding_counts["error"] else ("warn" if finding_counts["warning"] else "pass"),
+        "evidence",
+        _readiness_findings_message(finding_counts),
+        details=finding_counts,
+    )
+    drift_alerts = [
+        _mapping(item) for item in _sequence(tool_schema_visibility.get("drift_alerts")) if isinstance(item, Mapping)
+    ]
+    high_drift = sum(1 for alert in drift_alerts if alert.get("severity") == "high")
+    schema_errors = int(schema_summary.get("schema_errors") or 0)
+    _add_readiness_check(
+        checks,
+        "schemas.drift",
+        "fail" if high_drift else ("warn" if drift_alerts or schema_errors else "pass"),
+        "schemas",
+        _readiness_schema_message(drift_alerts, schema_errors),
+        details={
+            "drift_alerts": len(drift_alerts),
+            "high_drift_alerts": high_drift,
+            "schema_errors": schema_errors,
+            "tool_count": schema_summary.get("tool_count"),
+            "catalog_count": schema_summary.get("catalog_count"),
+        },
+    )
+    high_risk_tools = int(tool_summary.get("high") or 0)
+    _add_readiness_check(
+        checks,
+        "tools.high_risk",
+        "warn" if high_risk_tools else "pass",
+        "tools",
+        f"{high_risk_tools} high-risk tools require review" if high_risk_tools else "no high-risk tools detected",
+        details=dict(tool_summary),
+    )
+    _add_readiness_check(
+        checks,
+        "contract.bound",
+        _readiness_contract_status(contract),
+        "contract",
+        _readiness_contract_message(contract),
+        details={
+            "configured": contract.get("configured"),
+            "required": contract.get("required"),
+            "signed": contract.get("signed"),
+            "verified": contract.get("verified"),
+            "drifted": contract.get("drifted"),
+            "binding_digest": contract.get("binding_digest"),
+            "path": contract.get("path"),
+        },
+    )
+    _add_readiness_check(
+        checks,
+        "evidence.recorded",
+        "pass" if traffic.get("exists") and int(traffic.get("event_count") or 0) else "warn",
+        "evidence",
+        "request evidence has been recorded"
+        if traffic.get("exists") and int(traffic.get("event_count") or 0)
+        else "no recorded request evidence found yet",
+        details={
+            "source": traffic.get("source"),
+            "event_count": traffic.get("event_count"),
+            "shown": _mapping(decision_timeline.get("summary")).get("shown"),
+        },
+    )
+    auth_denials = int(_mapping(auth_visibility.get("denials")).get("total") or 0)
+    _add_readiness_check(
+        checks,
+        "auth.denials",
+        "warn" if auth_denials else "pass",
+        "auth",
+        f"{auth_denials} auth denials observed" if auth_denials else "no auth denials observed in recent evidence",
+        details={"denials": auth_denials, "source": auth_visibility.get("source")},
+    )
+
+    summary = _readiness_summary(checks)
+    decision = "blocked" if summary["failed"] else ("review" if summary["warnings"] else "ready")
+    labels = {
+        "ready": "Ready to share",
+        "review": "Needs review before sharing",
+        "blocked": "Do not share yet",
+    }
+    recommendations = _readiness_recommendations(checks, status)
+    attestation = _share_readiness_attestation(
+        share_dir,
+        status,
+        decision=decision,
+        label=labels[decision],
+        summary=summary,
+        checks=checks,
+        tunnel_provider=tunnel_provider,
+        auth_visibility=auth_visibility,
+        tool_schema_visibility=tool_schema_visibility,
+    )
+    return {
+        "schema": "snulbug.share-readiness-gate.v1",
+        "ok": decision == "ready",
+        "decision": decision,
+        "label": labels[decision],
+        "summary": summary,
+        "checks": checks,
+        "recommendations": recommendations,
+        "attestation": attestation,
+    }
+
+
+def _add_readiness_check(
+    checks: list[dict[str, Any]],
+    check_id: str,
+    status: str,
+    component: str,
+    message: str,
+    *,
+    details: Mapping[str, Any] | None = None,
+) -> None:
+    check = {
+        "id": check_id,
+        "status": status,
+        "component": component,
+        "message": message,
+    }
+    if details:
+        check["details"] = _drop_empty(dict(details))
+    checks.append(check)
+
+
+def _readiness_reachability_status(target: Mapping[str, Any]) -> str:
+    if target.get("checked") is not True:
+        return "warn"
+    return "pass" if target.get("reachable") is True else "fail"
+
+
+def _readiness_reachability_message(label: str, target: Mapping[str, Any]) -> str:
+    if target.get("checked") is not True:
+        return f"{label} reachability has not been checked"
+    if target.get("reachable") is True:
+        return f"{label} is reachable"
+    return f"{label} is not reachable"
+
+
+def _readiness_upstream_status(upstreams: Sequence[Mapping[str, Any]]) -> str:
+    if not upstreams:
+        return "fail"
+    if any(upstream.get("checked") and upstream.get("reachable") is not True for upstream in upstreams):
+        return "fail"
+    if all(upstream.get("checked") for upstream in upstreams):
+        return "pass"
+    return "warn"
+
+
+def _readiness_upstream_message(upstreams: Sequence[Mapping[str, Any]]) -> str:
+    if not upstreams:
+        return "no upstream MCP servers are configured"
+    unreachable = [
+        upstream.get("name") or upstream.get("url")
+        for upstream in upstreams
+        if upstream.get("checked") and upstream.get("reachable") is not True
+    ]
+    if unreachable:
+        return "unreachable upstreams: " + ", ".join(str(item) for item in unreachable[:5])
+    if all(upstream.get("checked") for upstream in upstreams):
+        return "all upstreams are reachable"
+    return "one or more upstream reachability checks have not run"
+
+
+def _readiness_public_url(value: Any) -> tuple[str, str]:
+    if not isinstance(value, str) or not value:
+        return "fail", "no public MCP URL is configured"
+    parsed = urlsplit(value)
+    host = parsed.hostname or ""
+    if parsed.scheme == "https" or host in {"127.0.0.1", "localhost", "::1"}:
+        return "pass", "client-facing MCP URL is configured"
+    return "warn", "client-facing MCP URL is not HTTPS"
+
+
+def _readiness_tunnel_doctor_status(tunnel: Mapping[str, Any]) -> str:
+    if tunnel.get("checked") is not True:
+        return "warn"
+    return "pass" if tunnel.get("ok") is True else "fail"
+
+
+def _readiness_tunnel_doctor_message(tunnel: Mapping[str, Any]) -> str:
+    if tunnel.get("checked") is not True:
+        return "tunnel doctor has not been run"
+    if tunnel.get("ok") is True:
+        return "last tunnel doctor passed"
+    return "last tunnel doctor failed"
+
+
+def _readiness_lease_status(required: Any, active_count: int) -> str:
+    if required is True:
+        return "pass" if active_count > 0 else "fail"
+    if required is False:
+        return "warn"
+    return "warn"
+
+
+def _readiness_lease_message(required: Any, active_count: int) -> str:
+    if required is True:
+        if active_count > 0:
+            return f"{active_count} active leases available"
+        return "leases are required but none are active"
+    if required is False:
+        return "leases are not required for this share"
+    return "lease requirement is unknown"
+
+
+def _readiness_policy_status(policy: Mapping[str, Any]) -> str:
+    lifecycle = policy.get("lifecycle_state")
+    if lifecycle == "active":
+        return "pass"
+    if lifecycle:
+        return "warn"
+    return "pass" if policy else "warn"
+
+
+def _readiness_policy_message(policy: Mapping[str, Any]) -> str:
+    lifecycle = policy.get("lifecycle_state")
+    if lifecycle == "active":
+        return "active policy bundle is selected"
+    if lifecycle:
+        return f"policy lifecycle state is {lifecycle}"
+    if policy:
+        return "policy is configured without lifecycle metadata"
+    return "no policy metadata is available"
+
+
+def _finding_severity_counts(findings: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    counts = {"error": 0, "warning": 0, "info": 0}
+    for finding in findings:
+        severity = str(finding.get("severity") or "info")
+        if severity not in counts:
+            severity = "info"
+        counts[severity] += 1
+    return counts
+
+
+def _readiness_findings_message(counts: Mapping[str, int]) -> str:
+    if counts.get("error", 0):
+        return f"{counts['error']} error findings block sharing"
+    if counts.get("warning", 0):
+        return f"{counts['warning']} warning findings need review"
+    return "no blocking findings"
+
+
+def _readiness_schema_message(drift_alerts: Sequence[Mapping[str, Any]], schema_errors: int) -> str:
+    high_drift = sum(1 for alert in drift_alerts if alert.get("severity") == "high")
+    if high_drift:
+        return f"{high_drift} high-severity schema drift alerts block sharing"
+    if drift_alerts:
+        return f"{len(drift_alerts)} schema drift alerts need review"
+    if schema_errors:
+        return f"{schema_errors} schema catalog errors need review"
+    return "no schema drift alerts"
+
+
+def _readiness_contract_status(contract: Mapping[str, Any]) -> str:
+    if contract.get("drifted") is True or contract.get("file_valid") is False or contract.get("exists") is False:
+        return "fail"
+    if contract.get("required") is True:
+        return "pass"
+    if contract.get("configured"):
+        return "pass"
+    return "pass"
+
+
+def _readiness_contract_message(contract: Mapping[str, Any]) -> str:
+    if contract.get("drifted") is True:
+        return "share contract has drifted from current share state"
+    if contract.get("file_valid") is False:
+        return "share contract file is invalid"
+    if contract.get("exists") is False:
+        return "share contract file is missing"
+    if contract.get("required") is True:
+        return "required share contract matches current share state"
+    if contract.get("configured"):
+        return "share contract metadata is available"
+    return "share contract is optional; readiness attestation is generated"
+
+
+def _readiness_summary(checks: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    return {
+        "passed": sum(1 for check in checks if check.get("status") == "pass"),
+        "warnings": sum(1 for check in checks if check.get("status") == "warn"),
+        "failed": sum(1 for check in checks if check.get("status") == "fail"),
+    }
+
+
+def _readiness_recommendations(checks: Sequence[Mapping[str, Any]], status: Mapping[str, Any]) -> list[str]:
+    recommendations: list[str] = []
+    check_status = {str(check.get("id")): str(check.get("status")) for check in checks}
+    commands = _mapping(status.get("commands"))
+    doctor = commands.get("share_doctor") or commands.get("doctor")
+    needs_doctor = any(
+        check_status.get(check_id) == "warn"
+        for check_id in ("gateway.reachable", "upstreams.reachable", "tunnel.doctor")
+    )
+    if doctor and needs_doctor:
+        recommendations.append(f"Run readiness checks: {doctor}")
+    if check_status.get("capability_requests.pending") == "warn":
+        recommendations.append("Approve or deny pending capability requests before sharing broadly.")
+    if check_status.get("contract.bound") == "warn":
+        recommendations.append("Generate a share contract if you need a reviewable attestation for this session.")
+    if check_status.get("schemas.drift") == "fail":
+        recommendations.append("Review schema drift alerts before exposing changed tool surfaces.")
+    if check_status.get("leases.active") == "fail":
+        recommendations.append("Create or reactivate a task lease before sharing the endpoint.")
+    if check_status.get("auth.configured") == "fail":
+        recommendations.append("Configure bearer, OAuth, or provider auth before exposing the endpoint.")
+    if any(value == "fail" for value in check_status.values()):
+        recommendations.append("Do not share this endpoint until failed checks are resolved.")
+    return _unique_console_strings(recommendations)
+
+
+def _unique_console_strings(values: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def _share_readiness_attestation(
+    share_dir: Path,
+    status: Mapping[str, Any],
+    *,
+    decision: str,
+    label: str,
+    summary: Mapping[str, int],
+    checks: Sequence[Mapping[str, Any]],
+    tunnel_provider: Mapping[str, Any],
+    auth_visibility: Mapping[str, Any],
+    tool_schema_visibility: Mapping[str, Any],
+) -> dict[str, Any]:
+    session = _mapping(status.get("session"))
+    policy = _mapping(status.get("policy"))
+    contract = _mapping(status.get("contract"))
+    traffic = _mapping(status.get("traffic"))
+    leases = _mapping(status.get("leases"))
+    auth_config = _mapping(auth_visibility.get("config"))
+    schema_summary = _mapping(tool_schema_visibility.get("summary"))
+    tool_risk = _mapping(_mapping(status.get("tool_risks")).get("summary"))
+    payload = _drop_empty(
+        {
+            "schema": "snulbug.share-readiness-attestation.v1",
+            "generated_at": _now_iso(),
+            "share": str(share_dir),
+            "decision": decision,
+            "label": label,
+            "summary": dict(summary),
+            "session": {
+                "state": status.get("state"),
+                "provider": session.get("provider") or tunnel_provider.get("provider"),
+                "public_url": tunnel_provider.get("public_url") or _mapping(status.get("client")).get("url"),
+                "local_url": tunnel_provider.get("local_url") or _mapping(status.get("gateway")).get("url"),
+            },
+            "auth": {
+                "mode": _mapping(tunnel_provider.get("auth")).get("mode") or auth_config.get("mode"),
+                "issuer": auth_config.get("issuer"),
+                "resource": auth_config.get("resource"),
+                "required_scopes": auth_config.get("required_scopes"),
+                "denials": _mapping(auth_visibility.get("denials")).get("total"),
+            },
+            "leases": {
+                "required": _mapping(tunnel_provider.get("auth")).get("lease_required", session.get("lease_required")),
+                "active_count": leases.get("active_count"),
+                "file": leases.get("file"),
+            },
+            "policy": {
+                "path": policy.get("path"),
+                "bundle": policy.get("bundle"),
+                "lifecycle_state": policy.get("lifecycle_state"),
+            },
+            "contract": {
+                "configured": contract.get("configured"),
+                "required": contract.get("required"),
+                "signed": contract.get("signed"),
+                "verified": contract.get("verified"),
+                "drifted": contract.get("drifted"),
+                "binding_digest": contract.get("binding_digest") or contract.get("digest"),
+                "key_id": contract.get("key_id"),
+            },
+            "evidence": {
+                "event_count": traffic.get("event_count"),
+                "allowed": traffic.get("allowed"),
+                "blocked": traffic.get("blocked"),
+                "confirmed": traffic.get("confirmed"),
+                "response_redacted": traffic.get("response_redacted"),
+            },
+            "tools": {
+                "risk": dict(tool_risk),
+                "schemas": dict(schema_summary),
+            },
+            "checks": [
+                {
+                    "id": check.get("id"),
+                    "status": check.get("status"),
+                    "component": check.get("component"),
+                    "message": check.get("message"),
+                }
+                for check in checks
+            ],
+        }
+    )
+    payload["digest"] = _console_json_digest(payload)
+    return payload
+
+
+def _console_json_digest(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
 def _event_response_policy(event: Mapping[str, Any]) -> Mapping[str, Any]:
     metadata = _mapping(event.get("metadata"))
     return _mapping(event.get("response_policy")) or _mapping(metadata.get("response_policy"))
@@ -1512,7 +2073,7 @@ def _console_html() -> str:
       border: 1px solid var(--line);
       background: #fff;
     }
-    .ok, .pass, .reachable, .approved {
+    .ok, .pass, .reachable, .approved, .ready {
       color: var(--green);
       border-color: #a7d8bf;
       background: #f0fbf5;
@@ -1522,7 +2083,7 @@ def _console_html() -> str:
       border-color: #efb3b8;
       background: #fff5f5;
     }
-    .warn, .pending, .unknown, .confirmed, .not-checked {
+    .warn, .pending, .unknown, .confirmed, .not-checked, .review, .skip {
       color: var(--yellow);
       border-color: #ecd598;
       background: #fffaf0;
@@ -1747,6 +2308,7 @@ def _console_html() -> str:
         </div>
       </div>
       <nav class="section-nav" aria-label="Console sections">
+        <a href="#readinessSection">Readiness</a>
         <a href="#providerSection">Provider</a>
         <a href="#decisionsSection">Decisions</a>
         <a href="#requestsSection">Requests</a>
@@ -1760,6 +2322,10 @@ def _console_html() -> str:
     <main>
       <div id="message" class="message" aria-live="polite"></div>
       <div class="metrics" id="metrics"></div>
+      <section id="readinessSection">
+        <div class="section-head"><h2>Share Readiness</h2><span id="readinessSummary" class="muted"></span></div>
+        <div class="section-body" id="shareReadiness"></div>
+      </section>
       <div class="overview-grid">
         <section id="providerSection">
           <div class="section-head"><h2>Tunnel Provider</h2><span id="providerSummary" class="muted"></span></div>
@@ -1883,7 +2449,8 @@ def _console_html() -> str:
       const snapshot = state.snapshot || {};
       const status = snapshot.status || {};
       $("sharePath").textContent = text(snapshot.share || status.directory);
-      renderMetrics(status);
+      renderMetrics(status, snapshot.readiness_gate || {});
+      renderReadinessGate(snapshot.readiness_gate || {});
       renderTunnelProvider(snapshot.tunnel_provider || {});
       renderDecisionTimeline(snapshot.decision_timeline || {});
       renderRequests(snapshot.capability_requests || {});
@@ -1897,13 +2464,14 @@ def _console_html() -> str:
       renderEvidence(status);
     }
 
-    function renderMetrics(status) {
+    function renderMetrics(status, readiness) {
       const traffic = status.traffic || {};
       const requests = status.capability_requests || {};
       const leases = status.leases || {};
       const risk = (status.tool_risks || {}).summary || {};
       const gateway = status.gateway || {};
       const metrics = [
+        ["Readiness", readiness.label || readiness.decision || "unknown"],
         ["State", status.state],
         ["Gateway", gateway.reachable === true ? "reachable" : (gateway.checked === false ? "not checked" : "unknown")],
         ["Active leases", leases.active_count || 0],
@@ -1914,6 +2482,69 @@ def _console_html() -> str:
       $("metrics").innerHTML = metrics.map(([label, value]) => (
         `<div class="metric"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`
       )).join("");
+    }
+
+    function renderReadinessGate(payload) {
+      const summary = payload.summary || {};
+      const checks = payload.checks || [];
+      const recommendations = payload.recommendations || [];
+      const attestation = payload.attestation || {};
+      const attestationSession = attestation.session || {};
+      const publicUrl = attestationSession.public_url;
+      $("readinessSummary").textContent =
+        `${payload.label || "Unknown"} · ${summary.passed || 0} passed, ` +
+        `${summary.failed || 0} failed, ${summary.warnings || 0} warnings`;
+      if (!checks.length) {
+        $("shareReadiness").innerHTML = '<div class="empty">No readiness data available.</div>';
+        return;
+      }
+      const overview = `<div class="detail-grid">
+        ${detailRowHtml("Decision", pill(payload.decision || "unknown"))}
+        ${detailRow("Generated", attestation.generated_at)}
+        ${detailRowHtml("Public URL", externalLink(publicUrl, publicUrl))}
+        ${detailRow("Auth", (attestation.auth || {}).mode)}
+        ${detailRow("Active leases", (attestation.leases || {}).active_count)}
+        ${detailRow("Policy", (attestation.policy || {}).lifecycle_state || (attestation.policy || {}).path)}
+        ${detailRow("Contract", contractText(attestation.contract || {}))}
+        ${detailRow("Digest", attestation.digest)}
+      </div>`;
+      const recommendationsHtml = recommendations.length ? `<div>
+        <h2>Next Steps</h2>
+        <ul class="recommendations">${recommendations.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>
+      </div>` : "";
+      const attestationHtml = `<details class="compact-details">
+        <summary>Readiness Attestation</summary>
+        <div class="details-body stack">
+          <button type="button" onclick="copyReadinessAttestation()">Copy Attestation</button>
+          <div class="token">${esc(JSON.stringify(attestation, null, 2))}</div>
+        </div>
+      </details>`;
+      $("shareReadiness").innerHTML =
+        `<div class="stack">${overview}${readinessChecksTable(checks)}${recommendationsHtml}${attestationHtml}</div>`;
+    }
+
+    function readinessChecksTable(checks) {
+      return `<table>
+        <thead><tr><th>Status</th><th>Component</th><th>Check</th><th>Message</th></tr></thead>
+        <tbody>${checks.map((check) => (
+          `<tr>
+            <td>${pill(check.status)}</td>
+            <td>${esc(check.component || "-")}</td>
+            <td>${esc(check.id || "-")}</td>
+            <td>${esc(check.message || "-")}</td>
+          </tr>`
+        )).join("")}</tbody>
+      </table>`;
+    }
+
+    function contractText(contract) {
+      if (!contract || !Object.keys(contract).length) return "-";
+      const parts = [];
+      if (contract.required !== undefined) parts.push(`required ${contract.required}`);
+      if (contract.signed !== undefined) parts.push(`signed ${contract.signed}`);
+      if (contract.drifted !== undefined) parts.push(`drifted ${contract.drifted}`);
+      if (contract.binding_digest) parts.push(shortHash(contract.binding_digest));
+      return parts.join(", ") || "-";
     }
 
     function renderDecisionTimeline(payload) {
@@ -2751,6 +3382,17 @@ def _console_html() -> str:
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
+    }
+
+    async function copyReadinessAttestation() {
+      const attestation = ((state.snapshot || {}).readiness_gate || {}).attestation || {};
+      try {
+        if (!navigator.clipboard) throw new Error("clipboard unavailable");
+        await navigator.clipboard.writeText(JSON.stringify(attestation, null, 2));
+        $("message").textContent = "Copied readiness attestation";
+      } catch (error) {
+        $("message").textContent = `Copy failed: ${error.message}`;
+      }
     }
 
     async function runDoctor() {

@@ -37,6 +37,8 @@ def test_share_console_snapshot_reads_existing_share_artifacts(tmp_path):
 
     snapshot = build_share_console_snapshot(tmp_path)
     timeline = snapshot["decision_timeline"]
+    readiness = snapshot["readiness_gate"]
+    readiness_checks = {check["id"]: check for check in readiness["checks"]}
 
     assert snapshot["ok"] is True
     assert snapshot["share"] == str(tmp_path)
@@ -50,6 +52,13 @@ def test_share_console_snapshot_reads_existing_share_artifacts(tmp_path):
     assert timeline["events"][0]["outcome"] == "capability_requested"
     assert timeline["events"][0]["tool"] == "safe_read_file"
     assert timeline["events"][0]["auth_subject"] == "user-1"
+    assert readiness["schema"] == "snulbug.share-readiness-gate.v1"
+    assert readiness["decision"] in {"review", "blocked"}
+    assert readiness["summary"]["warnings"] >= 1
+    assert readiness_checks["capability_requests.pending"]["status"] == "warn"
+    assert readiness["attestation"]["schema"] == "snulbug.share-readiness-attestation.v1"
+    assert readiness["attestation"]["digest"].startswith("sha256:")
+    assert readiness["attestation"]["session"]["public_url"] == "https://mcp.example.test/mcp"
     encoded = json.dumps(snapshot)
     assert "share-secret" not in encoded
     assert "sbl_" not in encoded
@@ -181,12 +190,18 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert 'class="toolbar-group"' in html
     assert 'class="overview-grid"' in html
     assert 'aria-live="polite"' in html
+    assert 'href="#readinessSection"' in html
     assert 'href="#providerSection"' in html
+    assert 'id="readinessSection"' in html
     assert 'id="decisionsSection"' in html
     assert 'id="requestsSection"' in html
     assert 'id="leasesSection"' in html
     assert 'id="schemaSection"' in html
     assert 'id="evidenceSection"' in html
+    assert "Share Readiness" in html
+    assert "renderReadinessGate" in html
+    assert "readinessChecksTable" in html
+    assert "copyReadinessAttestation" in html
     assert "Capability Requests" in html
     assert "Live Decisions" in html
     assert "Tunnel Provider" in html
@@ -270,6 +285,8 @@ def test_share_console_runs_inline_share_doctor(tmp_path, monkeypatch):
     assert snapshot["tunnel_provider"]["doctor"]["checked"] is True
     assert snapshot["tunnel_provider"]["doctor"]["ok"] is True
     assert snapshot["tunnel_provider"]["doctor"]["summary"]["failed"] == 0
+    readiness_checks = {check["id"]: check for check in snapshot["readiness_gate"]["checks"]}
+    assert readiness_checks["tunnel.doctor"]["status"] == "pass"
 
 
 def test_share_console_lists_and_revokes_active_leases(tmp_path):
@@ -386,6 +403,9 @@ def test_share_console_snapshot_summarizes_tool_schema_changes(tmp_path):
     assert "schema_variants" in alert_kinds
     assert "tool_pinning_changed" in alert_kinds
     assert "response.tool_description_changed" in alert_kinds
+    readiness_checks = {check["id"]: check for check in snapshot["readiness_gate"]["checks"]}
+    assert readiness_checks["schemas.drift"]["status"] == "fail"
+    assert snapshot["readiness_gate"]["decision"] == "blocked"
     assert "share-secret" not in json.dumps(visibility)
     assert "Bearer " not in json.dumps(visibility)
 
