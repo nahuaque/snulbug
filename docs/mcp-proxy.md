@@ -712,10 +712,10 @@ snulbug mcp share invite create .snulbug/share \
   --max-calls 5
 ```
 
-The create response includes MCP client JSON, a curl smoke test, a Claude Code
-setup command, and environment exports. Stored invite records are redacted, and
-the web console requires its local console secret before it reveals invite
-tokens.
+The create response includes MCP client JSON, a curl smoke test, Claude Code
+setup, Codex `config.toml`, and environment exports. Stored invite records are
+redacted, and the web console requires its local console secret before it
+reveals invite tokens.
 
 Auth binding flags are optional. When any are present, the current OAuth context
 must match every configured dimension before the lease covers the request. Use:

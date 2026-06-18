@@ -261,6 +261,11 @@ def test_mcp_share_invite_create_list_and_revoke_redacts_stored_snippets(tmp_pat
     assert created["setup_snippets"]["client_url"] == "https://mcp.example.test/mcp"
     assert created["setup_snippets"]["headers"]["Authorization"] == "Bearer share-secret"
     assert created["setup_snippets"]["env"]["SNULBUG_BEARER_TOKEN"] == "share-secret"
+    assert "[mcp_servers.snulbug-share]" in created["setup_snippets"]["codex"]["config_toml"]
+    assert 'bearer_token_env_var = "SNULBUG_MCP_BEARER_TOKEN"' in created["setup_snippets"]["codex"]["config_toml"]
+    assert '"x-snulbug-lease" = "SNULBUG_MCP_LEASE_TOKEN"' in created["setup_snippets"]["codex"]["config_toml"]
+    assert created["setup_snippets"]["codex"]["env"]["SNULBUG_MCP_BEARER_TOKEN"] == "share-secret"
+    assert created["setup_snippets"]["codex"]["env"]["SNULBUG_MCP_LEASE_TOKEN"].startswith("sbl_")
     assert "tools/list" in created["setup_snippets"]["curl"]["command"]
     assert "claude mcp add" in created["setup_snippets"]["claude_code"]["command"]
     assert listing["summary"] == {"total": 1, "active": 1, "revoked": 0}
@@ -316,6 +321,7 @@ def test_mcp_share_invite_cli_emits_setup_snippets(tmp_path, capsys):
     assert output["setup_snippets"]["mcp_client_json"]["mcpServers"]["snulbug-share"]["url"] == (
         "https://mcp.example.test/mcp"
     )
+    assert "[mcp_servers.snulbug-share]" in output["setup_snippets"]["codex"]["config_toml"]
     assert "curl -sS https://mcp.example.test/mcp" in output["setup_snippets"]["curl"]["command"]
 
 

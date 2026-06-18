@@ -1039,6 +1039,25 @@ def create_mcp_share_lease(
     }
 
 
+def cleanup_mcp_share_leases(directory: str | Path = ".") -> dict[str, Any]:
+    """Remove revoked or expired leases from the share's configured lease store."""
+
+    from .leases import cleanup_inactive_leases, list_leases
+
+    share_dir, manifest, session_model = _load_share_model_context(directory)
+    lease_file = _share_capability_lease_file(share_dir, session_model, manifest)
+    result = cleanup_inactive_leases(lease_file)
+    listed = list_leases(lease_file)
+    return {
+        "ok": bool(result.get("ok")),
+        "share": str(share_dir),
+        "removed_count": int(result.get("removed_count") or 0),
+        "lease_file": str(lease_file),
+        "leases": _share_leases_summary({"file": str(lease_file), "leases": listed.get("leases", [])}),
+        "session_model": str(share_session_model_path(share_dir)),
+    }
+
+
 def create_mcp_share_invite(
     directory: str | Path = ".",
     *,
@@ -1195,6 +1214,33 @@ def revoke_mcp_share_invite(
         "lease": lease_result,
         "session_model": str(share_session_model_path(share_dir)),
         "invitations": invitations,
+    }
+
+
+def cleanup_mcp_share_invites(directory: str | Path = ".") -> dict[str, Any]:
+    """Remove revoked share invite records from the session model."""
+
+    share_dir, _manifest, session_model = _load_share_model_context(directory)
+    invitations = dict(_mapping(session_model.get("invitations")))
+    items = [dict(_mapping(item)) for item in _sequence(invitations.get("items")) if isinstance(item, Mapping)]
+    kept = [item for item in items if not item.get("revoked_at")]
+    removed = [item for item in items if item.get("revoked_at")]
+    invitations["items"] = kept
+    invitations["summary"] = _share_invite_summary(kept)
+    last_created = _mapping(invitations.get("last_created"))
+    removed_ids = {str(item.get("id")) for item in removed if item.get("id")}
+    if str(last_created.get("id")) in removed_ids:
+        invitations.pop("last_created", None)
+
+    model = json.loads(json.dumps(dict(session_model), default=str))
+    model["invitations"] = invitations
+    write_share_session_model(share_dir, model, force=True)
+    return {
+        "ok": True,
+        "share": str(share_dir),
+        "removed_count": len(removed),
+        "invitations": invitations,
+        "session_model": str(share_session_model_path(share_dir)),
     }
 
 
@@ -7711,6 +7757,17 @@ def _share_invite_setup_snippets(
         f"-H 'Accept: application/json, text/event-stream' -d {shlex.quote(curl_body)}"
     )
     claude_code_headers = " ".join(f"--header {shlex.quote(f'{name}: {value}')}" for name, value in headers.items())
+    codex_env = {
+        "SNULBUG_MCP_BEARER_TOKEN": bearer_token,
+        "SNULBUG_MCP_LEASE_TOKEN": lease_token,
+    }
+    codex_config = _codex_mcp_config_toml(
+        client_name=client_name,
+        client_url=client_url,
+        bearer_env="SNULBUG_MCP_BEARER_TOKEN",
+        lease_header=lease_header,
+        lease_env="SNULBUG_MCP_LEASE_TOKEN",
+    )
     return {
         "client_url": client_url,
         "headers": dict(headers),
@@ -7730,6 +7787,11 @@ def _share_invite_setup_snippets(
                 f"{shlex.quote(client_url)} {claude_code_headers}"
             ),
         },
+        "codex": {
+            "description": "Add this to ~/.codex/config.toml or a trusted project .codex/config.toml.",
+            "config_toml": codex_config,
+            "env": codex_env,
+        },
         "mcp_inspector": {
             "description": "Use this URL and headers in the MCP Inspector HTTP transport form.",
             "url": client_url,
@@ -7746,6 +7808,34 @@ def _share_invite_setup_snippets(
             "SNULBUG_LEASE_TOKEN": lease_token,
         },
     }
+
+
+def _codex_mcp_config_toml(
+    *,
+    client_name: str,
+    client_url: str,
+    bearer_env: str,
+    lease_header: str,
+    lease_env: str,
+) -> str:
+    return "\n".join(
+        [
+            f"[mcp_servers.{_toml_bare_or_quoted_key(client_name)}]",
+            f"url = {_toml_string(client_url)}",
+            f"bearer_token_env_var = {_toml_string(bearer_env)}",
+            f"env_http_headers = {{ {_toml_string(lease_header)} = {_toml_string(lease_env)} }}",
+        ]
+    )
+
+
+def _toml_bare_or_quoted_key(value: str) -> str:
+    if value and all(char.isalnum() or char in "_-" for char in value):
+        return value
+    return _toml_string(value)
+
+
+def _toml_string(value: str) -> str:
+    return json.dumps(str(value))
 
 
 def _record_share_invite(

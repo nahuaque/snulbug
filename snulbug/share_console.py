@@ -24,6 +24,8 @@ from .redaction import SECRET_REPLACEMENT, build_audit_event
 from .share import (
     activate_mcp_share_policy,
     approve_share_capability_request,
+    cleanup_mcp_share_invites,
+    cleanup_mcp_share_leases,
     create_mcp_share,
     create_mcp_share_invite,
     create_mcp_share_lease,
@@ -529,6 +531,21 @@ class ShareConsoleServer:
                 )
                 _send_json(handler, 200, result)
                 return
+            if path == "/api/invites/cleanup-revoked":
+                if not self._has_console_secret(handler):
+                    _send_json(
+                        handler,
+                        403,
+                        {
+                            "ok": False,
+                            "error": "console secret required",
+                            "header": CONSOLE_SECRET_HEADER,
+                        },
+                    )
+                    return
+                result = cleanup_mcp_share_invites(self.directory)
+                _send_json(handler, 200, _redact_console_payload(result))
+                return
             invite_prefix = "/api/invites/"
             if path.startswith(invite_prefix) and path.endswith("/revoke"):
                 if not self._has_console_secret(handler):
@@ -548,6 +565,21 @@ class ShareConsoleServer:
                     invite_id=invite_id,
                     revoke_lease=_bool_or_default(body.get("revoke_lease"), True),
                 )
+                _send_json(handler, 200, _redact_console_payload(result))
+                return
+            if path == "/api/leases/cleanup-inactive":
+                if not self._has_console_secret(handler):
+                    _send_json(
+                        handler,
+                        403,
+                        {
+                            "ok": False,
+                            "error": "console secret required",
+                            "header": CONSOLE_SECRET_HEADER,
+                        },
+                    )
+                    return
+                result = cleanup_mcp_share_leases(self.directory)
                 _send_json(handler, 200, _redact_console_payload(result))
                 return
             if path == "/api/leases/create":
@@ -3947,13 +3979,6 @@ def _console_html() -> str:
         <div class="section-head"><h2>New Lease Header</h2></div>
         <div class="section-body"><div id="leaseOutput" class="console-output"></div></div>
       </section>
-      <section id="inviteSetupPanel" hidden>
-        <div class="section-head">
-          <h2>Invite Setup Snippets</h2>
-          <button type="button" onclick="copyInviteSetup()">Copy snippets</button>
-        </div>
-        <div class="section-body"><div id="inviteSetupOutput" class="console-output"></div></div>
-      </section>
       <section id="reportPanel" hidden>
         <div class="section-head"><h2>Session Report</h2></div>
         <div class="section-body"><div id="reportOutput" class="report-output"></div></div>
@@ -3971,7 +3996,10 @@ def _console_html() -> str:
       liveHealthStatus: null,
       liveHealthReadiness: null,
       liveHealthShare: null,
-      lastInviteSetup: ""
+      lastInviteSetup: "",
+      lastInviteId: "",
+      showInactiveLeases: false,
+      showRevokedInvites: false
     };
     const scrollPreserveSelectors = [
       ".policy-source",
@@ -4000,7 +4028,6 @@ def _console_html() -> str:
       "doctorPanel",
       "amendPreviewPanel",
       "leasePanel",
-      "inviteSetupPanel",
       "reportPanel"
     ];
     const $ = (id) => document.getElementById(id);
@@ -4966,8 +4993,9 @@ def _console_html() -> str:
       const leases = payload.leases || [];
       const active = leases.filter((lease) => lease.active === true);
       const inactive = leases.filter((lease) => lease.active !== true);
+      const visibleLeases = state.showInactiveLeases ? leases : active;
       $("leaseSummary").textContent =
-        `${active.length} active, ${inactive.length} inactive`;
+        `${active.length} active, ${inactive.length} inactive${state.showInactiveLeases ? "" : " hidden"}`;
       const createHtml = `<div class="setup-form stack">
         <div>
           <div class="timeline-target">Create task lease</div>
@@ -4984,12 +5012,28 @@ def _console_html() -> str:
         </div>
         <div><button type="button" class="primary" onclick="createLease()">Create lease</button></div>
       </div>`;
-      if (!leases.length) {
-        $("leases").innerHTML = `<div class="stack">${createHtml}<div class="empty">No task leases.</div></div>`;
+      const controlsHtml = `<div class="review-actions">
+        <label class="auto">
+          <input
+            id="show-inactive-leases"
+            type="checkbox"
+            onchange="setShowInactiveLeases(this.checked)"
+            ${state.showInactiveLeases ? "checked" : ""}
+          >
+          Show inactive
+        </label>
+        ${inactive.length ? '<button type="button" onclick="cleanupInactiveLeases()">Clean up inactive</button>' : ""}
+      </div>`;
+      if (!visibleLeases.length) {
+        const emptyText = inactive.length && !state.showInactiveLeases
+          ? `${inactive.length} inactive leases hidden.`
+          : "No task leases.";
+        const emptyHtml = `<div class="empty">${esc(emptyText)}</div>`;
+        $("leases").innerHTML = `<div class="stack">${createHtml}${controlsHtml}${emptyHtml}</div>`;
         return;
       }
-      const cardsHtml = `<div class="lease-list">${leases.map(leaseCardHtml).join("")}</div>`;
-      $("leases").innerHTML = `<div class="stack">${createHtml}${cardsHtml}</div>`;
+      const cardsHtml = `<div class="lease-list">${visibleLeases.map(leaseCardHtml).join("")}</div>`;
+      $("leases").innerHTML = `<div class="stack">${createHtml}${controlsHtml}${cardsHtml}</div>`;
     }
 
     function leaseCardHtml(lease) {
@@ -5067,14 +5111,18 @@ def _console_html() -> str:
     function renderInvites(payload) {
       const invitations = payload.items || [];
       const summary = payload.summary || {};
-      const active = numeric(summary.active);
-      const revoked = numeric(summary.revoked);
-      $("inviteSummary").textContent = `${active} active, ${revoked} revoked`;
+      const activeInvites = invitations.filter((invite) => !invite.revoked_at);
+      const revokedInvites = invitations.filter((invite) => invite.revoked_at);
+      const active = numeric(summary.active || activeInvites.length);
+      const revoked = numeric(summary.revoked || revokedInvites.length);
+      const visibleInvites = state.showRevokedInvites ? invitations : activeInvites;
+      $("inviteSummary").textContent =
+        `${active} active, ${revoked} revoked${state.showRevokedInvites ? "" : " hidden"}`;
       const createHtml = `<div class="setup-form stack">
         <div>
           <div class="timeline-target">Create task invite</div>
           <div class="timeline-detail">
-            Mint a lease-backed client setup packet for one recipient. Secrets are shown once here.
+            Mint a lease-backed client setup packet for one recipient. The setup packet is shown once after creation.
           </div>
         </div>
         <div class="field-grid">
@@ -5093,13 +5141,57 @@ def _console_html() -> str:
           <span id="inviteCreateStatus" class="copy-status"></span>
         </div>
       </div>`;
-      if (!invitations.length) {
-        const emptyHtml = '<div class="empty">No share invites yet.</div>';
-        $("invitations").innerHTML = `<div class="stack">${createHtml}${emptyHtml}</div>`;
+      const controlsHtml = `<div class="review-actions">
+        <label class="auto">
+          <input
+            id="show-revoked-invites"
+            type="checkbox"
+            onchange="setShowRevokedInvites(this.checked)"
+            ${state.showRevokedInvites ? "checked" : ""}
+          >
+          Show revoked
+        </label>
+        ${revokedInviteCleanupButton(revokedInvites)}
+      </div>`;
+      const setupHtml = inviteSetupPanelHtml();
+      if (!visibleInvites.length) {
+        const emptyText = revokedInvites.length && !state.showRevokedInvites
+          ? `${revokedInvites.length} revoked invites hidden.`
+          : "No share invites yet.";
+        const emptyHtml = `<div class="empty">${esc(emptyText)}</div>`;
+        $("invitations").innerHTML = `<div class="stack">${createHtml}${controlsHtml}${setupHtml}${emptyHtml}</div>`;
         return;
       }
-      const listHtml = `<div class="invite-list">${invitations.map(inviteCardHtml).join("")}</div>`;
-      $("invitations").innerHTML = `<div class="stack">${createHtml}${listHtml}</div>`;
+      const listHtml = `<div class="invite-list">${visibleInvites.map(inviteCardHtml).join("")}</div>`;
+      $("invitations").innerHTML = `<div class="stack">${createHtml}${controlsHtml}${setupHtml}${listHtml}</div>`;
+    }
+
+    function revokedInviteCleanupButton(revokedInvites) {
+      if (!revokedInvites.length) return "";
+      return '<button type="button" onclick="cleanupRevokedInvites()">Clean up revoked</button>';
+    }
+
+    function inviteSetupPanelHtml() {
+      if (!state.lastInviteSetup) return "";
+      return `<div id="inviteSetupPanel" class="review-panel ready">
+        <div class="review-head">
+          <div>
+            <div class="timeline-target">Invite Setup Snippets</div>
+            <div class="timeline-detail">
+              Use this invite now: copy the setup packet into the downstream MCP client, or run the curl smoke test.
+              It contains bearer and lease tokens and will not be recoverable from the invite card later.
+            </div>
+          </div>
+          <div class="review-actions">
+            <button type="button" class="primary" onclick="copyInviteSetup()">Copy setup packet</button>
+          </div>
+        </div>
+        <div class="detail-grid">
+          ${detailRow("Invite", state.lastInviteId || "-")}
+          ${detailRow("Next step", "Paste MCP client JSON into your client, or run the curl command.")}
+        </div>
+        <div id="inviteSetupOutput" class="console-output">${esc(state.lastInviteSetup)}</div>
+      </div>`;
     }
 
     function inviteCardHtml(invite) {
@@ -5110,6 +5202,9 @@ def _console_html() -> str:
       const paths = listText(invite.allow_paths);
       const taskDetail = `client ${invite.client_name || "snulbug-share"}`;
       const expiryDetail = revoked ? `revoked ${shortDateTime(invite.revoked_at)}` : "";
+      const guidance = revoked
+        ? "This invite was revoked. Create a new invite to generate fresh setup snippets."
+        : "Setup snippets and tokens are only shown immediately after creation.";
       const revokeAction = revoked
         ? ""
         : `<button class="danger" type="button" onclick="revokeInvite('${id}')">Revoke invite</button>`;
@@ -5127,6 +5222,7 @@ def _console_html() -> str:
           ${leaseMeta("Expiry", shortDateTime(invite.expires_at), expiryDetail)}
           ${leaseMeta("Backing lease", invite.lease_id || "-", invite.lease_header || "")}
         </div>
+        <div class="timeline-detail">${esc(guidance)}</div>
         <div class="invite-actions">
           ${revokeAction}
         </div>
@@ -5840,6 +5936,34 @@ def _console_html() -> str:
       }
     }
 
+    function setShowInactiveLeases(value) {
+      state.showInactiveLeases = Boolean(value);
+      renderLeases(((state.snapshot || {}).status || {}).leases || {});
+    }
+
+    async function cleanupInactiveLeases() {
+      if (!window.confirm("Remove inactive lease records from this share?")) return;
+      const secret = consoleSecret();
+      if (!secret) {
+        $("message").textContent = "Console secret required to clean up inactive leases";
+        return;
+      }
+      try {
+        const payload = await api("/api/leases/cleanup-inactive", {
+          method: "POST",
+          headers: { "x-snulbug-console-secret": secret },
+          body: JSON.stringify({})
+        });
+        $("message").textContent = `Removed ${payload.removed_count || 0} inactive leases`;
+        await loadSnapshot();
+      } catch (error) {
+        if (String(error.message || "").includes("console secret")) {
+          if (window.sessionStorage) window.sessionStorage.removeItem("snulbug-console-secret");
+        }
+        $("message").textContent = `Lease cleanup failed: ${error.message}`;
+      }
+    }
+
     function setInviteFeedback(message, kind = "") {
       const status = $("inviteCreateStatus");
       if (status) {
@@ -5874,8 +5998,7 @@ def _console_html() -> str:
           })
         });
         state.lastInviteSetup = formatInviteSetup(payload);
-        $("inviteSetupOutput").textContent = state.lastInviteSetup;
-        $("inviteSetupPanel").hidden = false;
+        state.lastInviteId = (payload.invite || {}).id || "";
         setInviteFeedback("Created", "ok");
         $("message").textContent = `Created invite ${(payload.invite || {}).id || ""}`;
         await loadSnapshot();
@@ -5911,9 +6034,38 @@ def _console_html() -> str:
       }
     }
 
+    function setShowRevokedInvites(value) {
+      state.showRevokedInvites = Boolean(value);
+      renderInvites(((state.snapshot || {}).status || {}).invitations || {});
+    }
+
+    async function cleanupRevokedInvites() {
+      if (!window.confirm("Remove revoked invite records from this share?")) return;
+      const secret = consoleSecret();
+      if (!secret) {
+        $("message").textContent = "Console secret required to clean up revoked invites";
+        return;
+      }
+      try {
+        const payload = await api("/api/invites/cleanup-revoked", {
+          method: "POST",
+          headers: { "x-snulbug-console-secret": secret },
+          body: JSON.stringify({})
+        });
+        $("message").textContent = `Removed ${payload.removed_count || 0} revoked invites`;
+        await loadSnapshot();
+      } catch (error) {
+        if (String(error.message || "").includes("console secret")) {
+          if (window.sessionStorage) window.sessionStorage.removeItem("snulbug-console-secret");
+        }
+        $("message").textContent = `Invite cleanup failed: ${error.message}`;
+      }
+    }
+
     function formatInviteSetup(payload) {
       const invite = payload.invite || {};
       const snippets = payload.setup_snippets || {};
+      const codex = snippets.codex || {};
       const lines = [
         `Invite: ${invite.id || ""}`,
         `Recipient: ${invite.recipient || ""}`,
@@ -5928,6 +6080,12 @@ def _console_html() -> str:
         "",
         "Claude Code:",
         (snippets.claude_code || {}).command || "",
+        "",
+        "Codex config.toml:",
+        (codex.config_toml || ""),
+        "",
+        "Codex environment:",
+        envSnippet(codex.env || {}),
         "",
         "MCP client JSON:",
         JSON.stringify(snippets.mcp_client_json || {}, null, 2),

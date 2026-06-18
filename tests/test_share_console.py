@@ -410,6 +410,17 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
             headers={share_console.CONSOLE_SECRET_HEADER: server.console_secret},
         )
         invite_snapshot = read_json(f"{server.url}/api/snapshot")
+        invite_cleanup = post_json(
+            f"{server.url}/api/invites/cleanup-revoked",
+            {},
+            headers={share_console.CONSOLE_SECRET_HEADER: server.console_secret},
+        )
+        lease_cleanup = post_json(
+            f"{server.url}/api/leases/cleanup-inactive",
+            {},
+            headers={share_console.CONSOLE_SECRET_HEADER: server.console_secret},
+        )
+        cleanup_snapshot = read_json(f"{server.url}/api/snapshot")
         approved = post_json(
             f"{server.url}/api/requests/{request_id}/approve",
             {"ttl": "12m", "max_calls": 2, "reviewer": "ui"},
@@ -499,16 +510,29 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "createLease" in html
     assert "reactivateLease" in html
     assert "revokeLease" in html
+    assert "Show inactive" in html
+    assert "Clean up inactive" in html
+    assert "cleanupInactiveLeases" in html
     assert 'href="#invitesSection"' in html
     assert 'id="invitesSection"' in html
     assert "Share Invitations" in html
     assert "renderInvites" in html
     assert "Create task invite" in html
+    assert "Show revoked" in html
+    assert "Clean up revoked" in html
     assert "Invite Setup Snippets" in html
+    assert "Use this invite now" in html
+    assert "Copy setup packet" in html
+    assert "Setup snippets and tokens are only shown immediately after creation." in html
     assert "createInvite" in html
     assert "revokeInvite" in html
+    assert "cleanupRevokedInvites" in html
     assert "copyInviteSetup" in html
+    assert "Codex config.toml" in html
+    assert "Codex environment" in html
     assert "/api/invites/create" in html
+    assert "/api/invites/cleanup-revoked" in html
+    assert "/api/leases/cleanup-inactive" in html
     assert "Auth Visibility" in html
     assert "renderAuthVisibility" in html
     assert "scopeMatchText" in html
@@ -550,11 +574,18 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert invite_created["headers"]["Authorization"] == "Bearer share-secret"
     assert invite_created["headers"]["x-snulbug-lease"].startswith("sbl_")
     assert invite_created["setup_snippets"]["env"]["SNULBUG_BEARER_TOKEN"] == "share-secret"
+    assert "[mcp_servers.snulbug-share]" in invite_created["setup_snippets"]["codex"]["config_toml"]
     assert invite_revoked["ok"] is True
     assert invite_revoked["lease_revoked"] is True
     assert invite_snapshot["status"]["invitations"]["summary"]["revoked"] == 1
     assert "share-secret" not in json.dumps(invite_snapshot)
     assert "sbl_" not in json.dumps(invite_snapshot)
+    assert invite_cleanup["ok"] is True
+    assert invite_cleanup["removed_count"] == 1
+    assert lease_cleanup["ok"] is True
+    assert lease_cleanup["removed_count"] >= 1
+    assert cleanup_snapshot["status"]["invitations"]["summary"]["revoked"] == 0
+    assert cleanup_snapshot["status"]["leases"]["active_count"] == len(cleanup_snapshot["status"]["leases"]["leases"])
     assert report_headers["content-type"].startswith("text/markdown")
     assert report_headers["content-disposition"].startswith("attachment;")
     assert report_headers["content-disposition"].endswith('report.md"')

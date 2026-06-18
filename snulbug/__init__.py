@@ -200,7 +200,14 @@ from .impact import analyze_mcp_impact, format_mcp_impact_report
 from .inspection import format_mcp_inspection_report, inspect_mcp_log
 from .lab import format_mcp_auth_lab_report, run_mcp_auth_lab, run_mcp_lab
 from .learn import amend_mcp_policy, learn_mcp_policy
-from .leases import LeasePolicyConfig, create_lease, list_leases, reactivate_lease, revoke_lease
+from .leases import (
+    LeasePolicyConfig,
+    cleanup_inactive_leases,
+    create_lease,
+    list_leases,
+    reactivate_lease,
+    revoke_lease,
+)
 from .manifests import load_manifest, manifest_digest, sign_upstream_manifest, verify_upstream_manifest, write_manifest
 from .mcp_auth import (
     OAuthDecision,
@@ -305,6 +312,8 @@ from .share import (
     amend_mcp_share_policy,
     approve_share_capability_request,
     attach_mcp_share_member,
+    cleanup_mcp_share_invites,
+    cleanup_mcp_share_leases,
     close_mcp_share,
     create_mcp_share,
     create_mcp_share_invite,
@@ -588,6 +597,9 @@ __all__ = [
     "bundle_lifecycle_digest",
     "clear_fabric_control_actions",
     "clear_fabric_runtime_status",
+    "cleanup_inactive_leases",
+    "cleanup_mcp_share_invites",
+    "cleanup_mcp_share_leases",
     "close_mcp_share",
     "compare_decisions",
     "classify_mcp_tool",

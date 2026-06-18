@@ -117,6 +117,25 @@ def list_leases(path: str | Path, *, include_inactive: bool = True) -> dict[str,
     return {"ok": True, "file": str(store_path), "leases": leases}
 
 
+def cleanup_inactive_leases(path: str | Path) -> dict[str, Any]:
+    """Remove revoked or expired leases from a lease store."""
+
+    store_path = Path(path)
+    store = _load_store(store_path, create_missing=True)
+    leases = list(_leases(store))
+    kept = [lease for lease in leases if _lease_view(lease)["active"]]
+    removed = [lease for lease in leases if _lease_view(lease)["active"] is not True]
+    store["leases"] = kept
+    _write_store(store_path, store)
+    return {
+        "ok": True,
+        "file": str(store_path),
+        "removed_count": len(removed),
+        "active_count": len(kept),
+        "leases": [_lease_view(lease) for lease in kept],
+    }
+
+
 def revoke_lease(path: str | Path, lease_id: str) -> dict[str, Any]:
     """Revoke a lease by id."""
 

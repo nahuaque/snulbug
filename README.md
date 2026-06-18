@@ -318,7 +318,8 @@ too; a copied lease token alone is not enough.
 
 When you want to hand a downstream client a ready-to-use setup packet, create a
 task-scoped invite instead. It mints a backing lease and returns one-time setup
-snippets for MCP client JSON, curl, Claude Code, and environment variables:
+snippets for MCP client JSON, curl, Claude Code, Codex `config.toml`, and
+environment variables:
 
 ```bash
 snulbug mcp share invite create .snulbug/share \

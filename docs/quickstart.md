@@ -340,8 +340,9 @@ snulbug mcp share invite create .snulbug/share \
   --ttl 30m
 ```
 
-The response includes MCP client JSON, a curl smoke test, Claude Code setup, and
-environment exports. The share session stores only redacted invite metadata.
+The response includes MCP client JSON, a curl smoke test, Claude Code setup,
+Codex `config.toml`, and environment exports. The share session stores only
+redacted invite metadata.
 
 If your policy uses `action = "confirm"` for risky calls, enable confirmation in
 `snulbug.toml`:
