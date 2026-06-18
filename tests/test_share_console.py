@@ -457,6 +457,9 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "saveTextAsFile" in html
     assert "Active Leases" in html
     assert "renderLeases" in html
+    assert "Create task lease" in html
+    assert "createLease" in html
+    assert "reactivateLease" in html
     assert "revokeLease" in html
     assert "Auth Visibility" in html
     assert "renderAuthVisibility" in html
@@ -465,6 +468,13 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "renderToolSchemaVisibility" in html
     assert "schemaCatalogTable" in html
     assert "Run Doctor" in html
+    assert "Run health check" in html
+    assert "runHealthCheck" in html
+    assert "snulbug gateway" in html
+    assert "Upstream MCP server behind snulbug" in html
+    assert ".target-kind.gateway" in html
+    assert ".target-kind.upstream" in html
+    assert 'class="target-kind ${esc(row.kind)}"' in html
     assert 'id="doctorPanel"' in html
     assert "renderDoctor" in html
     assert 'id="requestDrawer"' in html
@@ -593,6 +603,43 @@ def test_share_console_runs_inline_share_doctor(tmp_path, monkeypatch):
     assert readiness_checks["tunnel.doctor"]["status"] == "pass"
 
 
+def test_share_console_runs_manual_health_check(tmp_path, monkeypatch):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    calls = []
+
+    def fake_probe(url, *, headers, timeout):
+        calls.append((url, dict(headers), timeout))
+        return {"reachable": True, "status": 200, "error": None, "mcp_ok": True}
+
+    monkeypatch.setattr("snulbug.share._probe_mcp_url", fake_probe)
+    server = ShareConsoleServer(directory=tmp_path, port=0, live_checks=False)
+    server.start()
+    try:
+        snapshot = read_json(f"{server.url}/api/snapshot")
+        health = post_json(f"{server.url}/api/health/check", {})
+    finally:
+        server.stop()
+
+    assert snapshot["status"]["gateway"]["checked"] is False
+    assert snapshot["status"]["upstreams"][0]["checked"] is False
+    assert health["gateway"]["checked"] is True
+    assert health["gateway"]["reachable"] is True
+    assert health["upstreams"][0]["checked"] is True
+    assert health["upstreams"][0]["reachable"] is True
+    readiness_checks = {check["id"]: check for check in health["readiness_gate"]["checks"]}
+    assert readiness_checks["gateway.reachable"]["status"] == "pass"
+    assert readiness_checks["upstreams.reachable"]["status"] == "pass"
+    assert [call[0] for call in calls] == ["http://127.0.0.1:8080/mcp", "http://127.0.0.1:9000"]
+    assert "share-secret" not in json.dumps(health)
+
+
 def test_share_console_lists_and_revokes_active_leases(tmp_path):
     create_mcp_share(
         tmp_path,
@@ -617,13 +664,32 @@ def test_share_console_lists_and_revokes_active_leases(tmp_path):
     server.start()
     try:
         snapshot = read_json(f"{server.url}/api/snapshot")
+        created_from_console = post_json(
+            f"{server.url}/api/leases/create",
+            {
+                "task": "Inspect docs",
+                "allow_tools": "safe_read_file,git.status",
+                "allow_paths": ".",
+                "ttl": "20m",
+                "max_calls": 4,
+            },
+        )
         revoked = post_json(f"{server.url}/api/leases/{lease_id}/revoke", {})
+        after_revoke = read_json(f"{server.url}/api/snapshot")
+        reactivated = post_json(
+            f"{server.url}/api/leases/{lease_id}/reactivate",
+            {"ttl": "15m", "max_calls": 2},
+        )
         after = read_json(f"{server.url}/api/snapshot")
     finally:
         server.stop()
 
     before_lease = next(item for item in snapshot["status"]["leases"]["leases"] if item["id"] == lease_id)
+    revoked_lease = next(item for item in after_revoke["status"]["leases"]["leases"] if item["id"] == lease_id)
     after_lease = next(item for item in after["status"]["leases"]["leases"] if item["id"] == lease_id)
+    console_lease = next(
+        item for item in after["status"]["leases"]["leases"] if item["id"] == created_from_console["lease"]["id"]
+    )
     listed = list_leases(tmp_path / "leases.json")
     listed_lease = next(item for item in listed["leases"] if item["id"] == lease_id)
 
@@ -634,11 +700,24 @@ def test_share_console_lists_and_revokes_active_leases(tmp_path):
     assert before_lease["allow_tools"] == ["files.read_file", "git.status"]
     assert before_lease["max_calls"] == 3
     assert before_lease["use_count"] == 0
+    assert created_from_console["ok"] is True
+    assert created_from_console["lease"]["task"] == "Inspect docs"
+    assert created_from_console["lease"]["allow_tools"] == ["safe_read_file", "git.status"]
+    assert created_from_console["retry_header"] == "[REDACTED]"
+    assert console_lease["active"] is True
+    assert console_lease["max_calls"] == 4
     assert revoked["ok"] is True
     assert revoked["lease"]["active"] is False
-    assert after_lease["active"] is False
-    assert listed_lease["active"] is False
+    assert revoked_lease["active"] is False
+    assert reactivated["ok"] is True
+    assert reactivated["retry_header"] == "[REDACTED]"
+    assert after_lease["active"] is True
+    assert after_lease["max_calls"] == 2
+    assert after_lease["use_count"] == 0
+    assert listed_lease["active"] is True
     assert "sbl_console-lease" not in json.dumps(snapshot)
+    assert "sbl_" not in json.dumps(created_from_console)
+    assert "sbl_" not in json.dumps(reactivated)
     assert "sbl_console-lease" not in json.dumps(revoked)
 
 
@@ -821,7 +900,7 @@ def test_share_console_serves_provider_console_metadata_for_ngrok(tmp_path, monk
         server.stop()
 
     assert "providerConsole" in html
-    assert "externalLink(url, url)" in html
+    assert "externalLink(row.url, row.url)" in html
     assert 'target="_blank"' in html
     assert snapshot["provider_console"]["provider"] == "ngrok"
     assert snapshot["provider_console"]["url"] == f"http://127.0.0.1:{unused_port}"

@@ -993,6 +993,82 @@ def revoke_mcp_share_lease(
     }
 
 
+def create_mcp_share_lease(
+    directory: str | Path = ".",
+    *,
+    task: str,
+    allow_tools: Sequence[str],
+    allow_paths: Sequence[str] = (),
+    allow_hosts: Sequence[str] = (),
+    allow_commands: Sequence[str] = (),
+    ttl: str = "30m",
+    max_calls: int | None = None,
+) -> dict[str, Any]:
+    """Create a task-scoped lease in the share's configured lease store."""
+
+    from .leases import create_lease
+
+    share_dir, manifest, session_model = _load_share_model_context(directory)
+    lease_file = _share_capability_lease_file(share_dir, session_model, manifest)
+    lease_header = _share_capability_lease_header(session_model, manifest)
+    lease = create_lease(
+        lease_file,
+        task=task,
+        allow_tools=allow_tools,
+        allow_paths=allow_paths,
+        allow_hosts=allow_hosts,
+        allow_commands=allow_commands,
+        ttl=ttl,
+        max_calls=max_calls,
+    )
+    token = str(lease.get("token"))
+    return {
+        "ok": bool(lease.get("ok")),
+        "share": str(share_dir),
+        "lease": lease.get("lease"),
+        "lease_file": str(lease_file),
+        "lease_header": lease_header,
+        "headers": {lease_header: token},
+        "retry_header": f'-H "{lease_header}: {token}"',
+        "session_model": str(share_session_model_path(share_dir)),
+    }
+
+
+def reactivate_mcp_share_lease(
+    directory: str | Path = ".",
+    *,
+    lease_id: str,
+    ttl: str = "30m",
+    max_calls: int | None = None,
+) -> dict[str, Any]:
+    """Reactivate a share lease with a fresh token and expiry."""
+
+    from .leases import reactivate_lease
+
+    share_dir, manifest, session_model = _load_share_model_context(directory)
+    lease_file = _share_capability_lease_file(share_dir, session_model, manifest)
+    lease_header = _share_capability_lease_header(session_model, manifest)
+    lease = reactivate_lease(lease_file, lease_id, ttl=ttl, max_calls=max_calls)
+    if not lease.get("ok"):
+        return {
+            **lease,
+            "share": str(share_dir),
+            "lease_file": str(lease_file),
+            "lease_header": lease_header,
+        }
+    token = str(lease.get("token"))
+    return {
+        "ok": True,
+        "share": str(share_dir),
+        "lease": lease.get("lease"),
+        "lease_file": str(lease_file),
+        "lease_header": lease_header,
+        "headers": {lease_header: token},
+        "retry_header": f'-H "{lease_header}: {token}"',
+        "session_model": str(share_session_model_path(share_dir)),
+    }
+
+
 def deny_share_capability_request(
     directory: str | Path = ".",
     *,

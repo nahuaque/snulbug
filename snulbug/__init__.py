@@ -200,7 +200,7 @@ from .impact import analyze_mcp_impact, format_mcp_impact_report
 from .inspection import format_mcp_inspection_report, inspect_mcp_log
 from .lab import format_mcp_auth_lab_report, run_mcp_auth_lab, run_mcp_lab
 from .learn import amend_mcp_policy, learn_mcp_policy
-from .leases import LeasePolicyConfig, create_lease, list_leases, revoke_lease
+from .leases import LeasePolicyConfig, create_lease, list_leases, reactivate_lease, revoke_lease
 from .manifests import load_manifest, manifest_digest, sign_upstream_manifest, verify_upstream_manifest, write_manifest
 from .mcp_auth import (
     OAuthDecision,
@@ -718,6 +718,7 @@ __all__ = [
     "prepare_codespace_demo",
     "record_audit_event",
     "record_policy_request",
+    "reactivate_lease",
     "reconcile_fabric_controller",
     "reconcile_policy_activation",
     "register_fabric_member",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from snulbug import create_lease, list_leases, revoke_lease
+from snulbug import create_lease, list_leases, reactivate_lease, revoke_lease
 from snulbug.leases import LeasePolicyConfig, enforce_mcp_lease_policy, preview_mcp_lease_coverage
 from snulbug.simulator import main as simulator_main
 
@@ -159,6 +159,33 @@ def test_revoke_lease_marks_it_inactive(tmp_path):
     assert revoked["ok"] is True
     assert revoked["lease"]["active"] is False
     assert revoked["lease"]["revoked_at"] is not None
+
+
+def test_reactivate_lease_renews_token_and_resets_usage(tmp_path):
+    lease_file = tmp_path / "leases.json"
+    created = create_lease(
+        lease_file,
+        task="Inspect git status",
+        allow_tools=["git.status"],
+        ttl="30m",
+        max_calls=2,
+        token="sbl_old-token",
+    )
+    lease_id = created["lease"]["id"]
+    revoke_lease(lease_file, lease_id)
+
+    reactivated = reactivate_lease(lease_file, lease_id, ttl="15m", max_calls=3, token="sbl_new-token")
+    listed = list_leases(lease_file)
+    lease = next(item for item in listed["leases"] if item["id"] == lease_id)
+
+    assert reactivated["ok"] is True
+    assert reactivated["headers"]["x-snulbug-lease"] == "sbl_new-token"
+    assert reactivated["lease"]["active"] is True
+    assert reactivated["lease"]["revoked_at"] is None
+    assert reactivated["lease"]["max_calls"] == 3
+    assert lease["active"] is True
+    assert lease["use_count"] == 0
+    assert lease["last_used_at"] is None
 
 
 def test_mcp_share_lease_cli_create_list_and_revoke(tmp_path, capsys):

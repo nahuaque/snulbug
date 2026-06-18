@@ -131,6 +131,44 @@ def revoke_lease(path: str | Path, lease_id: str) -> dict[str, Any]:
     return {"ok": False, "file": str(store_path), "error": f"lease not found: {lease_id}"}
 
 
+def reactivate_lease(
+    path: str | Path,
+    lease_id: str,
+    *,
+    ttl: str | int | float = "1h",
+    max_calls: int | None = None,
+    token: str | None = None,
+) -> dict[str, Any]:
+    """Reactivate an existing lease id with a fresh token and expiry."""
+
+    if max_calls is not None and max_calls <= 0:
+        raise ValueError("max_calls must be positive when set")
+    store_path = Path(path)
+    store = _load_store(store_path, create_missing=True)
+    lease_token = token or _new_token()
+    now = _now()
+    for lease in _leases(store):
+        if lease.get("id") == lease_id:
+            lease["revoked_at"] = None
+            lease["expires_at"] = _format_time(now + timedelta(seconds=_parse_ttl(ttl)))
+            lease["reactivated_at"] = _format_time(now)
+            lease["token_hash"] = _token_hash(lease_token)
+            lease["use_count"] = 0
+            lease["last_used_at"] = None
+            lease["last_tool"] = None
+            if max_calls is not None:
+                lease["max_calls"] = max_calls
+            _write_store(store_path, store)
+            return {
+                "ok": True,
+                "file": str(store_path),
+                "lease": _lease_view(lease),
+                "token": lease_token,
+                "headers": {LEASE_HEADER: lease_token},
+            }
+    return {"ok": False, "file": str(store_path), "error": f"lease not found: {lease_id}"}
+
+
 def enforce_mcp_lease_policy(
     request: Mapping[str, Any] | None,
     scope: Scope,

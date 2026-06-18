@@ -23,10 +23,12 @@ from .share import (
     activate_mcp_share_policy,
     approve_share_capability_request,
     create_mcp_share,
+    create_mcp_share_lease,
     deny_share_capability_request,
     doctor_mcp_share,
     preview_mcp_share_policy_amendment,
     promote_mcp_share_policy,
+    reactivate_mcp_share_lease,
     revoke_mcp_share_lease,
     share_capability_requests,
     share_report,
@@ -432,6 +434,16 @@ class ShareConsoleServer:
                 result = revoke_mcp_share_lease(self.directory, lease_id=lease_id)
                 _send_json(handler, 200, _redact_console_payload(result))
                 return
+            if path.startswith(lease_prefix) and path.endswith("/reactivate"):
+                lease_id = unquote(path[len(lease_prefix) : -len("/reactivate")])
+                result = reactivate_mcp_share_lease(
+                    self.directory,
+                    lease_id=lease_id,
+                    ttl=_string_or_none(body.get("ttl")) or "30m",
+                    max_calls=_positive_int(body.get("max_calls")),
+                )
+                _send_json(handler, 200, _redact_console_payload(result))
+                return
             if path == "/api/doctor":
                 result = doctor_mcp_share(
                     self.directory,
@@ -440,6 +452,28 @@ class ShareConsoleServer:
                     live_checks=_bool_or_default(body.get("live_checks"), self.live_checks),
                     conformance_pack=_string_or_none(body.get("conformance_pack")),
                     require_conformance=bool(body.get("require_conformance", False)),
+                )
+                _send_json(handler, 200, _redact_console_payload(result))
+                return
+            if path == "/api/health/check":
+                snapshot = build_share_console_snapshot(self.directory, timeout=self.timeout, live_checks=True)
+                status = dict(_mapping(snapshot.get("status")))
+                status["readiness_gate"] = snapshot.get("readiness_gate")
+                status["share"] = snapshot.get("share")
+                status["generated_at"] = snapshot.get("generated_at")
+                result = status
+                _send_json(handler, 200, _redact_console_payload(result))
+                return
+            if path == "/api/leases/create":
+                result = create_mcp_share_lease(
+                    self.directory,
+                    task=_string_or_none(body.get("task")) or "Temporary MCP access",
+                    allow_tools=_string_list(body.get("allow_tools")),
+                    allow_paths=_string_list(body.get("allow_paths")),
+                    allow_hosts=_string_list(body.get("allow_hosts")),
+                    allow_commands=_string_list(body.get("allow_commands")),
+                    ttl=_string_or_none(body.get("ttl")) or "30m",
+                    max_calls=_positive_int(body.get("max_calls")),
                 )
                 _send_json(handler, 200, _redact_console_payload(result))
                 return
@@ -3240,6 +3274,33 @@ def _console_html() -> str:
       border-top: 1px solid var(--line);
       padding-top: 8px;
     }
+    .target-kind {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 2px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      font-size: 12px;
+      font-weight: 760;
+      text-transform: uppercase;
+      letter-spacing: 0;
+      background: #fff;
+    }
+    .target-kind.gateway {
+      color: var(--blue);
+      border-color: #9ec2df;
+      background: #f2f8fd;
+    }
+    .target-kind.upstream {
+      color: var(--green);
+      border-color: #a7d8bf;
+      background: #f0fbf5;
+    }
+    .health-target {
+      display: grid;
+      gap: 4px;
+    }
     .message {
       min-height: 20px;
       color: var(--muted);
@@ -3490,7 +3551,15 @@ def _console_html() -> str:
   </div>
   <script src="/assets/prism.js"></script>
   <script>
-    const state = { snapshot: null, timer: null, selectedRequestId: null, showAllReadiness: false };
+    const state = {
+      snapshot: null,
+      timer: null,
+      selectedRequestId: null,
+      showAllReadiness: false,
+      liveHealthStatus: null,
+      liveHealthReadiness: null,
+      liveHealthShare: null
+    };
     const scrollPreserveSelectors = [
       ".policy-source",
       "#reportOutput",
@@ -3560,6 +3629,11 @@ def _console_html() -> str:
       try {
         const snapshot = await api("/api/snapshot");
         const scrollState = captureScrollState();
+        if (state.liveHealthShare && state.liveHealthShare !== snapshot.share) {
+          state.liveHealthStatus = null;
+          state.liveHealthReadiness = null;
+          state.liveHealthShare = null;
+        }
         state.snapshot = snapshot;
         render();
         restoreScrollState(scrollState);
@@ -3620,8 +3694,9 @@ def _console_html() -> str:
         renderSetupWizard(snapshot.setup_wizard || {}, snapshot);
         return;
       }
-      renderMetrics(status, snapshot.readiness_gate || {});
-      renderReadinessGate(snapshot.readiness_gate || {});
+      const readiness = state.liveHealthReadiness || snapshot.readiness_gate || {};
+      renderMetrics(status, readiness);
+      renderReadinessGate(readiness);
       renderPolicyVisibility(snapshot.policy_visibility || {});
       renderTunnelProvider(snapshot.tunnel_provider || {});
       renderDecisionTimeline(snapshot.decision_timeline || {});
@@ -3630,7 +3705,7 @@ def _console_html() -> str:
       renderLeases(status.leases || {});
       renderAuthVisibility(snapshot.auth_visibility || {});
       renderToolSchemaVisibility(snapshot.tool_schema_visibility || {});
-      renderHealth(status);
+      renderHealth(state.liveHealthStatus || status);
       renderToolRisk(status);
       renderFindings(status);
       renderEvidence(status);
@@ -4305,19 +4380,37 @@ def _console_html() -> str:
     function renderLeases(payload) {
       const leases = payload.leases || [];
       const active = leases.filter((lease) => lease.active === true);
+      const inactive = leases.filter((lease) => lease.active !== true);
       $("leaseSummary").textContent =
-        `${active.length} active, ${Math.max(0, leases.length - active.length)} inactive`;
-      if (!active.length) {
-        $("leases").innerHTML = '<div class="empty">No active task leases.</div>';
+        `${active.length} active, ${inactive.length} inactive`;
+      const createHtml = `<div class="setup-form stack">
+        <div>
+          <div class="timeline-target">Create task lease</div>
+          <div class="timeline-detail">Grant temporary capability for a specific task.</div>
+        </div>
+        <div class="field-grid">
+          ${setupField("lease-create-task", "Task", "Temporary MCP access")}
+          ${setupField("lease-create-tools", "Allowed tools", "safe_read_file")}
+          ${setupField("lease-create-paths", "Allowed paths", ".")}
+          ${setupField("lease-create-ttl", "TTL", "30m")}
+          ${setupField("lease-create-calls", "Max calls", "")}
+          ${setupField("lease-create-hosts", "Allowed hosts", "")}
+          ${setupField("lease-create-commands", "Allowed commands", "", "wide")}
+        </div>
+        <div><button type="button" class="primary" onclick="createLease()">Create lease</button></div>
+      </div>`;
+      if (!leases.length) {
+        $("leases").innerHTML = `<div class="stack">${createHtml}<div class="empty">No task leases.</div></div>`;
         return;
       }
-      $("leases").innerHTML = `<table>
-        <thead><tr>
-          <th>Subject</th><th>Task</th><th>Allowed Tools</th><th>Expiry</th><th>Remaining Calls</th><th>Action</th>
-        </tr></thead>
-        <tbody>${active.map((lease) => {
+      const tableHtml = `<table>
+        <thead><tr>${["Status", "Subject", "Task", "Allowed Tools", "Expiry", "Remaining Calls", "Action"]
+          .map((label) => `<th>${label}</th>`)
+          .join("")}</tr></thead>
+        <tbody>${leases.map((lease) => {
           const id = esc(lease.id);
           return `<tr>
+            <td>${pill(lease.active ? "active" : "inactive")}</td>
             <td>
               ${esc(leaseSubject(lease))}
               <div class="timeline-detail">${esc(leaseAuthDetail(lease))}</div>
@@ -4337,10 +4430,26 @@ def _console_html() -> str:
               ${esc(remainingCalls(lease))}
               <div class="timeline-detail">${esc(lease.last_tool || "")}</div>
             </td>
-            <td><button class="danger" type="button" onclick="revokeLease('${id}')">Revoke</button></td>
+            <td>${leaseActionHtml(lease, id)}</td>
           </tr>`;
         }).join("")}</tbody>
       </table>`;
+      $("leases").innerHTML = `<div class="stack">${createHtml}${tableHtml}</div>`;
+    }
+
+    function leaseActionHtml(lease, id) {
+      if (lease.active) {
+        return `<button class="danger" type="button" onclick="revokeLease('${id}')">Revoke</button>`;
+      }
+      return `<div class="request-actions">
+        <input id="lease-reactivate-ttl-${id}" value="30m" aria-label="TTL">
+        <input
+          id="lease-reactivate-calls-${id}"
+          value="${esc(lease.max_calls || "")}"
+          aria-label="Max calls"
+        >
+        <button class="primary" type="button" onclick="reactivateLease('${id}')">Reactivate</button>
+      </div>`;
     }
 
     function leaseSubject(lease) {
@@ -4830,26 +4939,62 @@ def _console_html() -> str:
     function renderHealth(status) {
       const gateway = status.gateway || {};
       const upstreams = status.upstreams || [];
-      $("healthSummary").textContent = gateway.url || "";
-      const rows = [["gateway", gateway.url, gateway.reachable, gateway.status, false]]
-        .concat(upstreams.map((item) => [
-          item.name || "upstream",
-          item.url,
-          item.reachable,
-          item.status || item.health,
-          false
-        ]));
-      $("health").innerHTML = `<table>
-        <thead><tr><th>Target</th><th>URL</th><th>Reachable</th><th>Status</th></tr></thead>
-        <tbody>${rows.map(([name, url, reachable, detail, isLink]) => (
+      const rows = [
+        {
+          kind: "gateway",
+          label: "snulbug gateway",
+          detail: "Policy gateway receiving MCP client traffic",
+          url: gateway.url,
+          checked: gateway.checked,
+          reachable: gateway.reachable,
+          status: gateway.status || gateway.error || gateway.health
+        }
+      ].concat(upstreams.map((item) => ({
+        kind: "upstream",
+        label: item.name || "upstream",
+        detail: "Upstream MCP server behind snulbug",
+        url: item.url,
+        checked: item.checked,
+        reachable: item.reachable,
+        status: item.status || item.error || item.health
+      })));
+      const checked = rows.filter((row) => row.checked).length;
+      const reachable = rows.filter((row) => row.reachable === true).length;
+      $("healthSummary").textContent = checked
+        ? `${reachable}/${checked} checked targets reachable`
+        : "reachability not checked";
+      const staticNote =
+        "Static config is shown. Reachability is checked manually " +
+        "to avoid polling the gateway/upstreams every refresh.";
+      const note = checked
+        ? "Live reachability results from the last health check."
+        : staticNote;
+      $("health").innerHTML = `<div class="stack">
+        <div class="review-actions">
+          <button type="button" onclick="runHealthCheck()">Run health check</button>
+          <span class="timeline-detail">${esc(note)}</span>
+        </div>
+        <table>
+          <thead><tr><th>Role</th><th>URL</th><th>Reachable</th><th>Status</th></tr></thead>
+          <tbody>${rows.map((row) => (
           `<tr>
-            <td>${esc(name)}</td>
-            <td>${isLink ? externalLink(url, url) : esc(url)}</td>
-            <td>${pill(healthLabel(reachable))}</td>
-            <td>${esc(detail)}</td>
+            <td>
+              <div class="health-target">
+                <span class="target-kind ${esc(row.kind)}">${esc(row.kind)}</span>
+                <strong>${esc(row.label)}</strong>
+                <span class="timeline-detail">${esc(row.detail)}</span>
+              </div>
+            </td>
+            <td>${externalLink(row.url, row.url)}</td>
+            <td>${pill(healthLabel(row.reachable))}</td>
+            <td>
+              ${esc(row.checked ? row.status : "not checked")}
+              <div class="timeline-detail">${esc(row.checked ? "" : "Click Run health check to probe.")}</div>
+            </td>
           </tr>`
         )).join("")}</tbody>
-      </table>`;
+        </table>
+      </div>`;
     }
 
     function healthLabel(value) {
@@ -4961,6 +5106,49 @@ def _console_html() -> str:
         await loadSnapshot();
       } catch (error) {
         $("message").textContent = `Deny failed: ${error.message}`;
+      }
+    }
+
+    async function createLease() {
+      $("message").textContent = "Creating lease";
+      try {
+        const payload = await api("/api/leases/create", {
+          method: "POST",
+          body: JSON.stringify({
+            task: setupInputValue("lease-create-task"),
+            allow_tools: setupInputValue("lease-create-tools"),
+            allow_paths: setupInputValue("lease-create-paths"),
+            allow_hosts: setupInputValue("lease-create-hosts"),
+            allow_commands: setupInputValue("lease-create-commands"),
+            ttl: setupInputValue("lease-create-ttl") || "30m",
+            max_calls: setupInputValue("lease-create-calls")
+          })
+        });
+        $("leaseOutput").textContent = payload.retry_header || JSON.stringify(payload.headers || {}, null, 2);
+        $("leasePanel").hidden = false;
+        $("message").textContent = `Created lease ${(payload.lease || {}).id || ""}`;
+        await loadSnapshot();
+      } catch (error) {
+        $("message").textContent = `Create lease failed: ${error.message}`;
+      }
+    }
+
+    async function reactivateLease(id) {
+      $("message").textContent = `Reactivating lease ${id}`;
+      try {
+        const payload = await api(`/api/leases/${encodeURIComponent(id)}/reactivate`, {
+          method: "POST",
+          body: JSON.stringify({
+            ttl: setupInputValue(`lease-reactivate-ttl-${id}`) || "30m",
+            max_calls: setupInputValue(`lease-reactivate-calls-${id}`)
+          })
+        });
+        $("leaseOutput").textContent = payload.retry_header || JSON.stringify(payload.headers || {}, null, 2);
+        $("leasePanel").hidden = false;
+        $("message").textContent = `Reactivated lease ${id}`;
+        await loadSnapshot();
+      } catch (error) {
+        $("message").textContent = `Reactivate failed: ${error.message}`;
       }
     }
 
@@ -5150,6 +5338,32 @@ def _console_html() -> str:
         await loadSnapshot();
       } catch (error) {
         $("message").textContent = `Activation failed: ${error.message}`;
+      }
+    }
+
+    async function runHealthCheck() {
+      $("message").textContent = "Checking gateway and upstream reachability";
+      try {
+        const payload = await api("/api/health/check", {
+          method: "POST",
+          allowFalse: true,
+          body: JSON.stringify({})
+        });
+        state.liveHealthStatus = payload;
+        state.liveHealthReadiness = payload.readiness_gate || null;
+        state.liveHealthShare = ((state.snapshot || {}).share || payload.directory || null);
+        renderHealth(payload);
+        if (state.liveHealthReadiness) {
+          renderMetrics((state.snapshot || {}).status || payload, state.liveHealthReadiness);
+          renderReadinessGate(state.liveHealthReadiness);
+        }
+        const gateway = payload.gateway || {};
+        const upstreams = payload.upstreams || [];
+        const checked = [gateway].concat(upstreams).filter((item) => item.checked).length;
+        const reachable = [gateway].concat(upstreams).filter((item) => item.reachable === true).length;
+        $("message").textContent = `Health checked: ${reachable}/${checked} reachable`;
+      } catch (error) {
+        $("message").textContent = `Health check failed: ${error.message}`;
       }
     }
 
