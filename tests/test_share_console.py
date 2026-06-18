@@ -546,6 +546,9 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "const metricStatus = state.liveHealthStatus || status;" in html
     assert "renderMetrics(metricStatus, readiness)" in html
     assert "renderMetrics(payload, state.liveHealthReadiness)" in html
+    assert "Path-like tool arguments must stay under these files or directories." in html
+    assert "URL-like tool arguments may only target these hostnames." in html
+    assert "Command-like tool arguments may only name these executables or subcommands." in html
     assert "public tunnel" in html
     assert "snulbug gateway" in html
     assert "Upstream MCP server behind snulbug" in html

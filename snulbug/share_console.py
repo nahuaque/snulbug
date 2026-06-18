@@ -3542,6 +3542,11 @@ def _console_html() -> str:
     .form-field select {
       width: 100%;
     }
+    .field-help {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.25;
+    }
     .check-row {
       display: flex;
       flex-wrap: wrap;
@@ -4278,10 +4283,11 @@ def _console_html() -> str:
       </div>`;
     }
 
-    function setupField(id, label, value, extraClass = "") {
+    function setupField(id, label, value, extraClass = "", help = "") {
       return `<div class="form-field ${esc(extraClass)}">
         <label for="${esc(id)}">${esc(label)}</label>
         <input id="${esc(id)}" value="${esc(value)}">
+        ${help ? `<div class="field-help">${esc(help)}</div>` : ""}
       </div>`;
     }
 
@@ -5025,12 +5031,36 @@ def _console_html() -> str:
         </div>
         <div class="field-grid">
           ${setupField("lease-create-task", "Task", "Temporary MCP access")}
-          ${setupField("lease-create-tools", "Allowed tools", "safe_read_file")}
-          ${setupField("lease-create-paths", "Allowed paths", ".")}
+          ${setupField(
+            "lease-create-tools",
+            "Allowed tools",
+            "safe_read_file",
+            "",
+            "MCP tool names this lease may call. Use commas for multiple tools."
+          )}
+          ${setupField(
+            "lease-create-paths",
+            "Allowed paths",
+            ".",
+            "",
+            "Path-like tool arguments must stay under these files or directories. Use . for the current project."
+          )}
           ${setupField("lease-create-ttl", "TTL", "30m")}
           ${setupField("lease-create-calls", "Max calls", "")}
-          ${setupField("lease-create-hosts", "Allowed hosts", "")}
-          ${setupField("lease-create-commands", "Allowed commands", "", "wide")}
+          ${setupField(
+            "lease-create-hosts",
+            "Allowed hosts",
+            "",
+            "",
+            "URL-like tool arguments may only target these hostnames. Leave blank when no network targets are expected."
+          )}
+          ${setupField(
+            "lease-create-commands",
+            "Allowed commands",
+            "",
+            "wide",
+            "Command-like tool arguments may only name these executables or subcommands. Leave blank unless expected."
+          )}
         </div>
         <div><button type="button" class="primary" onclick="createLease()">Create lease</button></div>
       </div>`;
@@ -5151,12 +5181,36 @@ def _console_html() -> str:
           ${setupField("invite-create-recipient", "Recipient", "local collaborator")}
           ${setupField("invite-create-client-name", "Client name", "snulbug-share")}
           ${setupField("invite-create-task", "Task", "Temporary MCP access", "wide")}
-          ${setupField("invite-create-tools", "Allowed tools", "safe_read_file")}
-          ${setupField("invite-create-paths", "Allowed paths", ".")}
+          ${setupField(
+            "invite-create-tools",
+            "Allowed tools",
+            "safe_read_file",
+            "",
+            "MCP tool names this recipient may call. Use commas for multiple tools."
+          )}
+          ${setupField(
+            "invite-create-paths",
+            "Allowed paths",
+            ".",
+            "",
+            "Path-like tool arguments must stay under these files or directories. Use . for the current project."
+          )}
           ${setupField("invite-create-ttl", "TTL", "30m")}
           ${setupField("invite-create-calls", "Max calls", "")}
-          ${setupField("invite-create-hosts", "Allowed hosts", "")}
-          ${setupField("invite-create-commands", "Allowed commands", "", "wide")}
+          ${setupField(
+            "invite-create-hosts",
+            "Allowed hosts",
+            "",
+            "",
+            "URL-like tool arguments may only target these hostnames. Leave blank when no network targets are expected."
+          )}
+          ${setupField(
+            "invite-create-commands",
+            "Allowed commands",
+            "",
+            "wide",
+            "Command-like tool arguments may only name these executables or subcommands. Leave blank unless expected."
+          )}
         </div>
         <div class="review-actions">
           <button type="button" class="primary" onclick="createInvite()">Create invite</button>
