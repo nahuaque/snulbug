@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import http.client
 import json
 import os
 import re
+import secrets
 import threading
 from collections import deque
 from collections.abc import Mapping, Sequence
@@ -26,6 +28,7 @@ from .share import (
     create_mcp_share_lease,
     deny_share_capability_request,
     doctor_mcp_share,
+    load_mcp_share,
     preview_mcp_share_policy_amendment,
     promote_mcp_share_policy,
     reactivate_mcp_share_lease,
@@ -38,6 +41,7 @@ from .share_session import load_share_session_model, share_session_model_path, w
 
 DEFAULT_SHARE_CONSOLE_HOST = "127.0.0.1"
 DEFAULT_SHARE_CONSOLE_PORT = 8765
+CONSOLE_SECRET_HEADER = "x-snulbug-console-secret"
 DEFAULT_TUNNEL_PROVIDER_CONSOLES = {
     "ngrok": {
         "label": "ngrok local web console",
@@ -232,6 +236,7 @@ def run_share_console(
     )
     server.start()
     print(f"snulbug share console: {server.url}", flush=True)
+    print(f"snulbug share console secret: {server.console_secret}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -251,6 +256,7 @@ class ShareConsoleServer:
     timeout: float = 1.0
     live_checks: bool = False
     setup_only: bool = False
+    console_secret: str = field(default_factory=lambda: secrets.token_urlsafe(18), repr=False)
     _server: ThreadingHTTPServer | None = field(default=None, init=False, repr=False)
     _thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _run_requested: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
@@ -473,6 +479,21 @@ class ShareConsoleServer:
                 )
                 _send_json(handler, 200, _redact_console_payload(result))
                 return
+            if path == "/api/client/bearer-token":
+                if not self._has_console_secret(handler):
+                    _send_json(
+                        handler,
+                        403,
+                        {
+                            "ok": False,
+                            "error": "console secret required",
+                            "header": CONSOLE_SECRET_HEADER,
+                        },
+                    )
+                    return
+                result = _client_bearer_token(self.directory)
+                _send_json(handler, 200, result)
+                return
             if path == "/api/leases/create":
                 result = create_mcp_share_lease(
                     self.directory,
@@ -525,6 +546,10 @@ class ShareConsoleServer:
             timeout=self.timeout,
             live_checks=self.live_checks,
         )
+
+    def _has_console_secret(self, handler: BaseHTTPRequestHandler) -> bool:
+        supplied = handler.headers.get(CONSOLE_SECRET_HEADER, "")
+        return hmac.compare_digest(str(supplied), self.console_secret)
 
 
 def _send_json(handler: BaseHTTPRequestHandler, status: int, payload: Mapping[str, Any]) -> None:
@@ -710,6 +735,33 @@ def _record_share_readiness_review(
         "review": review,
         "readiness_gate": updated_snapshot.get("readiness_gate"),
         "session_model": str(share_session_model_path(share_dir)),
+    }
+
+
+def _client_bearer_token(directory: str | Path) -> dict[str, Any]:
+    manifest = load_mcp_share(directory)
+    client = _mapping(manifest.get("client"))
+    headers = _mapping(client.get("headers"))
+    auth_value = None
+    for name, value in headers.items():
+        if str(name).lower() == "authorization":
+            auth_value = str(value)
+            break
+    if not auth_value:
+        raise ValueError("share client does not include an Authorization bearer token")
+    match = re.match(r"Bearer\s+(.+)", auth_value.strip(), flags=re.IGNORECASE)
+    if not match:
+        raise ValueError("share client Authorization header is not a bearer token")
+    token = match.group(1).strip()
+    if not token or token.startswith("${"):
+        raise ValueError("bearer token is not stored in this share; mint or resolve it client-side")
+    return {
+        "ok": True,
+        "scheme": "Bearer",
+        "token": token,
+        "authorization": f"Bearer {token}",
+        "header": "Authorization",
+        "client_url": client.get("url"),
     }
 
 
@@ -5261,7 +5313,7 @@ def _console_html() -> str:
         ${detailRowHtml("Public URL", externalLink(payload.public_url, payload.public_url))}
         ${detailRowHtml("Client URL", externalLink(payload.client_url, payload.client_url))}
         ${detailRowHtml("Local Origin", externalLink(localOrigin, localOrigin))}
-        ${detailRow("Auth Mode", providerAuthText(auth))}
+        ${detailRowHtml("Auth Mode", providerAuthControls(auth))}
         ${detailRow("Lease Required", leaseRequired)}
         ${detailRowHtml("Local Console", providerConsoleHtml(localConsole))}
         ${detailRow("Config", (payload.config || {}).path)}
@@ -5269,6 +5321,16 @@ def _console_html() -> str:
       const doctorHtml = providerDoctorHtml(doctor);
       const commandsHtml = providerCommandsTable(commands);
       $("tunnelProvider").innerHTML = `<div class="stack">${overview}${doctorHtml}${commandsHtml}</div>`;
+    }
+
+    function providerAuthControls(auth) {
+      const controls = [esc(providerAuthText(auth))];
+      if ((auth.mode || "") === "bearer") {
+        controls.push(
+          '<button type="button" onclick="copyBearerToken()">Copy bearer token</button>'
+        );
+      }
+      return `<div class="review-actions">${controls.join("")}</div>`;
     }
 
     function providerAuthText(auth) {
@@ -5631,6 +5693,38 @@ def _console_html() -> str:
         $("message").textContent = "Copied readiness attestation";
       } catch (error) {
         $("message").textContent = `Copy failed: ${error.message}`;
+      }
+    }
+
+    function consoleSecret() {
+      const key = "snulbug-console-secret";
+      const cached = window.sessionStorage ? window.sessionStorage.getItem(key) : "";
+      if (cached) return cached;
+      const entered = window.prompt("Enter the snulbug share console secret printed in the terminal:");
+      if (entered && window.sessionStorage) window.sessionStorage.setItem(key, entered);
+      return entered || "";
+    }
+
+    async function copyBearerToken() {
+      const secret = consoleSecret();
+      if (!secret) {
+        $("message").textContent = "Console secret required to copy bearer token";
+        return;
+      }
+      try {
+        const payload = await api("/api/client/bearer-token", {
+          method: "POST",
+          headers: { "x-snulbug-console-secret": secret },
+          body: JSON.stringify({})
+        });
+        if (!navigator.clipboard) throw new Error("clipboard unavailable");
+        await navigator.clipboard.writeText(payload.token || "");
+        $("message").textContent = "Copied bearer token";
+      } catch (error) {
+        if (String(error.message || "").includes("console secret")) {
+          if (window.sessionStorage) window.sessionStorage.removeItem("snulbug-console-secret");
+        }
+        $("message").textContent = `Copy bearer token failed: ${error.message}`;
       }
     }
 

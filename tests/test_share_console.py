@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import socket
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -450,6 +451,10 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "Tunnel Provider" in html
     assert "renderTunnelProvider" in html
     assert "providerCommandsTable" in html
+    assert "Copy bearer token" in html
+    assert "copyBearerToken" in html
+    assert "x-snulbug-console-secret" in html
+    assert "Enter the snulbug share console secret" in html
     assert 'data-state-key="provider-generated-commands"' in html
     assert "Download Report" in html
     assert "/api/report/download" in html
@@ -699,6 +704,37 @@ def test_share_console_marks_readiness_reviewed(tmp_path):
     assert review["reviewer"] == "ui-test"
     assert review["review_digest"] == readiness["review_digest"]
     assert "share-secret" not in json.dumps(result)
+
+
+def test_share_console_bearer_token_copy_requires_console_secret(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    server = ShareConsoleServer(directory=tmp_path, port=0, console_secret="console-secret")
+    server.start()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            post_json(f"{server.url}/api/client/bearer-token", {})
+        copied = post_json(
+            f"{server.url}/api/client/bearer-token",
+            {},
+            headers={share_console.CONSOLE_SECRET_HEADER: "console-secret"},
+        )
+        snapshot = read_json(f"{server.url}/api/snapshot")
+    finally:
+        server.stop()
+
+    assert exc.value.code == 403
+    assert copied["ok"] is True
+    assert copied["scheme"] == "Bearer"
+    assert copied["token"] == "share-secret"
+    assert copied["authorization"] == "Bearer share-secret"
+    assert "share-secret" not in json.dumps(snapshot)
 
 
 def test_share_console_lists_and_revokes_active_leases(tmp_path):
@@ -1148,11 +1184,16 @@ def read_json(url: str) -> dict[str, object]:
     return json.loads(read_text(url))
 
 
-def post_json(url: str, payload: dict[str, object]) -> dict[str, object]:
+def post_json(
+    url: str,
+    payload: dict[str, object],
+    *,
+    headers: dict[str, str] | None = None,
+) -> dict[str, object]:
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"content-type": "application/json"},
+        headers={"content-type": "application/json", **(headers or {})},
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=3) as response:  # noqa: S310 - local test server.

@@ -1825,6 +1825,8 @@ def _start_share_run_console(directory: Path | None, args: argparse.Namespace) -
             sys.stderr.write(f"snulbug share console disabled: {retry_exc}\n")
             return None
     print(f"snulbug share console: {server.url}", flush=True)
+    if getattr(server, "console_secret", None):
+        print(f"snulbug share console secret: {server.console_secret}", flush=True)
     return server
 
 
@@ -1872,6 +1874,8 @@ def _run_share_setup_console(args: argparse.Namespace) -> int:
             sys.stderr.write(f"snulbug share setup console failed: {retry_exc}\n")
             return 1
     print(f"snulbug share setup wizard: {server.url}", flush=True)
+    if getattr(server, "console_secret", None):
+        print(f"snulbug share console secret: {server.console_secret}", flush=True)
     try:
         while not server.wait_for_gateway_start(timeout=0.25):
             continue
