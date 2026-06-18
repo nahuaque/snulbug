@@ -34,7 +34,7 @@ from .share import (
     share_report,
     share_status,
 )
-from .share_session import share_session_model_path
+from .share_session import load_share_session_model, share_session_model_path, write_share_session_model
 
 DEFAULT_SHARE_CONSOLE_HOST = "127.0.0.1"
 DEFAULT_SHARE_CONSOLE_PORT = 8765
@@ -464,6 +464,15 @@ class ShareConsoleServer:
                 result = status
                 _send_json(handler, 200, _redact_console_payload(result))
                 return
+            if path == "/api/readiness/review":
+                result = _record_share_readiness_review(
+                    self.directory,
+                    body,
+                    timeout=self.timeout,
+                    live_checks=_bool_or_default(body.get("live_checks"), self.live_checks),
+                )
+                _send_json(handler, 200, _redact_console_payload(result))
+                return
             if path == "/api/leases/create":
                 result = create_mcp_share_lease(
                     self.directory,
@@ -647,6 +656,61 @@ def _resolve_existing_setup_share_directory(base_directory: str | Path, value: A
     if not model_path.is_file():
         raise FileNotFoundError(f"share session model not found: {model_path}")
     return candidate
+
+
+def _record_share_readiness_review(
+    directory: str | Path,
+    payload: Mapping[str, Any],
+    *,
+    timeout: float,
+    live_checks: bool,
+) -> dict[str, Any]:
+    share_dir = Path(directory)
+    snapshot = build_share_console_snapshot(share_dir, timeout=timeout, live_checks=live_checks)
+    readiness_gate = _mapping(snapshot.get("readiness_gate"))
+    summary = _mapping(readiness_gate.get("summary"))
+    failed = int(summary.get("failed") or 0)
+    if failed:
+        raise ValueError("fix failing readiness checks before marking the share reviewed")
+
+    review_digest = _string_or_none(readiness_gate.get("review_digest"))
+    if review_digest is None:
+        raise ValueError("readiness review digest is unavailable")
+    expected_digest = _string_or_none(payload.get("review_digest"))
+    if expected_digest and expected_digest != review_digest:
+        raise ValueError("readiness changed; refresh the console and review again")
+
+    checks = [_mapping(check) for check in _sequence(readiness_gate.get("checks")) if isinstance(check, Mapping)]
+    warning_ids = [str(check.get("id")) for check in checks if check.get("status") == "warn" and check.get("id")]
+    review = _drop_empty(
+        {
+            "schema": "snulbug.share-readiness-review.v1",
+            "reviewed_at": _now_iso(),
+            "reviewer": _string_or_none(payload.get("reviewer")) or "share-console",
+            "decision": readiness_gate.get("decision"),
+            "review_digest": review_digest,
+            "attestation_digest": _mapping(readiness_gate.get("attestation")).get("digest"),
+            "content_digest": _mapping(readiness_gate.get("attestation")).get("content_digest"),
+            "warning_ids": warning_ids,
+            "failed_ids": [],
+            "live_checks": live_checks,
+        }
+    )
+
+    model = load_share_session_model(share_dir)
+    updated_model = json.loads(json.dumps(model, default=str))
+    readiness = dict(_mapping(updated_model.get("readiness")))
+    readiness["last_review"] = review
+    updated_model["readiness"] = readiness
+    write_share_session_model(share_dir, updated_model, force=True)
+
+    updated_snapshot = build_share_console_snapshot(share_dir, timeout=timeout, live_checks=live_checks)
+    return {
+        "ok": True,
+        "review": review,
+        "readiness_gate": updated_snapshot.get("readiness_gate"),
+        "session_model": str(share_session_model_path(share_dir)),
+    }
 
 
 def _run_policy_lifecycle_action(directory: str | Path, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -2019,18 +2083,35 @@ def _share_readiness_gate(
     )
 
     summary = _readiness_summary(checks)
-    decision = "blocked" if summary["failed"] else ("review" if summary["warnings"] else "ready")
+    base_decision = "blocked" if summary["failed"] else ("review" if summary["warnings"] else "ready")
     labels = {
         "ready": "Ready to share",
         "review": "Needs review before sharing",
         "blocked": "Do not share yet",
     }
+    base_label = labels[base_decision]
     recommendations = _readiness_recommendations(checks, status)
+    base_attestation = _share_readiness_attestation(
+        share_dir,
+        status,
+        decision=base_decision,
+        label=base_label,
+        summary=summary,
+        checks=checks,
+        tunnel_provider=tunnel_provider,
+        auth_visibility=auth_visibility,
+        tool_schema_visibility=tool_schema_visibility,
+    )
+    review_digest = _share_readiness_review_digest(base_attestation)
+    review = _matching_readiness_review(status, review_digest)
+    reviewed = bool(review) and base_decision == "review"
+    decision = "ready" if reviewed else base_decision
+    label = "Reviewed and ready to share" if reviewed else base_label
     attestation = _share_readiness_attestation(
         share_dir,
         status,
         decision=decision,
-        label=labels[decision],
+        label=label,
         summary=summary,
         checks=checks,
         tunnel_provider=tunnel_provider,
@@ -2041,10 +2122,13 @@ def _share_readiness_gate(
         "schema": "snulbug.share-readiness-gate.v1",
         "ok": decision == "ready",
         "decision": decision,
-        "label": labels[decision],
+        "label": label,
         "summary": summary,
         "checks": checks,
         "recommendations": recommendations,
+        "review_digest": review_digest,
+        "reviewed": reviewed,
+        "review": review if reviewed else None,
         "attestation": attestation,
     }
 
@@ -2643,6 +2727,22 @@ def _share_readiness_digest_payload(payload: Mapping[str, Any]) -> dict[str, Any
             "checks": payload.get("checks"),
         }
     )
+
+
+def _share_readiness_review_digest(attestation: Mapping[str, Any]) -> str:
+    payload = _share_readiness_digest_payload(attestation)
+    payload.pop("decision", None)
+    payload.pop("label", None)
+    return _console_json_digest(payload)
+
+
+def _matching_readiness_review(status: Mapping[str, Any], review_digest: str) -> dict[str, Any] | None:
+    session_model = _mapping(status.get("session_model"))
+    readiness = _mapping(session_model.get("readiness"))
+    review = _mapping(readiness.get("last_review"))
+    if review.get("review_digest") != review_digest:
+        return None
+    return dict(review)
 
 
 def _console_json_digest(value: Mapping[str, Any]) -> str:
@@ -3694,7 +3794,7 @@ def _console_html() -> str:
         renderSetupWizard(snapshot.setup_wizard || {}, snapshot);
         return;
       }
-      const readiness = state.liveHealthReadiness || snapshot.readiness_gate || {};
+      const readiness = activeReadinessGate(snapshot);
       renderMetrics(status, readiness);
       renderReadinessGate(readiness);
       renderPolicyVisibility(snapshot.policy_visibility || {});
@@ -3709,6 +3809,10 @@ def _console_html() -> str:
       renderToolRisk(status);
       renderFindings(status);
       renderEvidence(status);
+    }
+
+    function activeReadinessGate(snapshot = state.snapshot || {}) {
+      return state.liveHealthReadiness || snapshot.readiness_gate || {};
     }
 
     function setSetupMode(enabled) {
@@ -3943,7 +4047,7 @@ def _console_html() -> str:
 
     function setShowAllReadiness(value) {
       state.showAllReadiness = Boolean(value);
-      renderReadinessGate(((state.snapshot || {}).readiness_gate) || {});
+      renderReadinessGate(activeReadinessGate());
     }
 
     function readinessChecksTable(checks) {
@@ -3995,26 +4099,40 @@ def _console_html() -> str:
       const warnings = reviewChecks.filter((check) => check.status === "warn").length;
       const title = failures
         ? `${failures} failing check${failures === 1 ? "" : "s"}`
-        : `${warnings} warning${warnings === 1 ? "" : "s"} to review`;
+        : payload.reviewed
+          ? `${warnings} warning${warnings === 1 ? "" : "s"} reviewed`
+          : `${warnings} warning${warnings === 1 ? "" : "s"} to review`;
+      const detail = payload.reviewed
+        ? "Warnings were acknowledged for the current readiness digest. New drift will require another review."
+        : "Review these before sharing the public MCP URL. Passing checks are hidden by default.";
+      const reviewAction = readinessReviewAction(payload, failures);
       return `<div class="review-panel ${esc(payload.decision || "review")}">
         <div class="review-head">
           <div>
             <div class="timeline-target">${esc(title)}</div>
-            <div class="timeline-detail">
-              Review these before sharing the public MCP URL. Passing checks are hidden by default.
-            </div>
+            <div class="timeline-detail">${esc(detail)}</div>
           </div>
           ${pill(payload.decision || "review")}
         </div>
         <div class="review-actions">
           <a class="button-link" href="#readinessChecksList">Review checks</a>
           <button type="button" onclick="runDoctor()">Run doctor</button>
+          ${reviewAction}
           <button type="button" onclick="downloadReport()">Download report</button>
         </div>
         <div class="review-list">
           ${reviewChecks.map((check) => readinessReviewItem(check)).join("")}
         </div>
       </div>`;
+    }
+
+    function readinessReviewAction(payload, failures) {
+      if (failures > 0) return "";
+      if (payload.reviewed) {
+        const reviewedAt = (payload.review || {}).reviewed_at;
+        return `<span class="timeline-detail">Reviewed${reviewedAt ? ` ${esc(reviewedAt)}` : ""}</span>`;
+      }
+      return `<button type="button" class="primary" onclick="markReadinessReviewed()">Mark readiness reviewed</button>`;
     }
 
     function readinessReviewItem(check) {
@@ -5216,13 +5334,42 @@ def _console_html() -> str:
     }
 
     async function copyReadinessAttestation() {
-      const attestation = ((state.snapshot || {}).readiness_gate || {}).attestation || {};
+      const attestation = activeReadinessGate().attestation || {};
       try {
         if (!navigator.clipboard) throw new Error("clipboard unavailable");
         await navigator.clipboard.writeText(JSON.stringify(attestation, null, 2));
         $("message").textContent = "Copied readiness attestation";
       } catch (error) {
         $("message").textContent = `Copy failed: ${error.message}`;
+      }
+    }
+
+    async function markReadinessReviewed() {
+      const readiness = activeReadinessGate();
+      const summary = readiness.summary || {};
+      if ((summary.failed || 0) > 0) {
+        $("message").textContent = "Fix failing readiness checks before marking reviewed";
+        return;
+      }
+      $("message").textContent = "Marking readiness reviewed";
+      try {
+        const payload = await api("/api/readiness/review", {
+          method: "POST",
+          body: JSON.stringify({
+            review_digest: readiness.review_digest,
+            reviewer: "share-console",
+            live_checks: Boolean(state.liveHealthReadiness)
+          })
+        });
+        state.liveHealthReadiness = payload.readiness_gate || null;
+        if (state.liveHealthReadiness) {
+          renderMetrics((state.snapshot || {}).status || {}, state.liveHealthReadiness);
+          renderReadinessGate(state.liveHealthReadiness);
+        }
+        $("message").textContent = "Readiness reviewed";
+        await loadSnapshot();
+      } catch (error) {
+        $("message").textContent = `Review failed: ${error.message}`;
       }
     }
 

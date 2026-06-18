@@ -640,6 +640,51 @@ def test_share_console_runs_manual_health_check(tmp_path, monkeypatch):
     assert "share-secret" not in json.dumps(health)
 
 
+def test_share_console_marks_readiness_reviewed(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    server = ShareConsoleServer(directory=tmp_path, port=0, live_checks=False)
+    server.start()
+    try:
+        snapshot = read_json(f"{server.url}/api/snapshot")
+        readiness = snapshot["readiness_gate"]
+        result = post_json(
+            f"{server.url}/api/readiness/review",
+            {
+                "review_digest": readiness["review_digest"],
+                "reviewer": "ui-test",
+                "live_checks": False,
+            },
+        )
+        after = read_json(f"{server.url}/api/snapshot")
+    finally:
+        server.stop()
+
+    reviewed_gate = result["readiness_gate"]
+    session_model = load_share_session_model(tmp_path)
+    review = session_model["readiness"]["last_review"]
+
+    assert readiness["decision"] == "review"
+    assert readiness["summary"]["failed"] == 0
+    assert readiness["summary"]["warnings"] >= 1
+    assert result["ok"] is True
+    assert reviewed_gate["reviewed"] is True
+    assert reviewed_gate["decision"] == "ready"
+    assert reviewed_gate["review"]["reviewer"] == "ui-test"
+    assert reviewed_gate["review"]["review_digest"] == readiness["review_digest"]
+    assert after["readiness_gate"]["reviewed"] is True
+    assert after["readiness_gate"]["decision"] == "ready"
+    assert review["reviewer"] == "ui-test"
+    assert review["review_digest"] == readiness["review_digest"]
+    assert "share-secret" not in json.dumps(result)
+
+
 def test_share_console_lists_and_revokes_active_leases(tmp_path):
     create_mcp_share(
         tmp_path,
