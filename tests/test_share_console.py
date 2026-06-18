@@ -632,7 +632,7 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "drawer-task" in html
     assert "requestField" in html
     assert "renderDecisionTimeline" in html
-    assert "setInterval(loadSnapshot, 2000)" in html
+    assert "setInterval(loadSnapshot, 5000)" in html
     assert "window.Prism" in prism_js
     assert "highlightAllUnder" in prism_js
     assert ".token.keyword" in prism_css

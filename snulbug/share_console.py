@@ -6921,7 +6921,7 @@ def _console_html() -> str:
       if (state.timer) clearInterval(state.timer);
       state.timer = null;
       if ($("autoRefresh").checked) {
-        state.timer = setInterval(loadSnapshot, 2000);
+        state.timer = setInterval(loadSnapshot, 5000);
       }
     }
 
