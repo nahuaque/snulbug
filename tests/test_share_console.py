@@ -39,6 +39,8 @@ def test_share_console_snapshot_reads_existing_share_artifacts(tmp_path):
     timeline = snapshot["decision_timeline"]
     readiness = snapshot["readiness_gate"]
     readiness_checks = {check["id"]: check for check in readiness["checks"]}
+    policy_visibility = snapshot["policy_visibility"]
+    policy_source = policy_visibility["source"]
 
     assert snapshot["ok"] is True
     assert snapshot["share"] == str(tmp_path)
@@ -59,12 +61,69 @@ def test_share_console_snapshot_reads_existing_share_artifacts(tmp_path):
     assert readiness["attestation"]["schema"] == "snulbug.share-readiness-attestation.v1"
     assert readiness["attestation"]["digest"].startswith("sha256:")
     assert readiness["attestation"]["session"]["public_url"] == "https://mcp.example.test/mcp"
+    assert policy_visibility["ok"] is True
+    assert policy_visibility["policy"]["lifecycle_state"] == "observed"
+    assert policy_visibility["bundle_manifest"]["entrypoint"] == "policy.lua"
+    assert policy_source["displayable"] is True
+    assert policy_source["language"] == "lua"
+    assert policy_source["redacted"] is True
+    assert policy_source["sha256"].startswith("sha256:")
+    assert "safe_read_file" in policy_source["source"]
+    assert 'local token = "[REDACTED]"' in policy_source["source"]
+    assert {"value": "mcp.docs_capability_requested", "count": 1} in policy_visibility["reason_codes"]["summary"]
+    assert any(row["family"] == "mcp" for row in policy_visibility["helper_usage"])
     encoded = json.dumps(snapshot)
     assert "share-secret" not in encoded
     assert "sbl_" not in encoded
     assert "timeline-secret" not in encoded
     assert snapshot["status"]["client"]["headers"]["Authorization"] == "[REDACTED]"
     assert snapshot["status"]["client"]["headers"]["x-snulbug-lease"] == "[REDACTED]"
+
+
+def test_share_console_policy_visibility_resolves_cwd_relative_share_paths(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    create_mcp_share(
+        Path("relative-share"),
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    snapshot = build_share_console_snapshot(Path("relative-share"))
+    source = snapshot["policy_visibility"]["source"]
+
+    assert source["displayable"] is True
+    assert source["exists"] is True
+    assert source["path"] == "relative-share/policy.snulbug/policy.lua"
+    assert "active policy file is missing" not in json.dumps(snapshot["policy_visibility"])
+    assert "share-secret" not in json.dumps(snapshot["policy_visibility"])
+
+
+def test_share_console_compacts_repeated_live_decisions(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    write_repeated_upstream_failure_log(tmp_path)
+
+    snapshot = build_share_console_snapshot(tmp_path)
+    timeline = snapshot["decision_timeline"]
+    compacted = timeline["compacted_events"]
+
+    assert timeline["summary"]["shown"] == 3
+    assert timeline["summary"]["upstream_failed"] == 3
+    assert len(compacted) == 1
+    assert compacted[0]["count"] == 3
+    assert compacted[0]["outcome"] == "upstream_failed"
+    assert compacted[0]["reason_code"] == "mcp.tunnel_safe_rate_limit"
+    assert compacted[0]["earliest_line"] == 1
+    assert compacted[0]["latest_line"] == 3
 
 
 def test_share_console_snapshot_includes_ngrok_local_console_link(tmp_path, monkeypatch):
@@ -105,6 +164,42 @@ def test_share_console_snapshot_includes_ngrok_local_console_link(tmp_path, monk
     assert tunnel_provider["auth"]["mode"] == "bearer"
     assert tunnel_provider["auth"]["lease_required"] is True
     assert any(command["kind"] == "provider" for command in tunnel_provider["commands"])
+
+
+def test_share_console_caches_provider_console_probe_between_refreshes(tmp_path, monkeypatch):
+    share_console._PROVIDER_CONSOLE_CACHE.clear()
+    calls = []
+    monkeypatch.setitem(
+        share_console.DEFAULT_TUNNEL_PROVIDER_CONSOLES,
+        "ngrok",
+        {
+            "label": "ngrok local web console",
+            "url": "http://127.0.0.1:4040",
+            "description": "Inspect ngrok tunnel requests, headers, and replay details.",
+        },
+    )
+
+    def fake_probe(url, *, timeout):
+        calls.append((url, timeout))
+        return {"checked": True, "reachable": True, "status": 200, "error": None}
+
+    monkeypatch.setattr(share_console, "_probe_provider_console", fake_probe)
+    create_mcp_share(
+        tmp_path,
+        provider="ngrok",
+        public_url="https://mcp-dev.ngrok.app/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    first = build_share_console_snapshot(tmp_path)
+    second = build_share_console_snapshot(tmp_path)
+
+    assert len(calls) == 1
+    assert first["provider_console"]["cached"] is False
+    assert second["provider_console"]["cached"] is True
+    assert second["provider_console"]["reachable"] is True
 
 
 @pytest.mark.parametrize(
@@ -173,6 +268,8 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     server.start()
     try:
         html = read_text(f"{server.url}/")
+        prism_js = read_text(f"{server.url}/assets/prism.js")
+        prism_css = read_text(f"{server.url}/assets/prism.css")
         snapshot = read_json(f"{server.url}/api/snapshot")
         report_body, report_headers = read_response(f"{server.url}/api/report/download")
         request_id = snapshot["capability_requests"]["requests"][0]["id"]
@@ -191,8 +288,10 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert 'class="overview-grid"' in html
     assert 'aria-live="polite"' in html
     assert 'href="#readinessSection"' in html
+    assert 'href="#policySection"' in html
     assert 'href="#providerSection"' in html
     assert 'id="readinessSection"' in html
+    assert 'id="policySection"' in html
     assert 'id="decisionsSection"' in html
     assert 'id="requestsSection"' in html
     assert 'id="leasesSection"' in html
@@ -202,6 +301,17 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "renderReadinessGate" in html
     assert "readinessChecksTable" in html
     assert "copyReadinessAttestation" in html
+    assert "captureScrollState" in html
+    assert "restoreScrollState" in html
+    assert "scrollPreserveSelectors" in html
+    assert "Policy Visibility" in html
+    assert "renderPolicyVisibility" in html
+    assert "policySourceHtml" in html
+    assert "language-lua" in html
+    assert "/assets/prism.js" in html
+    assert "/assets/prism.css" in html
+    assert 'class="console-output"' in html
+    assert 'class="token"' not in html
     assert "Capability Requests" in html
     assert "Live Decisions" in html
     assert "Tunnel Provider" in html
@@ -230,7 +340,12 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "requestField" in html
     assert "renderDecisionTimeline" in html
     assert "setInterval(loadSnapshot, 2000)" in html
+    assert "window.Prism" in prism_js
+    assert "highlightAllUnder" in prism_js
+    assert ".token.keyword" in prism_css
     assert snapshot["ok"] is True
+    assert snapshot["policy_visibility"]["source"]["displayable"] is True
+    assert "share-secret" not in snapshot["policy_visibility"]["source"]["source"]
     assert "share-secret" not in json.dumps(snapshot)
     assert "sbl_" not in json.dumps(snapshot)
     assert report_headers["content-type"].startswith("text/markdown")
@@ -662,6 +777,30 @@ def write_capability_request_log(tmp_path: Path) -> None:
         "response": {"status": 403},
     }
     (traces / "audit.jsonl").write_text(json.dumps(event, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def write_repeated_upstream_failure_log(tmp_path: Path) -> None:
+    traces = tmp_path / "traces"
+    traces.mkdir(exist_ok=True)
+    lines = []
+    for second in (1, 3, 5):
+        event = {
+            "type": "snulbug.audit",
+            "version": 1,
+            "time": f"2026-06-14T00:00:0{second}+00:00",
+            "request": {"method": "POST", "path": "/mcp", "headers": {}},
+            "mcp": {"method": "tools/list"},
+            "decision": {
+                "action": "rate_limit",
+                "allowed": True,
+                "reason": "MCP request is allowed by the tunnel-safe profile",
+                "reason_code": "mcp.tunnel_safe_rate_limit",
+            },
+            "metadata": {"tunnel": {"source_ip": "127.0.0.1"}},
+            "response": {"status": 502},
+        }
+        lines.append(json.dumps(event, sort_keys=True))
+    (traces / "audit.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def write_auth_visibility_log(tmp_path: Path) -> None:

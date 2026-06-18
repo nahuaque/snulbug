@@ -1,0 +1,67 @@
+pre[class*="language-"],
+code[class*="language-"] {
+  color: #dbe7f3;
+  background: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+  white-space: pre;
+  word-spacing: normal;
+  word-break: normal;
+  word-wrap: normal;
+  tab-size: 2;
+  hyphens: none;
+}
+
+pre[class*="language-"] {
+  padding: 12px;
+  margin: 0;
+  overflow: auto;
+  border-radius: 8px;
+  background: #0f1720;
+}
+
+:not(pre) > code[class*="language-"] {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: #0f1720;
+}
+
+.token.comment,
+.token.prolog,
+.token.doctype,
+.token.cdata {
+  color: #7d8fa4;
+}
+
+.token.punctuation {
+  color: #a8bed4;
+}
+
+.token.keyword {
+  color: #8fc7ff;
+}
+
+.token.string {
+  color: #a7e3b5;
+}
+
+.token.number,
+.token.boolean,
+.token.nil {
+  color: #f3c981;
+}
+
+.token.function {
+  color: #f0d98c;
+}
+
+.token.operator {
+  color: #d4a7ff;
+}
+
+.token.redacted {
+  color: #ffb4b4;
+  font-weight: 700;
+}

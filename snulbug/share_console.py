@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import http.client
 import json
+import re
 import threading
 from collections import deque
 from collections.abc import Mapping, Sequence
@@ -10,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from time import monotonic
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -45,6 +47,25 @@ TUNNEL_PROVIDER_LABELS = {
 }
 DEFAULT_DECISION_TIMELINE_LIMIT = 20
 DEFAULT_AUTH_VISIBILITY_LIMIT = 50
+DEFAULT_PROVIDER_CONSOLE_PROBE_TTL_SECONDS = 15.0
+MAX_POLICY_SOURCE_BYTES = 256 * 1024
+MAX_POLICY_MANIFEST_BYTES = 64 * 1024
+POLICY_SECRET_ASSIGNMENT_PATTERN = re.compile(
+    r"(\b(?:api[_-]?key|credential|password|secret|token)\b\s*=\s*)(['\"])([^'\"]*)(\2)",
+    re.IGNORECASE,
+)
+POLICY_BEARER_PATTERN = re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]{8,}", re.IGNORECASE)
+POLICY_STANDALONE_SECRET_PATTERNS = [
+    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{16,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{16,}\b"),
+]
+CONSOLE_ASSET_DIR = Path(__file__).with_name("assets")
+CONSOLE_ASSETS = {
+    "prism.css": ("text/css; charset=utf-8", CONSOLE_ASSET_DIR / "prism.css"),
+    "prism.js": ("application/javascript; charset=utf-8", CONSOLE_ASSET_DIR / "prism.js"),
+}
+_PROVIDER_CONSOLE_CACHE: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 
 
 def build_share_console_snapshot(
@@ -63,6 +84,7 @@ def build_share_console_snapshot(
     auth_visibility = _auth_visibility(share_dir, status)
     tool_schema_visibility = _tool_schema_visibility(share_dir, status)
     tunnel_provider = _tunnel_provider_visibility(share_dir, status, provider_console)
+    policy_visibility = _policy_visibility(share_dir, status, decision_timeline=decision_timeline)
     readiness_gate = _share_readiness_gate(
         share_dir,
         status,
@@ -82,6 +104,7 @@ def build_share_console_snapshot(
         "auth_visibility": _redact_console_payload(auth_visibility),
         "tool_schema_visibility": _redact_console_payload(tool_schema_visibility),
         "tunnel_provider": _redact_console_payload(tunnel_provider),
+        "policy_visibility": _redact_console_payload(policy_visibility),
         "readiness_gate": _redact_console_payload(readiness_gate),
         "provider_console": provider_console,
     }
@@ -173,6 +196,11 @@ class ShareConsoleServer:
         try:
             if path in {"/", "/index.html"}:
                 _send(handler, 200, _console_html().encode("utf-8"), content_type="text/html; charset=utf-8")
+                return
+            asset_name = path.removeprefix("/assets/")
+            if asset_name != path and asset_name in CONSOLE_ASSETS:
+                content_type, asset_path = CONSOLE_ASSETS[asset_name]
+                _send(handler, 200, asset_path.read_bytes(), content_type=content_type)
                 return
             if path == "/api/snapshot":
                 _send_json(handler, 200, self.snapshot())
@@ -421,7 +449,7 @@ def _provider_console(status: Mapping[str, Any], *, timeout: float) -> dict[str,
     template = DEFAULT_TUNNEL_PROVIDER_CONSOLES.get(provider)
     if template is None:
         return None
-    probe = _probe_provider_console(str(template["url"]), timeout=timeout)
+    probe = _cached_provider_console_probe(provider, str(template["url"]), timeout=timeout)
     return {"provider": provider, **template, **probe}
 
 
@@ -530,6 +558,24 @@ def _provider_local_console_visibility(
     }
 
 
+def _cached_provider_console_probe(provider: str, url: str, *, timeout: float) -> dict[str, Any]:
+    key = (provider, url)
+    now = monotonic()
+    cached = _PROVIDER_CONSOLE_CACHE.get(key)
+    if cached is not None:
+        checked_at, payload = cached
+        if now - checked_at < DEFAULT_PROVIDER_CONSOLE_PROBE_TTL_SECONDS:
+            result = dict(payload)
+            result["cached"] = True
+            result["cache_ttl_seconds"] = DEFAULT_PROVIDER_CONSOLE_PROBE_TTL_SECONDS
+            return result
+    result = _probe_provider_console(url, timeout=timeout)
+    result["cached"] = False
+    result["cache_ttl_seconds"] = DEFAULT_PROVIDER_CONSOLE_PROBE_TTL_SECONDS
+    _PROVIDER_CONSOLE_CACHE[key] = (now, dict(result))
+    return result
+
+
 def _provider_doctor_visibility(tunnel: Mapping[str, Any]) -> dict[str, Any]:
     return _drop_empty(
         {
@@ -631,6 +677,7 @@ def _decision_timeline(
         return result
     items = [item for item in events if item is not None]
     result["events"] = list(reversed(items))
+    result["compacted_events"] = _compact_decision_timeline_events(result["events"])
     result["summary"] = _decision_timeline_summary(result["events"])
     return result
 
@@ -769,6 +816,48 @@ def _decision_timeline_summary(events: Sequence[Mapping[str, Any]]) -> dict[str,
         if event.get("redacted") or event.get("response_redacted"):
             summary["redacted"] += 1
     return summary
+
+
+def _compact_decision_timeline_events(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    compacted: list[dict[str, Any]] = []
+    current_signature: tuple[Any, ...] | None = None
+    for event in events:
+        signature = _decision_timeline_compaction_signature(event)
+        if compacted and signature == current_signature:
+            current = compacted[-1]
+            current["count"] = int(current.get("count") or 1) + 1
+            current["earliest_time"] = event.get("time") or current.get("earliest_time")
+            if event.get("line"):
+                current["earliest_line"] = event.get("line")
+            continue
+        item = dict(event)
+        item["count"] = 1
+        item["latest_time"] = event.get("time")
+        item["earliest_time"] = event.get("time")
+        item["latest_line"] = event.get("line")
+        item["earliest_line"] = event.get("line")
+        compacted.append(_drop_empty(item))
+        current_signature = signature
+    return compacted
+
+
+def _decision_timeline_compaction_signature(event: Mapping[str, Any]) -> tuple[Any, ...]:
+    return (
+        event.get("outcome"),
+        event.get("action"),
+        event.get("allowed"),
+        event.get("status"),
+        event.get("reason_code"),
+        event.get("http_method"),
+        event.get("path"),
+        event.get("mcp_method"),
+        event.get("tool"),
+        event.get("auth_subject"),
+        event.get("auth_tenant"),
+        event.get("auth_issuer"),
+        event.get("upstream"),
+        event.get("source_ip"),
+    )
 
 
 def _auth_visibility(share_dir: Path, status: Mapping[str, Any]) -> dict[str, Any]:
@@ -914,7 +1003,14 @@ def _auth_config_visibility(share_dir: Path) -> dict[str, Any]:
 
 def _resolve_console_path(base: Path, value: str | Path) -> Path:
     path = Path(value)
-    return path if path.is_absolute() else base / path
+    if path.is_absolute():
+        return path
+    share_relative = base / path
+    if share_relative.exists():
+        return share_relative
+    if path.exists():
+        return path
+    return share_relative
 
 
 def _auth_event_metadata(event: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -1181,6 +1277,242 @@ def _tool_schema_drift_alerts(
                 )
             )
     return alerts[-20:]
+
+
+def _policy_visibility(
+    share_dir: Path,
+    status: Mapping[str, Any],
+    *,
+    decision_timeline: Mapping[str, Any],
+) -> dict[str, Any]:
+    session_model = _mapping(status.get("session_model"))
+    policy = _mapping(status.get("policy")) or _mapping(session_model.get("policy"))
+    paths = _mapping(session_model.get("paths"))
+    runtime_paths = _mapping(_mapping(session_model.get("runtime")).get("resolved_paths"))
+    active_value = (
+        policy.get("active_policy") or policy.get("path") or runtime_paths.get("policy") or paths.get("active_policy")
+    )
+    bundle_value = policy.get("bundle") or runtime_paths.get("policy_bundle") or paths.get("policy_bundle")
+    active_path = _resolve_console_path(share_dir, active_value) if isinstance(active_value, str | Path) else None
+    bundle_path = _resolve_console_path(share_dir, bundle_value) if isinstance(bundle_value, str | Path) else None
+    source = _policy_source_visibility(active_path, share_dir=share_dir, bundle_path=bundle_path)
+    manifest = _policy_bundle_manifest_visibility(bundle_path, share_dir=share_dir)
+    reason_codes = _policy_reason_code_visibility(decision_timeline)
+    source_text = str(source.get("source") or "")
+    return {
+        "ok": bool(source.get("exists") or manifest.get("exists") or policy),
+        "policy": _drop_empty(
+            {
+                "active_policy": str(active_path) if active_path is not None else None,
+                "bundle": str(bundle_path) if bundle_path is not None else None,
+                "lifecycle_state": policy.get("lifecycle_state"),
+                "lifecycle_signed": policy.get("lifecycle_signed"),
+                "lifecycle_signature_key_id": _mapping(policy.get("lifecycle_signature")).get("key_id"),
+                "last_lifecycle": policy.get("last_lifecycle"),
+                "last_amendment": policy.get("last_amendment"),
+            }
+        ),
+        "source": source,
+        "bundle_manifest": manifest,
+        "helper_usage": _policy_helper_usage(source_text),
+        "reason_codes": reason_codes,
+    }
+
+
+def _policy_source_visibility(
+    path: Path | None,
+    *,
+    share_dir: Path,
+    bundle_path: Path | None,
+) -> dict[str, Any]:
+    if path is None:
+        return {"exists": False, "displayable": False, "reason": "no active policy path is configured"}
+    result: dict[str, Any] = {
+        "path": str(path),
+        "exists": path.is_file(),
+        "displayable": False,
+        "language": "lua",
+        "max_bytes": MAX_POLICY_SOURCE_BYTES,
+    }
+    if not path.exists():
+        result["reason"] = "active policy file is missing"
+        return result
+    if not path.is_file():
+        result["reason"] = "active policy path is not a file"
+        return result
+    if path.suffix != ".lua":
+        result["reason"] = "active policy is not a Lua source file"
+        return result
+    if not _policy_path_allowed(path, share_dir=share_dir, bundle_path=bundle_path):
+        result["reason"] = "active policy is outside the share policy roots"
+        return result
+
+    stat = path.stat()
+    raw = _read_bounded_bytes(path, MAX_POLICY_SOURCE_BYTES)
+    source = raw["data"].decode("utf-8", errors="replace")
+    redacted = _redact_policy_source(source)
+    result.update(
+        {
+            "displayable": True,
+            "size": stat.st_size,
+            "sha256": _file_sha256(path),
+            "truncated": raw["truncated"],
+            "source": redacted,
+            "redacted": redacted != source,
+            "line_count": _line_count(str(redacted)),
+        }
+    )
+    return result
+
+
+def _policy_bundle_manifest_visibility(bundle_path: Path | None, *, share_dir: Path) -> dict[str, Any]:
+    if bundle_path is None:
+        return {"exists": False}
+    manifest_path = bundle_path / "manifest.json"
+    result: dict[str, Any] = {
+        "bundle": str(bundle_path),
+        "path": str(manifest_path),
+        "exists": manifest_path.is_file(),
+    }
+    if not manifest_path.exists():
+        return result
+    if not _policy_path_allowed(manifest_path, share_dir=share_dir, bundle_path=bundle_path):
+        result["displayable"] = False
+        result["reason"] = "bundle manifest is outside the share policy roots"
+        return result
+    stat = manifest_path.stat()
+    result["size"] = stat.st_size
+    result["sha256"] = _file_sha256(manifest_path)
+    if stat.st_size > MAX_POLICY_MANIFEST_BYTES:
+        result["displayable"] = False
+        result["reason"] = "bundle manifest is too large to display"
+        return result
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        result["displayable"] = False
+        result["reason"] = str(exc)
+        return result
+    if not isinstance(manifest, Mapping):
+        result["displayable"] = False
+        result["reason"] = "bundle manifest must be a JSON object"
+        return result
+    fixtures = _sequence(manifest.get("fixtures"))
+    result.update(
+        _drop_empty(
+            {
+                "displayable": True,
+                "id": manifest.get("id"),
+                "name": manifest.get("name"),
+                "version": manifest.get("version"),
+                "description": manifest.get("description"),
+                "entrypoint": manifest.get("entrypoint"),
+                "fixture_count": len(fixtures),
+                "lifecycle": manifest.get("lifecycle"),
+            }
+        )
+    )
+    return result
+
+
+def _redact_policy_source(source: str) -> str:
+    redacted = POLICY_SECRET_ASSIGNMENT_PATTERN.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}{SECRET_REPLACEMENT}{match.group(2)}",
+        source,
+    )
+    redacted = POLICY_BEARER_PATTERN.sub("Bearer " + SECRET_REPLACEMENT, redacted)
+    for pattern in POLICY_STANDALONE_SECRET_PATTERNS:
+        redacted = pattern.sub(SECRET_REPLACEMENT, redacted)
+    return redacted
+
+
+def _policy_path_allowed(path: Path, *, share_dir: Path, bundle_path: Path | None) -> bool:
+    try:
+        resolved = path.resolve(strict=False)
+    except OSError:
+        return False
+    roots = [share_dir.resolve(strict=False)]
+    if bundle_path is not None:
+        roots.append(bundle_path.resolve(strict=False))
+    return any(_path_is_relative_to(resolved, root) for root in roots)
+
+
+def _path_is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _read_bounded_bytes(path: Path, limit: int) -> dict[str, Any]:
+    with path.open("rb") as file:
+        data = file.read(limit + 1)
+    return {"data": data[:limit], "truncated": len(data) > limit}
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(65536), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _line_count(value: str) -> int:
+    if not value:
+        return 0
+    return value.count("\n") + (0 if value.endswith("\n") else 1)
+
+
+def _policy_helper_usage(source: str) -> list[dict[str, Any]]:
+    helpers = {
+        "mcp": "mcp.",
+        "auth": "auth.",
+        "lease": "lease.",
+        "workspace": "workspace.",
+        "state": "state.",
+        "request": "request.",
+        "context": "context.",
+    }
+    rows = []
+    for name, needle in helpers.items():
+        count = source.count(needle)
+        if count:
+            rows.append({"family": name, "pattern": needle, "count": count})
+    for keyword in ("reject(", "respond(", "confirm(", "capability_request(", "rate_limit("):
+        count = source.count(keyword)
+        if count:
+            rows.append({"family": "decision", "pattern": keyword, "count": count})
+    return rows
+
+
+def _policy_reason_code_visibility(decision_timeline: Mapping[str, Any]) -> dict[str, Any]:
+    events = [_mapping(event) for event in _sequence(decision_timeline.get("events")) if isinstance(event, Mapping)]
+    counts: dict[str, int] = {}
+    recent = []
+    for event in events:
+        reason_code = str(event.get("reason_code") or "")
+        if reason_code:
+            _count(counts, reason_code)
+        recent.append(
+            _drop_empty(
+                {
+                    "time": event.get("time"),
+                    "outcome": event.get("outcome"),
+                    "action": event.get("action"),
+                    "reason_code": reason_code or None,
+                    "tool": event.get("tool"),
+                    "mcp_method": event.get("mcp_method"),
+                    "source": event.get("source"),
+                    "line": event.get("line"),
+                }
+            )
+        )
+    return {
+        "summary": _counter_rows(counts),
+        "recent": recent[:10],
+    }
 
 
 def _share_readiness_gate(
@@ -1806,6 +2138,7 @@ def _console_html() -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>snulbug share console</title>
+  <link rel="stylesheet" href="/assets/prism.css">
   <style>
     :root {
       color-scheme: light;
@@ -2206,7 +2539,7 @@ def _console_html() -> str:
       padding: 12px;
       background: var(--surface);
     }
-    .token {
+    .console-output {
       background: #0f1720;
       color: #e8f1f8;
       border-radius: 8px;
@@ -2238,6 +2571,10 @@ def _console_html() -> str:
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 12px;
+    }
+    .policy-source {
+      max-height: 520px;
+      border: 1px solid var(--line);
     }
     @media (max-width: 980px) {
       .metrics {
@@ -2309,6 +2646,7 @@ def _console_html() -> str:
       </div>
       <nav class="section-nav" aria-label="Console sections">
         <a href="#readinessSection">Readiness</a>
+        <a href="#policySection">Policy</a>
         <a href="#providerSection">Provider</a>
         <a href="#decisionsSection">Decisions</a>
         <a href="#requestsSection">Requests</a>
@@ -2325,6 +2663,10 @@ def _console_html() -> str:
       <section id="readinessSection">
         <div class="section-head"><h2>Share Readiness</h2><span id="readinessSummary" class="muted"></span></div>
         <div class="section-body" id="shareReadiness"></div>
+      </section>
+      <section id="policySection">
+        <div class="section-head"><h2>Policy Visibility</h2><span id="policySummary" class="muted"></span></div>
+        <div class="section-body" id="policyVisibility"></div>
       </section>
       <div class="overview-grid">
         <section id="providerSection">
@@ -2386,7 +2728,7 @@ def _console_html() -> str:
       </section>
       <section id="leasePanel" hidden>
         <div class="section-head"><h2>New Lease Header</h2></div>
-        <div class="section-body"><div id="leaseOutput" class="token"></div></div>
+        <div class="section-body"><div id="leaseOutput" class="console-output"></div></div>
       </section>
       <section id="reportPanel" hidden>
         <div class="section-head"><h2>Session Report</h2></div>
@@ -2395,8 +2737,16 @@ def _console_html() -> str:
     </main>
     <aside id="requestDrawer" class="drawer" hidden></aside>
   </div>
+  <script src="/assets/prism.js"></script>
   <script>
     const state = { snapshot: null, timer: null, selectedRequestId: null };
+    const scrollPreserveSelectors = [
+      ".policy-source",
+      "#reportOutput",
+      "#doctorChecks",
+      "#amendPreview",
+      "#requestDrawer .drawer-body"
+    ];
     const $ = (id) => document.getElementById(id);
 
     function text(value, fallback = "-") {
@@ -2437,11 +2787,43 @@ def _console_html() -> str:
     async function loadSnapshot() {
       $("message").textContent = "Refreshing";
       try {
-        state.snapshot = await api("/api/snapshot");
+        const snapshot = await api("/api/snapshot");
+        const scrollState = captureScrollState();
+        state.snapshot = snapshot;
         render();
+        restoreScrollState(scrollState);
         $("message").textContent = `Updated ${new Date().toLocaleTimeString()}`;
       } catch (error) {
         $("message").textContent = `Refresh failed: ${error.message}`;
+      }
+    }
+
+    function captureScrollState() {
+      return {
+        windowX: window.scrollX,
+        windowY: window.scrollY,
+        elements: scrollPreserveSelectors.map((selector) => {
+          const element = document.querySelector(selector);
+          return element ? { selector, left: element.scrollLeft, top: element.scrollTop } : null;
+        }).filter(Boolean)
+      };
+    }
+
+    function restoreScrollState(scrollState) {
+      if (!scrollState) return;
+      const restore = () => {
+        (scrollState.elements || []).forEach((item) => {
+          const element = document.querySelector(item.selector);
+          if (!element) return;
+          element.scrollLeft = item.left || 0;
+          element.scrollTop = item.top || 0;
+        });
+        window.scrollTo(scrollState.windowX || 0, scrollState.windowY || 0);
+      };
+      if (window.requestAnimationFrame) {
+        window.requestAnimationFrame(restore);
+      } else {
+        restore();
       }
     }
 
@@ -2451,6 +2833,7 @@ def _console_html() -> str:
       $("sharePath").textContent = text(snapshot.share || status.directory);
       renderMetrics(status, snapshot.readiness_gate || {});
       renderReadinessGate(snapshot.readiness_gate || {});
+      renderPolicyVisibility(snapshot.policy_visibility || {});
       renderTunnelProvider(snapshot.tunnel_provider || {});
       renderDecisionTimeline(snapshot.decision_timeline || {});
       renderRequests(snapshot.capability_requests || {});
@@ -2516,7 +2899,7 @@ def _console_html() -> str:
         <summary>Readiness Attestation</summary>
         <div class="details-body stack">
           <button type="button" onclick="copyReadinessAttestation()">Copy Attestation</button>
-          <div class="token">${esc(JSON.stringify(attestation, null, 2))}</div>
+          <div class="console-output">${esc(JSON.stringify(attestation, null, 2))}</div>
         </div>
       </details>`;
       $("shareReadiness").innerHTML =
@@ -2547,25 +2930,150 @@ def _console_html() -> str:
       return parts.join(", ") || "-";
     }
 
+    function renderPolicyVisibility(payload) {
+      const policy = payload.policy || {};
+      const source = payload.source || {};
+      const manifest = payload.bundle_manifest || {};
+      const helpers = payload.helper_usage || [];
+      const reasons = payload.reason_codes || {};
+      $("policySummary").textContent =
+        `${policy.lifecycle_state || "unspecified"} · ${source.displayable ? "source visible" : "source unavailable"}`;
+      if (!payload.ok) {
+        $("policyVisibility").innerHTML = '<div class="empty">No active policy metadata found.</div>';
+        return;
+      }
+      const metadata = `<div class="detail-grid">
+        ${detailRow("Lifecycle", policy.lifecycle_state || "unspecified")}
+        ${detailRow("Signed", policy.lifecycle_signed)}
+        ${detailRow("Signature key", policy.lifecycle_signature_key_id)}
+        ${detailRow("Active policy", policy.active_policy)}
+        ${detailRow("Bundle", policy.bundle)}
+        ${detailRow("Policy digest", source.sha256)}
+        ${detailRow("Source", policySourceStatus(source))}
+        ${detailRow("Bundle manifest", bundleManifestText(manifest))}
+      </div>`;
+      const bundleHtml = manifest.exists ? `<div>
+        <h2>Bundle Manifest</h2>
+        <div class="detail-grid">
+          ${detailRow("ID", manifest.id)}
+          ${detailRow("Name", manifest.name)}
+          ${detailRow("Version", manifest.version)}
+          ${detailRow("Entrypoint", manifest.entrypoint)}
+          ${detailRow("Fixtures", manifest.fixture_count)}
+          ${detailRow("Digest", manifest.sha256)}
+        </div>
+      </div>` : "";
+      const helpersHtml = `<div>
+        <h2>DSL Helper Usage</h2>
+        ${helperUsageTable(helpers)}
+      </div>`;
+      const reasonHtml = `<div class="grid-two">
+        <div>
+          <h2>Observed Reason Codes</h2>
+          ${counterTable(reasons.summary || [], "Reason code")}
+        </div>
+        <div>
+          <h2>Recent Decisions</h2>
+          ${policyReasonTable(reasons.recent || [])}
+        </div>
+      </div>`;
+      const sourceHtml = policySourceHtml(source);
+      $("policyVisibility").innerHTML =
+        `<div class="stack">${metadata}${bundleHtml}${helpersHtml}${reasonHtml}${sourceHtml}</div>`;
+      if (window.Prism) window.Prism.highlightAllUnder($("policyVisibility"));
+    }
+
+    function policySourceStatus(source) {
+      if (source.displayable) {
+        const parts = [`${source.line_count || 0} lines`, `${source.size || 0} bytes`];
+        if (source.truncated) parts.push("truncated");
+        if (source.redacted) parts.push("redacted");
+        return parts.join(", ");
+      }
+      return source.reason || "not displayable";
+    }
+
+    function bundleManifestText(manifest) {
+      if (!manifest.exists) return "missing";
+      if (manifest.displayable === false) return manifest.reason || "not displayable";
+      const parts = [manifest.id, manifest.version, manifest.entrypoint].filter(Boolean);
+      return parts.join(" · ") || "available";
+    }
+
+    function helperUsageTable(rows) {
+      if (!rows.length) {
+        return '<div class="empty">No first-class DSL helper calls detected in the displayed source.</div>';
+      }
+      return `<table>
+        <thead><tr><th>Family</th><th>Pattern</th><th>Count</th></tr></thead>
+        <tbody>${rows.map((row) => (
+          `<tr><td>${esc(row.family)}</td><td><code>${esc(row.pattern)}</code></td><td>${esc(row.count)}</td></tr>`
+        )).join("")}</tbody>
+      </table>`;
+    }
+
+    function policyReasonTable(rows) {
+      if (!rows.length) return '<div class="empty">No policy decision evidence recorded yet.</div>';
+      return `<table>
+        <thead><tr><th>Decision</th><th>Target</th><th>Reason</th></tr></thead>
+        <tbody>${rows.slice(0, 8).map((row) => (
+          `<tr>
+            <td>${pill(row.outcome || row.action || "unknown")}</td>
+            <td>
+              ${esc(row.tool || row.mcp_method || "-")}
+              <div class="timeline-detail">${esc(shortTime(row.time))}</div>
+            </td>
+            <td>
+              ${esc(row.reason_code || "-")}
+              <div class="timeline-detail">${esc(row.source ? `${row.source}:${row.line || ""}` : "")}</div>
+            </td>
+          </tr>`
+        )).join("")}</tbody>
+      </table>`;
+    }
+
+    function policySourceHtml(source) {
+      if (!source.displayable) {
+        return `<div>
+          <h2>Lua Source</h2>
+          <div class="empty">${esc(source.reason || "Source is not displayable.")}</div>
+        </div>`;
+      }
+      const notice = source.redacted
+        ? '<div class="timeline-detail">Secrets have been redacted before rendering.</div>'
+        : "";
+      return `<div>
+        <h2>Lua Source</h2>
+        ${notice}
+        <pre class="policy-source language-lua"><code class="language-lua">${esc(source.source || "")}</code></pre>
+      </div>`;
+    }
+
     function renderDecisionTimeline(payload) {
       const summary = payload.summary || {};
       const events = payload.events || [];
+      const visibleEvents = payload.compacted_events || events;
       $("decisionSummary").textContent =
-        `${summary.shown || 0} shown, ${summary.allowed || 0} allowed, ${summary.blocked || 0} blocked`;
+        `${visibleEvents.length || 0} grouped from ${summary.shown || 0}, ` +
+        `${summary.allowed || 0} allowed, ${summary.blocked || 0} blocked, ` +
+        `${summary.upstream_failed || 0} upstream failed`;
       if (!payload.exists) {
         $("decisionTimeline").innerHTML = `<div class="empty">No audit log found yet.</div>`;
         return;
       }
-      if (!events.length) {
+      if (!visibleEvents.length) {
         $("decisionTimeline").innerHTML = `<div class="empty">No decisions recorded yet.</div>`;
         return;
       }
       $("decisionTimeline").innerHTML = `<table>
         <thead><tr><th>Time</th><th>Outcome</th><th>Request</th><th>Subject</th><th>Status</th><th>Reason</th></tr></thead>
-        <tbody>${events.map((event) => (
+        <tbody>${visibleEvents.map((event) => (
           `<tr>
-            <td>${esc(shortTime(event.time))}</td>
-            <td>${pill(event.outcome)}</td>
+            <td>${esc(decisionTimeText(event))}</td>
+            <td>
+              ${pill(event.outcome)}
+              <div class="timeline-detail">${esc(decisionCountText(event))}</div>
+            </td>
             <td>
               <div class="timeline-target">${esc(decisionTarget(event))}</div>
               <div class="timeline-detail">${esc(decisionDetail(event))}</div>
@@ -2579,7 +3087,7 @@ def _console_html() -> str:
             <td>${esc(event.status || "-")}</td>
             <td>
               ${esc(event.reason_code || "-")}
-              <div class="timeline-detail">${esc(event.upstream || event.source_ip || event.reason || "")}</div>
+              <div class="timeline-detail">${esc(decisionReasonDetail(event))}</div>
             </td>
           </tr>`
         )).join("")}</tbody>
@@ -2609,6 +3117,27 @@ def _console_html() -> str:
     function decisionDetail(event) {
       const parts = [event.mcp_method, event.http_method, event.path].filter(Boolean);
       return parts.join(" ");
+    }
+
+    function decisionTimeText(event) {
+      if ((event.count || 1) <= 1) return shortTime(event.time || event.latest_time);
+      const latest = shortTime(event.latest_time || event.time);
+      const earliest = shortTime(event.earliest_time || event.time);
+      return earliest === latest ? latest : `${earliest} - ${latest}`;
+    }
+
+    function decisionCountText(event) {
+      const count = Number(event.count || 1);
+      return count > 1 ? `${count} repeated` : "";
+    }
+
+    function decisionReasonDetail(event) {
+      const parts = [event.upstream || event.source_ip || event.reason || ""];
+      const count = Number(event.count || 1);
+      if (count > 1 && event.source && event.earliest_line && event.latest_line) {
+        parts.push(`${event.source}:${event.earliest_line}-${event.latest_line}`);
+      }
+      return parts.filter(Boolean).join(" · ");
     }
 
     function renderRequests(payload) {
