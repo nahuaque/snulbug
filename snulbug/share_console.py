@@ -350,6 +350,7 @@ class ShareConsoleServer:
                 _send_json(handler, 200, share_capability_requests(self.directory, status=status))
                 return
             if path == "/api/invites":
+                _cleanup_console_stale_invites(self.directory)
                 query = parse_qs(parsed.query)
                 include_revoked = (_first(query.get("include_revoked")) or "true").lower() not in {"0", "false", "no"}
                 result = list_mcp_share_invites(
@@ -482,13 +483,17 @@ class ShareConsoleServer:
                 _send_json(handler, 200, _redact_console_payload(result))
                 return
             if path == "/api/health/check":
-                snapshot = build_share_console_snapshot(self.directory, timeout=self.timeout, live_checks=True)
+                _cleanup_console_stale_invites(self.directory)
+                snapshot = _with_console_invite_setups(
+                    self.directory,
+                    build_share_console_snapshot(self.directory, timeout=self.timeout, live_checks=True),
+                )
                 status = dict(_mapping(snapshot.get("status")))
                 status["readiness_gate"] = snapshot.get("readiness_gate")
                 status["share"] = snapshot.get("share")
                 status["generated_at"] = snapshot.get("generated_at")
                 result = status
-                _send_json(handler, 200, _redact_console_payload(result))
+                _send_json(handler, 200, result)
                 return
             if path == "/api/readiness/review":
                 result = _record_share_readiness_review(
@@ -527,7 +532,7 @@ class ShareConsoleServer:
                 _send_json(handler, 200, result)
                 return
             if path == "/api/invites/cleanup-revoked":
-                result = cleanup_mcp_share_invites(self.directory)
+                result = cleanup_mcp_share_invites(self.directory, stale_active=True)
                 _send_json(handler, 200, _redact_console_payload(result))
                 return
             invite_prefix = "/api/invites/"
@@ -591,6 +596,7 @@ class ShareConsoleServer:
     def snapshot(self) -> dict[str, Any]:
         if self.setup_only:
             return build_share_setup_console_snapshot(self.directory)
+        _cleanup_console_stale_invites(self.directory)
         share_key = str(self.directory.resolve(strict=False))
         if self.live_checks:
             snapshot = build_share_console_snapshot(
@@ -648,6 +654,13 @@ def _with_console_invite_setups(directory: str | Path, snapshot: Mapping[str, An
         "summary": invitations.get("summary", {}),
     }
     return payload
+
+
+def _cleanup_console_stale_invites(directory: str | Path) -> None:
+    try:
+        cleanup_mcp_share_invites(directory, stale_active=True)
+    except Exception:
+        return
 
 
 def _send_json(handler: BaseHTTPRequestHandler, status: int, payload: Mapping[str, Any]) -> None:
@@ -5579,7 +5592,7 @@ def _console_html() -> str:
       const paths = listText(invite.allow_paths);
       const taskDetail = `client ${invite.client_name || "snulbug-share"}`;
       const expiryDetail = revoked ? `revoked ${shortDateTime(invite.revoked_at)}` : "";
-      const hasSetup = !revoked && Boolean(invite.setup_snippets);
+      const hasSetup = !revoked && invite.setup_available === true && Boolean(invite.setup_snippets);
       const setupText = hasSetup
         ? formatInviteSetup({ invite, setup_snippets: invite.setup_snippets, headers: invite.headers || {} })
         : "";

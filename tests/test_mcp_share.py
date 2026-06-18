@@ -18,6 +18,7 @@ from snulbug import (
     append_record,
     approve_share_capability_request,
     attach_mcp_share_member,
+    cleanup_mcp_share_invites,
     close_mcp_share,
     create_mcp_share,
     create_mcp_share_invite,
@@ -280,6 +281,7 @@ def test_mcp_share_invite_create_list_and_revoke_redacts_stored_snippets(tmp_pat
     assert listing["invitations"][0]["setup_snippets"]["headers"]["Authorization"] == "Bearer [REDACTED]"
     assert setup_listing["invitations"][0]["setup_snippets"]["headers"]["Authorization"] == "Bearer share-secret"
     assert setup_listing["invitations"][0]["setup_snippets"]["headers"]["x-snulbug-lease"].startswith("sbl_")
+    assert setup_listing["invitations"][0]["setup_available"] is True
     assert "share-secret" not in json.dumps(listing)
     assert "sbl_" not in json.dumps(listing)
     assert "share-secret" not in json.dumps(session_model["invitations"])
@@ -288,7 +290,41 @@ def test_mcp_share_invite_create_list_and_revoke_redacts_stored_snippets(tmp_pat
     assert revoked["lease_revoked"] is True
     assert revoked["invite"]["revoked_at"]
     assert active_only["summary"] == {"total": 0, "active": 0, "revoked": 0}
-    assert revoked_setup_listing["invitations"][0]["setup_snippets"]["headers"]["Authorization"] == "Bearer [REDACTED]"
+    assert revoked_setup_listing["invitations"][0]["setup_available"] is False
+    assert "setup_snippets" not in revoked_setup_listing["invitations"][0]
+
+
+def test_mcp_share_invite_cleanup_removes_stale_active_invites(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        allowed_paths=["README.md"],
+        validate=False,
+    )
+    created = create_mcp_share_invite(
+        tmp_path,
+        recipient="frontend agent",
+        task="Read project docs",
+        allow_tools=["safe_read_file"],
+        allow_paths=["README.md"],
+        ttl="10m",
+    )
+    (tmp_path / ".snulbug" / "share" / "invite-secrets.json").unlink()
+
+    cleaned = cleanup_mcp_share_invites(tmp_path, stale_active=True)
+    listing = list_mcp_share_invites(tmp_path)
+    session_model = load_share_session_model(tmp_path)
+
+    assert cleaned["ok"] is True
+    assert cleaned["removed_count"] == 1
+    assert cleaned["removed_stale_active_count"] == 1
+    assert cleaned["stale_lease_revocations"][0]["ok"] is True
+    assert cleaned["stale_lease_revocations"][0]["lease"]["id"] == created["invite"]["lease_id"]
+    assert listing["summary"] == {"total": 0, "active": 0, "revoked": 0}
+    assert session_model["invitations"]["items"] == []
 
 
 def test_mcp_share_invite_cli_emits_setup_snippets(tmp_path, capsys):

@@ -1243,18 +1243,42 @@ def revoke_mcp_share_invite(
     }
 
 
-def cleanup_mcp_share_invites(directory: str | Path = ".") -> dict[str, Any]:
+def cleanup_mcp_share_invites(
+    directory: str | Path = ".",
+    *,
+    stale_active: bool = False,
+    revoke_stale_leases: bool = True,
+) -> dict[str, Any]:
     """Remove revoked share invite records from the session model."""
 
-    share_dir, _manifest, session_model = _load_share_model_context(directory)
+    share_dir, manifest, session_model = _load_share_model_context(directory)
     invitations = dict(_mapping(session_model.get("invitations")))
     items = [dict(_mapping(item)) for item in _sequence(invitations.get("items")) if isinstance(item, Mapping)]
-    kept = [item for item in items if not item.get("revoked_at")]
-    removed = [item for item in items if item.get("revoked_at")]
+    stale_removed: list[dict[str, Any]] = []
+    active_secret_ids: set[str] = set()
+    active_lease_ids: set[str] = set()
+    if stale_active:
+        active_secret_ids = set(_mapping(_load_share_invite_secret_store(share_dir).get("invitations")).keys())
+        active_lease_ids = _share_active_lease_ids(share_dir, session_model, manifest)
+
+    kept: list[dict[str, Any]] = []
+    removed: list[dict[str, Any]] = []
+    for item in items:
+        if item.get("revoked_at"):
+            removed.append(item)
+            continue
+        if stale_active and _share_invite_is_stale(
+            item,
+            active_secret_ids=active_secret_ids,
+            active_lease_ids=active_lease_ids,
+        ):
+            stale_removed.append(item)
+            continue
+        kept.append(item)
     invitations["items"] = kept
     invitations["summary"] = _share_invite_summary(kept)
     last_created = _mapping(invitations.get("last_created"))
-    removed_ids = {str(item.get("id")) for item in removed if item.get("id")}
+    removed_ids = {str(item.get("id")) for item in [*removed, *stale_removed] if item.get("id")}
     if str(last_created.get("id")) in removed_ids:
         invitations.pop("last_created", None)
 
@@ -1265,10 +1289,22 @@ def cleanup_mcp_share_invites(directory: str | Path = ".") -> dict[str, Any]:
         share_dir,
         active_ids={str(item.get("id")) for item in kept if item.get("id") and not item.get("revoked_at")},
     )
+    stale_lease_revocations = []
+    if revoke_stale_leases:
+        stale_lease_ids = {
+            str(item.get("lease_id"))
+            for item in stale_removed
+            if isinstance(item.get("lease_id"), str) and item.get("lease_id")
+        }
+        for lease_id in sorted(stale_lease_ids):
+            stale_lease_revocations.append(revoke_mcp_share_lease(share_dir, lease_id=lease_id))
     return {
         "ok": True,
         "share": str(share_dir),
-        "removed_count": len(removed),
+        "removed_count": len(removed) + len(stale_removed),
+        "removed_revoked_count": len(removed),
+        "removed_stale_active_count": len(stale_removed),
+        "stale_lease_revocations": stale_lease_revocations,
         "invitations": invitations,
         "session_model": str(share_session_model_path(share_dir)),
     }
@@ -7930,6 +7966,35 @@ def _record_share_invite_secret(share_dir: Path, invite_id: str, payload: Mappin
     _write_share_invite_secret_store(share_dir, updated)
 
 
+def _share_active_lease_ids(
+    share_dir: Path,
+    session_model: Mapping[str, Any],
+    manifest: Mapping[str, Any] | None,
+) -> set[str]:
+    from .leases import list_leases
+
+    try:
+        listed = list_leases(_share_capability_lease_file(share_dir, session_model, manifest))
+    except Exception:
+        return set()
+    return {
+        str(lease.get("id"))
+        for lease in _sequence(listed.get("leases"))
+        if isinstance(lease, Mapping) and lease.get("id") and lease.get("active")
+    }
+
+
+def _share_invite_is_stale(
+    invite: Mapping[str, Any],
+    *,
+    active_secret_ids: set[str],
+    active_lease_ids: set[str],
+) -> bool:
+    invite_id = str(invite.get("id") or "")
+    lease_id = str(invite.get("lease_id") or "")
+    return not invite_id or invite_id not in active_secret_ids or not lease_id or lease_id not in active_lease_ids
+
+
 def _remove_share_invite_secret(share_dir: Path, invite_id: str) -> None:
     store = _load_share_invite_secret_store(share_dir)
     invitations = dict(_mapping(store.get("invitations")))
@@ -7966,6 +8031,7 @@ def _attach_share_invite_secrets(
         invite_id = str(invite.get("id") or "")
         secret_payload = _mapping(secrets_by_invite.get(invite_id))
         if invite_id and not invite.get("revoked_at") and secret_payload:
+            invite["setup_available"] = True
             if isinstance(secret_payload.get("headers"), Mapping):
                 invite["headers"] = dict(_mapping(secret_payload.get("headers")))
             if isinstance(secret_payload.get("setup_snippets"), Mapping):
@@ -7974,6 +8040,12 @@ def _attach_share_invite_secrets(
                 value = secret_payload.get(key)
                 if isinstance(value, str) and value:
                     invite[key] = value
+        else:
+            invite["setup_available"] = False
+            invite.pop("headers", None)
+            invite.pop("setup_snippets", None)
+            invite.pop("bearer_token", None)
+            invite.pop("lease_token", None)
         hydrated.append(invite)
     return hydrated
 

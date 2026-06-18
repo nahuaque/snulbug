@@ -466,6 +466,7 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
             headers={share_console.CONSOLE_SECRET_HEADER: server.console_secret},
         )
         active_invite_snapshot = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
+        active_invite_health = post_json(f"{server.url}/api/health/check", {}, headers=console_headers(server))
         invite_revoked = post_json(
             f"{server.url}/api/invites/{invite_created['invite']['id']}/revoke",
             {"revoke_lease": True},
@@ -661,13 +662,21 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert active_invite_snapshot["status"]["invitations"]["items"][0]["setup_snippets"]["headers"][
         "x-snulbug-lease"
     ].startswith("sbl_")
+    assert (
+        active_invite_health["invitations"]["items"][0]["setup_snippets"]["headers"]["Authorization"]
+        == "Bearer share-secret"
+    )
+    assert active_invite_health["invitations"]["items"][0]["setup_snippets"]["headers"]["x-snulbug-lease"].startswith(
+        "sbl_"
+    )
     assert invite_revoked["ok"] is True
     assert invite_revoked["lease_revoked"] is True
-    assert invite_snapshot["status"]["invitations"]["summary"]["revoked"] == 1
+    assert invite_snapshot["status"]["invitations"]["summary"] == {"total": 0, "active": 0, "revoked": 0}
+    assert invite_snapshot["status"]["invitations"]["items"] == []
     assert "share-secret" not in json.dumps(invite_snapshot)
     assert "sbl_" not in json.dumps(invite_snapshot)
     assert invite_cleanup["ok"] is True
-    assert invite_cleanup["removed_count"] == 1
+    assert invite_cleanup["removed_count"] == 0
     assert lease_cleanup["ok"] is True
     assert lease_cleanup["removed_count"] >= 1
     assert cleanup_snapshot["status"]["invitations"]["summary"]["revoked"] == 0
@@ -729,6 +738,35 @@ def test_share_console_rejects_invite_when_handoff_is_not_ready(tmp_path, monkey
         server.stop()
 
     assert rejected.value.code == 409
+
+
+def test_share_console_deletes_stale_active_invites_before_rendering(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    create_mcp_share_invite(
+        tmp_path,
+        recipient="agent",
+        task="Read docs",
+        allow_tools=["safe_read_file"],
+        allow_paths=["README.md"],
+    )
+    (tmp_path / ".snulbug" / "share" / "invite-secrets.json").unlink()
+    server = ShareConsoleServer(directory=tmp_path, port=0)
+    server.start()
+    try:
+        snapshot = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
+    finally:
+        server.stop()
+
+    assert snapshot["status"]["invitations"]["summary"] == {"total": 0, "active": 0, "revoked": 0}
+    assert snapshot["status"]["invitations"]["items"] == []
+    assert load_share_session_model(tmp_path)["invitations"]["items"] == []
 
 
 def test_share_console_promotes_policy_lifecycle_from_browser(tmp_path, monkeypatch):
