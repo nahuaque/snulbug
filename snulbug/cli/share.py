@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -534,8 +535,7 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
             if directory is None and share_session_model_path(Path.cwd()).is_file():
                 directory = Path.cwd()
             if directory is None:
-                parser.error("mcp share run requires a share directory or --config")
-                return 2
+                return _run_share_setup_console(args)
             console_server = _start_share_run_console(directory, args)
             try:
                 result = run_mcp_share(
@@ -1831,6 +1831,54 @@ def _start_share_run_console(directory: Path | None, args: argparse.Namespace) -
 
 def _stop_share_run_console(server: Any) -> None:
     if server is not None:
+        server.stop()
+
+
+def _run_share_setup_console(args: argparse.Namespace) -> int:
+    if getattr(args, "no_console", False):
+        sys.stderr.write(
+            "snulbug share run failed: no share directory or --config was provided and --no-console is set\n"
+        )
+        return 1
+    from ..share_console import DEFAULT_SHARE_CONSOLE_PORT, ShareConsoleServer
+
+    host = str(getattr(args, "console_host", "127.0.0.1"))
+    port = int(getattr(args, "console_port", DEFAULT_SHARE_CONSOLE_PORT))
+    server = ShareConsoleServer(
+        directory=Path.cwd(),
+        host=host,
+        port=port,
+        timeout=float(getattr(args, "console_timeout", 1.0)),
+        live_checks=False,
+        setup_only=True,
+    )
+    try:
+        server.start()
+    except OSError as exc:
+        if port != DEFAULT_SHARE_CONSOLE_PORT:
+            sys.stderr.write(f"snulbug share setup console failed: {exc}\n")
+            return 1
+        sys.stderr.write(f"snulbug share console port {port} unavailable: {exc}; retrying with a dynamic port\n")
+        server = ShareConsoleServer(
+            directory=Path.cwd(),
+            host=host,
+            port=0,
+            timeout=float(getattr(args, "console_timeout", 1.0)),
+            live_checks=False,
+            setup_only=True,
+        )
+        try:
+            server.start()
+        except OSError as retry_exc:
+            sys.stderr.write(f"snulbug share setup console failed: {retry_exc}\n")
+            return 1
+    print(f"snulbug share setup wizard: {server.url}", flush=True)
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        return 0
+    finally:
         server.stop()
 
 

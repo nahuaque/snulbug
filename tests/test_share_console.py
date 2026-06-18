@@ -43,6 +43,8 @@ def test_share_console_snapshot_reads_existing_share_artifacts(tmp_path):
     policy_source = policy_visibility["source"]
 
     assert snapshot["ok"] is True
+    assert snapshot["mode"] == "share"
+    assert "setup_wizard" not in snapshot
     assert snapshot["share"] == str(tmp_path)
     assert snapshot["status"]["state"] == "created"
     assert snapshot["capability_requests"]["summary"]["pending"] == 1
@@ -99,6 +101,20 @@ def test_share_console_policy_visibility_resolves_cwd_relative_share_paths(tmp_p
     assert source["path"] == "relative-share/policy.snulbug/policy.lua"
     assert "active policy file is missing" not in json.dumps(snapshot["policy_visibility"])
     assert "share-secret" not in json.dumps(snapshot["policy_visibility"])
+
+
+def test_share_setup_console_snapshot_does_not_require_share_session(tmp_path):
+    snapshot = share_console.build_share_setup_console_snapshot(tmp_path)
+    wizard = snapshot["setup_wizard"]
+
+    assert snapshot["ok"] is True
+    assert snapshot["mode"] == "setup"
+    assert "status" not in snapshot
+    assert wizard["schema"] == "snulbug.share-setup-wizard.v1"
+    assert wizard["total"] == 6
+    assert wizard["next_step"]["id"] == "create_config"
+    assert wizard["next_step"]["primary_action"]["kind"] == "copy_command"
+    assert "share config init" in wizard["next_step"]["primary_action"]["command"]
 
 
 def test_share_console_compacts_repeated_live_decisions(tmp_path):
@@ -382,6 +398,7 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert 'href="#policySection"' in html
     assert 'href="#providerSection"' in html
     assert 'id="readinessSection"' in html
+    assert 'id="setupSection"' in html
     assert 'id="policySection"' in html
     assert 'id="decisionsSection"' in html
     assert 'id="requestsSection"' in html
@@ -389,6 +406,10 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert 'id="schemaSection"' in html
     assert 'id="evidenceSection"' in html
     assert "Share Readiness" in html
+    assert "Share Setup" in html
+    assert "renderSetupWizard" in html
+    assert "wizardActionHtml" in html
+    assert "copyWizardCommand" in html
     assert "renderReadinessGate" in html
     assert "readinessChecksTable" in html
     assert "setShowAllReadiness" in html
@@ -771,6 +792,36 @@ def test_share_run_console_starts_as_sidecar(tmp_path):
 
     assert "snulbug share console" in html
     assert "Capability Requests" in html
+
+
+def test_share_run_setup_console_serves_wizard_without_session(tmp_path):
+    server = ShareConsoleServer(directory=tmp_path, port=0, setup_only=True)
+    server.start()
+    try:
+        html = read_text(f"{server.url}/")
+        snapshot = read_json(f"{server.url}/api/snapshot")
+    finally:
+        server.stop()
+
+    assert "Share Setup" in html
+    assert snapshot["mode"] == "setup"
+    assert snapshot["setup_wizard"]["next_step"]["id"] == "create_config"
+
+
+def test_share_run_without_session_starts_setup_wizard(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_setup_console(args):
+        calls.append(args)
+        return 0
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("snulbug.cli.share._run_share_setup_console", fake_setup_console)
+
+    status = simulator_main(["mcp", "share", "run"])
+
+    assert status == 0
+    assert len(calls) == 1
 
 
 def test_share_run_console_respects_no_console(tmp_path):

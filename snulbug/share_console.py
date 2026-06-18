@@ -97,6 +97,7 @@ def build_share_console_snapshot(
     )
     return {
         "ok": bool(status.get("ok")),
+        "mode": "share",
         "generated_at": _now_iso(),
         "share": str(share_dir),
         "status": _redact_console_payload(status),
@@ -111,6 +112,19 @@ def build_share_console_snapshot(
     }
 
 
+def build_share_setup_console_snapshot(directory: str | Path) -> dict[str, Any]:
+    """Return the setup-only console state used before a share session exists."""
+
+    share_dir = Path(directory)
+    return {
+        "ok": True,
+        "mode": "setup",
+        "generated_at": _now_iso(),
+        "share": str(share_dir),
+        "setup_wizard": _redact_console_payload(_bootstrap_setup_wizard()),
+    }
+
+
 def run_share_console(
     directory: str | Path,
     *,
@@ -118,6 +132,7 @@ def run_share_console(
     port: int = DEFAULT_SHARE_CONSOLE_PORT,
     timeout: float = 1.0,
     live_checks: bool = False,
+    setup_only: bool = False,
 ) -> int:
     """Run the blocking local share-session console."""
 
@@ -127,6 +142,7 @@ def run_share_console(
         port=port,
         timeout=timeout,
         live_checks=live_checks,
+        setup_only=setup_only,
     )
     server.start()
     print(f"snulbug share console: {server.url}", flush=True)
@@ -148,6 +164,7 @@ class ShareConsoleServer:
     port: int = DEFAULT_SHARE_CONSOLE_PORT
     timeout: float = 1.0
     live_checks: bool = False
+    setup_only: bool = False
     _server: ThreadingHTTPServer | None = field(default=None, init=False, repr=False)
     _thread: threading.Thread | None = field(default=None, init=False, repr=False)
 
@@ -327,6 +344,8 @@ class ShareConsoleServer:
             _handle_handler_exception(handler, exc)
 
     def snapshot(self) -> dict[str, Any]:
+        if self.setup_only:
+            return build_share_setup_console_snapshot(self.directory)
         return build_share_console_snapshot(
             self.directory,
             timeout=self.timeout,
@@ -1785,6 +1804,284 @@ def _share_readiness_gate(
     }
 
 
+def _setup_wizard(
+    status: Mapping[str, Any],
+    *,
+    readiness_gate: Mapping[str, Any],
+    tunnel_provider: Mapping[str, Any],
+    capability_requests: Mapping[str, Any],
+    tool_schema_visibility: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Derive the human share setup path from existing console state."""
+
+    checks = {str(check.get("id")): _mapping(check) for check in _sequence(readiness_gate.get("checks"))}
+    commands = _mapping(status.get("commands"))
+    request_summary = _mapping(capability_requests.get("summary")) or _mapping(status.get("capability_requests"))
+    pending_requests = int(request_summary.get("pending") or 0)
+    schema_summary = _mapping(tool_schema_visibility.get("summary"))
+    tool_summary = _mapping(_mapping(status.get("tool_risks")).get("summary"))
+    public_url = tunnel_provider.get("public_url") or _mapping(status.get("client")).get("url")
+
+    steps = [
+        _wizard_step(
+            "upstream",
+            "Validate Upstream",
+            _wizard_status(checks, ("gateway.reachable", "upstreams.reachable")),
+            _wizard_message(
+                checks,
+                ("gateway.reachable", "upstreams.reachable"),
+                "Local gateway and upstream MCP servers are reachable.",
+            ),
+            _wizard_action("run_doctor", "Run doctor", disabled=False),
+        ),
+        _wizard_step(
+            "tunnel",
+            "Choose Tunnel",
+            _wizard_status(checks, ("tunnel.public_url", "tunnel.doctor")),
+            _wizard_tunnel_message(checks, public_url),
+            _wizard_tunnel_action(checks, commands),
+        ),
+        _wizard_step(
+            "auth_leases",
+            "Auth And Leases",
+            _wizard_status(checks, ("auth.configured", "leases.active")),
+            _wizard_message(checks, ("auth.configured", "leases.active"), "Auth and lease controls are configured."),
+            _wizard_auth_lease_action(checks, pending_requests),
+        ),
+        _wizard_step(
+            "tools",
+            "Inspect Tools",
+            _wizard_status(checks, ("schemas.drift", "tools.high_risk")),
+            _wizard_tools_message(checks, schema_summary, tool_summary),
+            _wizard_tools_action(checks),
+        ),
+        _wizard_step(
+            "policy",
+            "Generate Policy",
+            _wizard_status(checks, ("policy.active", "capability_requests.pending")),
+            _wizard_message(
+                checks,
+                ("policy.active", "capability_requests.pending"),
+                "Policy is active and no capability requests are pending.",
+            ),
+            _wizard_policy_action(checks, pending_requests),
+        ),
+        _wizard_step(
+            "share",
+            "Ready To Share",
+            _wizard_final_status(readiness_gate),
+            _wizard_final_message(readiness_gate),
+            _wizard_final_action(readiness_gate),
+        ),
+    ]
+    active_index = next((index for index, step in enumerate(steps) if step["status"] != "pass"), len(steps) - 1)
+    for index, step in enumerate(steps):
+        step["active"] = index == active_index
+        step["index"] = index + 1
+    completed = sum(1 for step in steps if step["status"] == "pass")
+    next_step = steps[active_index] if steps else None
+    return {
+        "schema": "snulbug.share-setup-wizard.v1",
+        "label": readiness_gate.get("label") or "Share setup",
+        "decision": readiness_gate.get("decision") or "unknown",
+        "completed": completed,
+        "total": len(steps),
+        "next_step": next_step,
+        "steps": steps,
+    }
+
+
+def _bootstrap_setup_wizard() -> dict[str, Any]:
+    steps = [
+        _wizard_step(
+            "create_config",
+            "Create Config",
+            "warn",
+            "Write a starter snulbug.toml and policy bundle paths for this workspace.",
+            _wizard_action(
+                "copy_command",
+                "Copy config command",
+                command="uv run snulbug mcp share config init --output .snulbug/configs/snulbug.toml",
+            ),
+        ),
+        _wizard_step(
+            "create_policy",
+            "Create Policy",
+            "skip",
+            "Generate or edit the Lua policy bundle referenced by the config.",
+            _wizard_action(
+                "copy_command",
+                "Copy policy command",
+                command="uv run snulbug mcp policy preset local-dev-safe --output policy.snulbug",
+            ),
+        ),
+        _wizard_step(
+            "set_upstream",
+            "Set Upstream",
+            "skip",
+            "Edit the config so upstream or facade upstreams point at your local MCP server.",
+            _wizard_action("copy_command", "Copy edit command", command="${EDITOR:-vi} .snulbug/configs/snulbug.toml"),
+        ),
+        _wizard_step(
+            "run_gateway",
+            "Run Gateway",
+            "skip",
+            "Start snulbug from the generated config after the upstream and policy are set.",
+            _wizard_action(
+                "copy_command",
+                "Copy run command",
+                command="uv run snulbug mcp share run --config .snulbug/configs/snulbug.toml",
+            ),
+        ),
+        _wizard_step(
+            "expose_tunnel",
+            "Expose Tunnel",
+            "skip",
+            "Run your tunnel provider against the local snulbug gateway port.",
+            _wizard_action("copy_command", "Copy ngrok example", command="ngrok http 8080"),
+        ),
+        _wizard_step(
+            "validate_share",
+            "Validate Share",
+            "skip",
+            "After a share session exists, run share doctor from that session console.",
+            _wizard_action("copy_command", "Copy status command", command="uv run snulbug mcp share status"),
+        ),
+    ]
+    for index, step in enumerate(steps):
+        step["index"] = index + 1
+        step["active"] = index == 0
+    return {
+        "schema": "snulbug.share-setup-wizard.v1",
+        "label": "Create or select a share session",
+        "decision": "setup",
+        "completed": 0,
+        "total": len(steps),
+        "next_step": steps[0],
+        "steps": steps,
+    }
+
+
+def _wizard_step(
+    step_id: str,
+    label: str,
+    status: str,
+    message: str,
+    action: Mapping[str, Any],
+) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "id": step_id,
+            "label": label,
+            "status": status,
+            "message": message,
+            "primary_action": dict(action),
+        }
+    )
+
+
+def _wizard_status(checks: Mapping[str, Mapping[str, Any]], ids: Sequence[str]) -> str:
+    statuses = [str(_mapping(checks.get(check_id)).get("status") or "warn") for check_id in ids]
+    if any(status == "fail" for status in statuses):
+        return "fail"
+    if any(status == "warn" for status in statuses):
+        return "warn"
+    return "pass"
+
+
+def _wizard_message(checks: Mapping[str, Mapping[str, Any]], ids: Sequence[str], success: str) -> str:
+    messages = [
+        str(check.get("message"))
+        for check_id in ids
+        for check in [_mapping(checks.get(check_id))]
+        if check.get("status") != "pass" and check.get("message")
+    ]
+    return " ".join(messages) if messages else success
+
+
+def _wizard_action(kind: str, label: str, **extra: Any) -> dict[str, Any]:
+    return _drop_empty({"kind": kind, "label": label, **extra})
+
+
+def _wizard_tunnel_message(checks: Mapping[str, Mapping[str, Any]], public_url: Any) -> str:
+    if public_url:
+        return _wizard_message(checks, ("tunnel.public_url", "tunnel.doctor"), f"Public URL is {public_url}.")
+    return _wizard_message(checks, ("tunnel.public_url", "tunnel.doctor"), "Tunnel provider is configured.")
+
+
+def _wizard_tunnel_action(checks: Mapping[str, Mapping[str, Any]], commands: Mapping[str, Any]) -> dict[str, Any]:
+    if _mapping(checks.get("tunnel.public_url")).get("status") == "fail":
+        provider_command = _first_command(commands.get("provider"))
+        if provider_command:
+            return _wizard_action("copy_command", "Copy provider command", command=provider_command)
+        return _wizard_action("anchor", "Review provider", target="#providerSection")
+    if _mapping(checks.get("tunnel.doctor")).get("status") != "pass":
+        return _wizard_action("run_doctor", "Run doctor")
+    return _wizard_action("anchor", "Review provider", target="#providerSection")
+
+
+def _wizard_auth_lease_action(checks: Mapping[str, Mapping[str, Any]], pending_requests: int) -> dict[str, Any]:
+    if _mapping(checks.get("auth.configured")).get("status") == "fail":
+        return _wizard_action("anchor", "Review auth", target="#authSection")
+    if pending_requests > 0:
+        return _wizard_action("anchor", "Review requests", target="#requestsSection")
+    return _wizard_action("anchor", "Review leases", target="#leasesSection")
+
+
+def _wizard_tools_message(
+    checks: Mapping[str, Mapping[str, Any]],
+    schema_summary: Mapping[str, Any],
+    tool_summary: Mapping[str, Any],
+) -> str:
+    success = (
+        f"{int(schema_summary.get('tool_count') or 0)} tools discovered; "
+        f"{int(tool_summary.get('high') or 0)} high-risk tools."
+    )
+    return _wizard_message(checks, ("schemas.drift", "tools.high_risk"), success)
+
+
+def _wizard_tools_action(checks: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    if _mapping(checks.get("schemas.drift")).get("status") != "pass":
+        return _wizard_action("anchor", "Inspect schemas", target="#schemaSection")
+    return _wizard_action("anchor", "Inspect risk", target="#riskSection")
+
+
+def _wizard_policy_action(checks: Mapping[str, Mapping[str, Any]], pending_requests: int) -> dict[str, Any]:
+    if pending_requests > 0:
+        return _wizard_action("preview_amendment", "Preview amendment")
+    if _mapping(checks.get("policy.active")).get("status") != "pass":
+        return _wizard_action("preview_amendment", "Preview amendment")
+    return _wizard_action("anchor", "Review policy", target="#policySection")
+
+
+def _wizard_final_status(readiness_gate: Mapping[str, Any]) -> str:
+    decision = readiness_gate.get("decision")
+    if decision == "ready":
+        return "pass"
+    if decision == "blocked":
+        return "fail"
+    return "warn"
+
+
+def _wizard_final_message(readiness_gate: Mapping[str, Any]) -> str:
+    if readiness_gate.get("decision") == "ready":
+        return "Share is ready; capture the report and client commands before handing out the URL."
+    return str(readiness_gate.get("label") or "Share needs review before handing out the URL.")
+
+
+def _wizard_final_action(readiness_gate: Mapping[str, Any]) -> dict[str, Any]:
+    if readiness_gate.get("decision") == "ready":
+        return _wizard_action("download_report", "Download report")
+    return _wizard_action("run_doctor", "Run doctor")
+
+
+def _first_command(value: Any) -> str | None:
+    for item in _sequence(value):
+        if isinstance(item, str) and item.strip():
+            return item
+    return None
+
+
 def _add_readiness_check(
     checks: list[dict[str, Any]],
     check_id: str,
@@ -2430,6 +2727,78 @@ def _console_html() -> str:
       gap: 16px;
       align-items: start;
     }
+    .wizard-overview {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfd;
+    }
+    .wizard-grid {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .wizard-step {
+      min-height: 160px;
+      display: grid;
+      gap: 10px;
+      align-content: start;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fff;
+    }
+    .wizard-step.active {
+      border-color: #9ec2df;
+      box-shadow: 0 0 0 2px rgba(33, 102, 165, 0.08);
+    }
+    .wizard-step-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .wizard-index {
+      width: 26px;
+      height: 26px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      color: var(--muted);
+      font-weight: 720;
+      background: #fbfcfd;
+    }
+    .wizard-title {
+      font-weight: 720;
+    }
+    .wizard-action {
+      align-self: end;
+      margin-top: auto;
+    }
+    .button-link {
+      min-height: 34px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 0 12px;
+      background: var(--surface);
+      color: var(--text);
+      font-weight: 400;
+      text-decoration: none;
+    }
+    .button-link:hover {
+      border-color: #9ec2df;
+      color: var(--blue);
+      text-decoration: none;
+    }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -2636,8 +3005,11 @@ def _console_html() -> str:
       .metrics {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
-      .grid-two, .overview-grid, .topbar {
+      .grid-two, .overview-grid, .topbar, .wizard-overview {
         grid-template-columns: 1fr;
+      }
+      .wizard-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
       }
       .toolbar {
         justify-content: flex-start;
@@ -2655,6 +3027,9 @@ def _console_html() -> str:
         width: 100%;
       }
       .metrics {
+        grid-template-columns: 1fr;
+      }
+      .wizard-grid {
         grid-template-columns: 1fr;
       }
       .section-body {
@@ -2693,7 +3068,7 @@ def _console_html() -> str:
             <label class="auto"><input id="autoRefresh" type="checkbox" checked> Auto refresh</label>
             <button id="refreshButton" class="primary" type="button">Refresh</button>
           </div>
-          <div class="toolbar-group" aria-label="Session actions">
+          <div id="sessionActions" class="toolbar-group" aria-label="Session actions">
             <button id="doctorButton" type="button">Run Doctor</button>
             <button id="amendPreviewButton" type="button">Preview Amendment</button>
             <button id="reportButton" type="button">Download Report</button>
@@ -2701,6 +3076,7 @@ def _console_html() -> str:
         </div>
       </div>
       <nav class="section-nav" aria-label="Console sections">
+        <a id="setupNavLink" href="#setupSection" hidden>Setup</a>
         <a href="#readinessSection">Readiness</a>
         <a href="#policySection">Policy</a>
         <a href="#providerSection">Provider</a>
@@ -2716,6 +3092,10 @@ def _console_html() -> str:
     <main>
       <div id="message" class="message" aria-live="polite"></div>
       <div class="metrics" id="metrics"></div>
+      <section id="setupSection" hidden>
+        <div class="section-head"><h2>Share Setup</h2><span id="wizardSummary" class="muted"></span></div>
+        <div class="section-body" id="setupWizard"></div>
+      </section>
       <section id="readinessSection">
         <div class="section-head"><h2>Share Readiness</h2><span id="readinessSummary" class="muted"></span></div>
         <div class="section-body" id="shareReadiness"></div>
@@ -2802,6 +3182,26 @@ def _console_html() -> str:
       "#doctorChecks",
       "#amendPreview",
       "#requestDrawer .drawer-body"
+    ];
+    const baseSectionIds = [
+      "readinessSection",
+      "policySection",
+      "providerSection",
+      "healthSection",
+      "decisionsSection",
+      "requestsSection",
+      "leasesSection",
+      "authSection",
+      "schemaSection",
+      "riskSection",
+      "findingsSection",
+      "evidenceSection"
+    ];
+    const transientPanelIds = [
+      "doctorPanel",
+      "amendPreviewPanel",
+      "leasePanel",
+      "reportPanel"
     ];
     const $ = (id) => document.getElementById(id);
 
@@ -2899,6 +3299,12 @@ def _console_html() -> str:
       const snapshot = state.snapshot || {};
       const status = snapshot.status || {};
       $("sharePath").textContent = text(snapshot.share || status.directory);
+      const setupOnly = snapshot.mode === "setup";
+      setSetupMode(setupOnly);
+      if (setupOnly) {
+        renderSetupWizard(snapshot.setup_wizard || {});
+        return;
+      }
       renderMetrics(status, snapshot.readiness_gate || {});
       renderReadinessGate(snapshot.readiness_gate || {});
       renderPolicyVisibility(snapshot.policy_visibility || {});
@@ -2913,6 +3319,79 @@ def _console_html() -> str:
       renderToolRisk(status);
       renderFindings(status);
       renderEvidence(status);
+    }
+
+    function setSetupMode(enabled) {
+      $("setupSection").hidden = !enabled;
+      $("setupNavLink").hidden = !enabled;
+      $("metrics").hidden = enabled;
+      $("sessionActions").hidden = enabled;
+      baseSectionIds.forEach((id) => {
+        const element = $(id);
+        if (element) element.hidden = enabled;
+      });
+      if (enabled) {
+        transientPanelIds.forEach((id) => {
+          const element = $(id);
+          if (element) element.hidden = true;
+        });
+      }
+    }
+
+    function renderSetupWizard(payload) {
+      const steps = payload.steps || [];
+      const next = payload.next_step || {};
+      $("wizardSummary").textContent =
+        `${payload.completed || 0}/${payload.total || steps.length || 0} complete · ${payload.label || "Share setup"}`;
+      if (!steps.length) {
+        $("setupWizard").innerHTML = '<div class="empty">No setup data available.</div>';
+        return;
+      }
+      const nextAction = (next.primary_action || {}).label || "Review setup";
+      const overview = `<div class="wizard-overview">
+        <div>
+          <div class="timeline-target">${esc(next.label || payload.label || "Share setup")}</div>
+          <div class="timeline-detail">${esc(next.message || payload.label || "")}</div>
+        </div>
+        <div>${wizardActionHtml(next.primary_action || {
+          kind: "anchor",
+          label: nextAction,
+          target: "#readinessSection"
+        })}</div>
+      </div>`;
+      const cards = `<div class="wizard-grid">${steps.map((step) => (
+        `<div class="wizard-step ${esc(step.status || "unknown")}${step.active ? " active" : ""}">
+          <div class="wizard-step-head">
+            <span class="wizard-index">${esc(step.index || "")}</span>
+            ${pill(step.status || "unknown")}
+          </div>
+          <div class="wizard-title">${esc(step.label || "-")}</div>
+          <div class="timeline-detail">${esc(step.message || "")}</div>
+          <div class="wizard-action">${wizardActionHtml(step.primary_action || {})}</div>
+        </div>`
+      )).join("")}</div>`;
+      $("setupWizard").innerHTML = `<div class="stack">${overview}${cards}</div>`;
+    }
+
+    function wizardActionHtml(action) {
+      const label = action.label || "Review";
+      if (action.kind === "run_doctor") {
+        return `<button type="button" class="primary" onclick="runDoctor()">${esc(label)}</button>`;
+      }
+      if (action.kind === "preview_amendment") {
+        return `<button type="button" onclick="previewAmendment()">${esc(label)}</button>`;
+      }
+      if (action.kind === "download_report") {
+        return `<button type="button" onclick="downloadReport()">${esc(label)}</button>`;
+      }
+      if (action.kind === "copy_command") {
+        return `<button type="button" data-command="${esc(action.command || "")}" ` +
+          `onclick="copyWizardCommand(this)">${esc(label)}</button>`;
+      }
+      if (action.kind === "anchor") {
+        return `<a class="button-link" href="${esc(action.target || "#readinessSection")}">${esc(label)}</a>`;
+      }
+      return `<a class="button-link" href="#readinessSection">${esc(label)}</a>`;
     }
 
     function renderMetrics(status, readiness) {
@@ -4024,6 +4503,18 @@ def _console_html() -> str:
         $("message").textContent = "Copied readiness attestation";
       } catch (error) {
         $("message").textContent = `Copy failed: ${error.message}`;
+      }
+    }
+
+    async function copyWizardCommand(element) {
+      const command = (element && element.dataset && element.dataset.command) || "";
+      if (!command) return;
+      try {
+        if (!navigator.clipboard) throw new Error("clipboard unavailable");
+        await navigator.clipboard.writeText(command);
+        $("message").textContent = "Copied command";
+      } catch (error) {
+        $("message").textContent = command;
       }
     }
 
