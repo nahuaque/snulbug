@@ -521,6 +521,7 @@ class ShareConsoleServer:
                     self.directory,
                     recipient=_string_or_none(body.get("recipient")) or "share recipient",
                     task=_string_or_none(body.get("task")) or "Temporary MCP access",
+                    capabilities=_string_list(body.get("capabilities")),
                     allow_tools=_string_list(body.get("allow_tools")),
                     allow_paths=_string_list(body.get("allow_paths")),
                     allow_hosts=_string_list(body.get("allow_hosts")),
@@ -2948,20 +2949,35 @@ def _share_readiness_digest_payload(payload: Mapping[str, Any]) -> dict[str, Any
     auth = dict(_mapping(payload.get("auth")))
     auth.pop("denials", None)
     tools = _mapping(payload.get("tools"))
+    leases = dict(_mapping(payload.get("leases")))
+    leases.pop("active_count", None)
+    leases.pop("active_invite_count", None)
+    volatile_non_failing_checks = {
+        "gateway.reachable",
+        "leases.active",
+        "tunnel.doctor",
+        "upstreams.reachable",
+    }
+    checks = [
+        _mapping(check)
+        for check in _sequence(payload.get("checks"))
+        if isinstance(check, Mapping)
+        and not (check.get("id") in volatile_non_failing_checks and check.get("status") != "fail")
+    ]
     return _drop_empty(
         {
             "schema": payload.get("schema"),
             "share": payload.get("share"),
             "decision": payload.get("decision"),
             "label": payload.get("label"),
-            "summary": payload.get("summary"),
+            "summary": _readiness_summary(checks),
             "session": payload.get("session"),
             "auth": auth,
-            "leases": payload.get("leases"),
+            "leases": leases,
             "policy": payload.get("policy"),
             "contract": payload.get("contract"),
             "tools": {"schemas": tools.get("schemas")},
-            "checks": payload.get("checks"),
+            "checks": checks,
         }
     )
 
@@ -5374,6 +5390,9 @@ def _console_html() -> str:
       const status = lease.active ? "active" : "inactive";
       const tools = listText(lease.allow_tools);
       const paths = listText(lease.allow_paths);
+      const capabilities = listText(lease.capabilities);
+      const accessValue = capabilities || tools || "-";
+      const accessDetail = capabilities ? "temporary capability labels" : (paths ? `paths ${paths}` : "");
       const lastUsed = lease.last_used_at ? `last used ${shortDateTime(lease.last_used_at)}` : "";
       return `<div class="lease-card ${esc(status)}">
         <div class="lease-card-head">
@@ -5385,7 +5404,7 @@ def _console_html() -> str:
         </div>
         <div class="lease-meta">
           ${leaseMeta("Subject", leaseSubject(lease), leaseAuthDetail(lease))}
-          ${leaseMeta("Allowed tools", tools || "-", paths ? `paths ${paths}` : "")}
+          ${leaseMeta(capabilities ? "Capabilities" : "Allowed tools", accessValue, accessDetail)}
           ${leaseMeta("Expiry", shortDateTime(lease.expires_at), lastUsed)}
           ${leaseMeta("Remaining", remainingCalls(lease), lease.last_tool || "")}
         </div>
@@ -5466,35 +5485,15 @@ def _console_html() -> str:
           ${setupField("invite-create-client-name", "Client name", "snulbug-share")}
           ${setupField("invite-create-task", "Task", "Temporary MCP access", "wide")}
           ${setupField(
-            "invite-create-tools",
-            "Allowed tools",
-            "safe_read_file",
-            "",
-            "MCP tool names this recipient may call. Use commas for multiple tools."
-          )}
-          ${setupField(
-            "invite-create-paths",
-            "Allowed paths",
-            ".",
-            "",
-            "Path-like tool arguments must stay under these files or directories. Use . for the current project."
+            "invite-create-capabilities",
+            "Capability labels",
+            "project_readonly",
+            "wide",
+            "Short-lived capability labels for Lua policy, for example project_readonly or docs_review. "
+              + "Use commas for multiple labels."
           )}
           ${setupField("invite-create-ttl", "TTL", "30m")}
           ${setupField("invite-create-calls", "Max calls", "")}
-          ${setupField(
-            "invite-create-hosts",
-            "Allowed hosts",
-            "",
-            "",
-            "URL-like tool arguments may only target these hostnames. Leave blank when no network targets are expected."
-          )}
-          ${setupField(
-            "invite-create-commands",
-            "Allowed commands",
-            "",
-            "wide",
-            "Command-like tool arguments may only name these executables or subcommands. Leave blank unless expected."
-          )}
         </div>
         <div class="review-actions">
           <button type="button" class="primary" onclick="createInvite()" ${inviteDisabled ? "disabled" : ""}>
@@ -5590,6 +5589,8 @@ def _console_html() -> str:
       const status = revoked ? "revoked" : "active";
       const tools = listText(invite.allow_tools);
       const paths = listText(invite.allow_paths);
+      const capabilities = listText(invite.capabilities);
+      const capabilityDetail = capabilities ? "interpreted by Lua policy" : (paths ? `paths ${paths}` : "");
       const taskDetail = `client ${invite.client_name || "snulbug-share"}`;
       const expiryDetail = revoked ? `revoked ${shortDateTime(invite.revoked_at)}` : "";
       const hasSetup = !revoked && invite.setup_available === true && Boolean(invite.setup_snippets);
@@ -5630,7 +5631,7 @@ def _console_html() -> str:
         </div>
         <div class="lease-meta">
           ${leaseMeta("Task", invite.task || "Temporary MCP access", taskDetail)}
-          ${leaseMeta("Allowed tools", tools || "-", paths ? `paths ${paths}` : "")}
+          ${leaseMeta("Capabilities", capabilities || tools || "-", capabilityDetail)}
           ${leaseMeta("Expiry", shortDateTime(invite.expires_at), expiryDetail)}
           ${leaseMeta("Backing lease", invite.lease_id || "-", invite.lease_header || "")}
         </div>
@@ -6393,10 +6394,7 @@ def _console_html() -> str:
             recipient: setupInputValue("invite-create-recipient"),
             client_name: setupInputValue("invite-create-client-name"),
             task: setupInputValue("invite-create-task"),
-            allow_tools: setupInputValue("invite-create-tools"),
-            allow_paths: setupInputValue("invite-create-paths"),
-            allow_hosts: setupInputValue("invite-create-hosts"),
-            allow_commands: setupInputValue("invite-create-commands"),
+            capabilities: setupInputValue("invite-create-capabilities"),
             ttl: setupInputValue("invite-create-ttl") || "30m",
             max_calls: setupInputValue("invite-create-calls"),
             live_checks: Boolean(state.liveHealthReadiness)

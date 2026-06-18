@@ -242,8 +242,7 @@ def test_mcp_share_invite_create_list_and_revoke_redacts_stored_snippets(tmp_pat
         tmp_path,
         recipient="frontend agent",
         task="Read project docs",
-        allow_tools=["safe_read_file"],
-        allow_paths=["README.md"],
+        capabilities=["project_readonly"],
         ttl="10m",
         max_calls=2,
     )
@@ -261,7 +260,12 @@ def test_mcp_share_invite_create_list_and_revoke_redacts_stored_snippets(tmp_pat
         "id": created["invite"]["id"],
         "recipient": "frontend agent",
         "client_name": "snulbug-share",
+        "capabilities": ["project_readonly"],
     }
+    assert created["invite"]["capabilities"] == ["project_readonly"]
+    assert "allow_tools" not in created["invite"]
+    assert created["lease"]["capabilities"] == ["project_readonly"]
+    assert created["lease"]["allow_tools"] == ["*"]
     assert created["headers"]["Authorization"] == "Bearer share-secret"
     assert created["headers"]["x-snulbug-lease"].startswith("sbl_")
     assert created["bearer_token"] == "share-secret"

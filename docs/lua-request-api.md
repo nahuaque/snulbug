@@ -576,6 +576,7 @@ return function(request, context)
   return decision.allow("mcp.allowed", {
     lease_id = lease.id(),
     lease_task = lease.task(),
+    lease_capabilities = lease.capabilities(),
   })
 end
 ```
@@ -590,6 +591,9 @@ Available helpers:
   the current `tools/call`.
 - `lease.id()`: return the matched lease id.
 - `lease.task()`: return the matched lease task label.
+- `lease.capabilities()`: return temporary capability labels attached to the
+  lease, such as `project_readonly` or `docs_review`.
+- `lease.has_capability(name)`: true when the active lease includes that label.
 - `lease.reason_code()`: return the lease denial reason, such as
   `lease.missing`, `lease.path_not_allowed`, or
   `lease.subject_not_allowed`.

@@ -881,6 +881,31 @@ def test_auth_and_lease_guards_delegate_to_standard_access_builders():
     assert lease_decision["body"] == "task lease expired"
 
 
+def test_lease_capability_helpers_read_temporary_labels():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return {
+            action = lease.has_capability("project_readonly") and "continue" or "reject",
+            reason_code = "test.lease_capability",
+            context = {
+              first_capability = lease.capabilities()[1],
+              missing = lease.has_capability("write_project")
+            }
+          }
+        end
+        """
+    )
+
+    decision = script.decide({"body": "{}"}, {"lease": {"capabilities": ["project_readonly"]}})
+
+    assert decision["action"] == "continue"
+    assert decision["context"] == {
+        "first_capability": "project_readonly",
+        "missing": False,
+    }
+
+
 def test_provider_aware_auth_helpers_read_normalized_claims():
     script = compile_lua_script(
         """

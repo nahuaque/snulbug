@@ -738,7 +738,10 @@ lease_header = "x-snulbug-lease"
 
 When a lease file is configured, Lua receives a non-consuming preview as
 `context.lease` and can use helpers such as `lease.require()`, `lease.id()`, and
-`lease.task()`. The proxy still performs the final lease check and only consumes
+`lease.task()`. Share invites can attach temporary capability labels, exposed as
+`lease.capabilities()` and `lease.has_capability("project_readonly")`, so policy
+can interpret a human-readable grant without duplicating path or tool rules in
+the invite itself. The proxy still performs the final lease check and only consumes
 a lease use when the request reaches the upstream. For auth-bound leases,
 `context.lease.auth_bound` is true and `context.lease.auth` contains the matched
 sanitized OAuth identity fields.

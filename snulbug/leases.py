@@ -47,6 +47,7 @@ def create_lease(
     *,
     task: str,
     allow_tools: Sequence[str],
+    capabilities: Sequence[str] = (),
     allow_paths: Sequence[str] = (),
     allow_hosts: Sequence[str] = (),
     allow_commands: Sequence[str] = (),
@@ -79,6 +80,7 @@ def create_lease(
         "expires_at": _format_time(now + timedelta(seconds=_parse_ttl(ttl))),
         "revoked_at": None,
         "token_hash": _token_hash(lease_token),
+        "capabilities": _dedupe(capabilities),
         "allow_tools": _dedupe(allow_tools),
         "allow_paths": _dedupe(allow_paths),
         "allow_hosts": _dedupe(host.lower() for host in allow_hosts),
@@ -275,6 +277,7 @@ def preview_mcp_lease_catalog(
             "use_count": int(lease.get("use_count") or 0),
             "max_calls": lease.get("max_calls"),
             **({"invite": invite_metadata} if invite_metadata else {}),
+            "capabilities": list(lease.get("capabilities", [])),
             "allow_tools": list(lease.get("allow_tools", [])),
             **_lease_auth_metadata(lease, auth_context),
         }
@@ -348,6 +351,7 @@ def _evaluate_mcp_lease_policy(
             "use_count": int(lease.get("use_count") or 0),
             "max_calls": lease.get("max_calls"),
             **({"invite": invite_metadata} if invite_metadata else {}),
+            "capabilities": list(lease.get("capabilities", [])),
             **_lease_auth_metadata(lease, auth_context),
         }
     )
@@ -604,6 +608,7 @@ def _lease_view(lease: Mapping[str, Any]) -> dict[str, Any]:
         "created_at": lease.get("created_at"),
         "expires_at": lease.get("expires_at"),
         "revoked_at": lease.get("revoked_at"),
+        "capabilities": list(lease.get("capabilities", [])),
         "allow_tools": list(lease.get("allow_tools", [])),
         "allow_paths": list(lease.get("allow_paths", [])),
         "allow_hosts": list(lease.get("allow_hosts", [])),
@@ -665,6 +670,7 @@ def _lease_invite_metadata(value: Any) -> dict[str, Any]:
             "id": invite.get("id"),
             "recipient": invite.get("recipient"),
             "client_name": invite.get("client_name"),
+            "capabilities": _string_list(invite.get("capabilities")),
         }
     )
 

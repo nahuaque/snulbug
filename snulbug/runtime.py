@@ -1345,6 +1345,26 @@ return function(source, source_name, instruction_limit)
     return current_lease.task
   end
 
+  function lease.capabilities()
+    if type(current_lease.capabilities) == "table" then
+      return current_lease.capabilities
+    end
+    return {}
+  end
+
+  function lease.has_capability(name)
+    if type(name) ~= "string" then
+      return false
+    end
+    local capabilities = lease.capabilities()
+    for _, capability in ipairs(capabilities) do
+      if capability == name then
+        return true
+      end
+    end
+    return false
+  end
+
   function lease.reason_code()
     return current_lease.reason_code
   end

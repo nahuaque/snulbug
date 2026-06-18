@@ -67,6 +67,7 @@ DEFAULT_SHARE_TTL = "30m"
 DEFAULT_SHARE_DIR = Path(".snulbug") / "shares"
 DEFAULT_SHARE_CLIENT_NAME = "snulbug-share"
 DEFAULT_SHARE_TOKEN_ENV = "SNULBUG_SHARE_TOKEN"
+DEFAULT_SHARE_INVITE_CAPABILITIES = ("project_readonly",)
 DEFAULT_CONTAINER_RECIPE_DIR = "containers"
 SHARE_MANIFEST = "share.json"
 CONTAINER_BIND_HOST = ".".join(("0", "0", "0", "0"))
@@ -1003,7 +1004,8 @@ def create_mcp_share_lease(
     directory: str | Path = ".",
     *,
     task: str,
-    allow_tools: Sequence[str],
+    allow_tools: Sequence[str] = (),
+    capabilities: Sequence[str] = (),
     allow_paths: Sequence[str] = (),
     allow_hosts: Sequence[str] = (),
     allow_commands: Sequence[str] = (),
@@ -1018,10 +1020,15 @@ def create_mcp_share_lease(
     share_dir, manifest, session_model = _load_share_model_context(directory)
     lease_file = _share_capability_lease_file(share_dir, session_model, manifest)
     lease_header = _share_capability_lease_header(session_model, manifest)
+    capability_labels = _string_list(capabilities)
+    lease_allow_tools = _string_list(allow_tools)
+    if capability_labels and not lease_allow_tools:
+        lease_allow_tools = ["*"]
     lease = create_lease(
         lease_file,
         task=task,
-        allow_tools=allow_tools,
+        allow_tools=lease_allow_tools,
+        capabilities=capability_labels,
         allow_paths=allow_paths,
         allow_hosts=allow_hosts,
         allow_commands=allow_commands,
@@ -1066,7 +1073,8 @@ def create_mcp_share_invite(
     *,
     recipient: str,
     task: str,
-    allow_tools: Sequence[str],
+    allow_tools: Sequence[str] = (),
+    capabilities: Sequence[str] = (),
     allow_paths: Sequence[str] = (),
     allow_hosts: Sequence[str] = (),
     allow_commands: Sequence[str] = (),
@@ -1086,10 +1094,16 @@ def create_mcp_share_invite(
     auth_header, auth_value, bearer_token = _share_client_bearer_token(manifest)
     invite_id = _new_share_invite_id()
     effective_client_name = client_name or str(client.get("name") or DEFAULT_SHARE_CLIENT_NAME)
+    capability_labels = _string_list(capabilities)
+    requested_allow_tools = _string_list(allow_tools)
+    if not capability_labels and not requested_allow_tools:
+        capability_labels = list(DEFAULT_SHARE_INVITE_CAPABILITIES)
+    lease_allow_tools = requested_allow_tools or (["*"] if capability_labels else [])
     lease_result = create_mcp_share_lease(
         share_dir,
         task=task,
-        allow_tools=allow_tools,
+        allow_tools=lease_allow_tools,
+        capabilities=capability_labels,
         allow_paths=allow_paths,
         allow_hosts=allow_hosts,
         allow_commands=allow_commands,
@@ -1099,6 +1113,7 @@ def create_mcp_share_invite(
             "id": invite_id,
             "recipient": recipient,
             "client_name": effective_client_name,
+            "capabilities": capability_labels,
         },
     )
     lease = _mapping(lease_result.get("lease"))
@@ -1136,7 +1151,8 @@ def create_mcp_share_invite(
             "auth_mode": "bearer",
             "lease_id": lease.get("id"),
             "lease_header": lease_header,
-            "allow_tools": list(allow_tools),
+            "capabilities": capability_labels,
+            "allow_tools": requested_allow_tools,
             "allow_paths": list(allow_paths),
             "allow_hosts": list(allow_hosts),
             "allow_commands": list(allow_commands),

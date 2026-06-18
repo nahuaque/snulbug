@@ -14,6 +14,7 @@ def test_create_lease_stores_only_token_hash_and_lists_without_secret(tmp_path):
         lease_file,
         task="Update README only",
         allow_tools=["files.read_file", "files.write_file"],
+        capabilities=["project_readonly"],
         allow_paths=["README.md"],
         ttl="30m",
         token="sbl_test-token",
@@ -24,8 +25,10 @@ def test_create_lease_stores_only_token_hash_and_lists_without_secret(tmp_path):
     assert result["ok"] is True
     assert result["token"] == "sbl_test-token"
     assert raw["leases"][0]["token_hash"].startswith("sha256:")
+    assert raw["leases"][0]["capabilities"] == ["project_readonly"]
     assert "sbl_test-token" not in lease_file.read_text(encoding="utf-8")
     assert listed["leases"][0]["task"] == "Update README only"
+    assert listed["leases"][0]["capabilities"] == ["project_readonly"]
     assert "token" not in listed["leases"][0]
 
 
@@ -43,6 +46,7 @@ def test_invite_backed_lease_exposes_recipient_metadata_without_secrets(tmp_path
             "id": "invite_frontend",
             "recipient": "frontend agent",
             "client_name": "codex",
+            "capabilities": ["project_readonly"],
             "lease_token": "should-not-be-stored",
         },
     )
@@ -56,7 +60,12 @@ def test_invite_backed_lease_exposes_recipient_metadata_without_secrets(tmp_path
     listed = list_leases(lease_file)
     raw = json.loads(lease_file.read_text(encoding="utf-8"))
 
-    expected_invite = {"id": "invite_frontend", "recipient": "frontend agent", "client_name": "codex"}
+    expected_invite = {
+        "id": "invite_frontend",
+        "recipient": "frontend agent",
+        "client_name": "codex",
+        "capabilities": ["project_readonly"],
+    }
     assert created["lease"]["invite"] == expected_invite
     assert listed["leases"][0]["invite"] == expected_invite
     assert raw["leases"][0]["invite"] == expected_invite

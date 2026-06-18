@@ -601,6 +601,7 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                     args.directory,
                     recipient=args.recipient,
                     task=args.task,
+                    capabilities=args.capability,
                     allow_tools=args.allow_tool,
                     allow_paths=args.allow_path,
                     allow_hosts=args.allow_host,
@@ -1373,7 +1374,13 @@ def _add_share_invite_args(parser: argparse.ArgumentParser) -> None:
     invite_create.add_argument("directory", type=Path, help="share session directory")
     invite_create.add_argument("--recipient", required=True, help="human-readable recipient or client label")
     invite_create.add_argument("--task", required=True, help="human-readable task this invite grants")
-    invite_create.add_argument("--allow-tool", action="append", required=True, help="allowed MCP tool name")
+    invite_create.add_argument(
+        "--capability",
+        action="append",
+        default=[],
+        help="temporary capability label interpreted by Lua policy, such as project_readonly",
+    )
+    invite_create.add_argument("--allow-tool", action="append", default=[], help="low-level allowed MCP tool name")
     add_allow_path_arg(invite_create, help="allowed path or path prefix")
     invite_create.add_argument("--allow-host", action="append", default=[], help="allowed URL host")
     invite_create.add_argument("--allow-command", action="append", default=[], help="allowed command name")

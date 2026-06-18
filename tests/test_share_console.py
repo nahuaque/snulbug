@@ -123,8 +123,7 @@ def test_share_readiness_active_invite_satisfies_handoff_grant(tmp_path):
         tmp_path,
         recipient="agent",
         task="Read docs",
-        allow_tools=["safe_read_file"],
-        allow_paths=["README.md"],
+        capabilities=["project_readonly"],
     )
     snapshot = build_share_console_snapshot(tmp_path)
     readiness = snapshot["readiness_gate"]
@@ -449,8 +448,7 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
                 {
                     "recipient": "agent",
                     "task": "Read docs",
-                    "allow_tools": "safe_read_file",
-                    "allow_paths": "README.md",
+                    "capabilities": "project_readonly",
                 },
             )
         invite_created = post_json(
@@ -458,8 +456,7 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
             {
                 "recipient": "agent",
                 "task": "Read docs",
-                "allow_tools": "safe_read_file",
-                "allow_paths": "README.md",
+                "capabilities": "project_readonly,docs_review",
                 "ttl": "8m",
                 "max_calls": 2,
             },
@@ -622,9 +619,9 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "const metricStatus = state.liveHealthStatus || status;" in html
     assert "renderMetrics(metricStatus, readiness)" in html
     assert "renderMetrics(payload, state.liveHealthReadiness)" in html
-    assert "Path-like tool arguments must stay under these files or directories." in html
-    assert "URL-like tool arguments may only target these hostnames." in html
-    assert "Command-like tool arguments may only name these executables or subcommands." in html
+    assert "Capability labels" in html
+    assert "project_readonly" in html
+    assert "Short-lived capability labels for Lua policy" in html
     assert "public tunnel" in html
     assert "snulbug gateway" in html
     assert "Upstream MCP server behind snulbug" in html
@@ -651,6 +648,10 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "sbl_" not in json.dumps(snapshot)
     assert forbidden.value.code == 403
     assert invite_created["ok"] is True
+    assert invite_created["invite"]["capabilities"] == ["project_readonly", "docs_review"]
+    assert "allow_tools" not in invite_created["invite"]
+    assert invite_created["lease"]["capabilities"] == ["project_readonly", "docs_review"]
+    assert invite_created["lease"]["allow_tools"] == ["*"]
     assert invite_created["headers"]["Authorization"] == "Bearer share-secret"
     assert invite_created["headers"]["x-snulbug-lease"].startswith("sbl_")
     assert invite_created["setup_snippets"]["env"]["SNULBUG_BEARER_TOKEN"] == "share-secret"
@@ -974,6 +975,67 @@ def test_share_console_marks_readiness_reviewed(tmp_path, monkeypatch):
     assert review["reviewer"] == "ui-test"
     assert review["review_digest"] == readiness["review_digest"]
     assert "share-secret" not in json.dumps(result)
+
+
+def test_share_console_readiness_review_survives_invite_creation(tmp_path, monkeypatch):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    for lease in list_leases(tmp_path / "leases.json")["leases"]:
+        revoke_lease(tmp_path / "leases.json", lease["id"])
+
+    def fake_probe(url, *, headers, timeout):
+        return {"reachable": True, "status": 200, "error": None, "mcp_ok": True}
+
+    monkeypatch.setattr("snulbug.share._probe_mcp_url", fake_probe)
+    server = ShareConsoleServer(directory=tmp_path, port=0, live_checks=False)
+    server.start()
+    try:
+        snapshot = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
+        readiness = snapshot["readiness_gate"]
+        reviewed = post_json(
+            f"{server.url}/api/readiness/review",
+            {
+                "review_digest": readiness["review_digest"],
+                "reviewer": "ui-test",
+                "live_checks": True,
+            },
+            headers=console_headers(server),
+        )
+        created = post_json(
+            f"{server.url}/api/invites/create",
+            {
+                "recipient": "agent",
+                "task": "Read docs",
+                "capabilities": "project_readonly",
+            },
+            headers=console_headers(server),
+        )
+        after_live = post_json(f"{server.url}/api/health/check", {}, headers=console_headers(server))
+        after = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
+    finally:
+        server.stop()
+
+    before_lease_check = {check["id"]: check for check in readiness["checks"]}["leases.active"]
+    after_gate = after["readiness_gate"]
+    after_lease_check = {check["id"]: check for check in after_gate["checks"]}["leases.active"]
+
+    assert readiness["decision"] == "review"
+    assert before_lease_check["status"] == "warn"
+    assert reviewed["readiness_gate"]["decision"] == "ready"
+    assert created["ok"] is True
+    assert after_lease_check["status"] == "pass"
+    assert after_lease_check["details"]["active_invite_count"] == 1
+    assert after_gate["reviewed"] is True
+    assert after_gate["decision"] == "ready"
+    assert after_gate["review"]["review_digest"] == readiness["review_digest"]
+    assert after_live["readiness_gate"]["reviewed"] is True
+    assert after_live["readiness_gate"]["decision"] == "ready"
 
 
 def test_share_console_bearer_token_copy_requires_console_secret(tmp_path):

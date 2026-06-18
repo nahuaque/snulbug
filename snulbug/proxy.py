@@ -2850,6 +2850,7 @@ def _lease_context_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
             "expires_at": metadata.get("expires_at"),
             "use_count": metadata.get("use_count"),
             "max_calls": metadata.get("max_calls"),
+            "capabilities": metadata.get("capabilities"),
             "last_used_at": metadata.get("last_used_at"),
             "tool": metadata.get("tool"),
             "path": metadata.get("path"),
