@@ -165,6 +165,7 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     try:
         html = read_text(f"{server.url}/")
         snapshot = read_json(f"{server.url}/api/snapshot")
+        report_body, report_headers = read_response(f"{server.url}/api/report/download")
         request_id = snapshot["capability_requests"]["requests"][0]["id"]
         approved = post_json(
             f"{server.url}/api/requests/{request_id}/approve",
@@ -181,6 +182,10 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "Tunnel Provider" in html
     assert "renderTunnelProvider" in html
     assert "providerCommandsTable" in html
+    assert "Download Report" in html
+    assert "/api/report/download" in html
+    assert "downloadReport" in html
+    assert "saveTextAsFile" in html
     assert "Active Leases" in html
     assert "renderLeases" in html
     assert "revokeLease" in html
@@ -203,6 +208,12 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert snapshot["ok"] is True
     assert "share-secret" not in json.dumps(snapshot)
     assert "sbl_" not in json.dumps(snapshot)
+    assert report_headers["content-type"].startswith("text/markdown")
+    assert report_headers["content-disposition"].startswith("attachment;")
+    assert report_headers["content-disposition"].endswith('report.md"')
+    assert "# snulbug MCP share report" in report_body
+    assert "share-secret" not in report_body
+    assert "Bearer " not in report_body
     assert approved["ok"] is True
     assert approved["headers"]["x-snulbug-lease"].startswith("sbl_")
     assert approved["review"]["reviewer"] == "ui"
@@ -524,6 +535,12 @@ def test_share_run_console_respects_no_console(tmp_path):
 def read_text(url: str) -> str:
     with urllib.request.urlopen(url, timeout=3) as response:  # noqa: S310 - local test server.
         return response.read().decode("utf-8")
+
+
+def read_response(url: str) -> tuple[str, dict[str, str]]:
+    with urllib.request.urlopen(url, timeout=3) as response:  # noqa: S310 - local test server.
+        headers = {key.lower(): value for key, value in response.headers.items()}
+        return response.read().decode("utf-8"), headers
 
 
 def read_json(url: str) -> dict[str, object]:

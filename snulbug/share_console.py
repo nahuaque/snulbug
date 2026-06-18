@@ -181,6 +181,16 @@ class ShareConsoleServer:
                     share_report(self.directory, timeout=self.timeout, live_checks=self.live_checks),
                 )
                 return
+            if path == "/api/report/download":
+                result = share_report(self.directory, timeout=self.timeout, live_checks=self.live_checks)
+                _send_download(
+                    handler,
+                    200,
+                    str(result.get("report") or ""),
+                    filename=_report_download_filename(self.directory),
+                    content_type="text/markdown; charset=utf-8",
+                )
+                return
             _send(handler, 404, b"not found\n", content_type="text/plain; charset=utf-8")
         except Exception as exc:
             _send_error(handler, exc)
@@ -294,6 +304,32 @@ def _send(handler: BaseHTTPRequestHandler, status: int, body: bytes, *, content_
     handler.send_header("content-length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def _send_download(
+    handler: BaseHTTPRequestHandler,
+    status: int,
+    text: str,
+    *,
+    filename: str,
+    content_type: str,
+) -> None:
+    body = text.encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("content-type", content_type)
+    handler.send_header("cache-control", "no-store")
+    handler.send_header("content-disposition", f'attachment; filename="{filename}"')
+    handler.send_header("x-content-type-options", "nosniff")
+    handler.send_header("content-length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def _report_download_filename(directory: str | Path) -> str:
+    raw = Path(directory).name or "share"
+    safe = "".join(char if char.isascii() and (char.isalnum() or char in "-_.") else "-" for char in raw)
+    safe = safe.strip(".-") or "share"
+    return f"snulbug-{safe}-report.md"
 
 
 def _read_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -1620,7 +1656,7 @@ def _console_html() -> str:
           <button id="refreshButton" class="primary" type="button">Refresh</button>
           <button id="doctorButton" type="button">Run Doctor</button>
           <button id="amendPreviewButton" type="button">Preview Amendment</button>
-          <button id="reportButton" type="button">Generate Report</button>
+          <button id="reportButton" type="button">Download Report</button>
         </div>
       </div>
     </header>
@@ -2578,14 +2614,42 @@ def _console_html() -> str:
       return Boolean(element.checked);
     }
 
-    async function generateReport() {
+    async function downloadReport() {
+      $("reportButton").disabled = true;
+      $("message").textContent = "Generating session report";
       try {
-        const payload = await api("/api/report");
-        $("reportOutput").textContent = payload.report || "";
+        const response = await fetch("/api/report/download", { headers: { "accept": "text/markdown" } });
+        const report = await response.text();
+        if (!response.ok) throw new Error(report || response.statusText);
+        const filename = reportFilename(response.headers.get("content-disposition"));
+        saveTextAsFile(report, filename);
+        $("reportOutput").textContent = report;
         $("reportPanel").hidden = false;
+        $("message").textContent = `Downloaded ${filename}`;
       } catch (error) {
-        $("message").textContent = `Report failed: ${error.message}`;
+        $("message").textContent = `Report download failed: ${error.message}`;
+      } finally {
+        $("reportButton").disabled = false;
       }
+    }
+
+    function reportFilename(disposition) {
+      const fallback = "snulbug-share-report.md";
+      if (!disposition) return fallback;
+      const match = disposition.match(/filename="?([^";]+)"?/i);
+      return match ? match[1] : fallback;
+    }
+
+    function saveTextAsFile(textValue, filename) {
+      const blob = new Blob([textValue], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
     }
 
     async function runDoctor() {
@@ -2718,7 +2782,7 @@ def _console_html() -> str:
     $("refreshButton").addEventListener("click", loadSnapshot);
     $("doctorButton").addEventListener("click", runDoctor);
     $("amendPreviewButton").addEventListener("click", previewAmendment);
-    $("reportButton").addEventListener("click", generateReport);
+    $("reportButton").addEventListener("click", downloadReport);
     $("autoRefresh").addEventListener("change", configureRefresh);
     configureRefresh();
     loadSnapshot();

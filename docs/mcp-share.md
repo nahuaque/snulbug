@@ -55,8 +55,10 @@ generate, and a tool/schema change panel with discovered tools, risk levels,
 pinned schema hashes, schema-catalog sources, and drift alerts. The dedicated
 tunnel-provider panel shows the provider, public/client URL, local origin, auth
 mode, generated run/provider/doctor/client/close commands, last tunnel doctor
-result, and local inspection console when one is known. Approving a capability
-request in the console creates the same task-scoped lease as
+result, local inspection console when one is known, and a one-click Markdown
+session report download using the same report generator as
+`snulbug mcp share report`. Approving a capability request in the console
+creates the same task-scoped lease as
 `share requests approve`; denying one records the same review state without
 minting a lease. When the tunnel provider has a known local inspection console,
 the provider panel includes a clickable local console row and probes whether it

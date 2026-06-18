@@ -138,7 +138,8 @@ JWKS cache health, audit logs, risk summary, findings, inline share doctor,
 policy amendment preview, a tool/schema change panel with discovered tools,
 risk levels, pinned schema hashes, and drift alerts, a tunnel-provider panel
 with public URL, local console, auth mode, generated commands, and last doctor
-result, and report generator used by the CLI. For providers with known local
+result, and one-click Markdown session report download using the same report
+generator as the CLI. For providers with known local
 inspection UIs, the provider panel includes a clickable local console row and
 probes whether it is reachable; ngrok appears as
 `http://127.0.0.1:4040`.
