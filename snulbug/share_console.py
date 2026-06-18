@@ -20,6 +20,7 @@ from .config import load_mcp_proxy_config
 from .redaction import SECRET_REPLACEMENT, build_audit_event
 from .share import (
     approve_share_capability_request,
+    create_mcp_share,
     deny_share_capability_request,
     doctor_mcp_share,
     preview_mcp_share_policy_amendment,
@@ -28,6 +29,7 @@ from .share import (
     share_report,
     share_status,
 )
+from .share_session import share_session_model_path
 
 DEFAULT_SHARE_CONSOLE_HOST = "127.0.0.1"
 DEFAULT_SHARE_CONSOLE_PORT = 8765
@@ -116,13 +118,92 @@ def build_share_setup_console_snapshot(directory: str | Path) -> dict[str, Any]:
     """Return the setup-only console state used before a share session exists."""
 
     share_dir = Path(directory)
+    existing_shares = _setup_existing_shares(share_dir)
     return {
         "ok": True,
         "mode": "setup",
         "generated_at": _now_iso(),
         "share": str(share_dir),
-        "setup_wizard": _redact_console_payload(_bootstrap_setup_wizard()),
+        "setup_defaults": _redact_console_payload(_setup_defaults()),
+        "existing_shares": _redact_console_payload(existing_shares),
+        "setup_wizard": _redact_console_payload(_bootstrap_setup_wizard(existing_shares)),
     }
+
+
+def _setup_defaults() -> dict[str, Any]:
+    return {
+        "directory": ".snulbug/share",
+        "provider": "generic",
+        "upstream": "http://127.0.0.1:9000",
+        "public_url": "http://127.0.0.1:8080/mcp",
+        "allowed_tools": "safe_read_file",
+        "allowed_paths": ".",
+        "host": "127.0.0.1",
+        "port": 8080,
+        "preset": "tunnel-safe",
+        "lease_required": True,
+        "validate": True,
+        "start_gateway": True,
+        "providers": [
+            {"name": name, "label": label}
+            for name, label in TUNNEL_PROVIDER_LABELS.items()
+            if name in {"generic", "ngrok", "cloudflare", "tailscale", "pinggy", "holepunch"}
+        ],
+    }
+
+
+def _setup_existing_shares(directory: str | Path) -> list[dict[str, Any]]:
+    base = Path(directory)
+    candidates: list[Path] = [base, base / ".snulbug" / "share"]
+    shares_root = base / ".snulbug" / "shares"
+    if shares_root.is_dir():
+        candidates.extend(path for path in sorted(shares_root.iterdir()) if path.is_dir())
+
+    seen: set[Path] = set()
+    shares: list[dict[str, Any]] = []
+    for candidate in candidates:
+        resolved = candidate.resolve(strict=False)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        summary = _setup_share_summary(base, candidate)
+        if summary:
+            shares.append(summary)
+    return shares
+
+
+def _setup_share_summary(base: Path, directory: Path) -> dict[str, Any] | None:
+    model_path = share_session_model_path(directory)
+    if not model_path.is_file():
+        return None
+    try:
+        model = json.loads(model_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        model = {}
+    share = _mapping(model.get("share"))
+    tunnel = _mapping(model.get("tunnel"))
+    client = _mapping(model.get("client"))
+    status = _mapping(model.get("status"))
+    paths = _mapping(model.get("paths"))
+    relative = _setup_relative_path(base, directory)
+    return {
+        "directory": str(directory),
+        "relative": relative,
+        "label": relative if relative not in {"", "."} else "current directory",
+        "state": status.get("state") or "created",
+        "provider": tunnel.get("provider") or "generic",
+        "public_url": client.get("url") or tunnel.get("public_url") or tunnel.get("client_url"),
+        "task": share.get("task"),
+        "config": paths.get("config"),
+        "session_model": str(model_path),
+    }
+
+
+def _setup_relative_path(base: Path, path: Path) -> str:
+    try:
+        return path.resolve(strict=False).relative_to(base.resolve(strict=False)).as_posix() or "."
+    except ValueError:
+        return str(path)
 
 
 def run_share_console(
@@ -167,6 +248,7 @@ class ShareConsoleServer:
     setup_only: bool = False
     _server: ThreadingHTTPServer | None = field(default=None, init=False, repr=False)
     _thread: threading.Thread | None = field(default=None, init=False, repr=False)
+    _run_requested: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
 
     @property
     def url(self) -> str:
@@ -217,6 +299,9 @@ class ShareConsoleServer:
         self._server.server_close()
         self._server = None
         self._thread = None
+
+    def wait_for_gateway_start(self, timeout: float | None = None) -> bool:
+        return self._run_requested.wait(timeout)
 
     def _handle_get(self, handler: BaseHTTPRequestHandler) -> None:
         parsed = urlsplit(handler.path)
@@ -271,6 +356,45 @@ class ShareConsoleServer:
         path = parsed.path
         try:
             body = _read_json_body(handler)
+            if path == "/api/setup/create-share":
+                share_dir, result = _create_share_from_setup(self.directory, body)
+                self.directory = share_dir
+                self.setup_only = False
+                start_gateway = _bool_or_default(body.get("start_gateway"), True)
+                if start_gateway:
+                    self._run_requested.set()
+                _send_json(
+                    handler,
+                    200,
+                    _redact_console_payload(
+                        {
+                            "ok": True,
+                            "share": str(share_dir),
+                            "run_requested": start_gateway,
+                            "result": result,
+                        }
+                    ),
+                )
+                return
+            if path == "/api/setup/select-share":
+                share_dir = _resolve_existing_setup_share_directory(self.directory, body.get("directory"))
+                self.directory = share_dir
+                self.setup_only = False
+                start_gateway = _bool_or_default(body.get("start_gateway"), True)
+                if start_gateway:
+                    self._run_requested.set()
+                _send_json(
+                    handler,
+                    200,
+                    _redact_console_payload(
+                        {
+                            "ok": True,
+                            "share": str(share_dir),
+                            "run_requested": start_gateway,
+                        }
+                    ),
+                )
+                return
             prefix = "/api/requests/"
             if path.startswith(prefix) and path.endswith("/approve"):
                 request_id = unquote(path[len(prefix) : -len("/approve")])
@@ -431,6 +555,57 @@ def _read_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
         raise ValueError("request body must be a JSON object")
     return dict(payload)
+
+
+def _create_share_from_setup(base_directory: str | Path, payload: Mapping[str, Any]) -> tuple[Path, dict[str, Any]]:
+    share_dir = _resolve_new_setup_share_directory(
+        base_directory,
+        _string_or_none(payload.get("directory")) or _setup_defaults()["directory"],
+    )
+    result = create_mcp_share(
+        share_dir,
+        provider=_string_or_none(payload.get("provider")) or "generic",
+        preset=_string_or_none(payload.get("preset")) or "tunnel-safe",
+        upstream=_string_or_none(payload.get("upstream")) or "http://127.0.0.1:9000",
+        public_url=_string_or_none(payload.get("public_url")),
+        token=_string_or_none(payload.get("token")),
+        task=_string_or_none(payload.get("task")) or "Ephemeral MCP share session",
+        ttl=_string_or_none(payload.get("ttl")) or "30m",
+        allowed_tools=_string_list(payload.get("allowed_tools")) or None,
+        allowed_paths=_string_list(payload.get("allowed_paths")) or None,
+        allowed_hosts=_string_list(payload.get("allowed_hosts")) or None,
+        allowed_commands=_string_list(payload.get("allowed_commands")) or None,
+        max_calls=_positive_int(payload.get("max_calls")),
+        host=_string_or_none(payload.get("host")) or "127.0.0.1",
+        port=_positive_int(payload.get("port")) or 8080,
+        state=_string_or_none(payload.get("state")) or "memory",
+        lease_required=_bool_or_default(payload.get("lease_required"), True),
+        force=bool(payload.get("force", False)),
+        validate=_bool_or_default(payload.get("validate"), True),
+    )
+    return share_dir, result
+
+
+def _resolve_new_setup_share_directory(base_directory: str | Path, value: str) -> Path:
+    base = Path(base_directory).resolve(strict=False)
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = base / candidate
+    resolved = candidate.resolve(strict=False)
+    if resolved != base and base not in resolved.parents:
+        raise ValueError("setup share directory must stay under the workspace")
+    return candidate
+
+
+def _resolve_existing_setup_share_directory(base_directory: str | Path, value: Any) -> Path:
+    raw = _string_or_none(value)
+    if raw is None:
+        raise ValueError("share directory is required")
+    candidate = _resolve_new_setup_share_directory(base_directory, raw)
+    model_path = share_session_model_path(candidate)
+    if not model_path.is_file():
+        raise FileNotFoundError(f"share session model not found: {model_path}")
+    return candidate
 
 
 def _first(values: Sequence[str] | None) -> str | None:
@@ -1891,47 +2066,31 @@ def _setup_wizard(
     }
 
 
-def _bootstrap_setup_wizard() -> dict[str, Any]:
+def _bootstrap_setup_wizard(existing_shares: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
+    create_message = "Create a share session from this browser, or select one already present in this workspace."
+    if existing_shares:
+        create_message = "Create a new share session, or start from one of the existing sessions listed above."
     steps = [
         _wizard_step(
-            "create_config",
-            "Create Config",
+            "create_share",
+            "Create Or Select Share",
             "warn",
-            "Write a starter snulbug.toml and policy bundle paths for this workspace.",
-            _wizard_action(
-                "copy_command",
-                "Copy config command",
-                command="uv run snulbug mcp share config init --output .snulbug/configs/snulbug.toml",
-            ),
-        ),
-        _wizard_step(
-            "create_policy",
-            "Create Policy",
-            "skip",
-            "Generate or edit the Lua policy bundle referenced by the config.",
-            _wizard_action(
-                "copy_command",
-                "Copy policy command",
-                command="uv run snulbug mcp policy preset local-dev-safe --output policy.snulbug",
-            ),
+            create_message,
+            _wizard_action("create_share", "Create share"),
         ),
         _wizard_step(
             "set_upstream",
             "Set Upstream",
             "skip",
-            "Edit the config so upstream or facade upstreams point at your local MCP server.",
-            _wizard_action("copy_command", "Copy edit command", command="${EDITOR:-vi} .snulbug/configs/snulbug.toml"),
+            "Point the share at your local MCP server or facade upstream.",
+            _wizard_action("create_share", "Edit setup form"),
         ),
         _wizard_step(
             "run_gateway",
             "Run Gateway",
             "skip",
-            "Start snulbug from the generated config after the upstream and policy are set.",
-            _wizard_action(
-                "copy_command",
-                "Copy run command",
-                command="uv run snulbug mcp share run --config .snulbug/configs/snulbug.toml",
-            ),
+            "Start the gateway directly from setup after creating or selecting a share.",
+            _wizard_action("create_share", "Create and run"),
         ),
         _wizard_step(
             "expose_tunnel",
@@ -1944,8 +2103,15 @@ def _bootstrap_setup_wizard() -> dict[str, Any]:
             "validate_share",
             "Validate Share",
             "skip",
-            "After a share session exists, run share doctor from that session console.",
-            _wizard_action("copy_command", "Copy status command", command="uv run snulbug mcp share status"),
+            "After the share is running, use share doctor from the console.",
+            _wizard_action("run_doctor", "Run doctor"),
+        ),
+        _wizard_step(
+            "review_report",
+            "Review Report",
+            "skip",
+            "Generate a session report once traffic has passed through the gateway.",
+            _wizard_action("download_report", "Download report"),
         ),
     ]
     for index, step in enumerate(steps):
@@ -2858,6 +3024,66 @@ def _console_html() -> str:
     .request-actions input {
       width: 100%;
     }
+    .setup-form {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcfd;
+    }
+    .field-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .form-field {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+    .form-field.wide {
+      grid-column: 1 / -1;
+    }
+    .form-field label,
+    .check-row label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 720;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+    .form-field input,
+    .form-field select {
+      width: 100%;
+    }
+    .check-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+    }
+    .check-row label {
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+      text-transform: none;
+    }
+    .setup-share-list {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #fff;
+    }
+    .setup-share-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .setup-share-row:last-child {
+      border-bottom: 0;
+    }
     .request-row {
       cursor: pointer;
     }
@@ -3004,6 +3230,10 @@ def _console_html() -> str:
     @media (max-width: 980px) {
       .metrics {
         grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .field-grid,
+      .setup-share-row {
+        grid-template-columns: 1fr;
       }
       .grid-two, .overview-grid, .topbar, .wizard-overview {
         grid-template-columns: 1fr;
@@ -3302,7 +3532,7 @@ def _console_html() -> str:
       const setupOnly = snapshot.mode === "setup";
       setSetupMode(setupOnly);
       if (setupOnly) {
-        renderSetupWizard(snapshot.setup_wizard || {});
+        renderSetupWizard(snapshot.setup_wizard || {}, snapshot);
         return;
       }
       renderMetrics(status, snapshot.readiness_gate || {});
@@ -3338,7 +3568,7 @@ def _console_html() -> str:
       }
     }
 
-    function renderSetupWizard(payload) {
+    function renderSetupWizard(payload, snapshot = {}) {
       const steps = payload.steps || [];
       const next = payload.next_step || {};
       $("wizardSummary").textContent =
@@ -3370,11 +3600,96 @@ def _console_html() -> str:
           <div class="wizard-action">${wizardActionHtml(step.primary_action || {})}</div>
         </div>`
       )).join("")}</div>`;
-      $("setupWizard").innerHTML = `<div class="stack">${overview}${cards}</div>`;
+      $("setupWizard").innerHTML =
+        `<div class="stack">${setupFormHtml(snapshot)}${existingSharesHtml(snapshot.existing_shares || [])}` +
+        `${overview}${cards}</div>`;
+    }
+
+    function setupFormHtml(snapshot) {
+      const defaults = snapshot.setup_defaults || {};
+      const providers = defaults.providers || [];
+      const optionHtml = providers.map((provider) => (
+        `<option value="${esc(provider.name)}" ${provider.name === defaults.provider ? "selected" : ""}>` +
+        `${esc(provider.label || provider.name)}</option>`
+      )).join("");
+      return `<div class="setup-form stack">
+        <div>
+          <div class="timeline-target">Create a share session</div>
+          <div class="timeline-detail">
+            Generate the share directory, config, policy bundle, lease, and client metadata.
+          </div>
+        </div>
+        <div class="field-grid">
+          ${setupField("setup-directory", "Share directory", defaults.directory || ".snulbug/share")}
+          <div class="form-field">
+            <label for="setup-provider">Tunnel provider</label>
+            <select id="setup-provider">${optionHtml}</select>
+          </div>
+          ${setupField("setup-upstream", "Upstream MCP URL", defaults.upstream || "http://127.0.0.1:9000", "wide")}
+          ${setupField(
+            "setup-public-url",
+            "Public MCP URL",
+            defaults.public_url || "http://127.0.0.1:8080/mcp",
+            "wide"
+          )}
+          ${setupField("setup-allowed-tools", "Allowed tools", defaults.allowed_tools || "safe_read_file")}
+          ${setupField("setup-allowed-paths", "Allowed paths", defaults.allowed_paths || ".")}
+          ${setupField("setup-host", "Gateway host", defaults.host || "127.0.0.1")}
+          ${setupField("setup-port", "Gateway port", defaults.port || 8080)}
+        </div>
+        <div class="check-row">
+          ${setupCheckbox("setup-lease-required", "Require lease", defaults.lease_required !== false)}
+          ${setupCheckbox("setup-validate", "Validate files", defaults.validate !== false)}
+          ${setupCheckbox("setup-force", "Overwrite existing", false)}
+          ${setupCheckbox("setup-start-gateway", "Start gateway now", defaults.start_gateway !== false)}
+        </div>
+        <div><button type="button" class="primary" onclick="createShareFromSetup()">Create share session</button></div>
+      </div>`;
+    }
+
+    function setupField(id, label, value, extraClass = "") {
+      return `<div class="form-field ${esc(extraClass)}">
+        <label for="${esc(id)}">${esc(label)}</label>
+        <input id="${esc(id)}" value="${esc(value)}">
+      </div>`;
+    }
+
+    function setupCheckbox(id, label, checked) {
+      return `<label for="${esc(id)}">` +
+        `<input id="${esc(id)}" type="checkbox" ${checked ? "checked" : ""}> ${esc(label)}` +
+        `</label>`;
+    }
+
+    function existingSharesHtml(shares) {
+      if (!shares.length) {
+        return `<div class="empty">No existing share sessions found under this workspace.</div>`;
+      }
+      return `<div class="setup-share-list">
+        ${shares.map((share) => (
+          `<div class="setup-share-row">
+            <div>
+              <div class="timeline-target">${esc(share.label || share.relative || share.directory)}</div>
+              <div class="timeline-detail">${esc(share.directory || "")}</div>
+            </div>
+            <div>
+              ${pill(share.state || "created")}
+              <div class="timeline-detail">${esc([share.provider, share.public_url].filter(Boolean).join(" · "))}</div>
+            </div>
+            <button
+              type="button"
+              data-directory="${esc(share.directory || "")}"
+              onclick="selectExistingShare(this)"
+            >Use share</button>
+          </div>`
+        )).join("")}
+      </div>`;
     }
 
     function wizardActionHtml(action) {
       const label = action.label || "Review";
+      if (action.kind === "create_share") {
+        return `<button type="button" class="primary" onclick="createShareFromSetup()">${esc(label)}</button>`;
+      }
       if (action.kind === "run_doctor") {
         return `<button type="button" class="primary" onclick="runDoctor()">${esc(label)}</button>`;
       }
@@ -4515,6 +4830,66 @@ def _console_html() -> str:
         $("message").textContent = "Copied command";
       } catch (error) {
         $("message").textContent = command;
+      }
+    }
+
+    function setupInputValue(id) {
+      const element = $(id);
+      return element ? element.value : "";
+    }
+
+    function setupChecked(id) {
+      const element = $(id);
+      return Boolean(element && element.checked);
+    }
+
+    async function createShareFromSetup() {
+      $("message").textContent = "Creating share session";
+      try {
+        const payload = await api("/api/setup/create-share", {
+          method: "POST",
+          body: JSON.stringify({
+            directory: setupInputValue("setup-directory"),
+            provider: setupInputValue("setup-provider"),
+            upstream: setupInputValue("setup-upstream"),
+            public_url: setupInputValue("setup-public-url"),
+            allowed_tools: setupInputValue("setup-allowed-tools"),
+            allowed_paths: setupInputValue("setup-allowed-paths"),
+            host: setupInputValue("setup-host"),
+            port: setupInputValue("setup-port"),
+            lease_required: setupChecked("setup-lease-required"),
+            validate: setupChecked("setup-validate"),
+            force: setupChecked("setup-force"),
+            start_gateway: setupChecked("setup-start-gateway")
+          })
+        });
+        $("message").textContent = payload.run_requested
+          ? "Share created; starting gateway"
+          : "Share created";
+        await loadSnapshot();
+      } catch (error) {
+        $("message").textContent = `Create failed: ${error.message}`;
+      }
+    }
+
+    async function selectExistingShare(element) {
+      const directory = (element && element.dataset && element.dataset.directory) || "";
+      if (!directory) return;
+      $("message").textContent = "Selecting share session";
+      try {
+        const payload = await api("/api/setup/select-share", {
+          method: "POST",
+          body: JSON.stringify({
+            directory,
+            start_gateway: setupChecked("setup-start-gateway")
+          })
+        });
+        $("message").textContent = payload.run_requested
+          ? "Share selected; starting gateway"
+          : "Share selected";
+        await loadSnapshot();
+      } catch (error) {
+        $("message").textContent = `Select failed: ${error.message}`;
       }
     }
 

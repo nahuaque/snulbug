@@ -20,7 +20,7 @@ from snulbug import (
     load_share_session_model,
     record_policy_request,
 )
-from snulbug.cli.share import _start_share_run_console, _stop_share_run_console
+from snulbug.cli.share import _run_share_setup_console, _start_share_run_console, _stop_share_run_console
 from snulbug.simulator import main as simulator_main
 
 
@@ -110,11 +110,12 @@ def test_share_setup_console_snapshot_does_not_require_share_session(tmp_path):
     assert snapshot["ok"] is True
     assert snapshot["mode"] == "setup"
     assert "status" not in snapshot
+    assert snapshot["setup_defaults"]["directory"] == ".snulbug/share"
+    assert snapshot["existing_shares"] == []
     assert wizard["schema"] == "snulbug.share-setup-wizard.v1"
     assert wizard["total"] == 6
-    assert wizard["next_step"]["id"] == "create_config"
-    assert wizard["next_step"]["primary_action"]["kind"] == "copy_command"
-    assert "share config init" in wizard["next_step"]["primary_action"]["command"]
+    assert wizard["next_step"]["id"] == "create_share"
+    assert wizard["next_step"]["primary_action"]["kind"] == "create_share"
 
 
 def test_share_console_compacts_repeated_live_decisions(tmp_path):
@@ -409,6 +410,8 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "Share Setup" in html
     assert "renderSetupWizard" in html
     assert "wizardActionHtml" in html
+    assert "createShareFromSetup" in html
+    assert "selectExistingShare" in html
     assert "copyWizardCommand" in html
     assert "renderReadinessGate" in html
     assert "readinessChecksTable" in html
@@ -805,7 +808,71 @@ def test_share_run_setup_console_serves_wizard_without_session(tmp_path):
 
     assert "Share Setup" in html
     assert snapshot["mode"] == "setup"
-    assert snapshot["setup_wizard"]["next_step"]["id"] == "create_config"
+    assert snapshot["setup_wizard"]["next_step"]["id"] == "create_share"
+    assert snapshot["setup_defaults"]["directory"] == ".snulbug/share"
+
+
+def test_share_setup_console_creates_share_and_requests_gateway_start(tmp_path):
+    server = ShareConsoleServer(directory=tmp_path, port=0, setup_only=True)
+    server.start()
+    try:
+        created = post_json(
+            f"{server.url}/api/setup/create-share",
+            {
+                "directory": ".snulbug/share",
+                "provider": "generic",
+                "upstream": "http://127.0.0.1:9000",
+                "public_url": "http://127.0.0.1:8080/mcp",
+                "allowed_tools": "safe_read_file",
+                "allowed_paths": ".",
+                "validate": False,
+                "start_gateway": True,
+            },
+        )
+        snapshot = read_json(f"{server.url}/api/snapshot")
+    finally:
+        server.stop()
+
+    share_dir = tmp_path / ".snulbug" / "share"
+    assert created["ok"] is True
+    assert created["share"] == str(share_dir)
+    assert created["run_requested"] is True
+    assert server.wait_for_gateway_start(timeout=0)
+    assert snapshot["mode"] == "share"
+    assert snapshot["share"] == str(share_dir)
+    assert load_share_session_model(share_dir)["share"]["directory"] == str(share_dir)
+
+
+def test_share_setup_console_lists_and_selects_existing_share(tmp_path):
+    existing = tmp_path / ".snulbug" / "shares" / "existing"
+    create_mcp_share(
+        existing,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    server = ShareConsoleServer(directory=tmp_path, port=0, setup_only=True)
+    server.start()
+    try:
+        setup_snapshot = read_json(f"{server.url}/api/snapshot")
+        selected = post_json(
+            f"{server.url}/api/setup/select-share",
+            {"directory": str(existing), "start_gateway": False},
+        )
+        selected_snapshot = read_json(f"{server.url}/api/snapshot")
+    finally:
+        server.stop()
+
+    listed = setup_snapshot["existing_shares"]
+    assert any(share["directory"] == str(existing) for share in listed)
+    assert selected["ok"] is True
+    assert selected["share"] == str(existing)
+    assert selected["run_requested"] is False
+    assert not server.wait_for_gateway_start(timeout=0)
+    assert selected_snapshot["mode"] == "share"
+    assert selected_snapshot["share"] == str(existing)
 
 
 def test_share_run_without_session_starts_setup_wizard(tmp_path, monkeypatch):
@@ -822,6 +889,39 @@ def test_share_run_without_session_starts_setup_wizard(tmp_path, monkeypatch):
 
     assert status == 0
     assert len(calls) == 1
+
+
+def test_share_run_setup_console_runs_selected_share(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeSetupServer:
+        def __init__(self, directory, **kwargs):
+            self.directory = Path(directory) / ".snulbug" / "share"
+            self.url = "http://127.0.0.1:0"
+
+        def start(self):
+            calls.append(("start", self.directory))
+
+        def wait_for_gateway_start(self, timeout=None):
+            return True
+
+        def stop(self):
+            calls.append(("stop", self.directory))
+
+    def fake_run_mcp_share(directory):
+        calls.append(("run", Path(directory)))
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("snulbug.share_console.ShareConsoleServer", FakeSetupServer)
+    monkeypatch.setattr("snulbug.share.run_mcp_share", fake_run_mcp_share)
+
+    status = _run_share_setup_console(share_run_args(console_port=0))
+
+    share_dir = tmp_path / ".snulbug" / "share"
+    assert status == 0
+    assert ("start", share_dir) in calls
+    assert ("run", share_dir) in calls
+    assert ("stop", share_dir) in calls
 
 
 def test_share_run_console_respects_no_console(tmp_path):

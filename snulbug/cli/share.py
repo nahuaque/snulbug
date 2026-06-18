@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -1874,10 +1873,17 @@ def _run_share_setup_console(args: argparse.Namespace) -> int:
             return 1
     print(f"snulbug share setup wizard: {server.url}", flush=True)
     try:
-        while True:
-            time.sleep(3600)
+        while not server.wait_for_gateway_start(timeout=0.25):
+            continue
+        from ..share import run_mcp_share
+
+        run_mcp_share(server.directory)
+        return 0
     except KeyboardInterrupt:
         return 0
+    except Exception as exc:
+        sys.stderr.write(f"snulbug share run failed: {exc}\n")
+        return 1
     finally:
         server.stop()
 
