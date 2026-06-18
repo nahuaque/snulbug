@@ -103,6 +103,7 @@ def build_share_console_snapshot(
     auth_visibility = _auth_visibility(share_dir, status)
     tool_schema_visibility = _tool_schema_visibility(share_dir, status)
     tunnel_provider = _tunnel_provider_visibility(share_dir, status, provider_console)
+    share_auth = _share_auth_visibility(status, auth_visibility, tunnel_provider)
     policy_visibility = _policy_visibility(share_dir, status, decision_timeline=decision_timeline)
     readiness_gate = _share_readiness_gate(
         share_dir,
@@ -122,6 +123,7 @@ def build_share_console_snapshot(
         "capability_requests": _redact_console_payload(requests),
         "decision_timeline": _redact_console_payload(decision_timeline),
         "auth_visibility": _redact_console_payload(auth_visibility),
+        "share_auth": _redact_console_payload(share_auth),
         "tool_schema_visibility": _redact_console_payload(tool_schema_visibility),
         "tunnel_provider": _redact_console_payload(tunnel_provider),
         "policy_visibility": _redact_console_payload(policy_visibility),
@@ -1120,6 +1122,154 @@ def _provider_auth_visibility(status: Mapping[str, Any], config: Mapping[str, An
     )
 
 
+def _share_auth_visibility(
+    status: Mapping[str, Any],
+    auth_visibility: Mapping[str, Any],
+    tunnel_provider: Mapping[str, Any],
+) -> dict[str, Any]:
+    session = _mapping(status.get("session"))
+    provider_auth = _mapping(tunnel_provider.get("auth"))
+    auth_config = _mapping(auth_visibility.get("config"))
+    current_auth = _mapping(auth_visibility.get("current"))
+    client_headers = _string_list(provider_auth.get("client_header_names"))
+    has_bearer = any(header.lower() == "authorization" for header in client_headers)
+    lease_required = provider_auth.get("lease_required", session.get("lease_required"))
+    lease_header = provider_auth.get("lease_header") or session.get("lease_header")
+    configured_mode = str(auth_config.get("mode") or provider_auth.get("mode") or "").strip()
+    cloudflare_access = provider_auth.get("cloudflare_access")
+    cloudflare_profile = provider_auth.get("cloudflare_access_profile")
+    tailscale_profile = provider_auth.get("tailscale_profile")
+
+    if configured_mode == "oauth-resource":
+        provider = _infer_oauth_provider(auth_config, current_auth)
+        provider_label = _auth_provider_label(provider)
+        parts = ["OAuth protected resource"]
+        if provider_label:
+            parts.append(provider_label)
+        detail_bits = []
+        if lease_required is True:
+            detail_bits.append("task lease required")
+        elif lease_required is False:
+            detail_bits.append("task lease optional")
+        if auth_config.get("required_scopes"):
+            detail_bits.append(f"scopes {', '.join(_string_list(auth_config.get('required_scopes')))}")
+        if auth_config.get("issuer"):
+            detail_bits.append(str(auth_config.get("issuer")))
+        return _drop_empty(
+            {
+                "mode": "oauth-resource",
+                "label": "OAuth" + (f" ({provider_label})" if provider_label else ""),
+                "detail": " · ".join(detail_bits),
+                "provider": provider,
+                "provider_label": provider_label,
+                "issuer": auth_config.get("issuer") or current_auth.get("issuer"),
+                "resource": auth_config.get("resource"),
+                "audience": auth_config.get("audience"),
+                "required_scopes": _string_list(auth_config.get("required_scopes")),
+                "scope_map_count": auth_config.get("scope_map_count"),
+                "lease_required": lease_required,
+                "lease_header": lease_header,
+                "client_header_names": client_headers,
+                "cloudflare_access": cloudflare_access,
+                "cloudflare_access_profile": cloudflare_profile,
+                "tailscale_profile": tailscale_profile,
+            }
+        )
+
+    if cloudflare_access:
+        label = "Cloudflare Access"
+        if has_bearer:
+            label += " + bearer"
+        if lease_required is True:
+            label += " + lease"
+        detail_bits = [str(cloudflare_access)]
+        if cloudflare_profile:
+            detail_bits.append(f"profile {cloudflare_profile}")
+        if lease_required is True:
+            detail_bits.append("task lease required")
+        return _drop_empty(
+            {
+                "mode": "cloudflare-access",
+                "label": label,
+                "detail": " · ".join(detail_bits),
+                "provider": "cloudflare-access",
+                "provider_label": "Cloudflare Access",
+                "lease_required": lease_required,
+                "lease_header": lease_header,
+                "client_header_names": client_headers,
+                "cloudflare_access": cloudflare_access,
+                "cloudflare_access_profile": cloudflare_profile,
+            }
+        )
+
+    if configured_mode == "bearer" or has_bearer:
+        label = "bearer token + lease" if lease_required is True else "bearer token"
+        return _drop_empty(
+            {
+                "mode": "bearer",
+                "label": label,
+                "detail": (
+                    f"headers Authorization, {lease_header}"
+                    if lease_required is True and lease_header
+                    else "header Authorization"
+                ),
+                "lease_required": lease_required,
+                "lease_header": lease_header,
+                "client_header_names": client_headers,
+                "tailscale_profile": tailscale_profile,
+            }
+        )
+
+    return _drop_empty(
+        {
+            "mode": configured_mode or "none",
+            "label": "No client auth" if not configured_mode or configured_mode == "none" else configured_mode,
+            "detail": "No bearer, OAuth, or provider auth detected",
+            "lease_required": lease_required,
+            "lease_header": lease_header,
+            "client_header_names": client_headers,
+        }
+    )
+
+
+def _infer_oauth_provider(config: Mapping[str, Any], current_auth: Mapping[str, Any]) -> str | None:
+    provider_context = _mapping(current_auth.get("provider"))
+    context_keys = {str(key).replace("_", "-").lower() for key in provider_context}
+    if "github-actions" in context_keys:
+        return "github-oidc"
+    for key in ("keycloak", "auth0", "okta", "entra", "cloudflare-access", "github-oidc"):
+        if key in context_keys:
+            return key
+    issuer = str(config.get("issuer") or current_auth.get("issuer") or "").lower()
+    if not issuer:
+        return None
+    if "token.actions.githubusercontent.com" in issuer:
+        return "github-oidc"
+    if "cloudflareaccess.com" in issuer:
+        return "cloudflare-access"
+    if "keycloak" in issuer or "/realms/" in issuer:
+        return "keycloak"
+    if "auth0.com" in issuer:
+        return "auth0"
+    if "okta" in issuer:
+        return "okta"
+    if "login.microsoftonline.com" in issuer or "sts.windows.net" in issuer or "entra" in issuer:
+        return "entra"
+    return None
+
+
+def _auth_provider_label(provider: str | None) -> str | None:
+    labels = {
+        "keycloak": "Keycloak",
+        "auth0": "Auth0",
+        "okta": "Okta",
+        "entra": "Microsoft Entra ID",
+        "cloudflare-access": "Cloudflare Access",
+        "github-oidc": "GitHub Actions OIDC",
+    }
+    return labels.get(provider or "")
+
+
 def _provider_local_console_visibility(
     provider: str,
     provider_console: Mapping[str, Any] | None,
@@ -1640,6 +1790,7 @@ def _auth_current_visibility(auth: Mapping[str, Any]) -> dict[str, Any]:
             "email": auth.get("email"),
             "scopes": _string_list(auth.get("scopes")),
             "groups": _string_list(auth.get("groups")),
+            "provider": _mapping(auth.get("provider")),
         }
     )
 
@@ -4484,7 +4635,7 @@ def _console_html() -> str:
       }
       const readiness = activeReadinessGate(snapshot);
       const metricStatus = state.liveHealthStatus || status;
-      renderMetrics(metricStatus, readiness);
+      renderMetrics(snapshot, metricStatus, readiness);
       renderReadinessGate(readiness);
       renderPolicyVisibility(snapshot.policy_visibility || {});
       renderTunnelProvider(snapshot.tunnel_provider || {});
@@ -4494,7 +4645,7 @@ def _console_html() -> str:
       renderLeases(status.leases || {});
       renderInvites(status.invitations || {});
       renderShareTabs(readiness, status.invitations || {});
-      renderAuthVisibility(snapshot.auth_visibility || {});
+      renderAuthVisibility(snapshot.auth_visibility || {}, snapshot.share_auth || {});
       renderToolSchemaVisibility(snapshot.tool_schema_visibility || {});
       renderHealth(state.liveHealthStatus || status);
       renderToolRisk(status);
@@ -4726,7 +4877,7 @@ def _console_html() -> str:
       return `<a class="button-link" href="#shareWorkflowSection">${esc(label)}</a>`;
     }
 
-    function renderMetrics(status, readiness) {
+    function renderMetrics(snapshot, status, readiness) {
       const traffic = status.traffic || {};
       const requests = status.capability_requests || {};
       const leases = status.leases || {};
@@ -4734,6 +4885,7 @@ def _console_html() -> str:
       const risk = (status.tool_risks || {}).summary || {};
       const gateway = status.gateway || {};
       const session = status.session || {};
+      const shareAuth = snapshot.share_auth || {};
       const readinessSummary = readiness.summary || {};
       const gatewayState = gatewayMetric(gateway);
       const activeLeases = numeric(leases.active_count);
@@ -4763,6 +4915,14 @@ def _console_html() -> str:
           status: stateMetricStatus(status.state),
           glyph: stateMetricGlyph(status.state),
           href: "#shareWorkflowSection"
+        },
+        {
+          label: "Auth",
+          value: shareAuth.label || "unknown",
+          detail: shareAuth.detail || authMetricDetail(shareAuth),
+          status: authMetricStatus(shareAuth),
+          glyph: authMetricGlyph(shareAuth),
+          href: "#authSection"
         },
         {
           label: "Gateway",
@@ -4814,6 +4974,30 @@ def _console_html() -> str:
         }
       ];
       $("metrics").innerHTML = metrics.map(metricCardHtml).join("");
+    }
+
+    function authMetricStatus(auth) {
+      const mode = auth.mode || "none";
+      if (!mode || mode === "none") return "bad";
+      if (auth.lease_required === false) return "warn";
+      return "good";
+    }
+
+    function authMetricGlyph(auth) {
+      const mode = auth.mode || "none";
+      if (!mode || mode === "none") return "!";
+      if (auth.lease_required === false) return "i";
+      return "OK";
+    }
+
+    function authMetricDetail(auth) {
+      if (!auth || !Object.keys(auth).length) return "no auth metadata";
+      const bits = [];
+      if (auth.provider_label) bits.push(auth.provider_label);
+      if (auth.lease_required === true) bits.push("lease required");
+      if (auth.lease_required === false) bits.push("lease optional");
+      if ((auth.required_scopes || []).length) bits.push(`scopes ${(auth.required_scopes || []).join(", ")}`);
+      return bits.join(" · ") || "client auth configured";
     }
 
     function metricCardHtml(metric) {
@@ -5792,16 +5976,34 @@ def _console_html() -> str:
       </div>`;
     }
 
-    function renderAuthVisibility(payload) {
+    function renderAuthVisibility(payload, shareAuth) {
       const summary = payload.summary || {};
       const current = payload.current || {};
       const scopeMatch = payload.scope_match || {};
       const jwks = payload.jwks || {};
       const denials = payload.denials || {};
       const config = payload.config || {};
+      const authMode = shareAuth || {};
       $("authSummary").textContent =
+        `${authMode.label || config.mode || "auth"} · ` +
         `${summary.auth_events || 0} auth events, ${summary.denied || 0} denied`;
-      if (!payload.exists && !payload.configured) {
+      const taskLease = authMode.lease_required === true
+        ? "required"
+        : (authMode.lease_required === false ? "optional" : "-");
+      const shareAuthHtml = `<div>
+        <h2>Share Authentication</h2>
+        <div class="detail-grid">
+          ${detailRow("Mode", authMode.label || authMode.mode)}
+          ${detailRow("Provider", authMode.provider_label || authMode.provider)}
+          ${detailRow("Issuer", authMode.issuer || config.issuer)}
+          ${detailRow("Resource", authMode.resource || config.resource)}
+          ${detailRow("Scopes", listText(authMode.required_scopes || config.required_scopes))}
+          ${detailRow("Task lease", taskLease)}
+          ${detailRow("Lease header", authMode.lease_header)}
+          ${detailRow("Client headers", listText(authMode.client_header_names))}
+        </div>
+      </div>`;
+      if (!payload.exists && !payload.configured && !authMode.mode) {
         $("authVisibility").innerHTML = '<div class="empty">No auth config or audit metadata found yet.</div>';
         return;
       }
@@ -5869,7 +6071,7 @@ def _console_html() -> str:
         </table>
       </div>` : "";
       $("authVisibility").innerHTML =
-        `<div class="stack">${currentHtml}${configHtml}${denialsHtml}${actorsHtml}${eventsHtml}</div>`;
+        `<div class="stack">${shareAuthHtml}${currentHtml}${configHtml}${denialsHtml}${actorsHtml}${eventsHtml}</div>`;
     }
 
     function scopeMatchText(scopeMatch) {
@@ -6813,7 +7015,11 @@ def _console_html() -> str:
         });
         state.liveHealthReadiness = payload.readiness_gate || null;
         if (state.liveHealthReadiness) {
-          renderMetrics(state.liveHealthStatus || (state.snapshot || {}).status || {}, state.liveHealthReadiness);
+          renderMetrics(
+            state.snapshot || {},
+            state.liveHealthStatus || (state.snapshot || {}).status || {},
+            state.liveHealthReadiness
+          );
           renderReadinessGate(state.liveHealthReadiness);
           renderShareTabs(state.liveHealthReadiness, currentInvitationsPayload());
         }
@@ -6945,7 +7151,7 @@ def _console_html() -> str:
         const payload = await fetchLiveHealth();
         renderHealth(payload);
         if (state.liveHealthReadiness) {
-          renderMetrics(payload, state.liveHealthReadiness);
+          renderMetrics(state.snapshot || {}, payload, state.liveHealthReadiness);
           renderReadinessGate(state.liveHealthReadiness);
           renderShareTabs(state.liveHealthReadiness, currentInvitationsPayload());
         }

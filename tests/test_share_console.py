@@ -51,6 +51,10 @@ def test_share_console_snapshot_reads_existing_share_artifacts(tmp_path):
     assert snapshot["share"] == str(tmp_path)
     assert snapshot["status"]["state"] == "created"
     assert snapshot["capability_requests"]["summary"]["pending"] == 1
+    assert snapshot["share_auth"]["mode"] == "bearer"
+    assert snapshot["share_auth"]["label"] == "bearer token + lease"
+    assert snapshot["share_auth"]["lease_required"] is True
+    assert snapshot["share_auth"]["lease_header"] == "x-snulbug-lease"
     assert snapshot["capability_requests"]["requests"][0]["tool"] == "safe_read_file"
     assert snapshot["capability_requests"]["requests"][0]["argument_keys"] == ["path"]
     assert timeline["exists"] is True
@@ -85,6 +89,33 @@ def test_share_console_snapshot_reads_existing_share_artifacts(tmp_path):
     assert "timeline-secret" not in encoded
     assert snapshot["status"]["client"]["headers"]["Authorization"] == "[REDACTED]"
     assert snapshot["status"]["client"]["headers"]["x-snulbug-lease"] == "[REDACTED]"
+
+
+def test_share_console_snapshot_summarizes_oauth_share_auth_mode(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="cloudflare",
+        public_url="https://mcp.example.com/mcp",
+        token="share-secret",
+        cloudflare_profile="oauth-resource",
+        auth_issuer="http://localhost:8080/realms/snulbug-demo",
+        auth_required_scopes=["mcp:connect", "mcp:tools.read"],
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    snapshot = build_share_console_snapshot(tmp_path)
+    share_auth = snapshot["share_auth"]
+
+    assert share_auth["mode"] == "oauth-resource"
+    assert share_auth["label"] == "OAuth (Keycloak)"
+    assert share_auth["provider"] == "keycloak"
+    assert share_auth["provider_label"] == "Keycloak"
+    assert share_auth["issuer"] == "http://localhost:8080/realms/snulbug-demo"
+    assert share_auth["resource"] == "https://mcp.example.com/mcp"
+    assert share_auth["required_scopes"] == ["mcp:connect", "mcp:tools.read"]
+    assert share_auth["lease_required"] is True
+    assert "share-secret" not in json.dumps(share_auth)
 
 
 def test_share_readiness_missing_grant_warns_without_blocking_invite_handoff(tmp_path):
@@ -621,6 +652,9 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "Auth Visibility" in html
     assert "renderAuthVisibility" in html
     assert "scopeMatchText" in html
+    assert "Share Authentication" in html
+    assert "shareAuth" in html
+    assert "authMetricStatus" in html
     assert "Tool And Schema Changes" in html
     assert "renderToolSchemaVisibility" in html
     assert "schemaCatalogTable" in html
@@ -629,8 +663,8 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "runHealthCheck" in html
     assert "snapshot.initial_health_check" in html
     assert "const metricStatus = state.liveHealthStatus || status;" in html
-    assert "renderMetrics(metricStatus, readiness)" in html
-    assert "renderMetrics(payload, state.liveHealthReadiness)" in html
+    assert "renderMetrics(snapshot, metricStatus, readiness)" in html
+    assert "renderMetrics(state.snapshot || {}, payload, state.liveHealthReadiness)" in html
     assert "Capability labels" in html
     assert "inviteCapabilityOptionsHtml" in html
     assert "selectedInviteCapabilities" in html
