@@ -250,11 +250,11 @@ def test_tunnel_init_tailscale_readme_includes_bearer_and_lease_defaults(tmp_pat
     assert "Tailscale Funnel bearer + lease recipe" in text
     assert "Authorization: Bearer ${SNULBUG_TOKEN}" in text
     assert 'lease_file = "leases.json"' in text
-    assert "lease_required = false" in text
+    assert "lease_required = true" in text
     assert 'lease_header = "x-snulbug-lease"' in text
     assert "snulbug mcp share lease create" in text
     assert "x-snulbug-lease: <lease token>" in text
-    assert "lease_required = true" in text
+    assert "explicitly set `lease_required = false`" in text
 
 
 def test_tunnel_init_tailscale_without_hostname_uses_url_env(tmp_path, monkeypatch):

@@ -2142,7 +2142,7 @@ def create_proxy_application(
     facade_health_cooldown_seconds: float = 30.0,
     facade_health_exclude_unhealthy: bool = True,
     lease_file: str | Path | None = None,
-    lease_required: bool = False,
+    lease_required: bool = True,
     lease_header: str = "x-snulbug-lease",
     tunnel_provider: str = "auto",
     tunnel_public_url: str | None = None,
@@ -2327,7 +2327,7 @@ def run_proxy(
     facade_health_cooldown_seconds: float = 30.0,
     facade_health_exclude_unhealthy: bool = True,
     lease_file: str | Path | None = None,
-    lease_required: bool = False,
+    lease_required: bool = True,
     lease_header: str = "x-snulbug-lease",
     tunnel_provider: str = "auto",
     tunnel_public_url: str | None = None,
@@ -2892,6 +2892,7 @@ def _composed_access_metadata(scope: Scope, *, lease: Mapping[str, Any] | None =
         lease_allowed = lease_metadata.get("allowed") is True
     else:
         lease_allowed = None
+    lease_presented_rejected = lease_enabled and lease_metadata.get("checked") is True and lease_allowed is False
     lua_action = decision.get("action") or trace.get("action")
     lua_allowed = lua_action in {"continue", "set_context", "rewrite", "rate_limit"}
 
@@ -2899,6 +2900,7 @@ def _composed_access_metadata(scope: Scope, *, lease: Mapping[str, Any] | None =
         (not oauth_enabled or oauth_allowed is True)
         and (not scope_map_enabled or scope_allowed is True)
         and (not claim_policy_enabled or claim_policy_allowed is True)
+        and not lease_presented_rejected
         and (not lease_required_for_request or lease_allowed is True)
         and lua_allowed
     )
@@ -2909,6 +2911,8 @@ def _composed_access_metadata(scope: Scope, *, lease: Mapping[str, Any] | None =
         reason_code = str(scope_map.get("reason_code") or "oauth.scope_map_denied")
     elif claim_policy_enabled and claim_policy_allowed is not True:
         reason_code = str(claim_policy.get("reason_code") or "oauth.claim_policy_denied")
+    elif lease_presented_rejected:
+        reason_code = str(lease_metadata.get("reason_code") or "lease.rejected")
     elif lease_required_for_request and lease_allowed is not True:
         reason_code = str(lease_metadata.get("reason_code") or "lease.required")
     elif not lua_allowed:

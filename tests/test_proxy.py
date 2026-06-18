@@ -37,6 +37,7 @@ from snulbug import (
     create_proxy_application,
     list_leases,
     load_record_log,
+    revoke_lease,
     sign_upstream_manifest,
 )
 from snulbug.mcp_auth import RemoteIssuerMetadataCache, RemoteJwksCache, TokenIntrospectionCache
@@ -3617,6 +3618,51 @@ def test_mcp_task_lease_required_blocks_missing_token_before_upstream(tmp_path):
     assert seen["calls"] == []
     assert records[0]["metadata"]["lease"]["blocked"] is True
     assert records[0]["metadata"]["lease"]["reason_code"] == "lease.missing"
+
+
+def test_mcp_task_lease_blocks_revoked_presented_token_even_when_not_required(tmp_path):
+    server, seen = start_mcp_upstream({"read_file": "Read a file"})
+    lease_file = tmp_path / "leases.json"
+    lease = create_lease(
+        lease_file,
+        task="Read README only",
+        allow_tools=["read_file"],
+        allow_paths=["README.md"],
+        ttl="30m",
+        token="sbl_revoked-token",
+    )
+    revoke_lease(lease_file, lease["lease"]["id"])
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+        lease_file=lease_file,
+        lease_required=False,
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            headers=[(b"x-snulbug-lease", b"sbl_revoked-token")],
+            body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list","params":{}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    records = load_record_log(record_log)
+    assert sent[0]["status"] == 200
+    assert payload["error"]["code"] == -32000
+    assert "lease.revoked" in payload["error"]["message"]
+    assert seen["calls"] == []
+    assert records[0]["metadata"]["lease"]["blocked"] is True
+    assert records[0]["metadata"]["lease"]["reason_code"] == "lease.revoked"
+    assert records[0]["metadata"]["access"]["allowed"] is False
+    assert records[0]["metadata"]["access"]["reason_code"] == "lease.revoked"
+    assert records[0]["metadata"]["access"]["lease"]["required"] is False
 
 
 def test_mcp_task_lease_blocks_disallowed_path_before_upstream(tmp_path):

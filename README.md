@@ -309,12 +309,12 @@ snulbug mcp share lease create \
   --ttl 30m
 ```
 
-Send the returned `x-snulbug-lease` header with MCP requests. Set
-`lease_required = true` in `snulbug.toml` when every `tools/call` must carry an
-active lease. OAuth-protected shares can require both a valid scoped OAuth token
-and an active task lease before Lua allows the tool call. If a lease includes
-auth binding flags, the current sanitized OAuth context must match those bounds
-too; a copied lease token alone is not enough.
+Send the returned `x-snulbug-lease` header with MCP requests. New configs require
+an active task lease for `tools/call` by default. OAuth-protected shares can
+require both a valid scoped OAuth token and an active task lease before Lua
+allows the tool call. If a lease includes auth binding flags, the current
+sanitized OAuth context must match those bounds too; a copied lease token alone
+is not enough.
 
 When you want to hand a downstream client a ready-to-use setup packet, create a
 task-scoped invite instead. It mints a backing lease and returns one-time setup

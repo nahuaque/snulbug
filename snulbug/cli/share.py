@@ -921,7 +921,7 @@ def _add_quickstart_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--lease-required",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=True,
         help="require a valid task lease for MCP tools/call requests",
     )
     parser.add_argument(

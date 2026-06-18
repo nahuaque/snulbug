@@ -308,13 +308,13 @@ def _evaluate_mcp_lease_policy(
         "method": method,
         "consume": consume,
     }
-    if config.lease_file is None or method != "tools/call":
+    if config.lease_file is None:
         return True, metadata
 
     token = _header_value(scope, config.header)
     if token is None:
         metadata["skipped"] = "missing_header"
-        if config.required:
+        if config.required and method == "tools/call":
             metadata["reason_code"] = "lease.missing"
             metadata["blocked"] = True
             return False, metadata
@@ -357,13 +357,16 @@ def _evaluate_mcp_lease_policy(
     if isinstance(tool, str):
         metadata["tool"] = tool
 
-    denied_reason = _lease_denial_reason(lease, request, auth_context=auth_context)
+    if method == "tools/call":
+        denied_reason = _lease_denial_reason(lease, request, auth_context=auth_context)
+    else:
+        denied_reason = _lease_catalog_denial_reason(lease, auth_context=auth_context)
     if denied_reason is not None:
         metadata.update(denied_reason)
         metadata["blocked"] = True
         return False, metadata
 
-    if consume:
+    if consume and method == "tools/call":
         _record_lease_use(config.lease_file, store, lease, tool if isinstance(tool, str) else None)
     metadata["allowed"] = True
     metadata["use_count"] = int(lease.get("use_count") or 0)

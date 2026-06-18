@@ -67,7 +67,7 @@ def create_mcp_quickstart(
     schema_validation: bool = True,
     schema_validation_action: str = "block",
     lease_file: str | Path = "leases.json",
-    lease_required: bool = False,
+    lease_required: bool = True,
     lease_header: str = "x-snulbug-lease",
     tunnel_provider: str = "auto",
     tunnel_public_url: str | None = None,

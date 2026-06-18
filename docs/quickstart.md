@@ -175,7 +175,7 @@ tool_pinning_action = "block"
 schema_validation = true
 schema_validation_action = "block"
 lease_file = "leases.json"
-lease_required = false
+lease_required = true
 lease_header = "x-snulbug-lease"
 tunnel_provider = "auto"
 tunnel_public_url = ""
@@ -325,9 +325,9 @@ snulbug mcp share lease create \
   --ttl 30m
 ```
 
-Send the returned `x-snulbug-lease` header with MCP requests. Set
-`lease_required = true` in `snulbug.toml` when every `tools/call` should require
-an active task lease.
+Send the returned `x-snulbug-lease` header with MCP requests. New configs require
+an active task lease for `tools/call` by default; explicitly set
+`lease_required = false` only for bearer-only compatibility.
 
 For a downstream MCP client, generate a task-scoped invite with setup snippets:
 

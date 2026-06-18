@@ -1308,16 +1308,15 @@ def _holepunch_readme_notes(plan: Mapping[str, Any]) -> str:
         f"{client_url}\n"
         f"Authorization: {authorization}\n"
         "```\n\n"
-        "The recommended quickstart defaults keep leases optional for bearer-only "
-        "clients:\n\n"
+        "The recommended quickstart defaults require task leases for MCP tool calls:\n\n"
         "```toml\n"
         'tunnel_provider = "holepunch"\n'
         f'tunnel_public_url = "{client_url}"\n'
         'lease_file = "leases.json"\n'
-        "lease_required = false\n"
+        "lease_required = true\n"
         'lease_header = "x-snulbug-lease"\n'
         "```\n\n"
-        "Create a short-lived lease when an agent needs one bounded task:\n\n"
+        "Create a short-lived lease for the bounded task before handing the URL to an agent:\n\n"
         "```bash\n"
         "snulbug mcp share lease create \\\n"
         "  --file leases.json \\\n"
@@ -1347,14 +1346,13 @@ def _tailscale_readme_notes(plan: Mapping[str, Any]) -> str:
         "```text\n"
         f"Authorization: {authorization}\n"
         "```\n\n"
-        "The generated quickstart defaults keep leases optional so existing clients "
-        "can connect with bearer auth only:\n\n"
+        "The generated quickstart defaults require task leases for MCP tool calls:\n\n"
         "```toml\n"
         'lease_file = "leases.json"\n'
-        "lease_required = false\n"
+        "lease_required = true\n"
         'lease_header = "x-snulbug-lease"\n'
         "```\n\n"
-        "Create a short-lived lease when an agent needs one bounded task:\n\n"
+        "Create a short-lived lease for the bounded task before handing the URL to an agent:\n\n"
         "```bash\n"
         "snulbug mcp share lease create \\\n"
         "  --file leases.json \\\n"
@@ -1367,8 +1365,8 @@ def _tailscale_readme_notes(plan: Mapping[str, Any]) -> str:
         "```text\n"
         "x-snulbug-lease: <lease token>\n"
         "```\n\n"
-        "To require leases for every MCP `tools/call`, set `lease_required = true` "
-        "and keep the same `x-snulbug-lease` header.\n\n"
+        "To run bearer-only, explicitly set `lease_required = false`; revoked or invalid "
+        "presented lease headers are still rejected.\n\n"
     )
 
 

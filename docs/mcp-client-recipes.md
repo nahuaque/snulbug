@@ -80,7 +80,7 @@ tool_pinning_action = "block"
 schema_validation = true
 schema_validation_action = "block"
 lease_file = "leases.json"
-lease_required = false
+lease_required = true
 lease_header = "x-snulbug-lease"
 
 [[mcp.events.sinks]]
@@ -395,7 +395,7 @@ tool_pinning_action = "block"
 schema_validation = true
 schema_validation_action = "block"
 lease_file = "leases.json"
-lease_required = false
+lease_required = true
 lease_header = "x-snulbug-lease"
 
 [[mcp.events.sinks]]

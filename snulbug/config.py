@@ -85,7 +85,7 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "facade_health_cooldown_seconds": 30.0,
     "facade_health_exclude_unhealthy": True,
     "lease_file": "leases.json",
-    "lease_required": False,
+    "lease_required": True,
     "lease_header": "x-snulbug-lease",
     "tunnel_provider": "auto",
     "tunnel_public_url": None,
@@ -191,7 +191,7 @@ facade_health_failure_threshold = 2
 facade_health_cooldown_seconds = 30.0
 facade_health_exclude_unhealthy = true
 lease_file = "leases.json"
-lease_required = false
+lease_required = true
 lease_header = "x-snulbug-lease"
 tunnel_provider = "auto"
 tunnel_public_url = ""

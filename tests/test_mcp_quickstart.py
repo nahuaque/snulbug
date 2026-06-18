@@ -51,7 +51,7 @@ def test_create_mcp_quickstart_writes_policy_config_and_trace_dir(tmp_path):
     assert proxy_config["schema_validation"] is True
     assert proxy_config["schema_validation_action"] == "block"
     assert proxy_config["lease_file"] == tmp_path / "leases.json"
-    assert proxy_config["lease_required"] is False
+    assert proxy_config["lease_required"] is True
     assert proxy_config["lease_header"] == "x-snulbug-lease"
     assert proxy_config["tunnel_provider"] == "auto"
     assert proxy_config["tunnel_public_url"] is None

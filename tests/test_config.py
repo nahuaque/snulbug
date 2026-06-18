@@ -1010,7 +1010,7 @@ def test_mcp_share_run_cli_loads_config_before_running(monkeypatch, tmp_path):
     assert calls[0]["facade_health_cooldown_seconds"] == 30.0
     assert calls[0]["facade_health_exclude_unhealthy"] is True
     assert calls[0]["lease_file"] == tmp_path / "leases.json"
-    assert calls[0]["lease_required"] is False
+    assert calls[0]["lease_required"] is True
     assert calls[0]["lease_header"] == "x-snulbug-lease"
     assert calls[0]["tunnel_provider"] == "auto"
     assert calls[0]["tunnel_public_url"] is None
