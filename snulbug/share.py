@@ -1008,6 +1008,7 @@ def create_mcp_share_lease(
     allow_commands: Sequence[str] = (),
     ttl: str = "30m",
     max_calls: int | None = None,
+    invite: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a task-scoped lease in the share's configured lease store."""
 
@@ -1025,6 +1026,7 @@ def create_mcp_share_lease(
         allow_commands=allow_commands,
         ttl=ttl,
         max_calls=max_calls,
+        invite=invite,
     )
     token = str(lease.get("token"))
     return {
@@ -1081,6 +1083,8 @@ def create_mcp_share_invite(
     if not client_url:
         raise ValueError("share manifest does not contain a client URL")
     auth_header, auth_value, bearer_token = _share_client_bearer_token(manifest)
+    invite_id = _new_share_invite_id()
+    effective_client_name = client_name or str(client.get("name") or DEFAULT_SHARE_CLIENT_NAME)
     lease_result = create_mcp_share_lease(
         share_dir,
         task=task,
@@ -1090,13 +1094,16 @@ def create_mcp_share_invite(
         allow_commands=allow_commands,
         ttl=ttl,
         max_calls=max_calls,
+        invite={
+            "id": invite_id,
+            "recipient": recipient,
+            "client_name": effective_client_name,
+        },
     )
     lease = _mapping(lease_result.get("lease"))
-    invite_id = _new_share_invite_id()
     lease_header = str(lease_result.get("lease_header") or _share_capability_lease_header(session_model, manifest))
     lease_token = str(_mapping(lease_result.get("headers")).get(lease_header) or "")
     headers = {auth_header: auth_value, lease_header: lease_token}
-    effective_client_name = client_name or str(client.get("name") or DEFAULT_SHARE_CLIENT_NAME)
     snippets = _share_invite_setup_snippets(
         client_name=effective_client_name,
         client_url=client_url,

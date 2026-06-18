@@ -254,6 +254,11 @@ def test_mcp_share_invite_create_list_and_revoke_redacts_stored_snippets(tmp_pat
     assert created["ok"] is True
     assert created["invite"]["id"].startswith("invite_")
     assert created["invite"]["lease_id"] == created["lease"]["id"]
+    assert created["lease"]["invite"] == {
+        "id": created["invite"]["id"],
+        "recipient": "frontend agent",
+        "client_name": "snulbug-share",
+    }
     assert created["headers"]["Authorization"] == "Bearer share-secret"
     assert created["headers"]["x-snulbug-lease"].startswith("sbl_")
     assert created["bearer_token"] == "share-secret"

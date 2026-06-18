@@ -32,6 +32,8 @@ from snulbug import (
     OAuthResourceConfig,
     build_fabric_audit_metadata,
     create_lease,
+    create_mcp_share,
+    create_mcp_share_invite,
     create_proxy_application,
     list_leases,
     load_record_log,
@@ -3522,6 +3524,68 @@ def test_mcp_task_lease_allows_matching_tool_call_and_records_usage(tmp_path):
     assert records[0]["metadata"]["lease"]["id"] == lease["lease"]["id"]
     assert records[0]["metadata"]["lease"]["allowed"] is True
     assert leases["leases"][0]["use_count"] == 1
+
+
+def test_invite_backed_task_lease_records_recipient_in_audit(tmp_path):
+    server, seen = start_mcp_upstream({"read_file": "Read a file"})
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://share.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["read_file"],
+        allowed_paths=["README.md"],
+        validate=False,
+    )
+    invite = create_mcp_share_invite(
+        tmp_path,
+        recipient="frontend agent",
+        task="Read README for collaborator",
+        allow_tools=["read_file"],
+        allow_paths=["README.md"],
+        ttl="30m",
+        client_name="codex",
+    )
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+        event_sinks=audit_event_sinks(audit_log),
+        lease_file=tmp_path / "leases.json",
+        lease_required=True,
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            headers=[(b"x-snulbug-lease", invite["lease_token"].encode("ascii"))],
+            body=(
+                b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call",'
+                b'"params":{"name":"read_file","arguments":{"path":"README.md"}}}'
+            ),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    expected_invite = {
+        "id": invite["invite"]["id"],
+        "recipient": "frontend agent",
+        "client_name": "codex",
+    }
+    record = load_record_log(record_log)[0]
+    audit = json.loads(audit_log.read_text(encoding="utf-8"))
+    assert sent[0]["status"] == 200
+    assert seen["calls"] == [{"method": "tools/call", "tool": "read_file"}]
+    assert record["metadata"]["lease"]["invite"] == expected_invite
+    assert record["metadata"]["access"]["lease"]["invite"] == expected_invite
+    assert audit["metadata"]["lease"]["invite"] == expected_invite
+    assert audit["access"]["lease"]["invite"] == expected_invite
+    assert invite["lease_token"] not in json.dumps(record)
+    assert invite["lease_token"] not in json.dumps(audit)
 
 
 def test_mcp_task_lease_required_blocks_missing_token_before_upstream(tmp_path):

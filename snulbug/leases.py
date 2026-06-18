@@ -59,6 +59,7 @@ def create_lease(
     ttl: str | int | float = "1h",
     max_calls: int | None = None,
     token: str | None = None,
+    invite: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a task-scoped lease and return the one-time plaintext token."""
 
@@ -93,6 +94,9 @@ def create_lease(
         "last_used_at": None,
         "last_tool": None,
     }
+    invite_metadata = _lease_invite_metadata(invite)
+    if invite_metadata:
+        lease["invite"] = invite_metadata
     store_path = Path(path)
     store = _load_store(store_path, create_missing=True)
     store.setdefault("leases", []).append(lease)
@@ -262,6 +266,7 @@ def preview_mcp_lease_catalog(
         metadata["allowed"] = False
         return metadata
 
+    invite_metadata = _lease_invite_metadata(lease.get("invite"))
     metadata.update(
         {
             "id": lease.get("id"),
@@ -269,6 +274,7 @@ def preview_mcp_lease_catalog(
             "expires_at": lease.get("expires_at"),
             "use_count": int(lease.get("use_count") or 0),
             "max_calls": lease.get("max_calls"),
+            **({"invite": invite_metadata} if invite_metadata else {}),
             "allow_tools": list(lease.get("allow_tools", [])),
             **_lease_auth_metadata(lease, auth_context),
         }
@@ -333,6 +339,7 @@ def _evaluate_mcp_lease_policy(
         metadata["blocked"] = True
         return False, metadata
 
+    invite_metadata = _lease_invite_metadata(lease.get("invite"))
     metadata.update(
         {
             "id": lease.get("id"),
@@ -340,6 +347,7 @@ def _evaluate_mcp_lease_policy(
             "expires_at": lease.get("expires_at"),
             "use_count": int(lease.get("use_count") or 0),
             "max_calls": lease.get("max_calls"),
+            **({"invite": invite_metadata} if invite_metadata else {}),
             **_lease_auth_metadata(lease, auth_context),
         }
     )
@@ -585,6 +593,7 @@ def _find_lease(store: Mapping[str, Any], token: str) -> dict[str, Any] | None:
 def _lease_view(lease: Mapping[str, Any]) -> dict[str, Any]:
     expires_at = _parse_time(lease.get("expires_at"))
     active = bool(not lease.get("revoked_at") and expires_at is not None and expires_at > _now())
+    invite_metadata = _lease_invite_metadata(lease.get("invite"))
     return {
         "id": lease.get("id"),
         "task": lease.get("task"),
@@ -603,6 +612,7 @@ def _lease_view(lease: Mapping[str, Any]) -> dict[str, Any]:
         "allow_groups": list(lease.get("allow_groups", [])),
         "allow_auth_profiles": list(lease.get("allow_auth_profiles", [])),
         "auth_bound": _lease_auth_bound(lease),
+        **({"invite": invite_metadata} if invite_metadata else {}),
         "max_calls": lease.get("max_calls"),
         "use_count": int(lease.get("use_count") or 0),
         "last_used_at": lease.get("last_used_at"),
@@ -643,6 +653,17 @@ def _lease_auth_metadata(lease: Mapping[str, Any], auth_context: Mapping[str, An
             }
         ),
     }
+
+
+def _lease_invite_metadata(value: Any) -> dict[str, Any]:
+    invite = value if isinstance(value, Mapping) else {}
+    return _drop_empty(
+        {
+            "id": invite.get("id"),
+            "recipient": invite.get("recipient"),
+            "client_name": invite.get("client_name"),
+        }
+    )
 
 
 def _lease_auth_denial_reason(

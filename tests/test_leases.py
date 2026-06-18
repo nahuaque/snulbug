@@ -29,6 +29,44 @@ def test_create_lease_stores_only_token_hash_and_lists_without_secret(tmp_path):
     assert "token" not in listed["leases"][0]
 
 
+def test_invite_backed_lease_exposes_recipient_metadata_without_secrets(tmp_path):
+    lease_file = tmp_path / "leases.json"
+
+    created = create_lease(
+        lease_file,
+        task="Read README for collaborator",
+        allow_tools=["files.read_file"],
+        allow_paths=["README.md"],
+        ttl="30m",
+        token="sbl_test-token",
+        invite={
+            "id": "invite_frontend",
+            "recipient": "frontend agent",
+            "client_name": "codex",
+            "lease_token": "should-not-be-stored",
+        },
+    )
+    request = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "files.read_file"}}
+
+    allowed, metadata = enforce_mcp_lease_policy(
+        request,
+        {"headers": [(b"x-snulbug-lease", b"sbl_test-token")]},
+        config=LeasePolicyConfig(lease_file=lease_file, required=True),
+    )
+    listed = list_leases(lease_file)
+    raw = json.loads(lease_file.read_text(encoding="utf-8"))
+
+    expected_invite = {"id": "invite_frontend", "recipient": "frontend agent", "client_name": "codex"}
+    assert created["lease"]["invite"] == expected_invite
+    assert listed["leases"][0]["invite"] == expected_invite
+    assert raw["leases"][0]["invite"] == expected_invite
+    assert allowed is True
+    assert metadata["allowed"] is True
+    assert metadata["invite"] == expected_invite
+    assert "sbl_test-token" not in json.dumps(raw)
+    assert "should-not-be-stored" not in json.dumps(raw)
+
+
 def test_create_lease_can_bind_to_oauth_identity(tmp_path):
     lease_file = tmp_path / "leases.json"
 

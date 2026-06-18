@@ -2965,6 +2965,7 @@ def _composed_access_metadata(scope: Scope, *, lease: Mapping[str, Any] | None =
                     "id": lease_metadata.get("id"),
                     "task": lease_metadata.get("task"),
                     "tool": lease_metadata.get("tool"),
+                    "invite": lease_metadata.get("invite"),
                     "auth_bound": lease_metadata.get("auth_bound"),
                     "auth": lease_metadata.get("auth"),
                     "reason_code": lease_metadata.get("reason_code"),

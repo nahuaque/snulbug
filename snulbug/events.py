@@ -436,6 +436,11 @@ def format_decision_console_line(event: Mapping[str, Any]) -> str:
             parts.append(f"lease.id={lease['id']}")
         if lease.get("task"):
             parts.append(f"lease.task={_console_value(lease['task'])}")
+        invite = lease.get("invite") if isinstance(lease.get("invite"), Mapping) else {}
+        if invite.get("recipient"):
+            parts.append(f"lease.invite.recipient={_console_value(invite['recipient'])}")
+        if invite.get("id"):
+            parts.append(f"lease.invite.id={invite['id']}")
         if lease.get("reason_code"):
             parts.append(f"lease.reason_code={lease['reason_code']}")
         if lease.get("allowed") is not None:
