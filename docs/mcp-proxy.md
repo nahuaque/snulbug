@@ -699,6 +699,24 @@ Send the returned `x-snulbug-lease` header with MCP requests. The proxy hot-load
 the JSON file on each call, so new leases and revocations do not require a proxy
 restart.
 
+Create an invite when you want snulbug to package the share URL, bearer header,
+lease header, and downstream client snippets together:
+
+```bash
+snulbug mcp share invite create .snulbug/share \
+  --recipient "agent demo" \
+  --task "Read README before editing docs" \
+  --allow-tool safe_read_file \
+  --allow-path README.md \
+  --ttl 30m \
+  --max-calls 5
+```
+
+The create response includes MCP client JSON, a curl smoke test, a Claude Code
+setup command, and environment exports. Stored invite records are redacted, and
+the web console requires its local console secret before it reveals invite
+tokens.
+
 Auth binding flags are optional. When any are present, the current OAuth context
 must match every configured dimension before the lease covers the request. Use:
 

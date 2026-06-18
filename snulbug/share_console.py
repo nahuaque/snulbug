@@ -25,13 +25,16 @@ from .share import (
     activate_mcp_share_policy,
     approve_share_capability_request,
     create_mcp_share,
+    create_mcp_share_invite,
     create_mcp_share_lease,
     deny_share_capability_request,
     doctor_mcp_share,
+    list_mcp_share_invites,
     load_mcp_share,
     preview_mcp_share_policy_amendment,
     promote_mcp_share_policy,
     reactivate_mcp_share_lease,
+    revoke_mcp_share_invite,
     revoke_mcp_share_lease,
     share_capability_requests,
     share_report,
@@ -341,6 +344,12 @@ class ShareConsoleServer:
                 status = _first(query.get("status")) or "all"
                 _send_json(handler, 200, share_capability_requests(self.directory, status=status))
                 return
+            if path == "/api/invites":
+                query = parse_qs(parsed.query)
+                include_revoked = (_first(query.get("include_revoked")) or "true").lower() not in {"0", "false", "no"}
+                result = list_mcp_share_invites(self.directory, include_revoked=include_revoked)
+                _send_json(handler, 200, _redact_console_payload(result))
+                return
             if path == "/api/report":
                 _send_json(
                     handler,
@@ -493,6 +502,53 @@ class ShareConsoleServer:
                     return
                 result = _client_bearer_token(self.directory)
                 _send_json(handler, 200, result)
+                return
+            if path == "/api/invites/create":
+                if not self._has_console_secret(handler):
+                    _send_json(
+                        handler,
+                        403,
+                        {
+                            "ok": False,
+                            "error": "console secret required",
+                            "header": CONSOLE_SECRET_HEADER,
+                        },
+                    )
+                    return
+                result = create_mcp_share_invite(
+                    self.directory,
+                    recipient=_string_or_none(body.get("recipient")) or "share recipient",
+                    task=_string_or_none(body.get("task")) or "Temporary MCP access",
+                    allow_tools=_string_list(body.get("allow_tools")),
+                    allow_paths=_string_list(body.get("allow_paths")),
+                    allow_hosts=_string_list(body.get("allow_hosts")),
+                    allow_commands=_string_list(body.get("allow_commands")),
+                    ttl=_string_or_none(body.get("ttl")) or "30m",
+                    max_calls=_positive_int(body.get("max_calls")),
+                    client_name=_string_or_none(body.get("client_name")),
+                )
+                _send_json(handler, 200, result)
+                return
+            invite_prefix = "/api/invites/"
+            if path.startswith(invite_prefix) and path.endswith("/revoke"):
+                if not self._has_console_secret(handler):
+                    _send_json(
+                        handler,
+                        403,
+                        {
+                            "ok": False,
+                            "error": "console secret required",
+                            "header": CONSOLE_SECRET_HEADER,
+                        },
+                    )
+                    return
+                invite_id = unquote(path[len(invite_prefix) : -len("/revoke")])
+                result = revoke_mcp_share_invite(
+                    self.directory,
+                    invite_id=invite_id,
+                    revoke_lease=_bool_or_default(body.get("revoke_lease"), True),
+                )
+                _send_json(handler, 200, _redact_console_payload(result))
                 return
             if path == "/api/leases/create":
                 result = create_mcp_share_lease(
@@ -3372,6 +3428,40 @@ def _console_html() -> str:
     .lease-actions button {
       white-space: nowrap;
     }
+    .invite-list {
+      display: grid;
+      gap: 10px;
+    }
+    .invite-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fff;
+      display: grid;
+      gap: 10px;
+    }
+    .invite-card.active {
+      border-left: 4px solid var(--blue);
+    }
+    .invite-card.revoked {
+      border-left: 4px solid var(--line);
+    }
+    .invite-card-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: start;
+    }
+    .invite-title {
+      font-weight: 740;
+      overflow-wrap: anywhere;
+    }
+    .invite-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
     .setup-form {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -3734,6 +3824,10 @@ def _console_html() -> str:
       .lease-actions {
         grid-template-columns: 1fr;
       }
+      .invite-card-head,
+      .invite-actions {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
@@ -3765,6 +3859,7 @@ def _console_html() -> str:
         <a href="#decisionsSection">Decisions</a>
         <a href="#requestsSection">Requests</a>
         <a href="#leasesSection">Leases</a>
+        <a href="#invitesSection">Invites</a>
         <a href="#authSection">Auth</a>
         <a href="#schemaSection">Schemas</a>
         <a href="#riskSection">Risk</a>
@@ -3810,6 +3905,10 @@ def _console_html() -> str:
           <div class="section-body" id="leases"></div>
         </section>
       </div>
+      <section id="invitesSection">
+        <div class="section-head"><h2>Share Invitations</h2><span id="inviteSummary" class="muted"></span></div>
+        <div class="section-body" id="invitations"></div>
+      </section>
       <section id="authSection">
         <div class="section-head"><h2>Auth Visibility</h2><span id="authSummary" class="muted"></span></div>
         <div class="section-body" id="authVisibility"></div>
@@ -3848,6 +3947,13 @@ def _console_html() -> str:
         <div class="section-head"><h2>New Lease Header</h2></div>
         <div class="section-body"><div id="leaseOutput" class="console-output"></div></div>
       </section>
+      <section id="inviteSetupPanel" hidden>
+        <div class="section-head">
+          <h2>Invite Setup Snippets</h2>
+          <button type="button" onclick="copyInviteSetup()">Copy snippets</button>
+        </div>
+        <div class="section-body"><div id="inviteSetupOutput" class="console-output"></div></div>
+      </section>
       <section id="reportPanel" hidden>
         <div class="section-head"><h2>Session Report</h2></div>
         <div class="section-body"><div id="reportOutput" class="report-output"></div></div>
@@ -3864,13 +3970,15 @@ def _console_html() -> str:
       showAllReadiness: false,
       liveHealthStatus: null,
       liveHealthReadiness: null,
-      liveHealthShare: null
+      liveHealthShare: null,
+      lastInviteSetup: ""
     };
     const scrollPreserveSelectors = [
       ".policy-source",
       "#reportOutput",
       "#doctorChecks",
       "#amendPreview",
+      "#inviteSetupOutput",
       "#requestDrawer .drawer-body"
     ];
     const baseSectionIds = [
@@ -3881,6 +3989,7 @@ def _console_html() -> str:
       "decisionsSection",
       "requestsSection",
       "leasesSection",
+      "invitesSection",
       "authSection",
       "schemaSection",
       "riskSection",
@@ -3891,6 +4000,7 @@ def _console_html() -> str:
       "doctorPanel",
       "amendPreviewPanel",
       "leasePanel",
+      "inviteSetupPanel",
       "reportPanel"
     ];
     const $ = (id) => document.getElementById(id);
@@ -4010,6 +4120,7 @@ def _console_html() -> str:
       renderRequests(snapshot.capability_requests || {});
       renderRequestDrawer(snapshot.capability_requests || {});
       renderLeases(status.leases || {});
+      renderInvites(status.invitations || {});
       renderAuthVisibility(snapshot.auth_visibility || {});
       renderToolSchemaVisibility(snapshot.tool_schema_visibility || {});
       renderHealth(state.liveHealthStatus || status);
@@ -4184,12 +4295,14 @@ def _console_html() -> str:
       const traffic = status.traffic || {};
       const requests = status.capability_requests || {};
       const leases = status.leases || {};
+      const invitations = status.invitations || {};
       const risk = (status.tool_risks || {}).summary || {};
       const gateway = status.gateway || {};
       const session = status.session || {};
       const readinessSummary = readiness.summary || {};
       const gatewayState = gatewayMetric(gateway);
       const activeLeases = numeric(leases.active_count);
+      const activeInvites = numeric((invitations.summary || {}).active);
       const pendingRequests = numeric(requests.pending);
       const blocked = numeric(traffic.blocked);
       const allowed = numeric(traffic.allowed);
@@ -4231,6 +4344,14 @@ def _console_html() -> str:
           status: leaseRequired && activeLeases === 0 ? "bad" : (activeLeases > 0 ? "good" : "warn"),
           glyph: activeLeases > 0 ? "OK" : "0",
           href: "#leasesSection"
+        },
+        {
+          label: "Active invites",
+          value: String(activeInvites),
+          detail: activeInvites ? "task-scoped client setup ready" : "no share invites",
+          status: activeInvites ? "good" : "neutral",
+          glyph: activeInvites ? "OK" : "0",
+          href: "#invitesSection"
         },
         {
           label: "Pending requests",
@@ -4943,6 +5064,75 @@ def _console_html() -> str:
       return `${Math.max(0, maxCalls - used)} / ${maxCalls}`;
     }
 
+    function renderInvites(payload) {
+      const invitations = payload.items || [];
+      const summary = payload.summary || {};
+      const active = numeric(summary.active);
+      const revoked = numeric(summary.revoked);
+      $("inviteSummary").textContent = `${active} active, ${revoked} revoked`;
+      const createHtml = `<div class="setup-form stack">
+        <div>
+          <div class="timeline-target">Create task invite</div>
+          <div class="timeline-detail">
+            Mint a lease-backed client setup packet for one recipient. Secrets are shown once here.
+          </div>
+        </div>
+        <div class="field-grid">
+          ${setupField("invite-create-recipient", "Recipient", "local collaborator")}
+          ${setupField("invite-create-client-name", "Client name", "snulbug-share")}
+          ${setupField("invite-create-task", "Task", "Temporary MCP access", "wide")}
+          ${setupField("invite-create-tools", "Allowed tools", "safe_read_file")}
+          ${setupField("invite-create-paths", "Allowed paths", ".")}
+          ${setupField("invite-create-ttl", "TTL", "30m")}
+          ${setupField("invite-create-calls", "Max calls", "")}
+          ${setupField("invite-create-hosts", "Allowed hosts", "")}
+          ${setupField("invite-create-commands", "Allowed commands", "", "wide")}
+        </div>
+        <div class="review-actions">
+          <button type="button" class="primary" onclick="createInvite()">Create invite</button>
+          <span id="inviteCreateStatus" class="copy-status"></span>
+        </div>
+      </div>`;
+      if (!invitations.length) {
+        const emptyHtml = '<div class="empty">No share invites yet.</div>';
+        $("invitations").innerHTML = `<div class="stack">${createHtml}${emptyHtml}</div>`;
+        return;
+      }
+      const listHtml = `<div class="invite-list">${invitations.map(inviteCardHtml).join("")}</div>`;
+      $("invitations").innerHTML = `<div class="stack">${createHtml}${listHtml}</div>`;
+    }
+
+    function inviteCardHtml(invite) {
+      const id = esc(invite.id);
+      const revoked = Boolean(invite.revoked_at);
+      const status = revoked ? "revoked" : "active";
+      const tools = listText(invite.allow_tools);
+      const paths = listText(invite.allow_paths);
+      const taskDetail = `client ${invite.client_name || "snulbug-share"}`;
+      const expiryDetail = revoked ? `revoked ${shortDateTime(invite.revoked_at)}` : "";
+      const revokeAction = revoked
+        ? ""
+        : `<button class="danger" type="button" onclick="revokeInvite('${id}')">Revoke invite</button>`;
+      return `<div class="invite-card ${esc(status)}">
+        <div class="invite-card-head">
+          <div>
+            <div class="invite-title">${esc(invite.recipient || "share recipient")}</div>
+            <div class="timeline-detail">${esc(invite.id || "")}</div>
+          </div>
+          ${pill(status)}
+        </div>
+        <div class="lease-meta">
+          ${leaseMeta("Task", invite.task || "Temporary MCP access", taskDetail)}
+          ${leaseMeta("Allowed tools", tools || "-", paths ? `paths ${paths}` : "")}
+          ${leaseMeta("Expiry", shortDateTime(invite.expires_at), expiryDetail)}
+          ${leaseMeta("Backing lease", invite.lease_id || "-", invite.lease_header || "")}
+        </div>
+        <div class="invite-actions">
+          ${revokeAction}
+        </div>
+      </div>`;
+    }
+
     function renderAuthVisibility(payload) {
       const summary = payload.summary || {};
       const current = payload.current || {};
@@ -5647,6 +5837,131 @@ def _console_html() -> str:
         await loadSnapshot();
       } catch (error) {
         $("message").textContent = `Revoke failed: ${error.message}`;
+      }
+    }
+
+    function setInviteFeedback(message, kind = "") {
+      const status = $("inviteCreateStatus");
+      if (status) {
+        status.textContent = message || "";
+        status.className = `copy-status ${kind}`.trim();
+      }
+    }
+
+    async function createInvite() {
+      setInviteFeedback("Creating...", "pending");
+      $("message").textContent = "Creating invite";
+      const secret = consoleSecret();
+      if (!secret) {
+        setInviteFeedback("Console secret required", "fail");
+        $("message").textContent = "Console secret required to create invites";
+        return;
+      }
+      try {
+        const payload = await api("/api/invites/create", {
+          method: "POST",
+          headers: { "x-snulbug-console-secret": secret },
+          body: JSON.stringify({
+            recipient: setupInputValue("invite-create-recipient"),
+            client_name: setupInputValue("invite-create-client-name"),
+            task: setupInputValue("invite-create-task"),
+            allow_tools: setupInputValue("invite-create-tools"),
+            allow_paths: setupInputValue("invite-create-paths"),
+            allow_hosts: setupInputValue("invite-create-hosts"),
+            allow_commands: setupInputValue("invite-create-commands"),
+            ttl: setupInputValue("invite-create-ttl") || "30m",
+            max_calls: setupInputValue("invite-create-calls")
+          })
+        });
+        state.lastInviteSetup = formatInviteSetup(payload);
+        $("inviteSetupOutput").textContent = state.lastInviteSetup;
+        $("inviteSetupPanel").hidden = false;
+        setInviteFeedback("Created", "ok");
+        $("message").textContent = `Created invite ${(payload.invite || {}).id || ""}`;
+        await loadSnapshot();
+      } catch (error) {
+        if (String(error.message || "").includes("console secret")) {
+          if (window.sessionStorage) window.sessionStorage.removeItem("snulbug-console-secret");
+        }
+        setInviteFeedback("Create failed", "fail");
+        $("message").textContent = `Create invite failed: ${error.message}`;
+      }
+    }
+
+    async function revokeInvite(id) {
+      if (!window.confirm(`Revoke invite ${id}? This also revokes its backing lease.`)) return;
+      const secret = consoleSecret();
+      if (!secret) {
+        $("message").textContent = "Console secret required to revoke invites";
+        return;
+      }
+      try {
+        await api(`/api/invites/${encodeURIComponent(id)}/revoke`, {
+          method: "POST",
+          headers: { "x-snulbug-console-secret": secret },
+          body: JSON.stringify({ revoke_lease: true })
+        });
+        $("message").textContent = `Revoked invite ${id}`;
+        await loadSnapshot();
+      } catch (error) {
+        if (String(error.message || "").includes("console secret")) {
+          if (window.sessionStorage) window.sessionStorage.removeItem("snulbug-console-secret");
+        }
+        $("message").textContent = `Revoke invite failed: ${error.message}`;
+      }
+    }
+
+    function formatInviteSetup(payload) {
+      const invite = payload.invite || {};
+      const snippets = payload.setup_snippets || {};
+      const lines = [
+        `Invite: ${invite.id || ""}`,
+        `Recipient: ${invite.recipient || ""}`,
+        `Task: ${invite.task || ""}`,
+        `Client URL: ${snippets.client_url || invite.client_url || ""}`,
+        "",
+        "Environment:",
+        envSnippet(snippets.env || {}),
+        "",
+        "curl smoke test:",
+        (snippets.curl || {}).command || "",
+        "",
+        "Claude Code:",
+        (snippets.claude_code || {}).command || "",
+        "",
+        "MCP client JSON:",
+        JSON.stringify(snippets.mcp_client_json || {}, null, 2),
+        "",
+        "Headers:",
+        JSON.stringify(snippets.headers || payload.headers || {}, null, 2)
+      ];
+      return lines.join("\\n");
+    }
+
+    function envSnippet(env) {
+      const keys = Object.keys(env);
+      if (!keys.length) return "-";
+      return keys.map((key) => `${key}=${shellQuote(env[key])}`).join("\\n");
+    }
+
+    function shellQuote(value) {
+      const raw = text(value, "");
+      if (/^[A-Za-z0-9_./:@-]+$/.test(raw)) return raw;
+      return "'" + raw.replace(/'/g, "'\\\\''") + "'";
+    }
+
+    async function copyInviteSetup() {
+      const textValue = state.lastInviteSetup || ($("inviteSetupOutput") || {}).textContent || "";
+      if (!textValue) {
+        $("message").textContent = "No invite setup snippets to copy";
+        return;
+      }
+      try {
+        if (!navigator.clipboard) throw new Error("clipboard unavailable");
+        await navigator.clipboard.writeText(textValue);
+        $("message").textContent = "Copied invite setup snippets";
+      } catch (error) {
+        $("message").textContent = `Copy failed: ${error.message}`;
       }
     }
 

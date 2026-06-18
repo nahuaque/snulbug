@@ -70,6 +70,9 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
     share_lease = share_subparsers.add_parser("lease", help="create and manage task-scoped MCP capability leases")
     _add_share_lease_args(share_lease)
 
+    share_invite = share_subparsers.add_parser("invite", help="create and manage task-scoped MCP share invites")
+    _add_share_invite_args(share_invite)
+
     share_requests = share_subparsers.add_parser("requests", help="review MCP just-in-time capability requests")
     _add_share_request_args(share_requests)
 
@@ -398,12 +401,15 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
         attach_mcp_share_member,
         close_mcp_share,
         create_mcp_share,
+        create_mcp_share_invite,
         deny_share_capability_request,
         doctor_mcp_share,
         doctor_mcp_share_auth,
         format_share_auth_conformance_report,
         generate_auth_conformance_pack,
+        list_mcp_share_invites,
         promote_mcp_share_policy,
+        revoke_mcp_share_invite,
         run_auth_conformance_pack,
         run_mcp_share,
         share_capability_requests,
@@ -584,6 +590,35 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                 result = revoke_lease(args.file, args.lease_id)
             else:
                 parser.error(f"unknown mcp share lease command: {args.share_lease_command}")
+                return 2
+            status = 0 if result["ok"] else 1
+            write_generated_session_output(result, compact=args.compact)
+            return status
+
+        if command == "invite":
+            if args.share_invite_command == "create":
+                result = create_mcp_share_invite(
+                    args.directory,
+                    recipient=args.recipient,
+                    task=args.task,
+                    allow_tools=args.allow_tool,
+                    allow_paths=args.allow_path,
+                    allow_hosts=args.allow_host,
+                    allow_commands=args.allow_command,
+                    ttl=args.ttl,
+                    max_calls=args.max_calls,
+                    client_name=args.client_name,
+                )
+            elif args.share_invite_command == "list":
+                result = list_mcp_share_invites(args.directory, include_revoked=not args.active_only)
+            elif args.share_invite_command == "revoke":
+                result = revoke_mcp_share_invite(
+                    args.directory,
+                    invite_id=args.invite_id,
+                    revoke_lease=not args.keep_lease,
+                )
+            else:
+                parser.error(f"unknown mcp share invite command: {args.share_invite_command}")
                 return 2
             status = 0 if result["ok"] else 1
             write_generated_session_output(result, compact=args.compact)
@@ -1326,6 +1361,41 @@ def _add_share_lease_args(parser: argparse.ArgumentParser) -> None:
     lease_revoke.add_argument("lease_id", help="lease id to revoke")
     lease_revoke.add_argument("--file", type=Path, default=Path("leases.json"), help="lease JSON file")
     add_compact_arg(lease_revoke)
+
+
+def _add_share_invite_args(parser: argparse.ArgumentParser) -> None:
+    invite_subparsers = parser.add_subparsers(dest="share_invite_command", required=True)
+
+    invite_create = invite_subparsers.add_parser(
+        "create",
+        help="create a task-scoped MCP client invite backed by a lease",
+    )
+    invite_create.add_argument("directory", type=Path, help="share session directory")
+    invite_create.add_argument("--recipient", required=True, help="human-readable recipient or client label")
+    invite_create.add_argument("--task", required=True, help="human-readable task this invite grants")
+    invite_create.add_argument("--allow-tool", action="append", required=True, help="allowed MCP tool name")
+    add_allow_path_arg(invite_create, help="allowed path or path prefix")
+    invite_create.add_argument("--allow-host", action="append", default=[], help="allowed URL host")
+    invite_create.add_argument("--allow-command", action="append", default=[], help="allowed command name")
+    invite_create.add_argument("--ttl", default="30m", help="invite lease TTL, such as 30m, 2h, or 1d")
+    invite_create.add_argument("--max-calls", type=int, help="maximum number of allowed tools/call uses")
+    invite_create.add_argument("--client-name", help="MCP client config server name")
+    add_compact_arg(invite_create)
+
+    invite_list = invite_subparsers.add_parser("list", help="list MCP share invites without revealing tokens")
+    invite_list.add_argument("directory", type=Path, help="share session directory")
+    invite_list.add_argument("--active-only", action="store_true", help="hide revoked invites")
+    add_compact_arg(invite_list)
+
+    invite_revoke = invite_subparsers.add_parser("revoke", help="revoke an MCP share invite")
+    invite_revoke.add_argument("directory", type=Path, help="share session directory")
+    invite_revoke.add_argument("invite_id", help="invite id to revoke")
+    invite_revoke.add_argument(
+        "--keep-lease",
+        action="store_true",
+        help="leave the invite's backing lease active",
+    )
+    add_compact_arg(invite_revoke)
 
 
 def _add_share_request_args(parser: argparse.ArgumentParser) -> None:

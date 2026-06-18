@@ -329,6 +329,20 @@ Send the returned `x-snulbug-lease` header with MCP requests. Set
 `lease_required = true` in `snulbug.toml` when every `tools/call` should require
 an active task lease.
 
+For a downstream MCP client, generate a task-scoped invite with setup snippets:
+
+```bash
+snulbug mcp share invite create .snulbug/share \
+  --recipient "local agent" \
+  --task "Read README only" \
+  --allow-tool safe_read_file \
+  --allow-path README.md \
+  --ttl 30m
+```
+
+The response includes MCP client JSON, a curl smoke test, Claude Code setup, and
+environment exports. The share session stores only redacted invite metadata.
+
 If your policy uses `action = "confirm"` for risky calls, enable confirmation in
 `snulbug.toml`:
 

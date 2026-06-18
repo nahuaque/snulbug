@@ -26,7 +26,8 @@ snulbug mcp guide --workflow share --compact
 - `learn-amend-impact`: inspect a captured session, learn a least-privilege
   policy, preview impact, and generate candidate amendments for legitimate
   blocks.
-- `leases`: create, preview, and revoke task-scoped capability leases.
+- `leases-invites`: create, preview, and revoke task-scoped leases; package
+  lease-backed setup snippets for downstream MCP clients.
 - `facade`: run several local MCP upstreams behind one protected endpoint with
   namespaced tool identities.
 

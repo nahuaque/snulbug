@@ -20,11 +20,13 @@ from snulbug import (
     attach_mcp_share_member,
     close_mcp_share,
     create_mcp_share,
+    create_mcp_share_invite,
     deny_share_capability_request,
     doctor_mcp_share,
     doctor_mcp_share_auth,
     generate_auth_conformance_pack,
     learn_mcp_policy,
+    list_mcp_share_invites,
     list_share_doctor_checks,
     load_fabric_member_registry,
     load_mcp_proxy_config,
@@ -33,6 +35,7 @@ from snulbug import (
     promote_mcp_share_policy,
     record_policy_request,
     register_share_doctor_check,
+    revoke_mcp_share_invite,
     run_auth_conformance_pack,
     run_mcp_share,
     share_capability_requests,
@@ -221,6 +224,99 @@ def test_mcp_share_cli_emits_compact_session_plan(tmp_path, capsys):
     assert (tmp_path / "share.json").is_file()
     assert share_session_model_path(tmp_path).is_file()
     assert (tmp_path / "SHARE.md").is_file()
+
+
+def test_mcp_share_invite_create_list_and_revoke_redacts_stored_snippets(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        allowed_paths=["README.md"],
+        validate=False,
+    )
+
+    created = create_mcp_share_invite(
+        tmp_path,
+        recipient="frontend agent",
+        task="Read project docs",
+        allow_tools=["safe_read_file"],
+        allow_paths=["README.md"],
+        ttl="10m",
+        max_calls=2,
+    )
+    listing = list_mcp_share_invites(tmp_path)
+    session_model = load_share_session_model(tmp_path)
+    revoked = revoke_mcp_share_invite(tmp_path, invite_id=created["invite"]["id"])
+    active_only = list_mcp_share_invites(tmp_path, include_revoked=False)
+
+    assert created["ok"] is True
+    assert created["invite"]["id"].startswith("invite_")
+    assert created["invite"]["lease_id"] == created["lease"]["id"]
+    assert created["headers"]["Authorization"] == "Bearer share-secret"
+    assert created["headers"]["x-snulbug-lease"].startswith("sbl_")
+    assert created["bearer_token"] == "share-secret"
+    assert created["lease_token"].startswith("sbl_")
+    assert created["setup_snippets"]["client_url"] == "https://mcp.example.test/mcp"
+    assert created["setup_snippets"]["headers"]["Authorization"] == "Bearer share-secret"
+    assert created["setup_snippets"]["env"]["SNULBUG_BEARER_TOKEN"] == "share-secret"
+    assert "tools/list" in created["setup_snippets"]["curl"]["command"]
+    assert "claude mcp add" in created["setup_snippets"]["claude_code"]["command"]
+    assert listing["summary"] == {"total": 1, "active": 1, "revoked": 0}
+    assert listing["invitations"][0]["recipient"] == "frontend agent"
+    assert listing["invitations"][0]["setup_snippets"]["headers"]["Authorization"] == "Bearer [REDACTED]"
+    assert "share-secret" not in json.dumps(listing)
+    assert "sbl_" not in json.dumps(listing)
+    assert "share-secret" not in json.dumps(session_model["invitations"])
+    assert "sbl_" not in json.dumps(session_model["invitations"])
+    assert revoked["ok"] is True
+    assert revoked["lease_revoked"] is True
+    assert revoked["invite"]["revoked_at"]
+    assert active_only["summary"] == {"total": 0, "active": 0, "revoked": 0}
+
+
+def test_mcp_share_invite_cli_emits_setup_snippets(tmp_path, capsys):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    status = simulator_main(
+        [
+            "mcp",
+            "share",
+            "invite",
+            "create",
+            str(tmp_path),
+            "--recipient",
+            "local agent",
+            "--task",
+            "Read docs",
+            "--allow-tool",
+            "safe_read_file",
+            "--allow-path",
+            "README.md",
+            "--ttl",
+            "5m",
+            "--compact",
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert status == 0
+    assert output["ok"] is True
+    assert output["invite"]["recipient"] == "local agent"
+    assert output["headers"]["Authorization"] == "Bearer share-secret"
+    assert output["headers"]["x-snulbug-lease"].startswith("sbl_")
+    assert output["setup_snippets"]["mcp_client_json"]["mcpServers"]["snulbug-share"]["url"] == (
+        "https://mcp.example.test/mcp"
+    )
+    assert "curl -sS https://mcp.example.test/mcp" in output["setup_snippets"]["curl"]["command"]
 
 
 def test_mcp_share_requires_lifecycle_subcommand(tmp_path):

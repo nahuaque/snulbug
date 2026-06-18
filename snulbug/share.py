@@ -74,6 +74,7 @@ CONTAINER_REMOTE_BRIDGE_PORT = 19100
 DEFAULT_SHARE_MEMBER_REGISTRY = Path(".snulbug") / "fabric-members.json"
 DEFAULT_SHARE_MEMBER_DISCOVERY_PROVIDER = "share-members"
 SHARE_MEMBER_KINDS = ("codespaces", "devcontainer", "holepunch", "container", "generic")
+SHARE_INVITE_SCHEMA = "snulbug.share.invite.v1"
 AUTH_CONFORMANCE_SCHEMA = "snulbug.auth-conformance-pack.v1"
 AUTH_CONFORMANCE_VERSION = 1
 SHARE_CONTRACT_SCHEMA = "snulbug.share-contract.v1"
@@ -457,6 +458,7 @@ def share_status(
     recordings = _share_recordings_status(share_dir, session_model)
     policy = _mapping(session_model.get("policy"))
     members = _mapping(session_model.get("members"))
+    invitations = _mapping(session_model.get("invitations"))
     amendments = _share_amendment_status(session_model)
     tunnel = _share_tunnel_status(manifest, session_model)
     contract = _share_contract_status(share_dir, manifest, session_model) if include_contract else {}
@@ -487,6 +489,7 @@ def share_status(
         "tunnel_doctor": tunnel,
         "policy": policy,
         "members": members,
+        "invitations": invitations,
         "amendments": amendments,
         "contract": contract,
         "traffic": traffic,
@@ -1033,6 +1036,165 @@ def create_mcp_share_lease(
         "headers": {lease_header: token},
         "retry_header": f'-H "{lease_header}: {token}"',
         "session_model": str(share_session_model_path(share_dir)),
+    }
+
+
+def create_mcp_share_invite(
+    directory: str | Path = ".",
+    *,
+    recipient: str,
+    task: str,
+    allow_tools: Sequence[str],
+    allow_paths: Sequence[str] = (),
+    allow_hosts: Sequence[str] = (),
+    allow_commands: Sequence[str] = (),
+    ttl: str = "30m",
+    max_calls: int | None = None,
+    client_name: str | None = None,
+) -> dict[str, Any]:
+    """Create a task-scoped share invitation with one-time client setup snippets."""
+
+    if not recipient.strip():
+        raise ValueError("recipient must be non-empty")
+    share_dir, manifest, session_model = _load_share_model_context(directory)
+    client = _mapping(manifest.get("client"))
+    client_url = str(client.get("url") or "")
+    if not client_url:
+        raise ValueError("share manifest does not contain a client URL")
+    auth_header, auth_value, bearer_token = _share_client_bearer_token(manifest)
+    lease_result = create_mcp_share_lease(
+        share_dir,
+        task=task,
+        allow_tools=allow_tools,
+        allow_paths=allow_paths,
+        allow_hosts=allow_hosts,
+        allow_commands=allow_commands,
+        ttl=ttl,
+        max_calls=max_calls,
+    )
+    lease = _mapping(lease_result.get("lease"))
+    invite_id = _new_share_invite_id()
+    lease_header = str(lease_result.get("lease_header") or _share_capability_lease_header(session_model, manifest))
+    lease_token = str(_mapping(lease_result.get("headers")).get(lease_header) or "")
+    headers = {auth_header: auth_value, lease_header: lease_token}
+    effective_client_name = client_name or str(client.get("name") or DEFAULT_SHARE_CLIENT_NAME)
+    snippets = _share_invite_setup_snippets(
+        client_name=effective_client_name,
+        client_url=client_url,
+        headers=headers,
+        bearer_token=bearer_token,
+        lease_header=lease_header,
+        lease_token=lease_token,
+    )
+    redacted_snippets = _share_invite_setup_snippets(
+        client_name=effective_client_name,
+        client_url=client_url,
+        headers=_redacted_invite_headers(headers),
+        bearer_token=SECRET_REPLACEMENT,
+        lease_header=lease_header,
+        lease_token=SECRET_REPLACEMENT,
+    )
+    now = _now_iso()
+    invite = _drop_empty_json(
+        {
+            "schema": SHARE_INVITE_SCHEMA,
+            "id": invite_id,
+            "recipient": recipient,
+            "task": task,
+            "created_at": now,
+            "expires_at": lease.get("expires_at"),
+            "revoked_at": None,
+            "client_name": effective_client_name,
+            "client_url": client_url,
+            "auth_mode": "bearer",
+            "lease_id": lease.get("id"),
+            "lease_header": lease_header,
+            "allow_tools": list(allow_tools),
+            "allow_paths": list(allow_paths),
+            "allow_hosts": list(allow_hosts),
+            "allow_commands": list(allow_commands),
+            "max_calls": max_calls,
+            "setup_snippets": redacted_snippets,
+        }
+    )
+    session_model = _record_share_invite(share_dir, session_model, invite)
+    return {
+        "ok": True,
+        "share": str(share_dir),
+        "invite": invite,
+        "headers": headers,
+        "bearer_token": bearer_token,
+        "lease_token": lease_token,
+        "setup_snippets": snippets,
+        "lease": lease_result.get("lease"),
+        "session_model": str(share_session_model_path(share_dir)),
+        "invitations": _mapping(session_model.get("invitations")),
+    }
+
+
+def list_mcp_share_invites(
+    directory: str | Path = ".",
+    *,
+    include_revoked: bool = True,
+) -> dict[str, Any]:
+    """List share invitations without revealing bearer or lease tokens."""
+
+    share_dir, _manifest, session_model = _load_share_model_context(directory)
+    invitations = _mapping(session_model.get("invitations"))
+    items = [_mapping(item) for item in _sequence(invitations.get("items")) if isinstance(item, Mapping)]
+    if not include_revoked:
+        items = [item for item in items if not item.get("revoked_at")]
+    return {
+        "ok": True,
+        "share": str(share_dir),
+        "invitations": items,
+        "summary": _share_invite_summary(items),
+        "session_model": str(share_session_model_path(share_dir)),
+    }
+
+
+def revoke_mcp_share_invite(
+    directory: str | Path = ".",
+    *,
+    invite_id: str,
+    revoke_lease: bool = True,
+) -> dict[str, Any]:
+    """Revoke a share invitation and optionally revoke its backing lease."""
+
+    share_dir, _manifest, session_model = _load_share_model_context(directory)
+    invitations = dict(_mapping(session_model.get("invitations")))
+    items = [dict(_mapping(item)) for item in _sequence(invitations.get("items")) if isinstance(item, Mapping)]
+    now = _now_iso()
+    invite: dict[str, Any] | None = None
+    for item in items:
+        if item.get("id") == invite_id:
+            item["revoked_at"] = item.get("revoked_at") or now
+            invite = item
+            break
+    if invite is None:
+        return {
+            "ok": False,
+            "share": str(share_dir),
+            "error": f"invite not found: {invite_id}",
+            "session_model": str(share_session_model_path(share_dir)),
+        }
+    invitations["items"] = items
+    invitations["summary"] = _share_invite_summary(items)
+    model = json.loads(json.dumps(dict(session_model), default=str))
+    model["invitations"] = invitations
+    write_share_session_model(share_dir, model, force=True)
+    lease_result = None
+    lease_id = invite.get("lease_id")
+    if revoke_lease and isinstance(lease_id, str) and lease_id:
+        lease_result = revoke_mcp_share_lease(share_dir, lease_id=lease_id)
+    return {
+        "ok": True,
+        "share": str(share_dir),
+        "invite": invite,
+        "lease_revoked": _mapping(lease_result).get("ok") if lease_result is not None else None,
+        "lease": lease_result,
+        "session_model": str(share_session_model_path(share_dir)),
+        "invitations": invitations,
     }
 
 
@@ -7498,6 +7660,119 @@ def _preflight_share(directory: Path, *, force: bool) -> None:
 
 def _new_bearer_token() -> str:
     return f"sbt_{secrets.token_urlsafe(24)}"
+
+
+def _new_share_invite_id() -> str:
+    return f"invite_{secrets.token_urlsafe(9).replace('-', '').replace('_', '')[:12]}"
+
+
+def _share_client_bearer_token(manifest: Mapping[str, Any]) -> tuple[str, str, str]:
+    client = _mapping(manifest.get("client"))
+    headers = _mapping(client.get("headers"))
+    for name, value in headers.items():
+        if str(name).lower() != "authorization":
+            continue
+        auth_value = str(value)
+        prefix = "bearer "
+        if not auth_value.lower().startswith(prefix):
+            raise ValueError("share client Authorization header is not a bearer token")
+        token = auth_value[len(prefix) :].strip()
+        if not token or token.startswith("${"):
+            raise ValueError("share bearer token is not stored locally; mint or resolve it client-side")
+        return str(name), f"Bearer {token}", token
+    raise ValueError("share client does not include an Authorization bearer token")
+
+
+def _redacted_invite_headers(headers: Mapping[str, Any]) -> dict[str, str]:
+    redacted = {}
+    for name, value in headers.items():
+        if str(name).lower() == "authorization":
+            redacted[str(name)] = "Bearer " + SECRET_REPLACEMENT
+        else:
+            redacted[str(name)] = SECRET_REPLACEMENT if value else ""
+    return redacted
+
+
+def _share_invite_setup_snippets(
+    *,
+    client_name: str,
+    client_url: str,
+    headers: Mapping[str, str],
+    bearer_token: str,
+    lease_header: str,
+    lease_token: str,
+) -> dict[str, Any]:
+    config = _client_config(client_name, client_url, {str(key): str(value) for key, value in headers.items()})
+    header_args = " ".join(f"-H {shlex.quote(f'{name}: {value}')}" for name, value in headers.items())
+    curl_body = json.dumps({"jsonrpc": "2.0", "id": "tools-list", "method": "tools/list", "params": {}})
+    curl = (
+        f"curl -sS {shlex.quote(client_url)} "
+        f"{header_args} -H 'Content-Type: application/json' "
+        f"-H 'Accept: application/json, text/event-stream' -d {shlex.quote(curl_body)}"
+    )
+    claude_code_headers = " ".join(f"--header {shlex.quote(f'{name}: {value}')}" for name, value in headers.items())
+    return {
+        "client_url": client_url,
+        "headers": dict(headers),
+        "mcp_client_json": config,
+        "claude_desktop": {
+            "description": "Merge this into Claude Desktop's MCP server configuration.",
+            "json": config,
+        },
+        "cursor": {
+            "description": "Merge this into Cursor's MCP server configuration.",
+            "json": config,
+        },
+        "claude_code": {
+            "description": "HTTP MCP server setup command for Claude Code.",
+            "command": (
+                f"claude mcp add --transport http {shlex.quote(client_name)} "
+                f"{shlex.quote(client_url)} {claude_code_headers}"
+            ),
+        },
+        "mcp_inspector": {
+            "description": "Use this URL and headers in the MCP Inspector HTTP transport form.",
+            "url": client_url,
+            "headers": dict(headers),
+        },
+        "curl": {
+            "description": "Smoke-test the invite by listing tools.",
+            "command": curl,
+        },
+        "env": {
+            "SNULBUG_INVITE_URL": client_url,
+            "SNULBUG_BEARER_TOKEN": bearer_token,
+            "SNULBUG_LEASE_HEADER": lease_header,
+            "SNULBUG_LEASE_TOKEN": lease_token,
+        },
+    }
+
+
+def _record_share_invite(
+    share_dir: Path,
+    session_model: Mapping[str, Any],
+    invite: Mapping[str, Any],
+) -> dict[str, Any]:
+    model = json.loads(json.dumps(dict(session_model), default=str))
+    invitations = dict(_mapping(model.get("invitations")))
+    items = [dict(_mapping(item)) for item in _sequence(invitations.get("items")) if isinstance(item, Mapping)]
+    items.append(dict(invite))
+    invitations["items"] = items
+    invitations["last_created"] = dict(invite)
+    invitations["summary"] = _share_invite_summary(items)
+    model["invitations"] = invitations
+    write_share_session_model(share_dir, model, force=True)
+    return model
+
+
+def _share_invite_summary(items: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    total = len(items)
+    revoked = sum(1 for item in items if item.get("revoked_at"))
+    return {
+        "total": total,
+        "active": total - revoked,
+        "revoked": revoked,
+    }
 
 
 def _client_config(name: str, url: str, headers: dict[str, str]) -> dict[str, Any]:

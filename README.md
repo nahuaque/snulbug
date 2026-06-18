@@ -316,6 +316,23 @@ and an active task lease before Lua allows the tool call. If a lease includes
 auth binding flags, the current sanitized OAuth context must match those bounds
 too; a copied lease token alone is not enough.
 
+When you want to hand a downstream client a ready-to-use setup packet, create a
+task-scoped invite instead. It mints a backing lease and returns one-time setup
+snippets for MCP client JSON, curl, Claude Code, and environment variables:
+
+```bash
+snulbug mcp share invite create .snulbug/share \
+  --recipient "local agent" \
+  --task "Read project docs only" \
+  --allow-tool safe_read_file \
+  --allow-path README.md \
+  --ttl 30m
+```
+
+The invite list stored in the share session is redacted; bearer and lease tokens
+are only shown in the create response or in the local share console after you
+enter the console secret printed by `snulbug mcp share run`.
+
 After a session, inspect the logs:
 
 ```bash

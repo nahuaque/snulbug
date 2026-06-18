@@ -382,6 +382,34 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
         snapshot = read_json(f"{server.url}/api/snapshot")
         report_body, report_headers = read_response(f"{server.url}/api/report/download")
         request_id = snapshot["capability_requests"]["requests"][0]["id"]
+        with pytest.raises(urllib.error.HTTPError) as forbidden:
+            post_json(
+                f"{server.url}/api/invites/create",
+                {
+                    "recipient": "agent",
+                    "task": "Read docs",
+                    "allow_tools": "safe_read_file",
+                    "allow_paths": "README.md",
+                },
+            )
+        invite_created = post_json(
+            f"{server.url}/api/invites/create",
+            {
+                "recipient": "agent",
+                "task": "Read docs",
+                "allow_tools": "safe_read_file",
+                "allow_paths": "README.md",
+                "ttl": "8m",
+                "max_calls": 2,
+            },
+            headers={share_console.CONSOLE_SECRET_HEADER: server.console_secret},
+        )
+        invite_revoked = post_json(
+            f"{server.url}/api/invites/{invite_created['invite']['id']}/revoke",
+            {"revoke_lease": True},
+            headers={share_console.CONSOLE_SECRET_HEADER: server.console_secret},
+        )
+        invite_snapshot = read_json(f"{server.url}/api/snapshot")
         approved = post_json(
             f"{server.url}/api/requests/{request_id}/approve",
             {"ttl": "12m", "max_calls": 2, "reviewer": "ui"},
@@ -471,6 +499,16 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "createLease" in html
     assert "reactivateLease" in html
     assert "revokeLease" in html
+    assert 'href="#invitesSection"' in html
+    assert 'id="invitesSection"' in html
+    assert "Share Invitations" in html
+    assert "renderInvites" in html
+    assert "Create task invite" in html
+    assert "Invite Setup Snippets" in html
+    assert "createInvite" in html
+    assert "revokeInvite" in html
+    assert "copyInviteSetup" in html
+    assert "/api/invites/create" in html
     assert "Auth Visibility" in html
     assert "renderAuthVisibility" in html
     assert "scopeMatchText" in html
@@ -507,6 +545,16 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "share-secret" not in snapshot["policy_visibility"]["source"]["source"]
     assert "share-secret" not in json.dumps(snapshot)
     assert "sbl_" not in json.dumps(snapshot)
+    assert forbidden.value.code == 403
+    assert invite_created["ok"] is True
+    assert invite_created["headers"]["Authorization"] == "Bearer share-secret"
+    assert invite_created["headers"]["x-snulbug-lease"].startswith("sbl_")
+    assert invite_created["setup_snippets"]["env"]["SNULBUG_BEARER_TOKEN"] == "share-secret"
+    assert invite_revoked["ok"] is True
+    assert invite_revoked["lease_revoked"] is True
+    assert invite_snapshot["status"]["invitations"]["summary"]["revoked"] == 1
+    assert "share-secret" not in json.dumps(invite_snapshot)
+    assert "sbl_" not in json.dumps(invite_snapshot)
     assert report_headers["content-type"].startswith("text/markdown")
     assert report_headers["content-disposition"].startswith("attachment;")
     assert report_headers["content-disposition"].endswith('report.md"')
