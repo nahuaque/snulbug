@@ -265,6 +265,7 @@ class ShareConsoleServer:
     _server: ThreadingHTTPServer | None = field(default=None, init=False, repr=False)
     _thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _run_requested: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _initial_health_share: str | None = field(default=None, init=False, repr=False)
 
     @property
     def url(self) -> str:
@@ -629,10 +630,26 @@ class ShareConsoleServer:
     def snapshot(self) -> dict[str, Any]:
         if self.setup_only:
             return build_share_setup_console_snapshot(self.directory)
+        share_key = str(self.directory.resolve(strict=False))
+        if self.live_checks:
+            return build_share_console_snapshot(
+                self.directory,
+                timeout=self.timeout,
+                live_checks=True,
+            )
+        if self._initial_health_share != share_key:
+            snapshot = build_share_console_snapshot(
+                self.directory,
+                timeout=self.timeout,
+                live_checks=True,
+            )
+            snapshot["initial_health_check"] = True
+            self._initial_health_share = share_key
+            return snapshot
         return build_share_console_snapshot(
             self.directory,
             timeout=self.timeout,
-            live_checks=self.live_checks,
+            live_checks=False,
         )
 
     def _has_console_secret(self, handler: BaseHTTPRequestHandler) -> bool:
@@ -4076,6 +4093,11 @@ def _console_html() -> str:
           state.liveHealthStatus = null;
           state.liveHealthReadiness = null;
           state.liveHealthShare = null;
+        }
+        if (snapshot.initial_health_check) {
+          state.liveHealthStatus = snapshot.status || null;
+          state.liveHealthReadiness = snapshot.readiness_gate || null;
+          state.liveHealthShare = snapshot.share || null;
         }
         state.snapshot = snapshot;
         render();

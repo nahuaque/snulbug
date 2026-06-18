@@ -542,6 +542,7 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "Run Doctor" in html
     assert "Run health check" in html
     assert "runHealthCheck" in html
+    assert "snapshot.initial_health_check" in html
     assert "const metricStatus = state.liveHealthStatus || status;" in html
     assert "renderMetrics(metricStatus, readiness)" in html
     assert "renderMetrics(payload, state.liveHealthReadiness)" in html
@@ -717,14 +718,20 @@ def test_share_console_runs_manual_health_check(tmp_path, monkeypatch):
     server.start()
     try:
         snapshot = read_json(f"{server.url}/api/snapshot")
+        refreshed = read_json(f"{server.url}/api/snapshot")
         health = post_json(f"{server.url}/api/health/check", {})
     finally:
         server.stop()
 
-    assert snapshot["status"]["gateway"]["checked"] is False
+    assert snapshot["initial_health_check"] is True
+    assert snapshot["status"]["gateway"]["checked"] is True
     assert snapshot["status"]["public_gateway"]["configured"] is True
-    assert snapshot["status"]["public_gateway"]["checked"] is False
-    assert snapshot["status"]["upstreams"][0]["checked"] is False
+    assert snapshot["status"]["public_gateway"]["checked"] is True
+    assert snapshot["status"]["upstreams"][0]["checked"] is True
+    assert "initial_health_check" not in refreshed
+    assert refreshed["status"]["gateway"]["checked"] is False
+    assert refreshed["status"]["public_gateway"]["checked"] is False
+    assert refreshed["status"]["upstreams"][0]["checked"] is False
     assert health["public_gateway"]["checked"] is True
     assert health["public_gateway"]["reachable"] is True
     assert health["gateway"]["checked"] is True
@@ -738,12 +745,15 @@ def test_share_console_runs_manual_health_check(tmp_path, monkeypatch):
         "https://mcp.example.test/mcp",
         "http://127.0.0.1:8080/mcp",
         "http://127.0.0.1:9000",
+        "https://mcp.example.test/mcp",
+        "http://127.0.0.1:8080/mcp",
+        "http://127.0.0.1:9000",
     ]
     assert {key.lower(): value for key, value in calls[0][1].items()}["authorization"] == "Bearer share-secret"
     assert "share-secret" not in json.dumps(health)
 
 
-def test_share_console_marks_readiness_reviewed(tmp_path):
+def test_share_console_marks_readiness_reviewed(tmp_path, monkeypatch):
     create_mcp_share(
         tmp_path,
         provider="generic",
@@ -752,6 +762,11 @@ def test_share_console_marks_readiness_reviewed(tmp_path):
         allowed_tools=["safe_read_file"],
         validate=False,
     )
+
+    def fake_probe(url, *, headers, timeout):
+        return {"reachable": True, "status": 200, "error": None, "mcp_ok": True}
+
+    monkeypatch.setattr("snulbug.share._probe_mcp_url", fake_probe)
     server = ShareConsoleServer(directory=tmp_path, port=0, live_checks=False)
     server.start()
     try:
@@ -762,10 +777,10 @@ def test_share_console_marks_readiness_reviewed(tmp_path):
             {
                 "review_digest": readiness["review_digest"],
                 "reviewer": "ui-test",
-                "live_checks": False,
+                "live_checks": True,
             },
         )
-        after = read_json(f"{server.url}/api/snapshot")
+        after = post_json(f"{server.url}/api/health/check", {})
     finally:
         server.stop()
 

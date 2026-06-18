@@ -1191,8 +1191,8 @@ def _add_share_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--console-live-checks",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="probe the local gateway and configured upstreams from the share console",
+        default=False,
+        help="probe the local gateway and configured upstreams on every share console refresh",
     )
     add_compact_arg(parser)
 
@@ -1868,7 +1868,7 @@ def _start_share_run_console(directory: Path | None, args: argparse.Namespace) -
     host = str(getattr(args, "console_host", "127.0.0.1"))
     port = int(getattr(args, "console_port", DEFAULT_SHARE_CONSOLE_PORT))
     timeout = float(getattr(args, "console_timeout", 1.0))
-    live_checks = bool(getattr(args, "console_live_checks", True))
+    live_checks = bool(getattr(args, "console_live_checks", False))
     server = ShareConsoleServer(
         directory=console_dir,
         host=host,
