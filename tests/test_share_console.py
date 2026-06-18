@@ -16,10 +16,12 @@ from snulbug import (
     build_share_console_snapshot,
     create_lease,
     create_mcp_share,
+    create_mcp_share_invite,
     learn_mcp_policy,
     list_leases,
     load_share_session_model,
     record_policy_request,
+    revoke_lease,
 )
 from snulbug.cli.share import _run_share_setup_console, _start_share_run_console, _stop_share_run_console
 from snulbug.simulator import main as simulator_main
@@ -81,6 +83,58 @@ def test_share_console_snapshot_reads_existing_share_artifacts(tmp_path):
     assert "timeline-secret" not in encoded
     assert snapshot["status"]["client"]["headers"]["Authorization"] == "[REDACTED]"
     assert snapshot["status"]["client"]["headers"]["x-snulbug-lease"] == "[REDACTED]"
+
+
+def test_share_readiness_missing_grant_warns_without_blocking_invite_handoff(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    for lease in list_leases(tmp_path / "leases.json")["leases"]:
+        revoke_lease(tmp_path / "leases.json", lease["id"])
+
+    snapshot = build_share_console_snapshot(tmp_path)
+    readiness = snapshot["readiness_gate"]
+    checks = {check["id"]: check for check in readiness["checks"]}
+
+    assert checks["leases.active"]["status"] == "warn"
+    assert checks["leases.active"]["message"] == "create a task invite or lease before handing out client access"
+    assert readiness["summary"]["failed"] == 0
+    assert readiness["handoff"]["ready"] is True
+
+
+def test_share_readiness_active_invite_satisfies_handoff_grant(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    for lease in list_leases(tmp_path / "leases.json")["leases"]:
+        revoke_lease(tmp_path / "leases.json", lease["id"])
+
+    created = create_mcp_share_invite(
+        tmp_path,
+        recipient="agent",
+        task="Read docs",
+        allow_tools=["safe_read_file"],
+        allow_paths=["README.md"],
+    )
+    snapshot = build_share_console_snapshot(tmp_path)
+    readiness = snapshot["readiness_gate"]
+    checks = {check["id"]: check for check in readiness["checks"]}
+
+    assert created["invite"]["lease_id"] == created["lease"]["id"]
+    assert checks["leases.active"]["status"] == "pass"
+    assert checks["leases.active"]["message"] == "1 active invite available"
+    assert checks["leases.active"]["details"]["active_invite_count"] == 1
+    assert readiness["attestation"]["leases"]["active_invite_count"] == 1
 
 
 def test_share_console_policy_visibility_resolves_cwd_relative_share_paths(tmp_path, monkeypatch):
@@ -363,7 +417,11 @@ def test_share_console_snapshot_summarizes_tunnel_provider_panel(tmp_path, monke
         assert panel["local_console"]["configured"] is False
 
 
-def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path):
+def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path, monkeypatch):
+    def fake_probe(url, *, headers, timeout):
+        return {"reachable": True, "status": 200, "error": None, "mcp_ok": True}
+
+    monkeypatch.setattr("snulbug.share._probe_mcp_url", fake_probe)
     create_mcp_share(
         tmp_path,
         provider="generic",
@@ -525,6 +583,8 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "Copy setup packet" in html
     assert "Setup snippets and tokens are only shown immediately after creation." in html
     assert "createInvite" in html
+    assert "inviteHandoffState" in html
+    assert "Resolve blocking checks before inviting" in html
     assert "revokeInvite" in html
     assert "cleanupRevokedInvites" in html
     assert "copyInviteSetup" in html
@@ -601,6 +661,52 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert approved["review"]["reviewer"] == "ui"
     assert after["summary"]["approved"] == 1
     assert session_model["capability_requests"]["last_review"]["lease_id"] == approved["review"]["lease_id"]
+
+
+def test_share_console_rejects_invite_when_handoff_is_not_ready(tmp_path, monkeypatch):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    def fake_snapshot(directory, *, timeout=1.0, live_checks=False):
+        return {
+            "readiness_gate": {
+                "decision": "blocked",
+                "label": "Do not share yet",
+                "summary": {"passed": 0, "warnings": 0, "failed": 1},
+                "handoff": {
+                    "ready": False,
+                    "reason_code": "share.handoff_blocked",
+                    "blocking_checks": ["gateway.reachable"],
+                    "message": "fix blocking readiness checks before creating invites",
+                },
+            }
+        }
+
+    monkeypatch.setattr(share_console, "build_share_console_snapshot", fake_snapshot)
+    server = ShareConsoleServer(directory=tmp_path, port=0)
+    server.start()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as rejected:
+            post_json(
+                f"{server.url}/api/invites/create",
+                {
+                    "recipient": "agent",
+                    "task": "Read docs",
+                    "allow_tools": "safe_read_file",
+                    "allow_paths": "README.md",
+                },
+                headers={share_console.CONSOLE_SECRET_HEADER: server.console_secret},
+            )
+    finally:
+        server.stop()
+
+    assert rejected.value.code == 409
 
 
 def test_share_console_promotes_policy_lifecycle_from_browser(tmp_path, monkeypatch):

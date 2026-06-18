@@ -518,6 +518,14 @@ class ShareConsoleServer:
                         },
                     )
                     return
+                handoff = _invite_handoff_readiness(
+                    self.directory,
+                    timeout=self.timeout,
+                    live_checks=True,
+                )
+                if handoff.get("ready") is not True:
+                    _send_json(handler, 409, _redact_console_payload(handoff))
+                    return
                 result = create_mcp_share_invite(
                     self.directory,
                     recipient=_string_or_none(body.get("recipient")) or "share recipient",
@@ -840,6 +848,33 @@ def _record_share_readiness_review(
         "review": review,
         "readiness_gate": updated_snapshot.get("readiness_gate"),
         "session_model": str(share_session_model_path(share_dir)),
+    }
+
+
+def _invite_handoff_readiness(
+    directory: str | Path,
+    *,
+    timeout: float,
+    live_checks: bool,
+) -> dict[str, Any]:
+    snapshot = build_share_console_snapshot(Path(directory), timeout=timeout, live_checks=live_checks)
+    readiness_gate = _mapping(snapshot.get("readiness_gate"))
+    handoff = _mapping(readiness_gate.get("handoff"))
+    if handoff.get("ready") is True:
+        return {"ok": True, "ready": True, "handoff": handoff}
+    blocking = list(_sequence(handoff.get("blocking_checks")))
+    return {
+        "ok": False,
+        "ready": False,
+        "error": "share is not handoff-ready for invites",
+        "reason_code": "share.handoff_not_ready",
+        "blocking_checks": blocking,
+        "handoff": handoff,
+        "readiness": {
+            "decision": readiness_gate.get("decision"),
+            "label": readiness_gate.get("label"),
+            "summary": readiness_gate.get("summary"),
+        },
     }
 
 
@@ -2051,6 +2086,7 @@ def _share_readiness_gate(
     provider_auth = _mapping(tunnel_provider.get("auth"))
     policy = _mapping(status.get("policy"))
     leases = _mapping(status.get("leases"))
+    invitations = _mapping(status.get("invitations"))
     findings = [_mapping(item) for item in _sequence(status.get("findings")) if isinstance(item, Mapping)]
     traffic = _mapping(status.get("traffic"))
     contract = _mapping(status.get("contract"))
@@ -2130,13 +2166,19 @@ def _share_readiness_gate(
     )
     lease_required = provider_auth.get("lease_required", session.get("lease_required"))
     active_lease_count = int(leases.get("active_count") or 0)
+    active_invite_count = _active_invite_count(invitations, leases)
     _add_readiness_check(
         checks,
         "leases.active",
-        _readiness_lease_status(lease_required, active_lease_count),
+        _readiness_lease_status(lease_required, active_lease_count, active_invite_count),
         "leases",
-        _readiness_lease_message(lease_required, active_lease_count),
-        details={"required": lease_required, "active_count": active_lease_count, "file": leases.get("file")},
+        _readiness_lease_message(lease_required, active_lease_count, active_invite_count),
+        details={
+            "required": lease_required,
+            "active_count": active_lease_count,
+            "active_invite_count": active_invite_count,
+            "file": leases.get("file"),
+        },
     )
     _add_readiness_check(
         checks,
@@ -2240,6 +2282,7 @@ def _share_readiness_gate(
     )
 
     summary = _readiness_summary(checks)
+    handoff = _share_handoff_readiness(checks)
     base_decision = "blocked" if summary["failed"] else ("review" if summary["warnings"] else "ready")
     labels = {
         "ready": "Ready to share",
@@ -2281,6 +2324,7 @@ def _share_readiness_gate(
         "decision": decision,
         "label": label,
         "summary": summary,
+        "handoff": handoff,
         "checks": checks,
         "recommendations": recommendations,
         "review_digest": review_digest,
@@ -2642,19 +2686,36 @@ def _readiness_tunnel_doctor_message(tunnel: Mapping[str, Any]) -> str:
     return "last tunnel doctor failed"
 
 
-def _readiness_lease_status(required: Any, active_count: int) -> str:
+def _active_invite_count(invitations: Mapping[str, Any], leases: Mapping[str, Any]) -> int:
+    active_lease_ids = {
+        str(lease.get("id"))
+        for lease in _sequence(leases.get("leases"))
+        if isinstance(lease, Mapping) and lease.get("active") is True and lease.get("id")
+    }
+    active_invites = [
+        _mapping(invite)
+        for invite in _sequence(invitations.get("items"))
+        if isinstance(invite, Mapping) and not invite.get("revoked_at")
+    ]
+    return sum(1 for invite in active_invites if str(invite.get("lease_id") or "") in active_lease_ids)
+
+
+def _readiness_lease_status(required: Any, active_count: int, active_invite_count: int = 0) -> str:
     if required is True:
-        return "pass" if active_count > 0 else "fail"
+        return "pass" if active_count > 0 or active_invite_count > 0 else "warn"
     if required is False:
         return "warn"
     return "warn"
 
 
-def _readiness_lease_message(required: Any, active_count: int) -> str:
+def _readiness_lease_message(required: Any, active_count: int, active_invite_count: int = 0) -> str:
     if required is True:
+        if active_invite_count > 0:
+            suffix = "invite" if active_invite_count == 1 else "invites"
+            return f"{active_invite_count} active {suffix} available"
         if active_count > 0:
             return f"{active_count} active leases available"
-        return "leases are required but none are active"
+        return "create a task invite or lease before handing out client access"
     if required is False:
         return "leases are not required for this share"
     return "lease requirement is unknown"
@@ -2741,6 +2802,25 @@ def _readiness_summary(checks: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     }
 
 
+def _share_handoff_readiness(checks: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    blocking = [
+        _mapping(check)
+        for check in checks
+        if check.get("status") == "fail" and str(check.get("id") or "") != "leases.active"
+    ]
+    blocking_ids = [str(check.get("id")) for check in blocking if check.get("id")]
+    return {
+        "ready": not blocking_ids,
+        "reason_code": "share.handoff_ready" if not blocking_ids else "share.handoff_blocked",
+        "blocking_checks": blocking_ids,
+        "message": (
+            "share can create task-scoped invites"
+            if not blocking_ids
+            else "fix blocking readiness checks before creating invites"
+        ),
+    }
+
+
 def _readiness_recommendations(checks: Sequence[Mapping[str, Any]], status: Mapping[str, Any]) -> list[str]:
     recommendations: list[str] = []
     check_status = {str(check.get("id")): str(check.get("status")) for check in checks}
@@ -2758,8 +2838,8 @@ def _readiness_recommendations(checks: Sequence[Mapping[str, Any]], status: Mapp
         recommendations.append("Generate a share contract if you need a reviewable attestation for this session.")
     if check_status.get("schemas.drift") == "fail":
         recommendations.append("Review schema drift alerts before exposing changed tool surfaces.")
-    if check_status.get("leases.active") == "fail":
-        recommendations.append("Create or reactivate a task lease before sharing the endpoint.")
+    if check_status.get("leases.active") == "warn":
+        recommendations.append("Create a task invite or lease before handing out client access.")
     if check_status.get("auth.configured") == "fail":
         recommendations.append("Configure bearer, OAuth, or provider auth before exposing the endpoint.")
     if any(value == "fail" for value in check_status.values()):
@@ -2794,6 +2874,7 @@ def _share_readiness_attestation(
     contract = _mapping(status.get("contract"))
     traffic = _mapping(status.get("traffic"))
     leases = _mapping(status.get("leases"))
+    invitations = _mapping(status.get("invitations"))
     auth_config = _mapping(auth_visibility.get("config"))
     schema_summary = _mapping(tool_schema_visibility.get("summary"))
     tool_risk = _mapping(_mapping(status.get("tool_risks")).get("summary"))
@@ -2821,6 +2902,7 @@ def _share_readiness_attestation(
             "leases": {
                 "required": _mapping(tunnel_provider.get("auth")).get("lease_required", session.get("lease_required")),
                 "active_count": leases.get("active_count"),
+                "active_invite_count": _active_invite_count(invitations, leases),
                 "file": leases.get("file"),
             },
             "policy": {
@@ -4113,6 +4195,50 @@ def _console_html() -> str:
       }
     }
 
+    async function refreshAfterReadinessMutation() {
+      const hadLiveHealth = Boolean(state.liveHealthStatus || state.liveHealthReadiness);
+      await loadSnapshot();
+      if (!hadLiveHealth) return;
+      const scrollState = captureScrollState();
+      try {
+        await fetchLiveHealth();
+        render();
+        restoreScrollState(scrollState);
+      } catch (error) {
+        state.liveHealthStatus = null;
+        state.liveHealthReadiness = null;
+        state.liveHealthShare = null;
+        render();
+        restoreScrollState(scrollState);
+        $("message").textContent = `Live health refresh failed: ${error.message}`;
+      }
+    }
+
+    async function fetchLiveHealth() {
+      const payload = await api("/api/health/check", {
+        method: "POST",
+        allowFalse: true,
+        body: JSON.stringify({})
+      });
+      applyLiveHealthPayload(payload);
+      return payload;
+    }
+
+    function applyLiveHealthPayload(payload) {
+      state.liveHealthStatus = payload;
+      state.liveHealthReadiness = payload.readiness_gate || null;
+      state.liveHealthShare = ((state.snapshot || {}).share || payload.share || payload.directory || null);
+      if (state.snapshot && (!state.liveHealthShare || state.snapshot.share === state.liveHealthShare)) {
+        state.snapshot = {
+          ...state.snapshot,
+          share: payload.share || state.snapshot.share,
+          generated_at: payload.generated_at || state.snapshot.generated_at,
+          status: payload,
+          readiness_gate: payload.readiness_gate || state.snapshot.readiness_gate
+        };
+      }
+    }
+
     function captureScrollState() {
       return {
         windowX: window.scrollX,
@@ -4537,6 +4663,7 @@ def _console_html() -> str:
           ${detailRowHtml("Public URL", externalLink(publicUrl, publicUrl))}
           ${detailRow("Auth", (attestation.auth || {}).mode)}
           ${detailRow("Active leases", (attestation.leases || {}).active_count)}
+          ${detailRow("Active invites", (attestation.leases || {}).active_invite_count)}
           ${detailRow("Policy", (attestation.policy || {}).lifecycle_state || (attestation.policy || {}).path)}
           ${detailRow("Contract", contractText(attestation.contract || {}))}
           ${detailRow("Content digest", attestation.content_digest || attestation.digest)}
@@ -5168,6 +5295,8 @@ def _console_html() -> str:
       const active = numeric(summary.active || activeInvites.length);
       const revoked = numeric(summary.revoked || revokedInvites.length);
       const visibleInvites = state.showRevokedInvites ? invitations : activeInvites;
+      const handoff = inviteHandoffState();
+      const inviteDisabled = handoff.ready !== true;
       $("inviteSummary").textContent =
         `${active} active, ${revoked} revoked${state.showRevokedInvites ? "" : " hidden"}`;
       const createHtml = `<div class="setup-form stack">
@@ -5213,9 +5342,12 @@ def _console_html() -> str:
           )}
         </div>
         <div class="review-actions">
-          <button type="button" class="primary" onclick="createInvite()">Create invite</button>
+          <button type="button" class="primary" onclick="createInvite()" ${inviteDisabled ? "disabled" : ""}>
+            Create invite
+          </button>
           <span id="inviteCreateStatus" class="copy-status"></span>
         </div>
+        <div class="field-help">${esc(inviteHandoffMessage(handoff))}</div>
       </div>`;
       const controlsHtml = `<div class="review-actions">
         <label class="auto">
@@ -5240,6 +5372,33 @@ def _console_html() -> str:
       }
       const listHtml = `<div class="invite-list">${visibleInvites.map(inviteCardHtml).join("")}</div>`;
       $("invitations").innerHTML = `<div class="stack">${createHtml}${controlsHtml}${setupHtml}${listHtml}</div>`;
+    }
+
+    function inviteHandoffState() {
+      const readiness = activeReadinessGate();
+      const handoff = readiness.handoff || {};
+      if (handoff.ready === true || handoff.ready === false) return handoff;
+      if (readiness.decision) {
+        return {
+          ready: readiness.decision !== "blocked",
+          message: readiness.decision === "blocked"
+            ? "fix blocking readiness checks before creating invites"
+            : "share can create task-scoped invites",
+          blocking_checks: []
+        };
+      }
+      return {
+        ready: false,
+        message: "load share readiness before creating invites",
+        blocking_checks: []
+      };
+    }
+
+    function inviteHandoffMessage(handoff) {
+      if (handoff.ready === true) return handoff.message || "Share is handoff-ready for task-scoped invites.";
+      const blocking = handoff.blocking_checks || [];
+      if (blocking.length) return `Resolve blocking checks before inviting: ${blocking.join(", ")}`;
+      return handoff.message || "Share is not handoff-ready for invites.";
     }
 
     function revokedInviteCleanupButton(revokedInvites) {
@@ -5937,7 +6096,7 @@ def _console_html() -> str:
         $("leaseOutput").textContent = payload.retry_header || JSON.stringify(payload.headers, null, 2);
         $("leasePanel").hidden = false;
         state.selectedRequestId = id;
-        await loadSnapshot();
+        await refreshAfterReadinessMutation();
       } catch (error) {
         $("message").textContent = `Approve failed: ${error.message}`;
       }
@@ -5952,7 +6111,7 @@ def _console_html() -> str:
           body: JSON.stringify({ reason, reviewer: requestField(id, "reviewer", source, "local-review") })
         });
         state.selectedRequestId = id;
-        await loadSnapshot();
+        await refreshAfterReadinessMutation();
       } catch (error) {
         $("message").textContent = `Deny failed: ${error.message}`;
       }
@@ -5976,7 +6135,7 @@ def _console_html() -> str:
         $("leaseOutput").textContent = payload.retry_header || JSON.stringify(payload.headers || {}, null, 2);
         $("leasePanel").hidden = false;
         $("message").textContent = `Created lease ${(payload.lease || {}).id || ""}`;
-        await loadSnapshot();
+        await refreshAfterReadinessMutation();
       } catch (error) {
         $("message").textContent = `Create lease failed: ${error.message}`;
       }
@@ -5995,7 +6154,7 @@ def _console_html() -> str:
         $("leaseOutput").textContent = payload.retry_header || JSON.stringify(payload.headers || {}, null, 2);
         $("leasePanel").hidden = false;
         $("message").textContent = `Reactivated lease ${id}`;
-        await loadSnapshot();
+        await refreshAfterReadinessMutation();
       } catch (error) {
         $("message").textContent = `Reactivate failed: ${error.message}`;
       }
@@ -6006,7 +6165,7 @@ def _console_html() -> str:
       try {
         await api(`/api/leases/${encodeURIComponent(id)}/revoke`, { method: "POST" });
         $("message").textContent = `Revoked lease ${id}`;
-        await loadSnapshot();
+        await refreshAfterReadinessMutation();
       } catch (error) {
         $("message").textContent = `Revoke failed: ${error.message}`;
       }
@@ -6031,7 +6190,7 @@ def _console_html() -> str:
           body: JSON.stringify({})
         });
         $("message").textContent = `Removed ${payload.removed_count || 0} inactive leases`;
-        await loadSnapshot();
+        await refreshAfterReadinessMutation();
       } catch (error) {
         if (String(error.message || "").includes("console secret")) {
           if (window.sessionStorage) window.sessionStorage.removeItem("snulbug-console-secret");
@@ -6049,6 +6208,13 @@ def _console_html() -> str:
     }
 
     async function createInvite() {
+      const handoff = inviteHandoffState();
+      if (handoff.ready !== true) {
+        const message = inviteHandoffMessage(handoff);
+        setInviteFeedback("Not handoff-ready", "fail");
+        $("message").textContent = message;
+        return;
+      }
       setInviteFeedback("Creating...", "pending");
       $("message").textContent = "Creating invite";
       const secret = consoleSecret();
@@ -6070,14 +6236,15 @@ def _console_html() -> str:
             allow_hosts: setupInputValue("invite-create-hosts"),
             allow_commands: setupInputValue("invite-create-commands"),
             ttl: setupInputValue("invite-create-ttl") || "30m",
-            max_calls: setupInputValue("invite-create-calls")
+            max_calls: setupInputValue("invite-create-calls"),
+            live_checks: Boolean(state.liveHealthReadiness)
           })
         });
         state.lastInviteSetup = formatInviteSetup(payload);
         state.lastInviteId = (payload.invite || {}).id || "";
         setInviteFeedback("Created", "ok");
         $("message").textContent = `Created invite ${(payload.invite || {}).id || ""}`;
-        await loadSnapshot();
+        await refreshAfterReadinessMutation();
       } catch (error) {
         if (String(error.message || "").includes("console secret")) {
           if (window.sessionStorage) window.sessionStorage.removeItem("snulbug-console-secret");
@@ -6101,7 +6268,7 @@ def _console_html() -> str:
           body: JSON.stringify({ revoke_lease: true })
         });
         $("message").textContent = `Revoked invite ${id}`;
-        await loadSnapshot();
+        await refreshAfterReadinessMutation();
       } catch (error) {
         if (String(error.message || "").includes("console secret")) {
           if (window.sessionStorage) window.sessionStorage.removeItem("snulbug-console-secret");
@@ -6129,7 +6296,7 @@ def _console_html() -> str:
           body: JSON.stringify({})
         });
         $("message").textContent = `Removed ${payload.removed_count || 0} revoked invites`;
-        await loadSnapshot();
+        await refreshAfterReadinessMutation();
       } catch (error) {
         if (String(error.message || "").includes("console secret")) {
           if (window.sessionStorage) window.sessionStorage.removeItem("snulbug-console-secret");
@@ -6464,14 +6631,7 @@ def _console_html() -> str:
     async function runHealthCheck() {
       $("message").textContent = "Checking gateway and upstream reachability";
       try {
-        const payload = await api("/api/health/check", {
-          method: "POST",
-          allowFalse: true,
-          body: JSON.stringify({})
-        });
-        state.liveHealthStatus = payload;
-        state.liveHealthReadiness = payload.readiness_gate || null;
-        state.liveHealthShare = ((state.snapshot || {}).share || payload.directory || null);
+        const payload = await fetchLiveHealth();
         renderHealth(payload);
         if (state.liveHealthReadiness) {
           renderMetrics(payload, state.liveHealthReadiness);
