@@ -3371,6 +3371,51 @@ def _console_html() -> str:
     .section-body {
       padding: 14px;
     }
+    .tab-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 10px;
+      margin-bottom: 14px;
+    }
+    .tab-button {
+      min-height: 36px;
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #fbfcfd;
+      color: var(--muted);
+      font-weight: 720;
+    }
+    .tab-button.active {
+      border-color: #9ec2df;
+      background: #f2f8fd;
+      color: var(--blue);
+      box-shadow: 0 0 0 2px rgba(33, 102, 165, 0.08);
+    }
+    .tab-button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    .tab-button-detail {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 620;
+    }
+    .tab-panel[hidden] {
+      display: none;
+    }
+    .section-subhead {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
     .overview-grid {
       display: grid;
       grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
@@ -3989,13 +4034,13 @@ def _console_html() -> str:
       </div>
       <nav class="section-nav" aria-label="Console sections">
         <a id="setupNavLink" href="#setupSection" hidden>Setup</a>
-        <a href="#readinessSection">Readiness</a>
+        <a href="#shareWorkflowSection" onclick="setShareTab('readiness')">Readiness</a>
         <a href="#policySection">Policy</a>
         <a href="#providerSection">Provider</a>
         <a href="#decisionsSection">Decisions</a>
         <a href="#requestsSection">Requests</a>
         <a href="#leasesSection">Leases</a>
-        <a href="#invitesSection">Invites</a>
+        <a href="#shareWorkflowSection" onclick="setShareTab('invites')">Invites</a>
         <a href="#authSection">Auth</a>
         <a href="#schemaSection">Schemas</a>
         <a href="#riskSection">Risk</a>
@@ -4009,9 +4054,51 @@ def _console_html() -> str:
         <div class="section-head"><h2>Share Setup</h2><span id="wizardSummary" class="muted"></span></div>
         <div class="section-body" id="setupWizard"></div>
       </section>
-      <section id="readinessSection">
-        <div class="section-head"><h2>Share Readiness</h2><span id="readinessSummary" class="muted"></span></div>
-        <div class="section-body" id="shareReadiness"></div>
+      <section id="shareWorkflowSection">
+        <div class="section-head"><h2>Share Handoff</h2><span id="shareWorkflowSummary" class="muted"></span></div>
+        <div class="section-body">
+          <div class="tab-list" role="tablist" aria-label="Share handoff">
+            <button
+              id="share-tab-readiness"
+              class="tab-button active"
+              type="button"
+              role="tab"
+              aria-selected="true"
+              aria-controls="readinessSection"
+              onclick="setShareTab('readiness')"
+            >
+              Readiness
+              <span id="share-tab-readiness-detail" class="tab-button-detail"></span>
+            </button>
+            <button
+              id="share-tab-invites"
+              class="tab-button"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="invitesSection"
+              onclick="setShareTab('invites')"
+              disabled
+            >
+              Invites
+              <span id="share-tab-invites-detail" class="tab-button-detail"></span>
+            </button>
+          </div>
+          <div id="readinessSection" class="tab-panel" role="tabpanel" aria-labelledby="share-tab-readiness">
+            <div class="section-subhead">
+              <h2>Share Readiness</h2>
+              <span id="readinessSummary" class="muted"></span>
+            </div>
+            <div id="shareReadiness"></div>
+          </div>
+          <div id="invitesSection" class="tab-panel" role="tabpanel" aria-labelledby="share-tab-invites" hidden>
+            <div class="section-subhead">
+              <h2>Share Invitations</h2>
+              <span id="inviteSummary" class="muted"></span>
+            </div>
+            <div id="invitations"></div>
+          </div>
+        </div>
       </section>
       <section id="policySection">
         <div class="section-head"><h2>Policy Visibility</h2><span id="policySummary" class="muted"></span></div>
@@ -4041,10 +4128,6 @@ def _console_html() -> str:
           <div class="section-body" id="leases"></div>
         </section>
       </div>
-      <section id="invitesSection">
-        <div class="section-head"><h2>Share Invitations</h2><span id="inviteSummary" class="muted"></span></div>
-        <div class="section-body" id="invitations"></div>
-      </section>
       <section id="authSection">
         <div class="section-head"><h2>Auth Visibility</h2><span id="authSummary" class="muted"></span></div>
         <div class="section-body" id="authVisibility"></div>
@@ -4103,7 +4186,8 @@ def _console_html() -> str:
       lastInviteSetup: "",
       lastInviteId: "",
       showInactiveLeases: false,
-      showRevokedInvites: false
+      showRevokedInvites: false,
+      activeShareTab: "readiness"
     };
     const scrollPreserveSelectors = [
       ".policy-source",
@@ -4114,14 +4198,13 @@ def _console_html() -> str:
       "#requestDrawer .drawer-body"
     ];
     const baseSectionIds = [
-      "readinessSection",
+      "shareWorkflowSection",
       "policySection",
       "providerSection",
       "healthSection",
       "decisionsSection",
       "requestsSection",
       "leasesSection",
-      "invitesSection",
       "authSection",
       "schemaSection",
       "riskSection",
@@ -4301,6 +4384,7 @@ def _console_html() -> str:
       renderRequestDrawer(snapshot.capability_requests || {});
       renderLeases(status.leases || {});
       renderInvites(status.invitations || {});
+      renderShareTabs(readiness, status.invitations || {});
       renderAuthVisibility(snapshot.auth_visibility || {});
       renderToolSchemaVisibility(snapshot.tool_schema_visibility || {});
       renderHealth(state.liveHealthStatus || status);
@@ -4311,6 +4395,67 @@ def _console_html() -> str:
 
     function activeReadinessGate(snapshot = state.snapshot || {}) {
       return state.liveHealthReadiness || snapshot.readiness_gate || {};
+    }
+
+    function currentInvitationsPayload() {
+      return (((state.snapshot || {}).status || {}).invitations || {});
+    }
+
+    function activeInviteCount(invitationsPayload = currentInvitationsPayload()) {
+      const summary = invitationsPayload.summary || {};
+      const summaryActive = numeric(summary.active);
+      if (summaryActive > 0) return summaryActive;
+      return (invitationsPayload.items || []).filter((invite) => !invite.revoked_at).length;
+    }
+
+    function inviteTabUnlocked(readiness = activeReadinessGate(), invitationsPayload = currentInvitationsPayload()) {
+      return (readiness || {}).decision === "ready" || activeInviteCount(invitationsPayload) > 0;
+    }
+
+    function setShareTab(tab) {
+      const nextTab = tab === "invites" ? "invites" : "readiness";
+      const invitationsPayload = currentInvitationsPayload();
+      if (nextTab === "invites" && !inviteTabUnlocked(activeReadinessGate(), invitationsPayload)) {
+        state.activeShareTab = "readiness";
+        $("message").textContent = "Share readiness must be green before opening new invitations.";
+        renderShareTabs(activeReadinessGate(), invitationsPayload);
+        return false;
+      }
+      state.activeShareTab = nextTab;
+      renderShareTabs(activeReadinessGate(), invitationsPayload);
+      return true;
+    }
+
+    function renderShareTabs(readiness = activeReadinessGate(), invitationsPayload = {}) {
+      const readinessTab = $("share-tab-readiness");
+      const invitesTab = $("share-tab-invites");
+      const readinessPanel = $("readinessSection");
+      const invitesPanel = $("invitesSection");
+      if (!readinessTab || !invitesTab || !readinessPanel || !invitesPanel) return;
+      const invitesEnabled = inviteTabUnlocked(readiness, invitationsPayload);
+      if (!invitesEnabled && state.activeShareTab === "invites") {
+        state.activeShareTab = "readiness";
+      }
+      const activeTab = state.activeShareTab === "invites" ? "invites" : "readiness";
+      const readinessReady = (readiness || {}).decision === "ready";
+      const summary = readiness.summary || {};
+      const invitationSummary = invitationsPayload.summary || {};
+      const activeInvites = activeInviteCount(invitationsPayload);
+      readinessTab.classList.toggle("active", activeTab === "readiness");
+      invitesTab.classList.toggle("active", activeTab === "invites");
+      readinessTab.setAttribute("aria-selected", activeTab === "readiness" ? "true" : "false");
+      invitesTab.setAttribute("aria-selected", activeTab === "invites" ? "true" : "false");
+      invitesTab.disabled = !invitesEnabled;
+      readinessPanel.hidden = activeTab !== "readiness";
+      invitesPanel.hidden = activeTab !== "invites";
+      $("share-tab-readiness-detail").textContent =
+        `${summary.failed || 0} failed · ${summary.warnings || 0} warnings`;
+      $("share-tab-invites-detail").textContent = invitesEnabled
+        ? `${activeInvites} active`
+        : "locked";
+      $("shareWorkflowSummary").textContent = readinessReady
+        ? "Ready for task invites"
+        : (activeInvites > 0 ? "Existing invites available" : "Review readiness before inviting");
     }
 
     function setSetupMode(enabled) {
@@ -4348,7 +4493,7 @@ def _console_html() -> str:
         <div>${wizardActionHtml(next.primary_action || {
           kind: "anchor",
           label: nextAction,
-          target: "#readinessSection"
+          target: "#shareWorkflowSection"
         })}</div>
       </div>`;
       const cards = `<div class="wizard-grid">${steps.map((step) => (
@@ -4467,9 +4612,9 @@ def _console_html() -> str:
           `onclick="copyWizardCommand(this)">${esc(label)}</button>`;
       }
       if (action.kind === "anchor") {
-        return `<a class="button-link" href="${esc(action.target || "#readinessSection")}">${esc(label)}</a>`;
+        return `<a class="button-link" href="${esc(action.target || "#shareWorkflowSection")}">${esc(label)}</a>`;
       }
-      return `<a class="button-link" href="#readinessSection">${esc(label)}</a>`;
+      return `<a class="button-link" href="#shareWorkflowSection">${esc(label)}</a>`;
     }
 
     function renderMetrics(status, readiness) {
@@ -4500,7 +4645,7 @@ def _console_html() -> str:
             `${numeric(readinessSummary.warnings)} warnings${readiness.reviewed ? " · reviewed" : ""}`,
           status: readinessMetricStatus(readiness),
           glyph: readinessMetricGlyph(readiness),
-          href: "#readinessSection"
+          href: "#shareWorkflowSection"
         },
         {
           label: "State",
@@ -4508,7 +4653,7 @@ def _console_html() -> str:
           detail: `${session.provider || "generic"} provider${session.preset ? ` · ${session.preset}` : ""}`,
           status: stateMetricStatus(status.state),
           glyph: stateMetricGlyph(status.state),
-          href: "#readinessSection"
+          href: "#shareWorkflowSection"
         },
         {
           label: "Gateway",
@@ -4532,7 +4677,7 @@ def _console_html() -> str:
           detail: activeInvites ? "task-scoped client setup ready" : "no share invites",
           status: activeInvites ? "good" : "neutral",
           glyph: activeInvites ? "OK" : "0",
-          href: "#invitesSection"
+          href: "#shareWorkflowSection"
         },
         {
           label: "Pending requests",
@@ -4563,7 +4708,8 @@ def _console_html() -> str:
     }
 
     function metricCardHtml(metric) {
-      return `<a class="metric ${esc(metric.status || "neutral")}" href="${esc(metric.href || "#readinessSection")}">
+      const href = esc(metric.href || "#shareWorkflowSection");
+      return `<a class="metric ${esc(metric.status || "neutral")}" href="${href}">
         <div class="metric-head">
           <span class="metric-label">${esc(metric.label)}</span>
           <span class="metric-badge" aria-hidden="true">${esc(metric.glyph || "i")}</span>
@@ -6505,6 +6651,7 @@ def _console_html() -> str:
         if (state.liveHealthReadiness) {
           renderMetrics(state.liveHealthStatus || (state.snapshot || {}).status || {}, state.liveHealthReadiness);
           renderReadinessGate(state.liveHealthReadiness);
+          renderShareTabs(state.liveHealthReadiness, currentInvitationsPayload());
         }
         $("message").textContent = "Readiness reviewed";
         await loadSnapshot();
@@ -6636,6 +6783,7 @@ def _console_html() -> str:
         if (state.liveHealthReadiness) {
           renderMetrics(payload, state.liveHealthReadiness);
           renderReadinessGate(state.liveHealthReadiness);
+          renderShareTabs(state.liveHealthReadiness, currentInvitationsPayload());
         }
         const gateway = payload.gateway || {};
         const upstreams = payload.upstreams || [];

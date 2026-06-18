@@ -493,7 +493,7 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert 'class="toolbar-group"' in html
     assert 'class="overview-grid"' in html
     assert 'aria-live="polite"' in html
-    assert 'href="#readinessSection"' in html
+    assert 'href="#shareWorkflowSection"' in html
     assert 'href="#policySection"' in html
     assert 'href="#providerSection"' in html
     assert 'id="readinessSection"' in html
@@ -571,7 +571,15 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "Show inactive" in html
     assert "Clean up inactive" in html
     assert "cleanupInactiveLeases" in html
-    assert 'href="#invitesSection"' in html
+    assert 'id="shareWorkflowSection"' in html
+    assert "Share Handoff" in html
+    assert 'role="tablist"' in html
+    assert "setShareTab('readiness')" in html
+    assert "setShareTab('invites')" in html
+    assert "inviteTabUnlocked" in html
+    assert "activeInviteCount" in html
+    assert "Existing invites available" in html
+    assert 'href="#shareWorkflowSection"' in html
     assert 'id="invitesSection"' in html
     assert "Share Invitations" in html
     assert "renderInvites" in html
