@@ -437,8 +437,11 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
         html = read_text(f"{server.url}/")
         prism_js = read_text(f"{server.url}/assets/prism.js")
         prism_css = read_text(f"{server.url}/assets/prism.css")
-        snapshot = read_json(f"{server.url}/api/snapshot")
-        report_body, report_headers = read_response(f"{server.url}/api/report/download")
+        snapshot = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
+        report_body, report_headers = read_response(
+            f"{server.url}/api/report/download",
+            headers=console_headers(server),
+        )
         request_id = snapshot["capability_requests"]["requests"][0]["id"]
         with pytest.raises(urllib.error.HTTPError) as forbidden:
             post_json(
@@ -462,12 +465,13 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
             },
             headers={share_console.CONSOLE_SECRET_HEADER: server.console_secret},
         )
+        active_invite_snapshot = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
         invite_revoked = post_json(
             f"{server.url}/api/invites/{invite_created['invite']['id']}/revoke",
             {"revoke_lease": True},
             headers={share_console.CONSOLE_SECRET_HEADER: server.console_secret},
         )
-        invite_snapshot = read_json(f"{server.url}/api/snapshot")
+        invite_snapshot = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
         invite_cleanup = post_json(
             f"{server.url}/api/invites/cleanup-revoked",
             {},
@@ -478,12 +482,13 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
             {},
             headers={share_console.CONSOLE_SECRET_HEADER: server.console_secret},
         )
-        cleanup_snapshot = read_json(f"{server.url}/api/snapshot")
+        cleanup_snapshot = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
         approved = post_json(
             f"{server.url}/api/requests/{request_id}/approve",
             {"ttl": "12m", "max_calls": 2, "reviewer": "ui"},
+            headers=console_headers(server),
         )
-        after = read_json(f"{server.url}/api/requests?status=all")
+        after = read_json(f"{server.url}/api/requests?status=all", headers=console_headers(server))
         session_model = load_share_session_model(tmp_path)
     finally:
         server.stop()
@@ -589,13 +594,15 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "Invite Setup Snippets" in html
     assert "Use this invite now" in html
     assert "Copy setup packet" in html
-    assert "Setup snippets and tokens are only shown immediately after creation." in html
+    assert "Active invite setup snippets stay available" in html
+    assert "Setup snippets are available while this invite remains active." in html
     assert "createInvite" in html
     assert "inviteHandoffState" in html
     assert "Resolve blocking checks before inviting" in html
     assert "revokeInvite" in html
     assert "cleanupRevokedInvites" in html
     assert "copyInviteSetup" in html
+    assert "copyInviteSetupFromCard" in html
     assert "Codex config.toml" in html
     assert "Codex environment" in html
     assert "/api/invites/create" in html
@@ -647,6 +654,13 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert invite_created["headers"]["x-snulbug-lease"].startswith("sbl_")
     assert invite_created["setup_snippets"]["env"]["SNULBUG_BEARER_TOKEN"] == "share-secret"
     assert "[mcp_servers.snulbug-share]" in invite_created["setup_snippets"]["codex"]["config_toml"]
+    assert (
+        active_invite_snapshot["status"]["invitations"]["items"][0]["setup_snippets"]["headers"]["Authorization"]
+        == "Bearer share-secret"
+    )
+    assert active_invite_snapshot["status"]["invitations"]["items"][0]["setup_snippets"]["headers"][
+        "x-snulbug-lease"
+    ].startswith("sbl_")
     assert invite_revoked["ok"] is True
     assert invite_revoked["lease_revoked"] is True
     assert invite_snapshot["status"]["invitations"]["summary"]["revoked"] == 1
@@ -739,6 +753,7 @@ def test_share_console_promotes_policy_lifecycle_from_browser(tmp_path, monkeypa
                 "secret_env": "SNULBUG_BUNDLE_SECRET",
                 "actor": "ui-test",
             },
+            headers=console_headers(server),
         )
         approved = post_json(
             f"{server.url}/api/policy/lifecycle",
@@ -749,6 +764,7 @@ def test_share_console_promotes_policy_lifecycle_from_browser(tmp_path, monkeypa
                 "secret_env": "SNULBUG_BUNDLE_SECRET",
                 "actor": "ui-test",
             },
+            headers=console_headers(server),
         )
         active = post_json(
             f"{server.url}/api/policy/lifecycle",
@@ -758,8 +774,9 @@ def test_share_console_promotes_policy_lifecycle_from_browser(tmp_path, monkeypa
                 "secret_env": "SNULBUG_BUNDLE_SECRET",
                 "actor": "ui-test",
             },
+            headers=console_headers(server),
         )
-        snapshot = read_json(f"{server.url}/api/snapshot")
+        snapshot = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
     finally:
         server.stop()
 
@@ -795,8 +812,8 @@ def test_share_console_runs_inline_share_doctor(tmp_path, monkeypatch):
     server = ShareConsoleServer(directory=tmp_path, port=0)
     server.start()
     try:
-        result = post_json(f"{server.url}/api/doctor", {"live_checks": False})
-        snapshot = read_json(f"{server.url}/api/snapshot")
+        result = post_json(f"{server.url}/api/doctor", {"live_checks": False}, headers=console_headers(server))
+        snapshot = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
         session_model = load_share_session_model(tmp_path)
     finally:
         server.stop()
@@ -834,9 +851,9 @@ def test_share_console_runs_manual_health_check(tmp_path, monkeypatch):
     server = ShareConsoleServer(directory=tmp_path, port=0, live_checks=False)
     server.start()
     try:
-        snapshot = read_json(f"{server.url}/api/snapshot")
-        refreshed = read_json(f"{server.url}/api/snapshot")
-        health = post_json(f"{server.url}/api/health/check", {})
+        snapshot = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
+        refreshed = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
+        health = post_json(f"{server.url}/api/health/check", {}, headers=console_headers(server))
     finally:
         server.stop()
 
@@ -887,7 +904,7 @@ def test_share_console_marks_readiness_reviewed(tmp_path, monkeypatch):
     server = ShareConsoleServer(directory=tmp_path, port=0, live_checks=False)
     server.start()
     try:
-        snapshot = read_json(f"{server.url}/api/snapshot")
+        snapshot = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
         readiness = snapshot["readiness_gate"]
         result = post_json(
             f"{server.url}/api/readiness/review",
@@ -896,8 +913,9 @@ def test_share_console_marks_readiness_reviewed(tmp_path, monkeypatch):
                 "reviewer": "ui-test",
                 "live_checks": True,
             },
+            headers=console_headers(server),
         )
-        after = post_json(f"{server.url}/api/health/check", {})
+        after = post_json(f"{server.url}/api/health/check", {}, headers=console_headers(server))
     finally:
         server.stop()
 
@@ -932,6 +950,8 @@ def test_share_console_bearer_token_copy_requires_console_secret(tmp_path):
     server = ShareConsoleServer(directory=tmp_path, port=0, console_secret="console-secret")
     server.start()
     try:
+        with pytest.raises(urllib.error.HTTPError) as snapshot_exc:
+            read_json(f"{server.url}/api/snapshot")
         with pytest.raises(urllib.error.HTTPError) as exc:
             post_json(f"{server.url}/api/client/bearer-token", {})
         copied = post_json(
@@ -939,10 +959,13 @@ def test_share_console_bearer_token_copy_requires_console_secret(tmp_path):
             {},
             headers={share_console.CONSOLE_SECRET_HEADER: "console-secret"},
         )
-        snapshot = read_json(f"{server.url}/api/snapshot")
+        snapshot = read_json(
+            f"{server.url}/api/snapshot", headers={share_console.CONSOLE_SECRET_HEADER: "console-secret"}
+        )
     finally:
         server.stop()
 
+    assert snapshot_exc.value.code == 403
     assert exc.value.code == 403
     assert copied["ok"] is True
     assert copied["scheme"] == "Bearer"
@@ -974,7 +997,7 @@ def test_share_console_lists_and_revokes_active_leases(tmp_path):
     server = ShareConsoleServer(directory=tmp_path, port=0)
     server.start()
     try:
-        snapshot = read_json(f"{server.url}/api/snapshot")
+        snapshot = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
         created_from_console = post_json(
             f"{server.url}/api/leases/create",
             {
@@ -984,14 +1007,16 @@ def test_share_console_lists_and_revokes_active_leases(tmp_path):
                 "ttl": "20m",
                 "max_calls": 4,
             },
+            headers=console_headers(server),
         )
-        revoked = post_json(f"{server.url}/api/leases/{lease_id}/revoke", {})
-        after_revoke = read_json(f"{server.url}/api/snapshot")
+        revoked = post_json(f"{server.url}/api/leases/{lease_id}/revoke", {}, headers=console_headers(server))
+        after_revoke = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
         reactivated = post_json(
             f"{server.url}/api/leases/{lease_id}/reactivate",
             {"ttl": "15m", "max_calls": 2},
+            headers=console_headers(server),
         )
-        after = read_json(f"{server.url}/api/snapshot")
+        after = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
     finally:
         server.stop()
 
@@ -1163,7 +1188,11 @@ def test_share_console_previews_policy_amendment_without_recording_candidate(tmp
     server.start()
     try:
         html = read_text(f"{server.url}/")
-        result = post_json(f"{server.url}/api/policy/amend-preview", {"source": "blocked", "validate": True})
+        result = post_json(
+            f"{server.url}/api/policy/amend-preview",
+            {"source": "blocked", "validate": True},
+            headers=console_headers(server),
+        )
         session_model = load_share_session_model(tmp_path)
     finally:
         server.stop()
@@ -1206,7 +1235,7 @@ def test_share_console_serves_provider_console_metadata_for_ngrok(tmp_path, monk
     server.start()
     try:
         html = read_text(f"{server.url}/")
-        snapshot = read_json(f"{server.url}/api/snapshot")
+        snapshot = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
     finally:
         server.stop()
 
@@ -1255,7 +1284,7 @@ def test_share_run_setup_console_serves_wizard_without_session(tmp_path):
     server.start()
     try:
         html = read_text(f"{server.url}/")
-        snapshot = read_json(f"{server.url}/api/snapshot")
+        snapshot = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
     finally:
         server.stop()
 
@@ -1281,8 +1310,9 @@ def test_share_setup_console_creates_share_and_requests_gateway_start(tmp_path):
                 "validate": False,
                 "start_gateway": True,
             },
+            headers=console_headers(server),
         )
-        snapshot = read_json(f"{server.url}/api/snapshot")
+        snapshot = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
     finally:
         server.stop()
 
@@ -1309,12 +1339,13 @@ def test_share_setup_console_lists_and_selects_existing_share(tmp_path):
     server = ShareConsoleServer(directory=tmp_path, port=0, setup_only=True)
     server.start()
     try:
-        setup_snapshot = read_json(f"{server.url}/api/snapshot")
+        setup_snapshot = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
         selected = post_json(
             f"{server.url}/api/setup/select-share",
             {"directory": str(existing), "start_gateway": False},
+            headers=console_headers(server),
         )
-        selected_snapshot = read_json(f"{server.url}/api/snapshot")
+        selected_snapshot = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
     finally:
         server.stop()
 
@@ -1383,19 +1414,25 @@ def test_share_run_console_respects_no_console(tmp_path):
     assert _start_share_run_console(tmp_path, args) is None
 
 
-def read_text(url: str) -> str:
-    with urllib.request.urlopen(url, timeout=3) as response:  # noqa: S310 - local test server.
+def console_headers(server: ShareConsoleServer) -> dict[str, str]:
+    return {share_console.CONSOLE_SECRET_HEADER: server.console_secret}
+
+
+def read_text(url: str, *, headers: dict[str, str] | None = None) -> str:
+    request = urllib.request.Request(url, headers=headers or {})
+    with urllib.request.urlopen(request, timeout=3) as response:  # noqa: S310 - local test server.
         return response.read().decode("utf-8")
 
 
-def read_response(url: str) -> tuple[str, dict[str, str]]:
-    with urllib.request.urlopen(url, timeout=3) as response:  # noqa: S310 - local test server.
+def read_response(url: str, *, headers: dict[str, str] | None = None) -> tuple[str, dict[str, str]]:
+    request = urllib.request.Request(url, headers=headers or {})
+    with urllib.request.urlopen(request, timeout=3) as response:  # noqa: S310 - local test server.
         headers = {key.lower(): value for key, value in response.headers.items()}
         return response.read().decode("utf-8"), headers
 
 
-def read_json(url: str) -> dict[str, object]:
-    return json.loads(read_text(url))
+def read_json(url: str, *, headers: dict[str, str] | None = None) -> dict[str, object]:
+    return json.loads(read_text(url, headers=headers))
 
 
 def post_json(

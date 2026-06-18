@@ -82,6 +82,7 @@ SHARE_CONTRACT_VERSION = 1
 SHARE_CONTRACT_SIGNATURE_FIELD = "snulbug_signature"
 SHARE_CONTRACT_ALGORITHM = "hmac-sha256"
 CAPABILITY_REQUEST_REVIEW_PATH = Path(".snulbug") / "share" / "capability-requests.json"
+SHARE_INVITE_SECRET_STORE_PATH = Path(".snulbug") / "share" / "invite-secrets.json"
 
 
 def create_mcp_share(
@@ -1073,7 +1074,7 @@ def create_mcp_share_invite(
     max_calls: int | None = None,
     client_name: str | None = None,
 ) -> dict[str, Any]:
-    """Create a task-scoped share invitation with one-time client setup snippets."""
+    """Create a task-scoped share invitation with console-gated client setup snippets."""
 
     if not recipient.strip():
         raise ValueError("recipient must be non-empty")
@@ -1144,6 +1145,20 @@ def create_mcp_share_invite(
         }
     )
     session_model = _record_share_invite(share_dir, session_model, invite)
+    _record_share_invite_secret(
+        share_dir,
+        invite_id,
+        {
+            "schema": "snulbug.share.invite-secret.v1",
+            "invite_id": invite_id,
+            "created_at": now,
+            "recipient": recipient,
+            "headers": headers,
+            "bearer_token": bearer_token,
+            "lease_token": lease_token,
+            "setup_snippets": snippets,
+        },
+    )
     return {
         "ok": True,
         "share": str(share_dir),
@@ -1162,6 +1177,7 @@ def list_mcp_share_invites(
     directory: str | Path = ".",
     *,
     include_revoked: bool = True,
+    include_setup: bool = False,
 ) -> dict[str, Any]:
     """List share invitations without revealing bearer or lease tokens."""
 
@@ -1170,6 +1186,8 @@ def list_mcp_share_invites(
     items = [_mapping(item) for item in _sequence(invitations.get("items")) if isinstance(item, Mapping)]
     if not include_revoked:
         items = [item for item in items if not item.get("revoked_at")]
+    if include_setup:
+        items = _attach_share_invite_secrets(share_dir, items)
     return {
         "ok": True,
         "share": str(share_dir),
@@ -1209,6 +1227,7 @@ def revoke_mcp_share_invite(
     model = json.loads(json.dumps(dict(session_model), default=str))
     model["invitations"] = invitations
     write_share_session_model(share_dir, model, force=True)
+    _remove_share_invite_secret(share_dir, invite_id)
     lease_result = None
     lease_id = invite.get("lease_id")
     if revoke_lease and isinstance(lease_id, str) and lease_id:
@@ -1242,6 +1261,10 @@ def cleanup_mcp_share_invites(directory: str | Path = ".") -> dict[str, Any]:
     model = json.loads(json.dumps(dict(session_model), default=str))
     model["invitations"] = invitations
     write_share_session_model(share_dir, model, force=True)
+    _prune_share_invite_secrets(
+        share_dir,
+        active_ids={str(item.get("id")) for item in kept if item.get("id") and not item.get("revoked_at")},
+    )
     return {
         "ok": True,
         "share": str(share_dir),
@@ -7860,6 +7883,99 @@ def _record_share_invite(
     model["invitations"] = invitations
     write_share_session_model(share_dir, model, force=True)
     return model
+
+
+def _share_invite_secret_store_path(share_dir: Path) -> Path:
+    return share_dir / SHARE_INVITE_SECRET_STORE_PATH
+
+
+def _load_share_invite_secret_store(share_dir: Path) -> dict[str, Any]:
+    path = _share_invite_secret_store_path(share_dir)
+    if not path.is_file():
+        return {
+            "schema": "snulbug.share.invite-secret-store.v1",
+            "invitations": {},
+        }
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {
+            "schema": "snulbug.share.invite-secret-store.v1",
+            "invitations": {},
+        }
+    if not isinstance(payload, Mapping):
+        return {
+            "schema": "snulbug.share.invite-secret-store.v1",
+            "invitations": {},
+        }
+    store = dict(payload)
+    if not isinstance(store.get("invitations"), Mapping):
+        store["invitations"] = {}
+    return store
+
+
+def _write_share_invite_secret_store(share_dir: Path, store: Mapping[str, Any]) -> None:
+    path = _share_invite_secret_store_path(share_dir)
+    _write_json(path, store, force=True)
+
+
+def _record_share_invite_secret(share_dir: Path, invite_id: str, payload: Mapping[str, Any]) -> None:
+    store = _load_share_invite_secret_store(share_dir)
+    invitations = dict(_mapping(store.get("invitations")))
+    invitations[invite_id] = json.loads(json.dumps(dict(payload), default=str))
+    updated = dict(store)
+    updated["schema"] = updated.get("schema") or "snulbug.share.invite-secret-store.v1"
+    updated["updated_at"] = _now_iso()
+    updated["invitations"] = invitations
+    _write_share_invite_secret_store(share_dir, updated)
+
+
+def _remove_share_invite_secret(share_dir: Path, invite_id: str) -> None:
+    store = _load_share_invite_secret_store(share_dir)
+    invitations = dict(_mapping(store.get("invitations")))
+    if invite_id not in invitations:
+        return
+    invitations.pop(invite_id, None)
+    updated = dict(store)
+    updated["updated_at"] = _now_iso()
+    updated["invitations"] = invitations
+    _write_share_invite_secret_store(share_dir, updated)
+
+
+def _prune_share_invite_secrets(share_dir: Path, *, active_ids: set[str]) -> None:
+    store = _load_share_invite_secret_store(share_dir)
+    invitations = dict(_mapping(store.get("invitations")))
+    kept = {invite_id: payload for invite_id, payload in invitations.items() if str(invite_id) in active_ids}
+    if kept == invitations:
+        return
+    updated = dict(store)
+    updated["updated_at"] = _now_iso()
+    updated["invitations"] = kept
+    _write_share_invite_secret_store(share_dir, updated)
+
+
+def _attach_share_invite_secrets(
+    share_dir: Path,
+    items: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    store = _load_share_invite_secret_store(share_dir)
+    secrets_by_invite = _mapping(store.get("invitations"))
+    hydrated: list[dict[str, Any]] = []
+    for item in items:
+        invite = dict(_mapping(item))
+        invite_id = str(invite.get("id") or "")
+        secret_payload = _mapping(secrets_by_invite.get(invite_id))
+        if invite_id and not invite.get("revoked_at") and secret_payload:
+            if isinstance(secret_payload.get("headers"), Mapping):
+                invite["headers"] = dict(_mapping(secret_payload.get("headers")))
+            if isinstance(secret_payload.get("setup_snippets"), Mapping):
+                invite["setup_snippets"] = dict(_mapping(secret_payload.get("setup_snippets")))
+            for key in ("bearer_token", "lease_token"):
+                value = secret_payload.get(key)
+                if isinstance(value, str) and value:
+                    invite[key] = value
+        hydrated.append(invite)
+    return hydrated
 
 
 def _share_invite_summary(items: Sequence[Mapping[str, Any]]) -> dict[str, int]:

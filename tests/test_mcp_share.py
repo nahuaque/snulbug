@@ -247,9 +247,11 @@ def test_mcp_share_invite_create_list_and_revoke_redacts_stored_snippets(tmp_pat
         max_calls=2,
     )
     listing = list_mcp_share_invites(tmp_path)
+    setup_listing = list_mcp_share_invites(tmp_path, include_setup=True)
     session_model = load_share_session_model(tmp_path)
     revoked = revoke_mcp_share_invite(tmp_path, invite_id=created["invite"]["id"])
     active_only = list_mcp_share_invites(tmp_path, include_revoked=False)
+    revoked_setup_listing = list_mcp_share_invites(tmp_path, include_setup=True)
 
     assert created["ok"] is True
     assert created["invite"]["id"].startswith("invite_")
@@ -276,6 +278,8 @@ def test_mcp_share_invite_create_list_and_revoke_redacts_stored_snippets(tmp_pat
     assert listing["summary"] == {"total": 1, "active": 1, "revoked": 0}
     assert listing["invitations"][0]["recipient"] == "frontend agent"
     assert listing["invitations"][0]["setup_snippets"]["headers"]["Authorization"] == "Bearer [REDACTED]"
+    assert setup_listing["invitations"][0]["setup_snippets"]["headers"]["Authorization"] == "Bearer share-secret"
+    assert setup_listing["invitations"][0]["setup_snippets"]["headers"]["x-snulbug-lease"].startswith("sbl_")
     assert "share-secret" not in json.dumps(listing)
     assert "sbl_" not in json.dumps(listing)
     assert "share-secret" not in json.dumps(session_model["invitations"])
@@ -284,6 +288,7 @@ def test_mcp_share_invite_create_list_and_revoke_redacts_stored_snippets(tmp_pat
     assert revoked["lease_revoked"] is True
     assert revoked["invite"]["revoked_at"]
     assert active_only["summary"] == {"total": 0, "active": 0, "revoked": 0}
+    assert revoked_setup_listing["invitations"][0]["setup_snippets"]["headers"]["Authorization"] == "Bearer [REDACTED]"
 
 
 def test_mcp_share_invite_cli_emits_setup_snippets(tmp_path, capsys):

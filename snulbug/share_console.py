@@ -332,6 +332,8 @@ class ShareConsoleServer:
                 content_type, asset_path = CONSOLE_ASSETS[asset_name]
                 _send(handler, 200, asset_path.read_bytes(), content_type=content_type)
                 return
+            if path.startswith("/api/") and not self._require_console_secret(handler):
+                return
             if path == "/api/snapshot":
                 _send_json(handler, 200, self.snapshot())
                 return
@@ -350,8 +352,12 @@ class ShareConsoleServer:
             if path == "/api/invites":
                 query = parse_qs(parsed.query)
                 include_revoked = (_first(query.get("include_revoked")) or "true").lower() not in {"0", "false", "no"}
-                result = list_mcp_share_invites(self.directory, include_revoked=include_revoked)
-                _send_json(handler, 200, _redact_console_payload(result))
+                result = list_mcp_share_invites(
+                    self.directory,
+                    include_revoked=include_revoked,
+                    include_setup=True,
+                )
+                _send_json(handler, 200, result)
                 return
             if path == "/api/report":
                 _send_json(
@@ -378,6 +384,8 @@ class ShareConsoleServer:
         parsed = urlsplit(handler.path)
         path = parsed.path
         try:
+            if path.startswith("/api/") and not self._require_console_secret(handler):
+                return
             body = _read_json_body(handler)
             if path == "/api/setup/create-share":
                 share_dir, result = _create_share_from_setup(self.directory, body)
@@ -492,32 +500,10 @@ class ShareConsoleServer:
                 _send_json(handler, 200, _redact_console_payload(result))
                 return
             if path == "/api/client/bearer-token":
-                if not self._has_console_secret(handler):
-                    _send_json(
-                        handler,
-                        403,
-                        {
-                            "ok": False,
-                            "error": "console secret required",
-                            "header": CONSOLE_SECRET_HEADER,
-                        },
-                    )
-                    return
                 result = _client_bearer_token(self.directory)
                 _send_json(handler, 200, result)
                 return
             if path == "/api/invites/create":
-                if not self._has_console_secret(handler):
-                    _send_json(
-                        handler,
-                        403,
-                        {
-                            "ok": False,
-                            "error": "console secret required",
-                            "header": CONSOLE_SECRET_HEADER,
-                        },
-                    )
-                    return
                 handoff = _invite_handoff_readiness(
                     self.directory,
                     timeout=self.timeout,
@@ -541,33 +527,11 @@ class ShareConsoleServer:
                 _send_json(handler, 200, result)
                 return
             if path == "/api/invites/cleanup-revoked":
-                if not self._has_console_secret(handler):
-                    _send_json(
-                        handler,
-                        403,
-                        {
-                            "ok": False,
-                            "error": "console secret required",
-                            "header": CONSOLE_SECRET_HEADER,
-                        },
-                    )
-                    return
                 result = cleanup_mcp_share_invites(self.directory)
                 _send_json(handler, 200, _redact_console_payload(result))
                 return
             invite_prefix = "/api/invites/"
             if path.startswith(invite_prefix) and path.endswith("/revoke"):
-                if not self._has_console_secret(handler):
-                    _send_json(
-                        handler,
-                        403,
-                        {
-                            "ok": False,
-                            "error": "console secret required",
-                            "header": CONSOLE_SECRET_HEADER,
-                        },
-                    )
-                    return
                 invite_id = unquote(path[len(invite_prefix) : -len("/revoke")])
                 result = revoke_mcp_share_invite(
                     self.directory,
@@ -577,17 +541,6 @@ class ShareConsoleServer:
                 _send_json(handler, 200, _redact_console_payload(result))
                 return
             if path == "/api/leases/cleanup-inactive":
-                if not self._has_console_secret(handler):
-                    _send_json(
-                        handler,
-                        403,
-                        {
-                            "ok": False,
-                            "error": "console secret required",
-                            "header": CONSOLE_SECRET_HEADER,
-                        },
-                    )
-                    return
                 result = cleanup_mcp_share_leases(self.directory)
                 _send_json(handler, 200, _redact_console_payload(result))
                 return
@@ -640,11 +593,12 @@ class ShareConsoleServer:
             return build_share_setup_console_snapshot(self.directory)
         share_key = str(self.directory.resolve(strict=False))
         if self.live_checks:
-            return build_share_console_snapshot(
+            snapshot = build_share_console_snapshot(
                 self.directory,
                 timeout=self.timeout,
                 live_checks=True,
             )
+            return _with_console_invite_setups(self.directory, snapshot)
         if self._initial_health_share != share_key:
             snapshot = build_share_console_snapshot(
                 self.directory,
@@ -653,16 +607,47 @@ class ShareConsoleServer:
             )
             snapshot["initial_health_check"] = True
             self._initial_health_share = share_key
-            return snapshot
-        return build_share_console_snapshot(
+            return _with_console_invite_setups(self.directory, snapshot)
+        snapshot = build_share_console_snapshot(
             self.directory,
             timeout=self.timeout,
             live_checks=False,
         )
+        return _with_console_invite_setups(self.directory, snapshot)
 
     def _has_console_secret(self, handler: BaseHTTPRequestHandler) -> bool:
         supplied = handler.headers.get(CONSOLE_SECRET_HEADER, "")
         return hmac.compare_digest(str(supplied), self.console_secret)
+
+    def _require_console_secret(self, handler: BaseHTTPRequestHandler) -> bool:
+        if self._has_console_secret(handler):
+            return True
+        _send_json(
+            handler,
+            403,
+            {
+                "ok": False,
+                "error": "console secret required",
+                "header": CONSOLE_SECRET_HEADER,
+            },
+        )
+        return False
+
+
+def _with_console_invite_setups(directory: str | Path, snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    payload = json.loads(json.dumps(dict(snapshot), default=str))
+    status = payload.get("status")
+    if not isinstance(status, dict):
+        return payload
+    try:
+        invitations = list_mcp_share_invites(directory, include_revoked=True, include_setup=True)
+    except Exception:
+        return payload
+    status["invitations"] = {
+        "items": invitations.get("invitations", []),
+        "summary": invitations.get("summary", {}),
+    }
+    return payload
 
 
 def _send_json(handler: BaseHTTPRequestHandler, status: int, payload: Mapping[str, Any]) -> None:
@@ -4195,6 +4180,7 @@ def _console_html() -> str:
       "#doctorChecks",
       "#amendPreview",
       "#inviteSetupOutput",
+      ".invite-setup-output",
       "#requestDrawer .drawer-body"
     ];
     const baseSectionIds = [
@@ -4242,14 +4228,23 @@ def _console_html() -> str:
 
     async function api(path, options = {}) {
       const { allowFalse = false, ...requestOptions } = options;
+      const headers = {
+        "content-type": "application/json",
+        ...(requestOptions.headers || {})
+      };
+      if (path.startsWith("/api/")) {
+        const secret = consoleSecret();
+        if (!secret) throw new Error("console secret required");
+        headers["x-snulbug-console-secret"] = secret;
+      }
       const response = await fetch(path, {
         ...requestOptions,
-        headers: {
-          "content-type": "application/json",
-          ...(requestOptions.headers || {})
-        }
+        headers
       });
       const payload = await response.json();
+      if (response.status === 403 && String(payload.error || "").includes("console secret")) {
+        if (window.sessionStorage) window.sessionStorage.removeItem("snulbug-console-secret");
+      }
       if (!response.ok || (!allowFalse && payload.ok === false)) throw new Error(payload.error || response.statusText);
       return payload;
     }
@@ -5449,7 +5444,8 @@ def _console_html() -> str:
         <div>
           <div class="timeline-target">Create task invite</div>
           <div class="timeline-detail">
-            Mint a lease-backed client setup packet for one recipient. The setup packet is shown once after creation.
+            Mint a lease-backed client setup packet for one recipient. Active invite setup snippets stay available
+            while the invite remains active.
           </div>
         </div>
         <div class="field-grid">
@@ -5560,7 +5556,7 @@ def _console_html() -> str:
             <div class="timeline-target">Invite Setup Snippets</div>
             <div class="timeline-detail">
               Use this invite now: copy the setup packet into the downstream MCP client, or run the curl smoke test.
-              It contains bearer and lease tokens and will not be recoverable from the invite card later.
+              It contains bearer and lease tokens and is also available from the active invite card.
             </div>
           </div>
           <div class="review-actions">
@@ -5583,12 +5579,34 @@ def _console_html() -> str:
       const paths = listText(invite.allow_paths);
       const taskDetail = `client ${invite.client_name || "snulbug-share"}`;
       const expiryDetail = revoked ? `revoked ${shortDateTime(invite.revoked_at)}` : "";
+      const hasSetup = !revoked && Boolean(invite.setup_snippets);
+      const setupText = hasSetup
+        ? formatInviteSetup({ invite, setup_snippets: invite.setup_snippets, headers: invite.headers || {} })
+        : "";
       const guidance = revoked
         ? "This invite was revoked. Create a new invite to generate fresh setup snippets."
-        : "Setup snippets and tokens are only shown immediately after creation.";
+        : (hasSetup
+          ? "Setup snippets are available while this invite remains active."
+          : [
+              "Setup snippets are unavailable for invites created before persistent setup packets;",
+              "create a new invite if needed."
+            ].join(" "));
       const revokeAction = revoked
         ? ""
         : `<button class="danger" type="button" onclick="revokeInvite('${id}')">Revoke invite</button>`;
+      const setupHtml = hasSetup
+        ? `<details class="compact-details" data-state-key="invite-setup-${id}">
+            <summary>Setup snippets</summary>
+            <div class="review-actions">
+              <button
+                type="button"
+                class="primary"
+                onclick="copyInviteSetupFromCard('${id}')"
+              >Copy setup packet</button>
+            </div>
+            <div id="invite-setup-output-${id}" class="console-output invite-setup-output">${esc(setupText)}</div>
+          </details>`
+        : "";
       return `<div class="invite-card ${esc(status)}">
         <div class="invite-card-head">
           <div>
@@ -5604,6 +5622,7 @@ def _console_html() -> str:
           ${leaseMeta("Backing lease", invite.lease_id || "-", invite.lease_header || "")}
         </div>
         <div class="timeline-detail">${esc(guidance)}</div>
+        ${setupHtml}
         <div class="invite-actions">
           ${revokeAction}
         </div>
@@ -6324,23 +6343,14 @@ def _console_html() -> str:
 
     async function cleanupInactiveLeases() {
       if (!window.confirm("Remove inactive lease records from this share?")) return;
-      const secret = consoleSecret();
-      if (!secret) {
-        $("message").textContent = "Console secret required to clean up inactive leases";
-        return;
-      }
       try {
         const payload = await api("/api/leases/cleanup-inactive", {
           method: "POST",
-          headers: { "x-snulbug-console-secret": secret },
           body: JSON.stringify({})
         });
         $("message").textContent = `Removed ${payload.removed_count || 0} inactive leases`;
         await refreshAfterReadinessMutation();
       } catch (error) {
-        if (String(error.message || "").includes("console secret")) {
-          if (window.sessionStorage) window.sessionStorage.removeItem("snulbug-console-secret");
-        }
         $("message").textContent = `Lease cleanup failed: ${error.message}`;
       }
     }
@@ -6363,16 +6373,9 @@ def _console_html() -> str:
       }
       setInviteFeedback("Creating...", "pending");
       $("message").textContent = "Creating invite";
-      const secret = consoleSecret();
-      if (!secret) {
-        setInviteFeedback("Console secret required", "fail");
-        $("message").textContent = "Console secret required to create invites";
-        return;
-      }
       try {
         const payload = await api("/api/invites/create", {
           method: "POST",
-          headers: { "x-snulbug-console-secret": secret },
           body: JSON.stringify({
             recipient: setupInputValue("invite-create-recipient"),
             client_name: setupInputValue("invite-create-client-name"),
@@ -6392,9 +6395,6 @@ def _console_html() -> str:
         $("message").textContent = `Created invite ${(payload.invite || {}).id || ""}`;
         await refreshAfterReadinessMutation();
       } catch (error) {
-        if (String(error.message || "").includes("console secret")) {
-          if (window.sessionStorage) window.sessionStorage.removeItem("snulbug-console-secret");
-        }
         setInviteFeedback("Create failed", "fail");
         $("message").textContent = `Create invite failed: ${error.message}`;
       }
@@ -6402,23 +6402,14 @@ def _console_html() -> str:
 
     async function revokeInvite(id) {
       if (!window.confirm(`Revoke invite ${id}? This also revokes its backing lease.`)) return;
-      const secret = consoleSecret();
-      if (!secret) {
-        $("message").textContent = "Console secret required to revoke invites";
-        return;
-      }
       try {
         await api(`/api/invites/${encodeURIComponent(id)}/revoke`, {
           method: "POST",
-          headers: { "x-snulbug-console-secret": secret },
           body: JSON.stringify({ revoke_lease: true })
         });
         $("message").textContent = `Revoked invite ${id}`;
         await refreshAfterReadinessMutation();
       } catch (error) {
-        if (String(error.message || "").includes("console secret")) {
-          if (window.sessionStorage) window.sessionStorage.removeItem("snulbug-console-secret");
-        }
         $("message").textContent = `Revoke invite failed: ${error.message}`;
       }
     }
@@ -6430,23 +6421,14 @@ def _console_html() -> str:
 
     async function cleanupRevokedInvites() {
       if (!window.confirm("Remove revoked invite records from this share?")) return;
-      const secret = consoleSecret();
-      if (!secret) {
-        $("message").textContent = "Console secret required to clean up revoked invites";
-        return;
-      }
       try {
         const payload = await api("/api/invites/cleanup-revoked", {
           method: "POST",
-          headers: { "x-snulbug-console-secret": secret },
           body: JSON.stringify({})
         });
         $("message").textContent = `Removed ${payload.removed_count || 0} revoked invites`;
         await refreshAfterReadinessMutation();
       } catch (error) {
-        if (String(error.message || "").includes("console secret")) {
-          if (window.sessionStorage) window.sessionStorage.removeItem("snulbug-console-secret");
-        }
         $("message").textContent = `Invite cleanup failed: ${error.message}`;
       }
     }
@@ -6512,6 +6494,22 @@ def _console_html() -> str:
       }
     }
 
+    async function copyInviteSetupFromCard(id) {
+      const output = $(`invite-setup-output-${id}`);
+      const textValue = output ? output.textContent : "";
+      if (!textValue) {
+        $("message").textContent = "No invite setup snippets to copy";
+        return;
+      }
+      try {
+        if (!navigator.clipboard) throw new Error("clipboard unavailable");
+        await navigator.clipboard.writeText(textValue);
+        $("message").textContent = `Copied invite setup snippets for ${id}`;
+      } catch (error) {
+        $("message").textContent = `Copy failed: ${error.message}`;
+      }
+    }
+
     function requestField(id, name, source, fallback) {
       const prefix = source ? `${source}-` : "";
       const element = $(`${prefix}${name}-${id}`);
@@ -6530,8 +6528,18 @@ def _console_html() -> str:
       $("reportButton").disabled = true;
       $("message").textContent = "Generating session report";
       try {
-        const response = await fetch("/api/report/download", { headers: { "accept": "text/markdown" } });
+        const secret = consoleSecret();
+        if (!secret) throw new Error("console secret required");
+        const response = await fetch("/api/report/download", {
+          headers: {
+            "accept": "text/markdown",
+            "x-snulbug-console-secret": secret
+          }
+        });
         const report = await response.text();
+        if (response.status === 403 && report.includes("console secret")) {
+          if (window.sessionStorage) window.sessionStorage.removeItem("snulbug-console-secret");
+        }
         if (!response.ok) throw new Error(report || response.statusText);
         const filename = reportFilename(response.headers.get("content-disposition"));
         saveTextAsFile(report, filename);
@@ -6605,16 +6613,9 @@ def _console_html() -> str:
 
     async function copyBearerToken() {
       setBearerCopyFeedback("Copying...", "pending");
-      const secret = consoleSecret();
-      if (!secret) {
-        setBearerCopyFeedback("Console secret required", "fail");
-        $("message").textContent = "Console secret required to copy bearer token";
-        return;
-      }
       try {
         const payload = await api("/api/client/bearer-token", {
           method: "POST",
-          headers: { "x-snulbug-console-secret": secret },
           body: JSON.stringify({})
         });
         if (!navigator.clipboard) throw new Error("clipboard unavailable");
@@ -6622,9 +6623,6 @@ def _console_html() -> str:
         setBearerCopyFeedback("Copied to clipboard", "ok");
         $("message").textContent = "Copied bearer token";
       } catch (error) {
-        if (String(error.message || "").includes("console secret")) {
-          if (window.sessionStorage) window.sessionStorage.removeItem("snulbug-console-secret");
-        }
         setBearerCopyFeedback("Copy failed", "fail");
         $("message").textContent = `Copy bearer token failed: ${error.message}`;
       }
