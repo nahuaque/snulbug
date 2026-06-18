@@ -5,6 +5,15 @@ local allowed_tools = {
 
 local token = "local-dev-secret"
 
+capabilities.declare({
+  {
+    id = "project_readonly",
+    label = "Project readonly",
+    description = "Allow read-only project inspection through the tunnel-safe tool set.",
+    default = true,
+  }
+})
+
 return function(request, context, state)
   if request.path ~= "/mcp" then
     return {

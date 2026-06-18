@@ -156,6 +156,40 @@ end
 This is the public-share model: valid OAuth token, matching MCP scope, active
 task lease, and Lua policy approval.
 
+### Temporary Capability Labels
+
+Share invites get their capability menu from the active Lua policy. Declare the
+labels the policy understands at load time, then check the active lease inside
+the request handler.
+
+```lua
+capabilities.declare({
+  {
+    id = "project_readonly",
+    label = "Project readonly",
+    description = "Allow read-only project inspection through the safe tool set.",
+    default = true,
+  },
+  {
+    id = "docs_review",
+    label = "Docs review",
+    description = "Allow documentation review tools for this task.",
+  },
+})
+
+return function(request, context)
+  return lease.require()
+    or (not lease.has_capability("project_readonly") and access.lease_required({
+      reason_code = "lease.capability_missing",
+      body = "project_readonly capability required",
+    }))
+    or decision.allow("mcp.project_readonly_allowed")
+end
+```
+
+The share console only offers policy-declared labels when creating invites, so
+the handoff UI cannot mint arbitrary labels the policy does not know about.
+
 ### Intent And Risk
 
 ```lua

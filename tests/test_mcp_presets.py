@@ -117,6 +117,17 @@ def test_generate_mcp_preset_renders_custom_policy_values(tmp_path):
     assert bundle_result["ok"] is True
 
 
+def test_generate_tunnel_safe_preset_declares_invite_capabilities(tmp_path):
+    output_path = tmp_path / "policy.snulbug"
+
+    generate_mcp_preset("tunnel-safe", output_path)
+
+    policy = (output_path / "policy.lua").read_text(encoding="utf-8")
+    assert "capabilities.declare" in policy
+    assert 'id = "project_readonly"' in policy
+    assert "default = true" in policy
+
+
 def test_generate_mcp_preset_can_use_context_token_env(tmp_path):
     output_path = tmp_path / "policy.snulbug"
 

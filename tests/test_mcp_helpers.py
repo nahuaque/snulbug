@@ -906,6 +906,39 @@ def test_lease_capability_helpers_read_temporary_labels():
     }
 
 
+def test_lua_policy_can_declare_supported_invite_capabilities():
+    script = compile_lua_script(
+        """
+        capabilities.declare({
+          {
+            id = "project_readonly",
+            label = "Project readonly",
+            description = "Read project files safely",
+            default = true
+          },
+          "docs_review",
+        })
+
+        return function(request, context)
+          return decision.allow("test.allowed")
+        end
+        """
+    )
+
+    assert script.capabilities == [
+        {
+            "id": "project_readonly",
+            "label": "Project readonly",
+            "description": "Read project files safely",
+            "default": True,
+        },
+        {
+            "id": "docs_review",
+            "label": "docs_review",
+        },
+    ]
+
+
 def test_provider_aware_auth_helpers_read_normalized_claims():
     script = compile_lua_script(
         """

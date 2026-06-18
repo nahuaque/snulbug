@@ -75,6 +75,8 @@ def test_share_console_snapshot_reads_existing_share_artifacts(tmp_path):
     assert policy_source["sha256"].startswith("sha256:")
     assert "safe_read_file" in policy_source["source"]
     assert 'local token = "[REDACTED]"' in policy_source["source"]
+    assert policy_source["capabilities"][0]["id"] == "project_readonly"
+    assert policy_source["capabilities"][0]["default"] is True
     assert {"value": "mcp.docs_capability_requested", "count": 1} in policy_visibility["reason_codes"]["summary"]
     assert any(row["family"] == "mcp" for row in policy_visibility["helper_usage"])
     encoded = json.dumps(snapshot)
@@ -451,12 +453,22 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
                     "capabilities": "project_readonly",
                 },
             )
+        with pytest.raises(urllib.error.HTTPError) as unsupported:
+            post_json(
+                f"{server.url}/api/invites/create",
+                {
+                    "recipient": "agent",
+                    "task": "Read docs",
+                    "capabilities": "docs_review",
+                },
+                headers={share_console.CONSOLE_SECRET_HEADER: server.console_secret},
+            )
         invite_created = post_json(
             f"{server.url}/api/invites/create",
             {
                 "recipient": "agent",
                 "task": "Read docs",
-                "capabilities": "project_readonly,docs_review",
+                "capabilities": "project_readonly",
                 "ttl": "8m",
                 "max_calls": 2,
             },
@@ -620,8 +632,10 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "renderMetrics(metricStatus, readiness)" in html
     assert "renderMetrics(payload, state.liveHealthReadiness)" in html
     assert "Capability labels" in html
-    assert "project_readonly" in html
-    assert "Short-lived capability labels for Lua policy" in html
+    assert "inviteCapabilityOptionsHtml" in html
+    assert "selectedInviteCapabilities" in html
+    assert "policyCapabilitiesTable" in html
+    assert "capabilities.declare" in html
     assert "public tunnel" in html
     assert "snulbug gateway" in html
     assert "Upstream MCP server behind snulbug" in html
@@ -647,10 +661,11 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "share-secret" not in json.dumps(snapshot)
     assert "sbl_" not in json.dumps(snapshot)
     assert forbidden.value.code == 403
+    assert unsupported.value.code == 400
     assert invite_created["ok"] is True
-    assert invite_created["invite"]["capabilities"] == ["project_readonly", "docs_review"]
+    assert invite_created["invite"]["capabilities"] == ["project_readonly"]
     assert "allow_tools" not in invite_created["invite"]
-    assert invite_created["lease"]["capabilities"] == ["project_readonly", "docs_review"]
+    assert invite_created["lease"]["capabilities"] == ["project_readonly"]
     assert invite_created["lease"]["allow_tools"] == ["*"]
     assert invite_created["headers"]["Authorization"] == "Bearer share-secret"
     assert invite_created["headers"]["x-snulbug-lease"].startswith("sbl_")

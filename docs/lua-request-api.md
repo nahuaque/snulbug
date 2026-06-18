@@ -601,6 +601,18 @@ Available helpers:
   lease covers the request, otherwise a standardized `access.lease_required`
   or `access.expired_lease` rejection.
 
+Declare the labels a policy supports before returning the request handler:
+
+```lua
+capabilities.declare({
+  { id = "project_readonly", label = "Project readonly", default = true },
+  { id = "docs_review", label = "Docs review" },
+})
+```
+
+The share console uses these declarations to render the invite capability menu
+and rejects undeclared labels submitted to the console API.
+
 For auth-bound leases, `lease.info()` / `context.lease` also includes:
 
 - `auth_bound`: true when the matched lease has OAuth identity constraints.

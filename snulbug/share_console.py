@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from .config import load_mcp_proxy_config
 from .redaction import SECRET_REPLACEMENT, build_audit_event
+from .runtime import LuaRuntimeError, compile_lua_script
 from .share import (
     activate_mcp_share_policy,
     approve_share_capability_request,
@@ -517,11 +518,40 @@ class ShareConsoleServer:
                 if handoff.get("ready") is not True:
                     _send_json(handler, 409, _redact_console_payload(handoff))
                     return
+                policy_capabilities = _declared_invite_capabilities(self.directory, timeout=self.timeout)
+                capability_ids = {str(item.get("id")) for item in policy_capabilities if item.get("id")}
+                requested_capabilities = _string_list(body.get("capabilities"))
+                if not capability_ids:
+                    _send_json(
+                        handler,
+                        409,
+                        {
+                            "ok": False,
+                            "error": "active policy does not declare supported invite capabilities",
+                            "policy_capabilities": policy_capabilities,
+                        },
+                    )
+                    return
+                if not requested_capabilities:
+                    requested_capabilities = _default_invite_capability_ids(policy_capabilities)
+                unsupported = [item for item in requested_capabilities if item not in capability_ids]
+                if unsupported:
+                    _send_json(
+                        handler,
+                        400,
+                        {
+                            "ok": False,
+                            "error": "requested invite capability is not declared by the active policy",
+                            "unsupported_capabilities": unsupported,
+                            "policy_capabilities": policy_capabilities,
+                        },
+                    )
+                    return
                 result = create_mcp_share_invite(
                     self.directory,
                     recipient=_string_or_none(body.get("recipient")) or "share recipient",
                     task=_string_or_none(body.get("task")) or "Temporary MCP access",
-                    capabilities=_string_list(body.get("capabilities")),
+                    capabilities=requested_capabilities,
                     allow_tools=_string_list(body.get("allow_tools")),
                     allow_paths=_string_list(body.get("allow_paths")),
                     allow_hosts=_string_list(body.get("allow_hosts")),
@@ -1871,6 +1901,25 @@ def _policy_visibility(
     }
 
 
+def _declared_invite_capabilities(directory: str | Path, *, timeout: float) -> list[dict[str, Any]]:
+    share_dir = Path(directory)
+    status = share_status(share_dir, timeout=timeout, live_checks=False)
+    visibility = _policy_visibility(share_dir, status, decision_timeline={})
+    source = _mapping(visibility.get("source"))
+    capabilities = source.get("capabilities")
+    if not isinstance(capabilities, Sequence) or isinstance(capabilities, str | bytes | bytearray):
+        return []
+    return [dict(item) for item in capabilities if isinstance(item, Mapping) and item.get("id")]
+
+
+def _default_invite_capability_ids(capabilities: Sequence[Mapping[str, Any]]) -> list[str]:
+    defaults = [str(item.get("id")) for item in capabilities if item.get("default") is True and item.get("id")]
+    if defaults:
+        return defaults
+    first = next((str(item.get("id")) for item in capabilities if item.get("id")), "")
+    return [first] if first else []
+
+
 def _policy_source_visibility(
     path: Path | None,
     *,
@@ -1903,6 +1952,7 @@ def _policy_source_visibility(
     raw = _read_bounded_bytes(path, MAX_POLICY_SOURCE_BYTES)
     source = raw["data"].decode("utf-8", errors="replace")
     redacted = _redact_policy_source(source)
+    declared_capabilities = _policy_declared_capabilities(source, source_name=str(path))
     result.update(
         {
             "displayable": True,
@@ -1912,9 +1962,25 @@ def _policy_source_visibility(
             "source": redacted,
             "redacted": redacted != source,
             "line_count": _line_count(str(redacted)),
+            **declared_capabilities,
         }
     )
     return result
+
+
+def _policy_declared_capabilities(source: str, *, source_name: str) -> dict[str, Any]:
+    try:
+        script = compile_lua_script(source, source_name=source_name)
+    except LuaRuntimeError as exc:
+        return {
+            "capabilities": [],
+            "capabilities_ok": False,
+            "capabilities_error": str(exc),
+        }
+    return {
+        "capabilities": script.capabilities,
+        "capabilities_ok": True,
+    }
 
 
 def _policy_bundle_manifest_visibility(bundle_path: Path | None, *, share_dir: Path) -> dict[str, Any]:
@@ -3688,6 +3754,24 @@ def _console_html() -> str:
       font-size: 12px;
       line-height: 1.25;
     }
+    .capability-options {
+      grid-column: 1 / -1;
+      display: grid;
+      gap: 8px;
+    }
+    .capability-option {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
+      background: white;
+    }
+    .capability-option-title {
+      font-weight: 720;
+    }
     .check-row {
       display: flex;
       flex-wrap: wrap;
@@ -5003,6 +5087,7 @@ def _console_html() -> str:
       const manifest = payload.bundle_manifest || {};
       const helpers = payload.helper_usage || [];
       const reasons = payload.reason_codes || {};
+      const capabilities = source.capabilities || [];
       $("policySummary").textContent =
         `${policy.lifecycle_state || "unspecified"} · ${source.displayable ? "source visible" : "source unavailable"}`;
       if (!payload.ok) {
@@ -5017,6 +5102,7 @@ def _console_html() -> str:
         ${detailRow("Bundle", policy.bundle)}
         ${detailRow("Policy digest", source.sha256)}
         ${detailRow("Source", policySourceStatus(source))}
+        ${detailRow("Invite capabilities", capabilities.length ? listText(capabilities.map((item) => item.id)) : "-")}
         ${detailRow("Bundle manifest", bundleManifestText(manifest))}
       </div>`;
       const bundleHtml = manifest.exists ? `<div>
@@ -5034,6 +5120,10 @@ def _console_html() -> str:
         <h2>DSL Helper Usage</h2>
         ${helperUsageTable(helpers)}
       </div>`;
+      const capabilitiesHtml = `<div>
+        <h2>Invite Capabilities</h2>
+        ${policyCapabilitiesTable(capabilities, source)}
+      </div>`;
       const reasonHtml = `<div class="grid-two">
         <div>
           <h2>Observed Reason Codes</h2>
@@ -5044,8 +5134,25 @@ def _console_html() -> str:
       const sourceHtml = policySourceHtml(source);
       $("policyVisibility").innerHTML =
         `<div class="stack">${metadata}${policyLifecycleHtml(policy)}${bundleHtml}${helpersHtml}` +
-        `${reasonHtml}${sourceHtml}</div>`;
+        `${capabilitiesHtml}${reasonHtml}${sourceHtml}</div>`;
       if (window.Prism) window.Prism.highlightAllUnder($("policyVisibility"));
+    }
+
+    function policyCapabilitiesTable(capabilities, source) {
+      if (!capabilities.length) {
+        const reason = source.capabilities_ok === false
+          ? `Capability declaration unavailable: ${source.capabilities_error || "policy did not compile"}`
+          : "No invite capabilities declared by this policy.";
+        return `<div class="empty">${esc(reason)}</div>`;
+      }
+      const rows = capabilities.map((item) => `<tr>
+        <td>${esc(item.id)}</td>
+        <td>${esc(item.label || item.id)}</td>
+        <td>${esc(item.description || "-")}</td>
+        <td>${item.default ? pill("default") : ""}</td>
+      </tr>`).join("");
+      return `<table><thead><tr><th>ID</th><th>Label</th><th>Description</th><th></th></tr></thead>` +
+        `<tbody>${rows}</tbody></table>`;
     }
 
     function policyLifecycleHtml(policy) {
@@ -5469,7 +5576,9 @@ def _console_html() -> str:
       const revoked = numeric(summary.revoked || revokedInvites.length);
       const visibleInvites = state.showRevokedInvites ? invitations : activeInvites;
       const handoff = inviteHandoffState();
-      const inviteDisabled = handoff.ready !== true;
+      const capabilities = policyInviteCapabilities();
+      const hasCapabilities = capabilities.length > 0;
+      const inviteDisabled = handoff.ready !== true || !hasCapabilities;
       $("inviteSummary").textContent =
         `${active} active, ${revoked} revoked${state.showRevokedInvites ? "" : " hidden"}`;
       const createHtml = `<div class="setup-form stack">
@@ -5484,14 +5593,7 @@ def _console_html() -> str:
           ${setupField("invite-create-recipient", "Recipient", "local collaborator")}
           ${setupField("invite-create-client-name", "Client name", "snulbug-share")}
           ${setupField("invite-create-task", "Task", "Temporary MCP access", "wide")}
-          ${setupField(
-            "invite-create-capabilities",
-            "Capability labels",
-            "project_readonly",
-            "wide",
-            "Short-lived capability labels for Lua policy, for example project_readonly or docs_review. "
-              + "Use commas for multiple labels."
-          )}
+          ${inviteCapabilityOptionsHtml(capabilities)}
           ${setupField("invite-create-ttl", "TTL", "30m")}
           ${setupField("invite-create-calls", "Max calls", "")}
         </div>
@@ -5502,6 +5604,11 @@ def _console_html() -> str:
           <span id="inviteCreateStatus" class="copy-status"></span>
         </div>
         <div class="field-help">${esc(inviteHandoffMessage(handoff))}</div>
+        ${hasCapabilities ? "" : [
+          '<div class="field-help">',
+          "The active Lua policy must declare invite capabilities with capabilities.declare(...).",
+          "</div>"
+        ].join("")}
       </div>`;
       const controlsHtml = `<div class="review-actions">
         <label class="auto">
@@ -5526,6 +5633,47 @@ def _console_html() -> str:
       }
       const listHtml = `<div class="invite-list">${visibleInvites.map(inviteCardHtml).join("")}</div>`;
       $("invitations").innerHTML = `<div class="stack">${createHtml}${controlsHtml}${setupHtml}${listHtml}</div>`;
+    }
+
+    function policyInviteCapabilities() {
+      const source = (((state.snapshot || {}).policy_visibility || {}).source || {});
+      return (source.capabilities || []).filter((item) => item && item.id);
+    }
+
+    function inviteCapabilityOptionsHtml(capabilities) {
+      if (!capabilities.length) {
+        return `<div class="capability-options">
+          <div class="detail-label">Capability labels</div>
+          <div class="empty">No invite capabilities declared by the active policy.</div>
+        </div>`;
+      }
+      const hasDefault = capabilities.some((item) => item.default === true);
+      const options = capabilities.map((item, index) => {
+        const checked = item.default === true || (!hasDefault && index === 0);
+        return `<label class="capability-option">
+          <input
+            class="invite-capability-option"
+            type="checkbox"
+            value="${esc(item.id)}"
+            ${checked ? "checked" : ""}
+          >
+          <span>
+            <span class="capability-option-title">${esc(item.label || item.id)}</span>
+            <span class="timeline-detail">${esc(item.description || item.id)}</span>
+          </span>
+        </label>`;
+      }).join("");
+      return `<div class="capability-options">
+        <div class="detail-label">Capability labels</div>
+        ${options}
+        <div class="field-help">These labels are declared by the active Lua policy.</div>
+      </div>`;
+    }
+
+    function selectedInviteCapabilities() {
+      return Array.from(document.querySelectorAll(".invite-capability-option:checked"))
+        .map((element) => element.value)
+        .filter(Boolean);
     }
 
     function inviteHandoffState() {
@@ -6385,6 +6533,12 @@ def _console_html() -> str:
         $("message").textContent = message;
         return;
       }
+      const capabilities = selectedInviteCapabilities();
+      if (!capabilities.length) {
+        setInviteFeedback("Choose a capability", "fail");
+        $("message").textContent = "Choose at least one policy-declared invite capability.";
+        return;
+      }
       setInviteFeedback("Creating...", "pending");
       $("message").textContent = "Creating invite";
       try {
@@ -6394,7 +6548,7 @@ def _console_html() -> str:
             recipient: setupInputValue("invite-create-recipient"),
             client_name: setupInputValue("invite-create-client-name"),
             task: setupInputValue("invite-create-task"),
-            capabilities: setupInputValue("invite-create-capabilities"),
+            capabilities,
             ttl: setupInputValue("invite-create-ttl") || "30m",
             max_calls: setupInputValue("invite-create-calls"),
             live_checks: Boolean(state.liveHealthReadiness)

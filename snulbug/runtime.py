@@ -44,6 +44,7 @@ class CompiledLuaScript:
     source_name: str
     _runtime: Any = field(repr=False)
     _handler: Any = field(repr=False)
+    capabilities: list[dict[str, Any]] = field(default_factory=list)
 
     def decide(self, request: Mapping[str, Any], context: Mapping[str, Any] | None = None) -> dict[str, Any]:
         return self.decide_with_trace(request, context).decision
@@ -150,11 +151,23 @@ def compile_lua_script(
 
     loader = runtime.execute(_LOADER)
     try:
-        handler = loader(source, source_name, int(instruction_limit))
+        loaded = loader(source, source_name, int(instruction_limit))
     except Exception as exc:
         raise LuaRuntimeError(f"Could not compile Lua script {source_name!r}: {exc}") from exc
 
-    return CompiledLuaScript(source_name=source_name, _runtime=runtime, _handler=handler)
+    if isinstance(loaded, tuple):
+        handler = loaded[0]
+        capabilities = _normalize_capability_declarations(_from_lua(loaded[1] if len(loaded) > 1 else None))
+    else:
+        handler = loaded
+        capabilities = []
+
+    return CompiledLuaScript(
+        source_name=source_name,
+        capabilities=capabilities,
+        _runtime=runtime,
+        _handler=handler,
+    )
 
 
 def compile_lua_file(
@@ -203,6 +216,41 @@ def _from_lua(value: Any) -> Any:
 
 def _is_lua_table(value: Any) -> bool:
     return hasattr(value, "keys") and hasattr(value, "__getitem__") and not isinstance(value, dict)
+
+
+def _normalize_capability_declarations(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    declared: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in value:
+        if isinstance(item, str):
+            raw = {"id": item}
+        elif isinstance(item, Mapping):
+            raw = item
+        else:
+            continue
+        capability_id = str(raw.get("id") or "").strip()
+        if not capability_id or capability_id in seen or not _valid_capability_id(capability_id):
+            continue
+        seen.add(capability_id)
+        declared.append(
+            {
+                key: item
+                for key, item in {
+                    "id": capability_id,
+                    "label": str(raw.get("label") or capability_id).strip(),
+                    "description": str(raw.get("description") or "").strip(),
+                    "default": raw.get("default") is True,
+                }.items()
+                if item not in ("", None, False)
+            }
+        )
+    return declared
+
+
+def _valid_capability_id(value: str) -> bool:
+    return all(char.isalnum() or char in {"_", "-", ".", ":"} for char in value)
 
 
 _LOADER = r"""
@@ -511,8 +559,54 @@ return function(source, source_name, instruction_limit)
     if type(value) ~= "table" then
       return false
     end
-    return type(value[1]) == "table"
+    return value[1] ~= nil
   end
+
+  local declared_capabilities = {}
+
+  local function declare_capability_entry(key, spec)
+    local item = {}
+    if type(spec) == "string" then
+      item.id = spec
+      item.label = spec
+    elseif type(spec) == "table" then
+      item.id = spec.id or spec.name or key
+      item.label = spec.label or item.id
+      item.description = spec.description
+      item.default = spec.default
+    else
+      return nil
+    end
+    if type(item.id) ~= "string" or item.id == "" then
+      return nil
+    end
+    table.insert(declared_capabilities, item)
+    return item
+  end
+
+  local capabilities = {}
+
+  function capabilities.declare(values)
+    if type(values) == "string" then
+      declare_capability_entry(nil, values)
+      return values
+    end
+    if type(values) ~= "table" then
+      return values
+    end
+    if table_is_array(values) then
+      for _, value in ipairs(values) do
+        declare_capability_entry(nil, value)
+      end
+    else
+      for key, value in pairs(values) do
+        declare_capability_entry(key, value)
+      end
+    end
+    return values
+  end
+
+  safe_env.capabilities = capabilities
 
   local function starts_with(value, prefix)
     return string.sub(value, 1, #prefix) == prefix
@@ -2741,6 +2835,6 @@ return function(source, source_name, instruction_limit)
       decision = result,
       instruction_count = instruction_count,
     }
-  end
+  end, declared_capabilities
 end
 """
