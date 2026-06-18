@@ -14,6 +14,22 @@ from snulbug import test_bundle as run_bundle_tests
 from snulbug.simulator import main as simulator_main
 
 
+def _mcp_tool_request(name: str, arguments: dict[str, object]) -> dict[str, object]:
+    return {
+        "method": "POST",
+        "path": "/mcp",
+        "headers": {"authorization": "Bearer local-dev-secret", "content-type": "application/json"},
+        "body": json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "test",
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments},
+            }
+        ),
+    }
+
+
 def test_builtin_mcp_presets_are_listed():
     presets = {preset["preset"]: preset for preset in list_builtin_presets()}
 
@@ -125,7 +141,67 @@ def test_generate_tunnel_safe_preset_declares_invite_capabilities(tmp_path):
     policy = (output_path / "policy.lua").read_text(encoding="utf-8")
     assert "capabilities.declare" in policy
     assert 'id = "project_readonly"' in policy
+    assert 'id = "project_search"' in policy
+    assert 'id = "docs_review"' in policy
+    assert 'id = "git_inspection"' in policy
+    assert 'id = "low_risk_tools"' in policy
     assert "default = true" in policy
+
+
+def test_tunnel_safe_preset_enforces_invite_capability_labels(tmp_path):
+    output_path = tmp_path / "policy.snulbug"
+    generate_mcp_preset("tunnel-safe", output_path)
+    policy = output_path / "policy.lua"
+
+    base_context = {
+        "lease": {
+            "enabled": True,
+            "method": "tools/call",
+            "allowed": True,
+            "checked": True,
+            "id": "lease_1",
+        }
+    }
+
+    readonly = simulate_policy(
+        policy,
+        _mcp_tool_request("safe_read_file", {"path": "README.md"}),
+        context={**base_context, "lease": {**base_context["lease"], "capabilities": ["project_readonly"]}},
+    )
+    docs = simulate_policy(
+        policy,
+        _mcp_tool_request("safe_read_file", {"path": "docs/guide.md"}),
+        context={**base_context, "lease": {**base_context["lease"], "capabilities": ["docs_review"]}},
+    )
+    docs_blocked = simulate_policy(
+        policy,
+        _mcp_tool_request("safe_read_file", {"path": "src/app.py"}),
+        context={**base_context, "lease": {**base_context["lease"], "capabilities": ["docs_review"]}},
+    )
+    git_read = simulate_policy(
+        policy,
+        _mcp_tool_request("git_status", {}),
+        context={**base_context, "lease": {**base_context["lease"], "capabilities": ["git_inspection"]}},
+    )
+    git_mutation = simulate_policy(
+        policy,
+        _mcp_tool_request("git_push", {}),
+        context={**base_context, "lease": {**base_context["lease"], "capabilities": ["git_inspection"]}},
+    )
+    search = simulate_policy(
+        policy,
+        _mcp_tool_request("search_files", {"path": "snulbug"}),
+        context={**base_context, "lease": {**base_context["lease"], "capabilities": ["project_search"]}},
+    )
+
+    assert readonly["action"] == "rate_limit"
+    assert docs["action"] == "rate_limit"
+    assert docs_blocked["action"] == "reject"
+    assert docs_blocked["decision"]["reason_code"] == "mcp.workspace_path_outside"
+    assert git_read["action"] == "rate_limit"
+    assert git_mutation["action"] == "reject"
+    assert git_mutation["decision"]["reason_code"] == "mcp.tunnel_safe_git_write_blocked"
+    assert search["action"] == "rate_limit"
 
 
 def test_generate_mcp_preset_can_use_context_token_env(tmp_path):

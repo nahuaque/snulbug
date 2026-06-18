@@ -335,14 +335,18 @@ For a downstream MCP client, generate a task-scoped invite with setup snippets:
 snulbug mcp share invite create .snulbug/share \
   --recipient "local agent" \
   --task "Read README only" \
-  --allow-tool safe_read_file \
-  --allow-path README.md \
+  --capability project_readonly \
   --ttl 30m
 ```
 
 The response includes MCP client JSON, a curl smoke test, Claude Code setup,
 Codex `config.toml`, and environment exports. The share session stores only
 redacted invite metadata.
+
+The default `tunnel-safe` policy exposes a small capability menu for invites:
+`project_readonly`, `project_search`, `docs_review`, `git_inspection`, and
+`low_risk_tools`. These are labels interpreted by Lua policy, not a separate
+permission system in the invite form.
 
 If your policy uses `action = "confirm"` for risky calls, enable confirmation in
 `snulbug.toml`:

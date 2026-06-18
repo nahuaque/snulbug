@@ -706,8 +706,7 @@ lease header, and downstream client snippets together:
 snulbug mcp share invite create .snulbug/share \
   --recipient "agent demo" \
   --task "Read README before editing docs" \
-  --allow-tool safe_read_file \
-  --allow-path README.md \
+  --capability docs_review \
   --ttl 30m \
   --max-calls 5
 ```

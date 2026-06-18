@@ -136,8 +136,16 @@ snulbug mcp policy preset workspace-firewall \
 
 `tunnel-safe` is the recommended default for ngrok, Cloudflare Tunnel,
 Tailscale Funnel, Pinggy, Holepunch peer bridges, or similar tunnel
-exposure. It requires bearer auth, rejects JSON-RPC batch requests, allows only
-configured safe tools, and rate-limits traffic.
+exposure. It requires bearer auth, rejects JSON-RPC batch requests, requires
+task leases for tool calls when a lease store is configured, and rate-limits
+traffic. For share invites, it declares policy-enforced temporary capability
+labels:
+
+- `project_readonly`: default; allow configured read-only project tools.
+- `project_search`: allow low-risk read/search tools against non-secret project paths.
+- `docs_review`: allow read/search tools scoped to README, docs, and examples.
+- `git_inspection`: allow git status/diff/log-style inspection while blocking git mutation.
+- `low_risk_tools`: allow low-risk non-writing, non-network, non-secret tools classified by schema or name.
 
 ```bash
 snulbug mcp share quickstart \

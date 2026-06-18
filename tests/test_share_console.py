@@ -74,7 +74,7 @@ def test_share_console_snapshot_reads_existing_share_artifacts(tmp_path):
     assert policy_source["redacted"] is True
     assert policy_source["sha256"].startswith("sha256:")
     assert "safe_read_file" in policy_source["source"]
-    assert 'local token = "[REDACTED]"' in policy_source["source"]
+    assert 'fallback_token = "[REDACTED]"' in policy_source["source"]
     assert policy_source["capabilities"][0]["id"] == "project_readonly"
     assert policy_source["capabilities"][0]["default"] is True
     assert {"value": "mcp.docs_capability_requested", "count": 1} in policy_visibility["reason_codes"]["summary"]
@@ -459,7 +459,7 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
                 {
                     "recipient": "agent",
                     "task": "Read docs",
-                    "capabilities": "docs_review",
+                    "capabilities": "shell_access",
                 },
                 headers={share_console.CONSOLE_SECRET_HEADER: server.console_secret},
             )

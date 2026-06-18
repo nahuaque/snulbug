@@ -680,84 +680,12 @@ end
 
 
 def _tunnel_safe_policy(options: McpPolicyOptions) -> str:
-    return f"""local allowed_tools = {{
-{_lua_tool_lines(options.allowed_tools)}
-}}
-
-capabilities.declare({{
-  {{
-    id = "project_readonly",
-    label = "Project readonly",
-    description = "Allow read-only project inspection through the tunnel-safe tool set.",
-    default = true,
-  }}
-}})
-
-return function(request, context, state)
-  if request.path ~= "/mcp" then
-    return {{
-      action = "reject",
-      status = 404,
-      body = "unknown MCP endpoint",
-      reason = "Request path is not the configured MCP endpoint",
-      reason_code = "mcp.endpoint_not_found"
-    }}
-  end
-
-{_token_assignment(options)}
-  if request.headers.authorization ~= "Bearer " .. token then
-    return {{
-      action = "challenge",
-      scheme = "Bearer",
-      realm = "local-mcp",
-      error = "invalid_token",
-      body = "MCP bearer token required",
-      reason = "Missing or invalid MCP bearer token",
-      reason_code = "mcp.auth_required"
-    }}
-  end
-
-  local body = mcp.body(request)
-  if type(body) ~= "table" then
-    return {{
-      action = "reject",
-      status = 400,
-      body = "invalid MCP JSON-RPC request",
-      reason = "MCP request body is not a JSON-RPC object",
-      reason_code = "mcp.invalid_json"
-    }}
-  end
-  if type(body[1]) == "table" then
-    return {{
-      action = "reject",
-      status = 400,
-      body = "MCP batch requests are disabled for tunnel-safe profile",
-      reason = "Batch JSON-RPC requests are disabled for tunneled local-dev exposure",
-      reason_code = "mcp.batch_rejected"
-    }}
-  end
-
-  local blocked = mcp.allow_tools(request, allowed_tools)
-  if blocked ~= nil then
-    return blocked
-  end
-
-  return {{
-    action = "rate_limit",
-    key = "mcp:tunnel:" .. token,
-    limit = {options.rate_limit},
-    window = {options.rate_window},
-    body = "too many MCP calls",
-    reason = "MCP request is allowed by the tunnel-safe profile",
-    reason_code = "mcp.tunnel_safe_rate_limit",
-    context = {{
-      policy = "mcp-tunnel-safe",
-      method = mcp.method(request) or "",
-      tool = mcp.tool_name(request) or ""
-    }}
-  }}
-end
-"""
+    policy = _read_resource_text(_preset_path("tunnel-safe").joinpath("policy.lua"))
+    policy = _replace_lua_table(policy, "allowed_tools", _lua_tool_lines(options.allowed_tools))
+    policy = policy.replace(_default_tunnel_safe_token_block(), _tunnel_safe_token_block(options), 1)
+    policy = policy.replace("limit = 60,", f"limit = {options.rate_limit},", 1)
+    policy = policy.replace("window = 60,", f"window = {options.rate_window},", 1)
+    return policy
 
 
 def _token_assignment(options: McpPolicyOptions) -> str:
@@ -766,6 +694,37 @@ def _token_assignment(options: McpPolicyOptions) -> str:
         token_key = _lua_identifier(options.token_env)
         return f'  local token = context.{token_key} or "{escaped_token}"'
     return f'  local token = "{escaped_token}"'
+
+
+def _default_tunnel_safe_token_block() -> str:
+    return """local fallback_token = "local-dev-secret"
+
+local function policy_token(context)
+  return fallback_token
+end"""
+
+
+def _tunnel_safe_token_block(options: McpPolicyOptions) -> str:
+    escaped_token = _lua_escape(options.token or DEFAULT_TOKEN)
+    if options.token_env:
+        token_key = _lua_identifier(options.token_env)
+        return f"""local fallback_token = "{escaped_token}"
+
+local function policy_token(context)
+  return context.{token_key} or fallback_token
+end"""
+    return f"""local fallback_token = "{escaped_token}"
+
+local function policy_token(context)
+  return fallback_token
+end"""
+
+
+def _replace_lua_table(policy: str, name: str, body: str) -> str:
+    prefix = f"local {name} = {{\n"
+    start = policy.index(prefix)
+    end = policy.index("}\n", start) + len("}\n")
+    return f"{policy[:start]}{prefix}{body}\n}}\n{policy[end:]}"
 
 
 def _lua_tool_lines(tools: list[str]) -> str:
@@ -860,6 +819,11 @@ def _read_resource_json(path: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"resource JSON must be an object: {path}")
     return value
+
+
+def _read_resource_text(path: Any) -> str:
+    with path.open("r", encoding="utf-8") as file:
+        return file.read()
 
 
 def _read_json_file(path: Path) -> dict[str, Any]:

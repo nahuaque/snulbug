@@ -325,14 +325,17 @@ environment variables:
 snulbug mcp share invite create .snulbug/share \
   --recipient "local agent" \
   --task "Read project docs only" \
-  --allow-tool safe_read_file \
-  --allow-path README.md \
+  --capability docs_review \
   --ttl 30m
 ```
 
-The invite list stored in the share session is redacted; bearer and lease tokens
-are only shown in the create response or in the local share console after you
-enter the console secret printed by `snulbug mcp share run`.
+The active Lua policy declares the supported invite capability labels. The
+default `tunnel-safe` preset offers `project_readonly`, `project_search`,
+`docs_review`, `git_inspection`, and `low_risk_tools`; the invite stores only
+labels, while Lua enforces the actual tool, path, intent, and risk rules. The
+invite list stored in the share session is redacted; bearer and lease tokens are
+only shown in the create response or in the local share console after you enter
+the console secret printed by `snulbug mcp share run`.
 
 After a session, inspect the logs:
 

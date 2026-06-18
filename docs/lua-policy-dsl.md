@@ -175,15 +175,35 @@ capabilities.declare({
     label = "Docs review",
     description = "Allow documentation review tools for this task.",
   },
+  {
+    id = "git_inspection",
+    label = "Git inspection",
+    description = "Allow read-only git status, diff, log, and branch inspection.",
+  },
 })
 
 return function(request, context)
-  return lease.require()
-    or (not lease.has_capability("project_readonly") and access.lease_required({
-      reason_code = "lease.capability_missing",
-      body = "project_readonly capability required",
-    }))
-    or decision.allow("mcp.project_readonly_allowed")
+  local blocked = lease.require()
+  if blocked ~= nil then
+    return blocked
+  end
+
+  if lease.has_capability("project_readonly") then
+    return mcp.allow_tools(request, { "safe_read_file", "list_project_files" })
+      or decision.allow("mcp.project_readonly_allowed")
+  end
+
+  if lease.has_capability("docs_review") then
+    return workspace.require_under_project(nil, { allowed_paths = { "README.md", "docs/" } })
+      or workspace.block_secret_paths(nil)
+      or workspace.readonly_only()
+      or decision.allow("mcp.docs_review_allowed")
+  end
+
+  return access.lease_required({
+    reason_code = "lease.capability_missing",
+    body = "matching invite capability required",
+  })
 end
 ```
 

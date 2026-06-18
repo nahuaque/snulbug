@@ -69,7 +69,8 @@ DEFAULT_PROVIDER_CONSOLE_PROBE_TTL_SECONDS = 15.0
 MAX_POLICY_SOURCE_BYTES = 256 * 1024
 MAX_POLICY_MANIFEST_BYTES = 64 * 1024
 POLICY_SECRET_ASSIGNMENT_PATTERN = re.compile(
-    r"(\b(?:api[_-]?key|credential|password|secret|token)\b\s*=\s*)(['\"])([^'\"]*)(\2)",
+    r"(\b[A-Za-z_][A-Za-z0-9_-]*(?:api[_-]?key|credential|password|secret|token)[A-Za-z0-9_-]*\b\s*=\s*)"
+    r"(['\"])([^'\"]*)(\2)",
     re.IGNORECASE,
 )
 POLICY_BEARER_PATTERN = re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]{8,}", re.IGNORECASE)
