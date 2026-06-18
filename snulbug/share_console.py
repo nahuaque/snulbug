@@ -3275,6 +3275,51 @@ def _console_html() -> str:
     .request-actions input {
       width: 100%;
     }
+    .lease-list {
+      display: grid;
+      gap: 10px;
+    }
+    .lease-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fff;
+      display: grid;
+      gap: 10px;
+    }
+    .lease-card.active {
+      border-left: 4px solid var(--green);
+    }
+    .lease-card.inactive {
+      border-left: 4px solid var(--line);
+    }
+    .lease-card-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: start;
+    }
+    .lease-title {
+      font-weight: 740;
+      overflow-wrap: anywhere;
+    }
+    .lease-meta {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 12px;
+    }
+    .lease-actions {
+      display: grid;
+      grid-template-columns: minmax(70px, 0.7fr) minmax(86px, 0.8fr) auto;
+      gap: 6px;
+      align-items: center;
+    }
+    .lease-actions input {
+      width: 100%;
+    }
+    .lease-actions button {
+      white-space: nowrap;
+    }
     .setup-form {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -3570,6 +3615,9 @@ def _console_html() -> str:
       .grid-two, .overview-grid, .topbar, .wizard-overview {
         grid-template-columns: 1fr;
       }
+      .lease-meta {
+        grid-template-columns: 1fr;
+      }
       .wizard-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
@@ -3612,6 +3660,10 @@ def _console_html() -> str:
         padding: 8px 0;
       }
       .request-actions {
+        grid-template-columns: 1fr;
+      }
+      .lease-card-head,
+      .lease-actions {
         grid-template-columns: 1fr;
       }
     }
@@ -4747,45 +4799,47 @@ def _console_html() -> str:
         $("leases").innerHTML = `<div class="stack">${createHtml}<div class="empty">No task leases.</div></div>`;
         return;
       }
-      const tableHtml = `<table>
-        <thead><tr>${["Status", "Subject", "Task", "Allowed Tools", "Expiry", "Remaining Calls", "Action"]
-          .map((label) => `<th>${label}</th>`)
-          .join("")}</tr></thead>
-        <tbody>${leases.map((lease) => {
-          const id = esc(lease.id);
-          return `<tr>
-            <td>${pill(lease.active ? "active" : "inactive")}</td>
-            <td>
-              ${esc(leaseSubject(lease))}
-              <div class="timeline-detail">${esc(leaseAuthDetail(lease))}</div>
-            </td>
-            <td>
-              ${esc(lease.task || "-")}
-              <div class="timeline-detail">${esc(lease.id || "")}</div>
-            </td>
-            <td>${esc(listText(lease.allow_tools) || "-")}</td>
-            <td>
-              ${esc(shortDateTime(lease.expires_at))}
-              <div class="timeline-detail">${esc(
-                lease.last_used_at ? `last used ${shortDateTime(lease.last_used_at)}` : ""
-              )}</div>
-            </td>
-            <td>
-              ${esc(remainingCalls(lease))}
-              <div class="timeline-detail">${esc(lease.last_tool || "")}</div>
-            </td>
-            <td>${leaseActionHtml(lease, id)}</td>
-          </tr>`;
-        }).join("")}</tbody>
-      </table>`;
-      $("leases").innerHTML = `<div class="stack">${createHtml}${tableHtml}</div>`;
+      const cardsHtml = `<div class="lease-list">${leases.map(leaseCardHtml).join("")}</div>`;
+      $("leases").innerHTML = `<div class="stack">${createHtml}${cardsHtml}</div>`;
+    }
+
+    function leaseCardHtml(lease) {
+      const id = esc(lease.id);
+      const status = lease.active ? "active" : "inactive";
+      const tools = listText(lease.allow_tools);
+      const paths = listText(lease.allow_paths);
+      const lastUsed = lease.last_used_at ? `last used ${shortDateTime(lease.last_used_at)}` : "";
+      return `<div class="lease-card ${esc(status)}">
+        <div class="lease-card-head">
+          <div>
+            <div class="lease-title">${esc(lease.task || "Temporary MCP access")}</div>
+            <div class="timeline-detail">${esc(lease.id || "")}</div>
+          </div>
+          ${pill(status)}
+        </div>
+        <div class="lease-meta">
+          ${leaseMeta("Subject", leaseSubject(lease), leaseAuthDetail(lease))}
+          ${leaseMeta("Allowed tools", tools || "-", paths ? `paths ${paths}` : "")}
+          ${leaseMeta("Expiry", shortDateTime(lease.expires_at), lastUsed)}
+          ${leaseMeta("Remaining", remainingCalls(lease), lease.last_tool || "")}
+        </div>
+        <div>${leaseActionHtml(lease, id)}</div>
+      </div>`;
+    }
+
+    function leaseMeta(label, value, detail = "") {
+      return `<div>
+        <div class="detail-label">${esc(label)}</div>
+        <div>${esc(value || "-")}</div>
+        <div class="timeline-detail">${esc(detail || "")}</div>
+      </div>`;
     }
 
     function leaseActionHtml(lease, id) {
       if (lease.active) {
         return `<button class="danger" type="button" onclick="revokeLease('${id}')">Revoke</button>`;
       }
-      return `<div class="request-actions">
+      return `<div class="lease-actions">
         <input id="lease-reactivate-ttl-${id}" value="30m" aria-label="TTL">
         <input
           id="lease-reactivate-calls-${id}"

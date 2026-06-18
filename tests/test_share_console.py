@@ -458,6 +458,8 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "Active Leases" in html
     assert "renderLeases" in html
     assert "Create task lease" in html
+    assert "lease-card" in html
+    assert "lease-actions" in html
     assert "createLease" in html
     assert "reactivateLease" in html
     assert "revokeLease" in html
