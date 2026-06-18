@@ -209,6 +209,12 @@ end
 
 The share console only offers policy-declared labels when creating invites, so
 the handoff UI cannot mint arbitrary labels the policy does not know about.
+These labels are scope-like, but they are not OAuth scopes: OAuth scopes come
+from the identity provider, while invite capabilities are local, task-scoped
+lease labels interpreted by Lua. Future work is tracked in
+[Scope-qualified task capabilities](roadmap.md#scope-qualified-task-capabilities),
+where capability declarations can state which OAuth scopes make a temporary
+capability eligible for the current caller.
 
 ### Intent And Risk
 
