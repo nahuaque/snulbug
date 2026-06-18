@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import http.client
 import json
+import os
 import re
 import threading
 from collections import deque
@@ -19,11 +20,13 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from .config import load_mcp_proxy_config
 from .redaction import SECRET_REPLACEMENT, build_audit_event
 from .share import (
+    activate_mcp_share_policy,
     approve_share_capability_request,
     create_mcp_share,
     deny_share_capability_request,
     doctor_mcp_share,
     preview_mcp_share_policy_amendment,
+    promote_mcp_share_policy,
     revoke_mcp_share_lease,
     share_capability_requests,
     share_report,
@@ -453,6 +456,10 @@ class ShareConsoleServer:
                 )
                 _send_json(handler, 200, _redact_console_payload(result))
                 return
+            if path == "/api/policy/lifecycle":
+                result = _run_policy_lifecycle_action(self.directory, body)
+                _send_json(handler, 200, _redact_console_payload(result))
+                return
             if path == "/api/report":
                 result = share_report(
                     self.directory,
@@ -606,6 +613,35 @@ def _resolve_existing_setup_share_directory(base_directory: str | Path, value: A
     if not model_path.is_file():
         raise FileNotFoundError(f"share session model not found: {model_path}")
     return candidate
+
+
+def _run_policy_lifecycle_action(directory: str | Path, payload: Mapping[str, Any]) -> dict[str, Any]:
+    action = _string_or_none(payload.get("action")) or "promote"
+    key_id = _string_or_none(payload.get("key_id")) or "local-review"
+    secret_env = _string_or_none(payload.get("secret_env")) or "SNULBUG_BUNDLE_SECRET"
+    secret = os.environ.get(secret_env)
+    if not secret:
+        raise ValueError(f"set {secret_env} before starting the share console to sign policy lifecycle changes")
+    memory_limit = _positive_int(payload.get("memory_limit_bytes"))
+    if memory_limit is None and payload.get("memory_limit_bytes") not in (0, "0"):
+        memory_limit = 8 * 1024 * 1024
+    kwargs = {
+        "secret": secret,
+        "key_id": key_id,
+        "actor": _string_or_none(payload.get("actor")) or "share-console",
+        "note": _string_or_none(payload.get("note")),
+        "instruction_limit": _positive_int(payload.get("instruction_limit")) or 100_000,
+        "memory_limit_bytes": memory_limit,
+    }
+    if action == "activate":
+        result = activate_mcp_share_policy(directory, **kwargs)
+    else:
+        to_state = _string_or_none(payload.get("to_state") or payload.get("to"))
+        if to_state not in {"proposed", "approved"}:
+            raise ValueError("policy lifecycle promotion target must be proposed or approved")
+        result = promote_mcp_share_policy(directory, to_state=to_state, **kwargs)
+    result["secret_env"] = secret_env
+    return result
 
 
 def _first(values: Sequence[str] | None) -> str | None:
@@ -3159,6 +3195,51 @@ def _console_html() -> str:
       color: var(--muted);
       margin-top: 2px;
     }
+    .review-panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcfd;
+      display: grid;
+      gap: 12px;
+    }
+    .review-panel.ready {
+      border-color: #a7d8bf;
+      background: #f0fbf5;
+    }
+    .review-panel.review,
+    .review-panel.warn {
+      border-color: #ecd598;
+      background: #fffaf0;
+    }
+    .review-panel.blocked,
+    .review-panel.fail {
+      border-color: #efb3b8;
+      background: #fff5f5;
+    }
+    .review-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: start;
+    }
+    .review-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .review-list {
+      display: grid;
+      gap: 8px;
+    }
+    .review-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      border-top: 1px solid var(--line);
+      padding-top: 8px;
+    }
     .message {
       min-height: 20px;
       color: var(--muted);
@@ -3232,8 +3313,12 @@ def _console_html() -> str:
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
       .field-grid,
-      .setup-share-row {
+      .setup-share-row,
+      .review-item {
         grid-template-columns: 1fr;
+      }
+      .review-head {
+        display: grid;
       }
       .grid-two, .overview-grid, .topbar, .wizard-overview {
         grid-template-columns: 1fr;
@@ -3743,16 +3828,19 @@ def _console_html() -> str:
         $("shareReadiness").innerHTML = '<div class="empty">No readiness data available.</div>';
         return;
       }
-      const overview = `<div class="detail-grid">
-        ${detailRowHtml("Decision", pill(payload.decision || "unknown"))}
-        ${detailRow("Generated", attestation.generated_at)}
-        ${detailRowHtml("Public URL", externalLink(publicUrl, publicUrl))}
-        ${detailRow("Auth", (attestation.auth || {}).mode)}
-        ${detailRow("Active leases", (attestation.leases || {}).active_count)}
-        ${detailRow("Policy", (attestation.policy || {}).lifecycle_state || (attestation.policy || {}).path)}
-        ${detailRow("Contract", contractText(attestation.contract || {}))}
-        ${detailRow("Content digest", attestation.content_digest || attestation.digest)}
-      </div>`;
+      const overview = `<details class="compact-details" data-state-key="readiness-details">
+        <summary>Readiness Details</summary>
+        <div class="details-body detail-grid">
+          ${detailRowHtml("Decision", pill(payload.decision || "unknown"))}
+          ${detailRow("Generated", attestation.generated_at)}
+          ${detailRowHtml("Public URL", externalLink(publicUrl, publicUrl))}
+          ${detailRow("Auth", (attestation.auth || {}).mode)}
+          ${detailRow("Active leases", (attestation.leases || {}).active_count)}
+          ${detailRow("Policy", (attestation.policy || {}).lifecycle_state || (attestation.policy || {}).path)}
+          ${detailRow("Contract", contractText(attestation.contract || {}))}
+          ${detailRow("Content digest", attestation.content_digest || attestation.digest)}
+        </div>
+      </details>`;
       const recommendationsHtml = recommendations.length ? `<div>
         <h2>Next Steps</h2>
         <ul class="recommendations">${recommendations.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>
@@ -3773,7 +3861,8 @@ def _console_html() -> str:
         > Show all
       </label>`;
       $("shareReadiness").innerHTML =
-        `<div class="stack">${overview}${filterHtml}${readinessChecksTable(checks)}` +
+        `<div class="stack">${readinessReviewQueue(payload, checks)}${filterHtml}${readinessChecksTable(checks)}` +
+        `${overview}` +
         `${recommendationsHtml}${attestationHtml}</div>`;
     }
 
@@ -3791,12 +3880,12 @@ def _console_html() -> str:
         const message = state.showAllReadiness
           ? "No readiness checks available."
           : `No warnings or failures. ${hiddenPasses} passing checks hidden.`;
-        return `<div class="empty">${esc(message)}</div>`;
+        return `<div id="readinessChecksList" class="empty">${esc(message)}</div>`;
       }
       const hiddenHtml = !state.showAllReadiness && hiddenPasses
         ? `<div class="timeline-detail">${esc(`${hiddenPasses} passing checks hidden`)}</div>`
         : "";
-      return `<table>
+      return `<div id="readinessChecksList"><table>
         <thead><tr><th>Status</th><th>Component</th><th>Check</th><th>Message</th></tr></thead>
         <tbody>${visibleChecks.map((check) => (
           `<tr>
@@ -3806,7 +3895,84 @@ def _console_html() -> str:
             <td>${esc(check.message || "-")}</td>
           </tr>`
         )).join("")}</tbody>
-      </table>${hiddenHtml}`;
+      </table>${hiddenHtml}</div>`;
+    }
+
+    function readinessReviewQueue(payload, checks) {
+      const reviewChecks = checks.filter((check) => check.status === "warn" || check.status === "fail");
+      const summary = payload.summary || {};
+      if (!reviewChecks.length) {
+        return `<div class="review-panel ready">
+          <div class="review-head">
+            <div>
+              <div class="timeline-target">Ready to share</div>
+              <div class="timeline-detail">${esc(summary.passed || 0)} checks passed.</div>
+            </div>
+            ${pill(payload.decision || "ready")}
+          </div>
+          <div class="review-actions">
+            <button type="button" onclick="runDoctor()">Run doctor</button>
+            <button type="button" onclick="downloadReport()">Download report</button>
+          </div>
+        </div>`;
+      }
+      const failures = reviewChecks.filter((check) => check.status === "fail").length;
+      const warnings = reviewChecks.filter((check) => check.status === "warn").length;
+      const title = failures
+        ? `${failures} failing check${failures === 1 ? "" : "s"}`
+        : `${warnings} warning${warnings === 1 ? "" : "s"} to review`;
+      return `<div class="review-panel ${esc(payload.decision || "review")}">
+        <div class="review-head">
+          <div>
+            <div class="timeline-target">${esc(title)}</div>
+            <div class="timeline-detail">
+              Review these before sharing the public MCP URL. Passing checks are hidden by default.
+            </div>
+          </div>
+          ${pill(payload.decision || "review")}
+        </div>
+        <div class="review-actions">
+          <a class="button-link" href="#readinessChecksList">Review checks</a>
+          <button type="button" onclick="runDoctor()">Run doctor</button>
+          <button type="button" onclick="downloadReport()">Download report</button>
+        </div>
+        <div class="review-list">
+          ${reviewChecks.map((check) => readinessReviewItem(check)).join("")}
+        </div>
+      </div>`;
+    }
+
+    function readinessReviewItem(check) {
+      const target = readinessReviewTarget(check);
+      return `<div class="review-item">
+        <div>
+          <div class="timeline-target">${pill(check.status)} ${esc(check.id || "readiness check")}</div>
+          <div class="timeline-detail">${esc(check.message || "-")}</div>
+        </div>
+        <a class="button-link" href="${esc(target.href)}">${esc(target.label)}</a>
+      </div>`;
+    }
+
+    function readinessReviewTarget(check) {
+      const id = String(check.id || "");
+      const component = String(check.component || "");
+      const value = `${component}.${id}`;
+      if (value.includes("capability_requests")) return { href: "#requestsSection", label: "Review requests" };
+      if (value.includes("lease")) return { href: "#leasesSection", label: "Review leases" };
+      if (value.includes("auth")) return { href: "#authSection", label: "Review auth" };
+      if (value.includes("schema") || value.includes("tool")) {
+        return { href: "#schemaSection", label: "Inspect schemas" };
+      }
+      if (value.includes("policy") || value.includes("contract")) {
+        return { href: "#policySection", label: "Review policy" };
+      }
+      if (value.includes("tunnel") || value.includes("provider")) {
+        return { href: "#providerSection", label: "Review provider" };
+      }
+      if (value.includes("gateway") || value.includes("upstream") || value.includes("health")) {
+        return { href: "#healthSection", label: "Review health" };
+      }
+      return { href: "#readinessChecksList", label: "Review check" };
     }
 
     function contractText(contract) {
@@ -3865,8 +4031,59 @@ def _console_html() -> str:
       </div>`;
       const sourceHtml = policySourceHtml(source);
       $("policyVisibility").innerHTML =
-        `<div class="stack">${metadata}${bundleHtml}${helpersHtml}${reasonHtml}${sourceHtml}</div>`;
+        `<div class="stack">${metadata}${policyLifecycleHtml(policy)}${bundleHtml}${helpersHtml}` +
+        `${reasonHtml}${sourceHtml}</div>`;
       if (window.Prism) window.Prism.highlightAllUnder($("policyVisibility"));
+    }
+
+    function policyLifecycleHtml(policy) {
+      const action = nextPolicyLifecycleAction(policy.lifecycle_state);
+      const last = policy.last_lifecycle || {};
+      const lastText = last.action
+        ? `${last.action} ${last.from_state || "?"}->${last.to_state || last.state || "?"}`
+        : "No lifecycle transition recorded.";
+      const actionHtml = action
+        ? `<button type="button" class="primary" onclick="${esc(action.onclick)}">${esc(action.label)}</button>`
+        : pill("active");
+      return `<div class="setup-form stack">
+        <div>
+          <div class="timeline-target">Policy Lifecycle Review</div>
+          <div class="timeline-detail">
+            Move the active policy bundle through observed, proposed, approved, and active states.
+          </div>
+        </div>
+        <div class="field-grid">
+          ${setupField("policy-lifecycle-key-id", "Signing key id", "local-review")}
+          ${setupField("policy-lifecycle-secret-env", "Secret env var", "SNULBUG_BUNDLE_SECRET")}
+          ${setupField("policy-lifecycle-actor", "Reviewer", "share-console")}
+          ${setupField("policy-lifecycle-note", "Review note", "", "wide")}
+        </div>
+        <div class="review-actions">${actionHtml}</div>
+        <div class="timeline-detail">${esc(lastText)}</div>
+      </div>`;
+    }
+
+    function nextPolicyLifecycleAction(state) {
+      const current = state || "observed";
+      if (current === "observed") {
+        return {
+          label: "Mark reviewed",
+          onclick: "promotePolicyLifecycle('proposed')"
+        };
+      }
+      if (current === "proposed") {
+        return {
+          label: "Approve policy",
+          onclick: "promotePolicyLifecycle('approved')"
+        };
+      }
+      if (current === "approved") {
+        return {
+          label: "Activate policy",
+          onclick: "activatePolicyLifecycle()"
+        };
+      }
+      return null;
     }
 
     function policySourceStatus(source) {
@@ -4890,6 +5107,49 @@ def _console_html() -> str:
         await loadSnapshot();
       } catch (error) {
         $("message").textContent = `Select failed: ${error.message}`;
+      }
+    }
+
+    function policyLifecyclePayload(extra = {}) {
+      return {
+        key_id: setupInputValue("policy-lifecycle-key-id") || "local-review",
+        secret_env: setupInputValue("policy-lifecycle-secret-env") || "SNULBUG_BUNDLE_SECRET",
+        actor: setupInputValue("policy-lifecycle-actor") || "share-console",
+        note: setupInputValue("policy-lifecycle-note"),
+        ...extra
+      };
+    }
+
+    async function promotePolicyLifecycle(toState) {
+      $("message").textContent = `Promoting policy to ${toState}`;
+      try {
+        const payload = await api("/api/policy/lifecycle", {
+          method: "POST",
+          body: JSON.stringify(policyLifecyclePayload({
+            action: "promote",
+            to_state: toState
+          }))
+        });
+        $("message").textContent = `Policy lifecycle is now ${payload.state || toState}`;
+        await loadSnapshot();
+      } catch (error) {
+        $("message").textContent = `Lifecycle update failed: ${error.message}`;
+      }
+    }
+
+    async function activatePolicyLifecycle() {
+      $("message").textContent = "Activating policy";
+      try {
+        const payload = await api("/api/policy/lifecycle", {
+          method: "POST",
+          body: JSON.stringify(policyLifecyclePayload({
+            action: "activate"
+          }))
+        });
+        $("message").textContent = `Policy lifecycle is now ${payload.state || "active"}`;
+        await loadSnapshot();
+      } catch (error) {
+        $("message").textContent = `Activation failed: ${error.message}`;
       }
     }
 

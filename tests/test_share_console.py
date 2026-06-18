@@ -415,6 +415,10 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "copyWizardCommand" in html
     assert "renderReadinessGate" in html
     assert "readinessChecksTable" in html
+    assert "readinessReviewQueue" in html
+    assert "readinessReviewTarget" in html
+    assert "Review checks" in html
+    assert "Readiness Details" in html
     assert "setShowAllReadiness" in html
     assert "Show all" in html
     assert "passing checks hidden" in html
@@ -426,6 +430,10 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "element.open = Boolean" in html
     assert "Policy Visibility" in html
     assert "renderPolicyVisibility" in html
+    assert "Policy Lifecycle Review" in html
+    assert "promotePolicyLifecycle" in html
+    assert "activatePolicyLifecycle" in html
+    assert "Mark reviewed" in html
     assert "policySourceHtml" in html
     assert "policyRecentDecisionsDetails" in html
     assert 'data-state-key="policy-recent-decisions"' in html
@@ -485,6 +493,61 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert approved["review"]["reviewer"] == "ui"
     assert after["summary"]["approved"] == 1
     assert session_model["capability_requests"]["last_review"]["lease_id"] == approved["review"]["lease_id"]
+
+
+def test_share_console_promotes_policy_lifecycle_from_browser(tmp_path, monkeypatch):
+    monkeypatch.setenv("SNULBUG_BUNDLE_SECRET", "dev-secret")
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    server = ShareConsoleServer(directory=tmp_path, port=0)
+    server.start()
+    try:
+        proposed = post_json(
+            f"{server.url}/api/policy/lifecycle",
+            {
+                "action": "promote",
+                "to_state": "proposed",
+                "key_id": "dev",
+                "secret_env": "SNULBUG_BUNDLE_SECRET",
+                "actor": "ui-test",
+            },
+        )
+        approved = post_json(
+            f"{server.url}/api/policy/lifecycle",
+            {
+                "action": "promote",
+                "to_state": "approved",
+                "key_id": "dev",
+                "secret_env": "SNULBUG_BUNDLE_SECRET",
+                "actor": "ui-test",
+            },
+        )
+        active = post_json(
+            f"{server.url}/api/policy/lifecycle",
+            {
+                "action": "activate",
+                "key_id": "dev",
+                "secret_env": "SNULBUG_BUNDLE_SECRET",
+                "actor": "ui-test",
+            },
+        )
+        snapshot = read_json(f"{server.url}/api/snapshot")
+    finally:
+        server.stop()
+
+    assert proposed["ok"] is True
+    assert proposed["state"] == "proposed"
+    assert proposed["secret_env"] == "[REDACTED]"
+    assert approved["state"] == "approved"
+    assert active["state"] == "active"
+    assert snapshot["policy_visibility"]["policy"]["lifecycle_state"] == "active"
+    assert load_share_session_model(tmp_path)["policy"]["last_lifecycle"]["action"] == "activate"
 
 
 def test_share_console_runs_inline_share_doctor(tmp_path, monkeypatch):
