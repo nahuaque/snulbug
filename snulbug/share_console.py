@@ -3004,8 +3004,8 @@ def _console_html() -> str:
     }
     .metrics {
       display: grid;
-      grid-template-columns: repeat(6, minmax(128px, 1fr));
-      gap: 10px;
+      grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+      gap: 12px;
     }
     .metric, section {
       background: var(--surface);
@@ -3014,20 +3014,101 @@ def _console_html() -> str:
       box-shadow: var(--shadow);
     }
     .metric {
-      padding: 12px;
-      min-height: 70px;
+      min-height: 118px;
+      padding: 13px 14px;
       display: grid;
-      align-content: space-between;
+      grid-template-rows: auto 1fr auto;
+      gap: 8px;
+      color: var(--text);
+      text-decoration: none;
+      position: relative;
+      overflow: hidden;
+      transition: border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
     }
-    .metric span {
+    .metric:hover,
+    .metric:focus-visible {
+      border-color: #9ec2df;
+      box-shadow: 0 10px 30px rgba(25, 38, 52, 0.12);
+      text-decoration: none;
+      transform: translateY(-1px);
+    }
+    .metric::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 4px;
+      background: var(--line);
+    }
+    .metric.good::before {
+      background: var(--green);
+    }
+    .metric.warn::before {
+      background: var(--yellow);
+    }
+    .metric.bad::before {
+      background: var(--red);
+    }
+    .metric.neutral::before {
+      background: var(--blue);
+    }
+    .metric-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      min-width: 0;
+    }
+    .metric-label {
       color: var(--muted);
       font-size: 12px;
       text-transform: uppercase;
       letter-spacing: 0;
+      font-weight: 760;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
-    .metric strong {
-      font-size: 21px;
+    .metric-badge {
+      width: 30px;
+      height: 30px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+      font-size: 11px;
+      font-weight: 760;
+      border: 1px solid var(--line);
+      background: #fbfcfd;
+      color: var(--muted);
+    }
+    .metric.good .metric-badge {
+      color: var(--green);
+      border-color: #a8d9bf;
+      background: #f0faf5;
+    }
+    .metric.warn .metric-badge {
+      color: var(--yellow);
+      border-color: #e7cf8a;
+      background: #fff9e8;
+    }
+    .metric.bad .metric-badge {
+      color: var(--red);
+      border-color: #e5b8bb;
+      background: #fff3f4;
+    }
+    .metric-value {
+      font-size: clamp(20px, 2.1vw, 28px);
+      font-weight: 780;
       line-height: 1.1;
+      overflow-wrap: anywhere;
+      align-self: end;
+    }
+    .metric-detail {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.25;
+      min-height: 30px;
       overflow-wrap: anywhere;
     }
     section {
@@ -3979,18 +4060,157 @@ def _console_html() -> str:
       const leases = status.leases || {};
       const risk = (status.tool_risks || {}).summary || {};
       const gateway = status.gateway || {};
+      const session = status.session || {};
+      const readinessSummary = readiness.summary || {};
+      const gatewayState = gatewayMetric(gateway);
+      const activeLeases = numeric(leases.active_count);
+      const pendingRequests = numeric(requests.pending);
+      const blocked = numeric(traffic.blocked);
+      const allowed = numeric(traffic.allowed);
+      const confirmed = numeric(traffic.confirmed);
+      const highRisk = numeric(risk.high);
+      const mediumRisk = numeric(risk.medium);
+      const lowRisk = numeric(risk.low);
+      const leaseRequired = session.lease_required === true;
       const metrics = [
-        ["Readiness", readiness.label || readiness.decision || "unknown"],
-        ["State", status.state],
-        ["Gateway", gateway.reachable === true ? "reachable" : (gateway.checked === false ? "not checked" : "unknown")],
-        ["Active leases", leases.active_count || 0],
-        ["Pending requests", requests.pending || 0],
-        ["Blocked", traffic.blocked || 0],
-        ["High risk tools", risk.high || 0]
+        {
+          label: "Readiness",
+          value: readiness.label || readiness.decision || "unknown",
+          detail: `${numeric(readinessSummary.passed)} passed, ${numeric(readinessSummary.failed)} failed, ` +
+            `${numeric(readinessSummary.warnings)} warnings${readiness.reviewed ? " · reviewed" : ""}`,
+          status: readinessMetricStatus(readiness),
+          glyph: readinessMetricGlyph(readiness),
+          href: "#readinessSection"
+        },
+        {
+          label: "State",
+          value: status.state || "unknown",
+          detail: `${session.provider || "generic"} provider${session.preset ? ` · ${session.preset}` : ""}`,
+          status: stateMetricStatus(status.state),
+          glyph: stateMetricGlyph(status.state),
+          href: "#readinessSection"
+        },
+        {
+          label: "Gateway",
+          value: gatewayState.value,
+          detail: gatewayState.detail,
+          status: gatewayState.status,
+          glyph: gatewayState.glyph,
+          href: "#healthSection"
+        },
+        {
+          label: "Active leases",
+          value: String(activeLeases),
+          detail: leaseRequired ? "required for this share" : "optional for this share",
+          status: leaseRequired && activeLeases === 0 ? "bad" : (activeLeases > 0 ? "good" : "warn"),
+          glyph: activeLeases > 0 ? "OK" : "0",
+          href: "#leasesSection"
+        },
+        {
+          label: "Pending requests",
+          value: String(pendingRequests),
+          detail: pendingRequests ? "awaiting approve or deny" : "no queued capability asks",
+          status: pendingRequests ? "warn" : "good",
+          glyph: pendingRequests ? "!" : "OK",
+          href: "#requestsSection"
+        },
+        {
+          label: "Blocked",
+          value: String(blocked),
+          detail: `${allowed} allowed${confirmed ? ` · ${confirmed} confirmed` : ""}`,
+          status: blocked ? "warn" : "good",
+          glyph: blocked ? "!" : "OK",
+          href: "#decisionsSection"
+        },
+        {
+          label: "High risk tools",
+          value: String(highRisk),
+          detail: `${mediumRisk} medium, ${lowRisk} low risk`,
+          status: highRisk ? "warn" : "good",
+          glyph: highRisk ? "!" : "OK",
+          href: "#riskSection"
+        }
       ];
-      $("metrics").innerHTML = metrics.map(([label, value]) => (
-        `<div class="metric"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`
-      )).join("");
+      $("metrics").innerHTML = metrics.map(metricCardHtml).join("");
+    }
+
+    function metricCardHtml(metric) {
+      return `<a class="metric ${esc(metric.status || "neutral")}" href="${esc(metric.href || "#readinessSection")}">
+        <div class="metric-head">
+          <span class="metric-label">${esc(metric.label)}</span>
+          <span class="metric-badge" aria-hidden="true">${esc(metric.glyph || "i")}</span>
+        </div>
+        <div class="metric-value">${esc(metric.value)}</div>
+        <div class="metric-detail">${esc(metric.detail || "")}</div>
+      </a>`;
+    }
+
+    function numeric(value) {
+      const parsed = Number(value || 0);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function readinessMetricStatus(readiness) {
+      const decision = readiness.decision || "";
+      if (decision === "blocked") return "bad";
+      if (decision === "review") return "warn";
+      if (decision === "ready") return "good";
+      return "neutral";
+    }
+
+    function readinessMetricGlyph(readiness) {
+      const decision = readiness.decision || "";
+      if (decision === "blocked") return "!";
+      if (decision === "review") return "!";
+      if (decision === "ready") return "OK";
+      return "i";
+    }
+
+    function stateMetricStatus(value) {
+      const stateValue = String(value || "");
+      if (["running", "active", "verified"].includes(stateValue)) return "good";
+      if (["closed", "failed", "error"].includes(stateValue)) return "bad";
+      if (stateValue === "created") return "warn";
+      return "neutral";
+    }
+
+    function stateMetricGlyph(value) {
+      const status = stateMetricStatus(value);
+      if (status === "good") return "OK";
+      if (status === "bad") return "!";
+      return "i";
+    }
+
+    function gatewayMetric(gateway) {
+      const url = shortUrl(gateway.url || "");
+      if (gateway.checked === true && gateway.reachable === true) {
+        const status = gateway.status ? `HTTP ${gateway.status}` : "MCP probe passed";
+        return { value: "reachable", detail: `${status}${url ? ` · ${url}` : ""}`, status: "good", glyph: "OK" };
+      }
+      if (gateway.checked === true) {
+        return {
+          value: "unreachable",
+          detail: gateway.error || url || "probe failed",
+          status: "bad",
+          glyph: "!"
+        };
+      }
+      return {
+        value: "not checked",
+        detail: url || "run doctor or health check",
+        status: "warn",
+        glyph: "i"
+      };
+    }
+
+    function shortUrl(value) {
+      if (!value) return "";
+      try {
+        const url = new URL(value);
+        return `${url.host}${url.pathname === "/" ? "" : url.pathname}`;
+      } catch (_) {
+        return String(value);
+      }
     }
 
     function renderReadinessGate(payload) {
