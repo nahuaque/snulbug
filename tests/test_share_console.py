@@ -126,6 +126,33 @@ def test_share_console_compacts_repeated_live_decisions(tmp_path):
     assert compacted[0]["latest_line"] == 3
 
 
+def test_share_console_readiness_digest_ignores_refresh_and_live_traffic_churn(tmp_path, monkeypatch):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    write_repeated_upstream_failure_log(tmp_path)
+    now = {"value": "2026-06-14T00:10:00+00:00"}
+    monkeypatch.setattr(share_console, "_now_iso", lambda: now["value"])
+
+    first = build_share_console_snapshot(tmp_path)
+    append_upstream_failure_event(tmp_path, line_second=7)
+    now["value"] = "2026-06-14T00:10:02+00:00"
+    second = build_share_console_snapshot(tmp_path)
+
+    first_attestation = first["readiness_gate"]["attestation"]
+    second_attestation = second["readiness_gate"]["attestation"]
+    assert first_attestation["generated_at"] != second_attestation["generated_at"]
+    assert first_attestation["digest"] == second_attestation["digest"]
+    assert first_attestation["content_digest"] == second_attestation["content_digest"]
+    assert first["status"]["traffic"]["event_count"] == 3
+    assert second["status"]["traffic"]["event_count"] == 4
+
+
 def test_share_console_snapshot_includes_ngrok_local_console_link(tmp_path, monkeypatch):
     unused_port = unused_local_port()
     monkeypatch.setitem(
@@ -784,23 +811,33 @@ def write_repeated_upstream_failure_log(tmp_path: Path) -> None:
     traces.mkdir(exist_ok=True)
     lines = []
     for second in (1, 3, 5):
-        event = {
-            "type": "snulbug.audit",
-            "version": 1,
-            "time": f"2026-06-14T00:00:0{second}+00:00",
-            "request": {"method": "POST", "path": "/mcp", "headers": {}},
-            "mcp": {"method": "tools/list"},
-            "decision": {
-                "action": "rate_limit",
-                "allowed": True,
-                "reason": "MCP request is allowed by the tunnel-safe profile",
-                "reason_code": "mcp.tunnel_safe_rate_limit",
-            },
-            "metadata": {"tunnel": {"source_ip": "127.0.0.1"}},
-            "response": {"status": 502},
-        }
-        lines.append(json.dumps(event, sort_keys=True))
+        lines.append(json.dumps(upstream_failure_event(second), sort_keys=True))
     (traces / "audit.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def append_upstream_failure_event(tmp_path: Path, *, line_second: int) -> None:
+    traces = tmp_path / "traces"
+    traces.mkdir(exist_ok=True)
+    with (traces / "audit.jsonl").open("a", encoding="utf-8") as file:
+        file.write(json.dumps(upstream_failure_event(line_second), sort_keys=True) + "\n")
+
+
+def upstream_failure_event(second: int) -> dict[str, object]:
+    return {
+        "type": "snulbug.audit",
+        "version": 1,
+        "time": f"2026-06-14T00:00:{second:02d}+00:00",
+        "request": {"method": "POST", "path": "/mcp", "headers": {}},
+        "mcp": {"method": "tools/list"},
+        "decision": {
+            "action": "rate_limit",
+            "allowed": True,
+            "reason": "MCP request is allowed by the tunnel-safe profile",
+            "reason_code": "mcp.tunnel_safe_rate_limit",
+        },
+        "metadata": {"tunnel": {"source_ip": "127.0.0.1"}},
+        "response": {"status": 502},
+    }
 
 
 def write_auth_visibility_log(tmp_path: Path) -> None:

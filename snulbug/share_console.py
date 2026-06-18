@@ -2052,8 +2052,31 @@ def _share_readiness_attestation(
             ],
         }
     )
-    payload["digest"] = _console_json_digest(payload)
+    payload["content_digest"] = _console_json_digest(_share_readiness_digest_payload(payload))
+    payload["digest"] = payload["content_digest"]
     return payload
+
+
+def _share_readiness_digest_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    auth = dict(_mapping(payload.get("auth")))
+    auth.pop("denials", None)
+    tools = _mapping(payload.get("tools"))
+    return _drop_empty(
+        {
+            "schema": payload.get("schema"),
+            "share": payload.get("share"),
+            "decision": payload.get("decision"),
+            "label": payload.get("label"),
+            "summary": payload.get("summary"),
+            "session": payload.get("session"),
+            "auth": auth,
+            "leases": payload.get("leases"),
+            "policy": payload.get("policy"),
+            "contract": payload.get("contract"),
+            "tools": {"schemas": tools.get("schemas")},
+            "checks": payload.get("checks"),
+        }
+    )
 
 
 def _console_json_digest(value: Mapping[str, Any]) -> str:
@@ -2889,7 +2912,7 @@ def _console_html() -> str:
         ${detailRow("Active leases", (attestation.leases || {}).active_count)}
         ${detailRow("Policy", (attestation.policy || {}).lifecycle_state || (attestation.policy || {}).path)}
         ${detailRow("Contract", contractText(attestation.contract || {}))}
-        ${detailRow("Digest", attestation.digest)}
+        ${detailRow("Content digest", attestation.content_digest || attestation.digest)}
       </div>`;
       const recommendationsHtml = recommendations.length ? `<div>
         <h2>Next Steps</h2>
