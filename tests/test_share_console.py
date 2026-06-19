@@ -169,6 +169,46 @@ def test_share_readiness_active_invite_satisfies_handoff_grant(tmp_path):
     assert readiness["attestation"]["leases"]["active_invite_count"] == 1
 
 
+def test_share_console_previews_effective_access_from_active_invites(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    create_mcp_share_invite(
+        tmp_path,
+        recipient="agent",
+        task="Read docs",
+        capabilities=["project_readonly"],
+    )
+
+    snapshot = build_share_console_snapshot(tmp_path)
+    effective_access = snapshot["effective_access"]
+    invite_rows = [
+        row
+        for row in effective_access["rows"]
+        if row.get("target_kind") == "invite" and row.get("tool") == "safe_read_file"
+    ]
+
+    assert effective_access["schema"] == "snulbug.effective-access.v1"
+    assert effective_access["ok"] is True
+    assert effective_access["summary"]["allowed"] >= 1
+    assert effective_access["summary"]["blocked"] >= 1
+    assert effective_access["auth"]["label"] == "bearer token + lease"
+    assert effective_access["auth"]["lease_required"] is True
+    assert invite_rows
+    assert invite_rows[0]["outcome"] == "allowed"
+    assert invite_rows[0]["action"] == "rate_limit"
+    assert invite_rows[0]["reason_code"] == "mcp.tunnel_safe_rate_limit"
+    assert invite_rows[0]["capabilities"] == ["project_readonly"]
+    assert invite_rows[0]["sample_arguments"] == {"path": "README.md"}
+    assert "share-secret" not in json.dumps(effective_access)
+    assert "sbl_" not in json.dumps(effective_access)
+
+
 def test_share_console_policy_visibility_resolves_cwd_relative_share_paths(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     create_mcp_share(

@@ -21,7 +21,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from .config import load_mcp_proxy_config
 from .redaction import SECRET_REPLACEMENT, build_audit_event
-from .runtime import LuaRuntimeError, compile_lua_script
+from .runtime import LuaRuntimeError, compile_lua_file, compile_lua_script
 from .share import (
     activate_mcp_share_policy,
     approve_share_capability_request,
@@ -44,6 +44,7 @@ from .share import (
     share_status,
 )
 from .share_session import load_share_session_model, share_session_model_path, write_share_session_model
+from .simulator import normalize_request
 
 DEFAULT_SHARE_CONSOLE_HOST = "127.0.0.1"
 DEFAULT_SHARE_CONSOLE_PORT = 8765
@@ -68,6 +69,9 @@ DEFAULT_AUTH_VISIBILITY_LIMIT = 50
 DEFAULT_PROVIDER_CONSOLE_PROBE_TTL_SECONDS = 15.0
 MAX_POLICY_SOURCE_BYTES = 256 * 1024
 MAX_POLICY_MANIFEST_BYTES = 64 * 1024
+MAX_EFFECTIVE_ACCESS_TARGETS = 8
+MAX_EFFECTIVE_ACCESS_TOOLS = 16
+MAX_EFFECTIVE_ACCESS_ROWS = 96
 POLICY_SECRET_ASSIGNMENT_PATTERN = re.compile(
     r"(\b[A-Za-z_][A-Za-z0-9_-]*(?:api[_-]?key|credential|password|secret|token)[A-Za-z0-9_-]*\b\s*=\s*)"
     r"(['\"])([^'\"]*)(\2)",
@@ -105,6 +109,13 @@ def build_share_console_snapshot(
     tunnel_provider = _tunnel_provider_visibility(share_dir, status, provider_console)
     share_auth = _share_auth_visibility(status, auth_visibility, tunnel_provider)
     policy_visibility = _policy_visibility(share_dir, status, decision_timeline=decision_timeline)
+    effective_access = _effective_access_preview(
+        share_dir,
+        status,
+        policy_visibility=policy_visibility,
+        tool_schema_visibility=tool_schema_visibility,
+        share_auth=share_auth,
+    )
     readiness_gate = _share_readiness_gate(
         share_dir,
         status,
@@ -127,6 +138,7 @@ def build_share_console_snapshot(
         "tool_schema_visibility": _redact_console_payload(tool_schema_visibility),
         "tunnel_provider": _redact_console_payload(tunnel_provider),
         "policy_visibility": _redact_console_payload(policy_visibility),
+        "effective_access": _redact_console_payload(effective_access),
         "readiness_gate": _redact_console_payload(readiness_gate),
         "provider_console": provider_console,
     }
@@ -2013,6 +2025,439 @@ def _tool_schema_drift_alerts(
     return alerts[-20:]
 
 
+def _effective_access_preview(
+    share_dir: Path,
+    status: Mapping[str, Any],
+    *,
+    policy_visibility: Mapping[str, Any],
+    tool_schema_visibility: Mapping[str, Any],
+    share_auth: Mapping[str, Any],
+) -> dict[str, Any]:
+    policy_path = _effective_access_policy_path(share_dir, policy_visibility)
+    targets = _effective_access_targets(status)
+    tools = _effective_access_tools(status, tool_schema_visibility)
+    result: dict[str, Any] = {
+        "schema": "snulbug.effective-access.v1",
+        "ok": False,
+        "generated_at": _now_iso(),
+        "summary": {
+            "targets": len(targets),
+            "tools": len(tools),
+            "rows": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "confirm": 0,
+            "errors": 0,
+        },
+        "auth": _drop_empty(
+            {
+                "mode": share_auth.get("mode"),
+                "label": share_auth.get("label"),
+                "provider": share_auth.get("provider_label") or share_auth.get("provider"),
+                "lease_required": share_auth.get("lease_required"),
+                "lease_header": share_auth.get("lease_header"),
+            }
+        ),
+        "targets": [_effective_access_target_summary(target) for target in targets],
+        "tools": [_effective_access_tool_summary(tool) for tool in tools],
+        "rows": [],
+        "limits": {
+            "targets": MAX_EFFECTIVE_ACCESS_TARGETS,
+            "tools": MAX_EFFECTIVE_ACCESS_TOOLS,
+            "rows": MAX_EFFECTIVE_ACCESS_ROWS,
+        },
+    }
+    if not targets:
+        result["reason"] = "no active invite or lease is available to preview"
+        return result
+    if not tools:
+        result["reason"] = "no discovered or configured MCP tools are available to preview"
+        return result
+    if policy_path is None or not policy_path.is_file():
+        result["reason"] = "active Lua policy is unavailable"
+        return result
+    client_headers = _effective_access_client_headers(status)
+    if not _has_authorization_header(client_headers):
+        result["reason"] = "share client Authorization header is unavailable for local simulation"
+        return result
+
+    try:
+        script = compile_lua_file(policy_path)
+    except Exception as exc:
+        result["reason"] = f"active Lua policy could not be compiled: {exc}"
+        return result
+
+    rows: list[dict[str, Any]] = []
+    counts = {"allowed": 0, "blocked": 0, "confirm": 0, "errors": 0}
+    for target in targets[:MAX_EFFECTIVE_ACCESS_TARGETS]:
+        if len(rows) >= MAX_EFFECTIVE_ACCESS_ROWS:
+            break
+        if target.get("active") is not True:
+            rows.append(_effective_access_unavailable_row(target, "backing lease is not active"))
+            counts["blocked"] += 1
+            continue
+        for tool in tools[:MAX_EFFECTIVE_ACCESS_TOOLS]:
+            if len(rows) >= MAX_EFFECTIVE_ACCESS_ROWS:
+                break
+            row = _simulate_effective_access_row(
+                script=script,
+                target=target,
+                tool=tool,
+                client_headers=client_headers,
+            )
+            rows.append(row)
+            outcome = str(row.get("outcome") or "errors")
+            if outcome in counts:
+                counts[outcome] += 1
+            else:
+                counts["errors"] += 1
+
+    result["rows"] = rows
+    result["ok"] = True
+    result["summary"] = {
+        **_mapping(result["summary"]),
+        "rows": len(rows),
+        "allowed": counts["allowed"],
+        "blocked": counts["blocked"],
+        "confirm": counts["confirm"],
+        "errors": counts["errors"],
+    }
+    if len(targets) > MAX_EFFECTIVE_ACCESS_TARGETS or len(tools) > MAX_EFFECTIVE_ACCESS_TOOLS:
+        result["truncated"] = True
+    return result
+
+
+def _effective_access_policy_path(share_dir: Path, policy_visibility: Mapping[str, Any]) -> Path | None:
+    policy = _mapping(policy_visibility.get("policy"))
+    value = policy.get("active_policy")
+    if not isinstance(value, str | Path) or not value:
+        return None
+    return _resolve_console_path(share_dir, value)
+
+
+def _effective_access_client_headers(status: Mapping[str, Any]) -> dict[str, str]:
+    headers = _mapping(_mapping(status.get("client")).get("headers"))
+    result = {str(name).lower(): str(value) for name, value in headers.items() if value is not None}
+    result.setdefault("content-type", "application/json")
+    result.setdefault("accept", "application/json, text/event-stream")
+    return result
+
+
+def _has_authorization_header(headers: Mapping[str, Any]) -> bool:
+    return any(str(name).lower() == "authorization" and bool(value) for name, value in headers.items())
+
+
+def _effective_access_targets(status: Mapping[str, Any]) -> list[dict[str, Any]]:
+    leases = [
+        _mapping(lease)
+        for lease in _sequence(_mapping(status.get("leases")).get("leases"))
+        if isinstance(lease, Mapping) and lease.get("id")
+    ]
+    leases_by_id = {str(lease.get("id")): lease for lease in leases}
+    invitations = [
+        _mapping(invite)
+        for invite in _sequence(_mapping(status.get("invitations")).get("items"))
+        if isinstance(invite, Mapping) and invite.get("id")
+    ]
+    targets: list[dict[str, Any]] = []
+    seen_lease_ids: set[str] = set()
+    for invite in invitations:
+        if invite.get("revoked_at"):
+            continue
+        lease_id = str(invite.get("lease_id") or "")
+        lease = leases_by_id.get(lease_id, {})
+        if lease_id:
+            seen_lease_ids.add(lease_id)
+        targets.append(
+            _drop_empty(
+                {
+                    "kind": "invite",
+                    "id": invite.get("id"),
+                    "label": invite.get("recipient") or invite.get("client_name") or invite.get("id"),
+                    "recipient": invite.get("recipient"),
+                    "client_name": invite.get("client_name"),
+                    "task": invite.get("task") or lease.get("task"),
+                    "lease_id": lease_id,
+                    "active": bool(lease.get("active")),
+                    "capabilities": _string_list(invite.get("capabilities") or lease.get("capabilities")),
+                    "allow_tools": _string_list(invite.get("allow_tools") or lease.get("allow_tools")),
+                    "allow_paths": _string_list(invite.get("allow_paths") or lease.get("allow_paths")),
+                    "expires_at": invite.get("expires_at") or lease.get("expires_at"),
+                    "max_calls": invite.get("max_calls")
+                    if invite.get("max_calls") is not None
+                    else lease.get("max_calls"),
+                    "use_count": lease.get("use_count"),
+                }
+            )
+        )
+    for lease in leases:
+        lease_id = str(lease.get("id") or "")
+        if not lease_id or lease_id in seen_lease_ids or lease.get("active") is not True:
+            continue
+        targets.append(
+            _drop_empty(
+                {
+                    "kind": "lease",
+                    "id": lease_id,
+                    "label": lease.get("task") or lease_id,
+                    "task": lease.get("task"),
+                    "lease_id": lease_id,
+                    "active": True,
+                    "capabilities": _string_list(lease.get("capabilities")),
+                    "allow_tools": _string_list(lease.get("allow_tools")),
+                    "allow_paths": _string_list(lease.get("allow_paths")),
+                    "expires_at": lease.get("expires_at"),
+                    "max_calls": lease.get("max_calls"),
+                    "use_count": lease.get("use_count"),
+                }
+            )
+        )
+    return targets
+
+
+def _effective_access_tools(
+    status: Mapping[str, Any],
+    tool_schema_visibility: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    tools_by_name: dict[str, dict[str, Any]] = {}
+    for row in _sequence(tool_schema_visibility.get("tools")):
+        tool = _mapping(row)
+        name = str(tool.get("name") or "").strip()
+        if not name:
+            continue
+        tools_by_name[name] = _drop_empty(
+            {
+                "name": name,
+                "risk": tool.get("risk"),
+                "categories": _string_list(tool.get("categories")),
+                "properties": _string_list(tool.get("properties")),
+                "required": _string_list(tool.get("required")),
+                "schema_hash": tool.get("schema_hash"),
+                "schema_hashes": _string_list(tool.get("schema_hashes")),
+                "source": "schema",
+            }
+        )
+    for row in _sequence(_mapping(status.get("traffic")).get("tools")):
+        name = str(_mapping(row).get("value") or "").strip()
+        if name and name not in tools_by_name:
+            tools_by_name[name] = {"name": name, "source": "traffic"}
+    for lease in _sequence(_mapping(status.get("leases")).get("leases")):
+        for name in _string_list(_mapping(lease).get("allow_tools")):
+            if name and name != "*" and name not in tools_by_name:
+                tools_by_name[name] = {"name": name, "source": "lease"}
+    return sorted(tools_by_name.values(), key=lambda item: str(item.get("name") or ""))[:MAX_EFFECTIVE_ACCESS_TOOLS]
+
+
+def _effective_access_target_summary(target: Mapping[str, Any]) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "kind": target.get("kind"),
+            "id": target.get("id"),
+            "label": target.get("label"),
+            "lease_id": target.get("lease_id"),
+            "active": target.get("active"),
+            "capabilities": _string_list(target.get("capabilities")),
+            "allow_tools": _string_list(target.get("allow_tools")),
+            "expires_at": target.get("expires_at"),
+            "remaining_calls": _effective_access_remaining_calls(target),
+        }
+    )
+
+
+def _effective_access_tool_summary(tool: Mapping[str, Any]) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "name": tool.get("name"),
+            "risk": tool.get("risk"),
+            "categories": _string_list(tool.get("categories")),
+            "source": tool.get("source"),
+            "schema_hash": tool.get("schema_hash"),
+        }
+    )
+
+
+def _effective_access_remaining_calls(target: Mapping[str, Any]) -> int | str | None:
+    max_calls = target.get("max_calls")
+    if max_calls in (None, ""):
+        return "unlimited"
+    try:
+        max_int = int(max_calls)
+        used = int(target.get("use_count") or 0)
+    except (TypeError, ValueError):
+        return None
+    return max(0, max_int - used)
+
+
+def _simulate_effective_access_row(
+    *,
+    script: Any,
+    target: Mapping[str, Any],
+    tool: Mapping[str, Any],
+    client_headers: Mapping[str, str],
+) -> dict[str, Any]:
+    tool_name = str(tool.get("name") or "")
+    request = _effective_access_tool_request(tool, client_headers)
+    context = _effective_access_context(target, tool)
+    try:
+        normalized_request, _body_read = normalize_request(request)
+        trace = script.decide_with_trace(normalized_request, context, None)
+        decision = trace.decision
+        action = str(decision.get("action") or "")
+        outcome = _effective_access_outcome(action)
+        return _drop_empty(
+            {
+                "target_kind": target.get("kind"),
+                "target_id": target.get("id"),
+                "target_label": target.get("label"),
+                "lease_id": target.get("lease_id"),
+                "capabilities": _string_list(target.get("capabilities")),
+                "tool": tool_name,
+                "risk": tool.get("risk"),
+                "sample_arguments": _mapping(json.loads(str(request.get("body") or "{}")).get("params")).get(
+                    "arguments"
+                ),
+                "action": action,
+                "outcome": outcome,
+                "status": decision.get("status"),
+                "reason_code": decision.get("reason_code"),
+                "reason": decision.get("reason") or decision.get("body"),
+                "schema_hash": tool.get("schema_hash"),
+            }
+        )
+    except Exception as exc:
+        return _drop_empty(
+            {
+                "target_kind": target.get("kind"),
+                "target_id": target.get("id"),
+                "target_label": target.get("label"),
+                "lease_id": target.get("lease_id"),
+                "capabilities": _string_list(target.get("capabilities")),
+                "tool": tool_name,
+                "risk": tool.get("risk"),
+                "outcome": "errors",
+                "action": "error",
+                "reason_code": "effective_access.simulation_failed",
+                "reason": str(exc),
+                "schema_hash": tool.get("schema_hash"),
+            }
+        )
+
+
+def _effective_access_unavailable_row(target: Mapping[str, Any], reason: str) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "target_kind": target.get("kind"),
+            "target_id": target.get("id"),
+            "target_label": target.get("label"),
+            "lease_id": target.get("lease_id"),
+            "capabilities": _string_list(target.get("capabilities")),
+            "tool": "*",
+            "outcome": "blocked",
+            "action": "unavailable",
+            "reason_code": "effective_access.target_unavailable",
+            "reason": reason,
+        }
+    )
+
+
+def _effective_access_tool_request(tool: Mapping[str, Any], client_headers: Mapping[str, str]) -> dict[str, Any]:
+    tool_name = str(tool.get("name") or "")
+    arguments = _effective_access_sample_arguments(tool)
+    return {
+        "method": "POST",
+        "path": "/mcp",
+        "headers": dict(client_headers),
+        "body": json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": f"effective-access-{_effective_access_slug(tool_name)}",
+                "method": "tools/call",
+                "params": {"name": tool_name, "arguments": arguments},
+            },
+            sort_keys=True,
+        ),
+    }
+
+
+def _effective_access_sample_arguments(tool: Mapping[str, Any]) -> dict[str, Any]:
+    properties = _string_list(tool.get("properties"))
+    required = _string_list(tool.get("required"))
+    names = required or [name for name in properties if name in {"path", "paths", "query", "pattern", "command"}]
+    result: dict[str, Any] = {}
+    for name in names[:8]:
+        result[name] = _effective_access_sample_value(name)
+    if not result and _tool_name_needs_path(str(tool.get("name") or "")):
+        result["path"] = "README.md"
+    return result
+
+
+def _effective_access_slug(value: str) -> str:
+    result = []
+    for char in value.lower():
+        result.append(char if char.isalnum() else "-")
+    return "-".join("".join(result).split("-")).strip("-") or "tool"
+
+
+def _effective_access_sample_value(name: str) -> Any:
+    lowered = name.lower()
+    if lowered in {"paths", "files", "filenames"}:
+        return ["README.md"]
+    if "path" in lowered or "file" in lowered or "directory" in lowered:
+        return "README.md"
+    if "query" in lowered or "pattern" in lowered or "search" in lowered:
+        return "README"
+    if "command" in lowered or lowered in {"cmd", "argv"}:
+        return "status"
+    if "url" in lowered or "host" in lowered:
+        return "https://example.invalid"
+    if lowered.startswith("is_") or lowered.startswith("enable") or lowered.startswith("include"):
+        return False
+    if "count" in lowered or "limit" in lowered or "max" in lowered:
+        return 1
+    return "example"
+
+
+def _tool_name_needs_path(name: str) -> bool:
+    lowered = name.lower().replace("-", "_")
+    return any(term in lowered for term in ("read_file", "file_read", "list_project", "search_file", "grep"))
+
+
+def _effective_access_context(target: Mapping[str, Any], tool: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "lease": _drop_empty(
+            {
+                "enabled": True,
+                "required": True,
+                "checked": True,
+                "allowed": target.get("active") is True,
+                "method": "tools/call",
+                "id": target.get("lease_id") or target.get("id"),
+                "task": target.get("task"),
+                "capabilities": _string_list(target.get("capabilities")),
+                "allow_tools": _string_list(target.get("allow_tools")),
+                "allow_paths": _string_list(target.get("allow_paths")),
+                "expires_at": target.get("expires_at"),
+            }
+        ),
+        "intent": _drop_empty(
+            {
+                "name": tool.get("name"),
+                "level": tool.get("risk"),
+                "categories": _string_list(tool.get("categories")),
+                "source": tool.get("source"),
+            }
+        ),
+    }
+
+
+def _effective_access_outcome(action: str) -> str:
+    if action in {"continue", "set_context", "rewrite", "respond", "rate_limit"}:
+        return "allowed"
+    if action == "confirm":
+        return "confirm"
+    return "blocked"
+
+
 def _policy_visibility(
     share_dir: Path,
     status: Mapping[str, Any],
@@ -3860,6 +4305,27 @@ def _console_html() -> str:
       gap: 10px;
       align-items: start;
     }
+    .access-overview {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 10px;
+    }
+    .access-overview-item {
+      min-height: 92px;
+      display: grid;
+      align-content: start;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fbfcfd;
+    }
+    .access-overview-value {
+      font-size: 26px;
+      line-height: 1;
+      font-weight: 780;
+      overflow-wrap: anywhere;
+    }
     .invite-title {
       font-weight: 740;
       overflow-wrap: anywhere;
@@ -4285,6 +4751,7 @@ def _console_html() -> str:
       <nav class="section-nav" aria-label="Console sections">
         <a id="setupNavLink" href="#setupSection" hidden>Setup</a>
         <a href="#shareWorkflowSection" onclick="setShareTab('readiness')">Readiness</a>
+        <a href="#effectiveAccessSection">Access</a>
         <a href="#policySection">Policy</a>
         <a href="#providerSection">Provider</a>
         <a href="#decisionsSection">Decisions</a>
@@ -4349,6 +4816,10 @@ def _console_html() -> str:
             <div id="invitations"></div>
           </div>
         </div>
+      </section>
+      <section id="effectiveAccessSection">
+        <div class="section-head"><h2>Effective Access</h2><span id="effectiveAccessSummary" class="muted"></span></div>
+        <div class="section-body" id="effectiveAccess"></div>
       </section>
       <section id="policySection">
         <div class="section-head"><h2>Policy Visibility</h2><span id="policySummary" class="muted"></span></div>
@@ -4450,6 +4921,7 @@ def _console_html() -> str:
     ];
     const baseSectionIds = [
       "shareWorkflowSection",
+      "effectiveAccessSection",
       "policySection",
       "providerSection",
       "healthSection",
@@ -4645,6 +5117,7 @@ def _console_html() -> str:
       renderLeases(status.leases || {});
       renderInvites(status.invitations || {});
       renderShareTabs(readiness, status.invitations || {});
+      renderEffectiveAccess(snapshot.effective_access || {});
       renderAuthVisibility(snapshot.auth_visibility || {}, snapshot.share_auth || {});
       renderToolSchemaVisibility(snapshot.tool_schema_visibility || {});
       renderHealth(state.liveHealthStatus || status);
@@ -5974,6 +6447,131 @@ def _console_html() -> str:
           ${revokeAction}
         </div>
       </div>`;
+    }
+
+    function renderEffectiveAccess(payload) {
+      const summary = payload.summary || {};
+      const rows = payload.rows || [];
+      const targets = payload.targets || [];
+      const tools = payload.tools || [];
+      $("effectiveAccessSummary").textContent =
+        `${summary.allowed || 0} allowed, ${summary.blocked || 0} blocked, ${summary.confirm || 0} confirm`;
+      if (!payload.ok) {
+        const emptyReason = payload.reason || "Effective access preview is unavailable.";
+        $("effectiveAccess").innerHTML = `<div class="empty">${esc(emptyReason)}</div>`;
+        return;
+      }
+      const targetDetail = "active invite-backed leases and standalone leases";
+      const toolDetail = "discovered tools plus configured lease fallback";
+      const overviewHtml = `<div class="access-overview">
+        ${accessOverviewItem("Targets", summary.targets || targets.length, targetDetail)}
+        ${accessOverviewItem("Tools", summary.tools || tools.length, toolDetail)}
+        ${accessOverviewItem("Allowed", summary.allowed || 0, "Lua policy returned continue/respond/rate_limit")}
+        ${accessOverviewItem("Blocked", summary.blocked || 0, "Lua policy returned reject/challenge/redirect")}
+        ${accessOverviewItem("Confirm", summary.confirm || 0, "human approval required")}
+      </div>`;
+      const auth = payload.auth || {};
+      const leaseMode = auth.lease_required === true
+        ? "required"
+        : (auth.lease_required === false ? "optional" : "-");
+      const authHtml = `<div class="detail-grid">
+        ${detailRow("Auth mode", auth.label || auth.mode)}
+        ${detailRow("Provider", auth.provider)}
+        ${detailRow("Task lease", leaseMode)}
+        ${detailRow("Lease header", auth.lease_header)}
+      </div>`;
+      const targetsHtml = `<div>
+        <h2>Previewed Grants</h2>
+        ${effectiveAccessTargetTable(targets)}
+      </div>`;
+      const rowsHtml = `<div>
+        <h2>Policy Outcomes</h2>
+        ${effectiveAccessRowTable(rows)}
+      </div>`;
+      const note = payload.truncated
+        ? '<div class="field-help">Preview was truncated to keep the console responsive.</div>'
+        : "";
+      const effectiveAccessHtml = `${overviewHtml}${authHtml}${targetsHtml}${rowsHtml}${note}`;
+      $("effectiveAccess").innerHTML = `<div class="stack">${effectiveAccessHtml}</div>`;
+    }
+
+    function accessOverviewItem(label, value, detail) {
+      return `<div class="access-overview-item">
+        <div class="detail-label">${esc(label)}</div>
+        <div class="access-overview-value">${esc(value)}</div>
+        <div class="timeline-detail">${esc(detail)}</div>
+      </div>`;
+    }
+
+    function effectiveAccessTargetTable(targets) {
+      if (!targets.length) return '<div class="empty">No active invite or lease targets.</div>';
+      return `<table>
+        <thead><tr><th>Target</th><th>Lease</th><th>Capabilities</th><th>Remaining</th></tr></thead>
+        <tbody>${targets.map((target) => (
+          `<tr>
+            <td>
+              <strong>${esc(target.label || target.id || "-")}</strong>
+              <div class="timeline-detail">${esc(target.kind || "-")}</div>
+            </td>
+            <td>
+              ${pill(target.active === true ? "active" : "inactive")}
+              <div class="timeline-detail">${esc(target.lease_id || target.id || "")}</div>
+            </td>
+            <td>
+              ${esc(listText(target.capabilities || target.allow_tools))}
+              <div class="timeline-detail">${esc(listText(target.allow_tools))}</div>
+            </td>
+            <td>
+              ${esc(target.remaining_calls || "-")}
+              <div class="timeline-detail">${esc(shortDateTime(target.expires_at))}</div>
+            </td>
+          </tr>`
+        )).join("")}</tbody>
+      </table>`;
+    }
+
+    function effectiveAccessRowTable(rows) {
+      if (!rows.length) return '<div class="empty">No policy outcomes to preview.</div>';
+      return `<table>
+        <thead><tr><th>Grant</th><th>Tool</th><th>Outcome</th><th>Reason</th><th>Sample</th></tr></thead>
+        <tbody>${rows.map((row) => (
+          `<tr>
+            <td>
+              <strong>${esc(row.target_label || row.target_id || "-")}</strong>
+              <div class="timeline-detail">${esc(row.lease_id || row.target_kind || "")}</div>
+            </td>
+            <td>
+              ${esc(row.tool || "-")}
+              <div class="timeline-detail">${esc(accessToolDetail(row))}</div>
+            </td>
+            <td>
+              ${pill(accessOutcomeLabel(row))}
+              <div class="timeline-detail">${esc(row.action || "-")}</div>
+            </td>
+            <td>
+              ${esc(row.reason_code || "-")}
+              <div class="timeline-detail">${esc(row.reason || "")}</div>
+            </td>
+            <td>${esc(sampleArgumentsText(row.sample_arguments))}</td>
+          </tr>`
+        )).join("")}</tbody>
+      </table>`;
+    }
+
+    function accessOutcomeLabel(row) {
+      if (row.outcome === "allowed") return "allowed";
+      if (row.outcome === "confirm") return "confirm";
+      if (row.outcome === "errors") return "error";
+      return "blocked";
+    }
+
+    function accessToolDetail(row) {
+      return [row.risk, shortHash(row.schema_hash)].filter(Boolean).join(" · ");
+    }
+
+    function sampleArgumentsText(value) {
+      if (!value || !Object.keys(value).length) return "-";
+      return JSON.stringify(value);
     }
 
     function renderAuthVisibility(payload, shareAuth) {
