@@ -463,7 +463,12 @@ def share_status(
     recordings = _share_recordings_status(share_dir, session_model)
     policy = _mapping(session_model.get("policy"))
     members = _mapping(session_model.get("members"))
-    invitations = _mapping(session_model.get("invitations"))
+    invitations = _share_invitation_connection_statuses(
+        share_dir,
+        session_model,
+        _mapping(session_model.get("invitations")),
+        lease_status,
+    )
     amendments = _share_amendment_status(session_model)
     tunnel = _share_tunnel_status(manifest, session_model)
     contract = _share_contract_status(share_dir, manifest, session_model) if include_contract else {}
@@ -1216,8 +1221,27 @@ def list_mcp_share_invites(
 ) -> dict[str, Any]:
     """List share invitations without revealing bearer or lease tokens."""
 
-    share_dir, _manifest, session_model = _load_share_model_context(directory)
-    invitations = _mapping(session_model.get("invitations"))
+    share_dir, manifest, session_model = _load_share_model_context(directory)
+    files = manifest.get("files") if isinstance(manifest.get("files"), Mapping) else {}
+    lease = manifest.get("lease") if isinstance(manifest.get("lease"), Mapping) else {}
+    lease_file = files.get("lease_file") or lease.get("file")
+    lease_status: dict[str, Any] = {"ok": False, "file": lease_file}
+    if isinstance(lease_file, str) and lease_file:
+        from .leases import list_leases
+
+        listed = list_leases(_resolve_share_path(share_dir, lease_file))
+        lease_status = {
+            "ok": True,
+            "file": lease_file,
+            "id": lease.get("id"),
+            "leases": listed.get("leases", []),
+        }
+    invitations = _share_invitation_connection_statuses(
+        share_dir,
+        session_model,
+        _mapping(session_model.get("invitations")),
+        lease_status,
+    )
     items = [_mapping(item) for item in _sequence(invitations.get("items")) if isinstance(item, Mapping)]
     if not include_revoked:
         items = [item for item in items if not item.get("revoked_at")]
@@ -1228,6 +1252,7 @@ def list_mcp_share_invites(
         "share": str(share_dir),
         "invitations": items,
         "summary": _share_invite_summary(items),
+        "connection_summary": _share_invitation_connection_summary(items),
         "session_model": str(share_session_model_path(share_dir)),
     }
 
@@ -6198,6 +6223,260 @@ def _share_leases_summary(lease_status: Mapping[str, Any]) -> dict[str, Any]:
         "active_count": sum(1 for lease in all_leases if lease.get("active")),
         "current": lease_status.get("matched"),
         "leases": all_leases,
+    }
+
+
+def _share_invitation_connection_statuses(
+    share_dir: Path,
+    session_model: Mapping[str, Any],
+    invitations: Mapping[str, Any],
+    lease_status: Mapping[str, Any],
+) -> dict[str, Any]:
+    items = [dict(_mapping(item)) for item in _sequence(invitations.get("items")) if isinstance(item, Mapping)]
+    leases = [lease for lease in _sequence(lease_status.get("leases")) if isinstance(lease, Mapping)]
+    leases_by_id = {str(lease.get("id")): lease for lease in leases if lease.get("id")}
+    lease_to_invite = {
+        str(item.get("lease_id")): str(item.get("id")) for item in items if item.get("lease_id") and item.get("id")
+    }
+    try:
+        event_summaries = _share_invitation_connection_events(share_dir, session_model, lease_to_invite)
+        error = None
+    except Exception as exc:
+        event_summaries = {}
+        error = str(exc)
+    enriched: list[dict[str, Any]] = []
+    for item in items:
+        invite_id = str(item.get("id") or "")
+        lease_id = str(item.get("lease_id") or "")
+        lease = _mapping(leases_by_id.get(lease_id))
+        event_summary = _mapping(event_summaries.get(invite_id))
+        item["connection_status"] = _share_invitation_connection_status(item, lease, event_summary, error=error)
+        enriched.append(item)
+    result = dict(invitations)
+    result["items"] = enriched
+    result["summary"] = dict(_mapping(invitations.get("summary"))) or _share_invite_summary(enriched)
+    result["connection_summary"] = _share_invitation_connection_summary(enriched)
+    return result
+
+
+def _share_invitation_connection_events(
+    share_dir: Path,
+    session_model: Mapping[str, Any],
+    lease_to_invite: Mapping[str, str],
+) -> dict[str, dict[str, Any]]:
+    source_path = _share_invitation_event_source_path(share_dir, session_model)
+    if source_path is None or not source_path.exists():
+        return {}
+    summaries: dict[str, dict[str, Any]] = {}
+    for event in _load_share_events(source_path):
+        lease = _share_event_lease_metadata(event)
+        lease_id = str(lease.get("id") or "")
+        invite = _mapping(lease.get("invite"))
+        invite_id = str(invite.get("id") or lease_to_invite.get(lease_id, ""))
+        if not invite_id:
+            continue
+        mcp = _mapping(event.get("mcp"))
+        decision = _mapping(event.get("decision"))
+        access = _mapping(event.get("access") or _mapping(event.get("metadata")).get("access"))
+        access_lease = _mapping(access.get("lease"))
+        reason_code = str(
+            lease.get("reason_code")
+            or access_lease.get("reason_code")
+            or access.get("reason_code")
+            or decision.get("reason_code")
+            or ""
+        )
+        allowed = _share_event_allowed(event, lease=lease, access=access)
+        method = str(mcp.get("method") or "")
+        tool = str(mcp.get("tool") or mcp.get("target") or lease.get("tool") or "")
+        summary = summaries.setdefault(
+            invite_id,
+            {
+                "event_count": 0,
+                "healthy_methods": [],
+                "denied_count": 0,
+            },
+        )
+        summary["event_count"] = int(summary.get("event_count") or 0) + 1
+        if allowed is False:
+            summary["denied_count"] = int(summary.get("denied_count") or 0) + 1
+        if allowed is True and method in {"initialize", "tools/list"}:
+            summary["last_healthy_at"] = event.get("time")
+            summary["healthy_methods"] = sorted({*map(str, _sequence(summary.get("healthy_methods"))), method})
+        summary["last_seen_at"] = event.get("time")
+        summary["last_method"] = method or None
+        summary["last_tool"] = tool or None
+        summary["last_allowed"] = allowed
+        summary["last_reason_code"] = reason_code or None
+        if lease_id:
+            summary["lease_id"] = lease_id
+        if invite.get("recipient"):
+            summary["recipient"] = invite.get("recipient")
+    return summaries
+
+
+def _share_invitation_event_source_path(share_dir: Path, session_model: Mapping[str, Any]) -> Path | None:
+    evidence = _mapping(session_model.get("evidence"))
+    audit_path = _resolve_share_path(share_dir, evidence.get("audit_log", "traces/audit.jsonl"))
+    if audit_path.exists():
+        return audit_path
+    record_path = _resolve_share_path(share_dir, evidence.get("record_log", "traces/session.jsonl"))
+    if record_path.exists():
+        return record_path
+    return audit_path
+
+
+def _share_event_lease_metadata(event: Mapping[str, Any]) -> Mapping[str, Any]:
+    metadata = _mapping(event.get("metadata"))
+    access = _mapping(event.get("access") or metadata.get("access"))
+    access_lease = _mapping(access.get("lease"))
+    if access_lease:
+        return access_lease
+    lease = _mapping(metadata.get("lease") or metadata.get("lease_preview"))
+    if lease:
+        return lease
+    decision_context = _mapping(_mapping(event.get("decision")).get("context"))
+    return _mapping(decision_context.get("lease"))
+
+
+def _share_event_allowed(
+    event: Mapping[str, Any],
+    *,
+    lease: Mapping[str, Any],
+    access: Mapping[str, Any],
+) -> bool | None:
+    if "allowed" in access:
+        return access.get("allowed") is True
+    decision = _mapping(event.get("decision"))
+    if "allowed" in decision:
+        return decision.get("allowed") is True
+    if "allowed" in lease:
+        return lease.get("allowed") is True
+    return None
+
+
+def _share_invitation_connection_status(
+    invite: Mapping[str, Any],
+    lease: Mapping[str, Any],
+    event_summary: Mapping[str, Any],
+    *,
+    error: str | None,
+) -> dict[str, Any]:
+    lease_id = str(invite.get("lease_id") or lease.get("id") or "")
+    base = _drop_empty_json(
+        {
+            "lease_id": lease_id,
+            "checked": error is None,
+            "error": error,
+            "event_count": event_summary.get("event_count"),
+            "last_seen_at": event_summary.get("last_seen_at") or lease.get("last_used_at"),
+            "last_method": event_summary.get("last_method"),
+            "last_tool": event_summary.get("last_tool") or lease.get("last_tool"),
+            "last_reason_code": event_summary.get("last_reason_code"),
+            "healthy_methods": _sequence(event_summary.get("healthy_methods")),
+        }
+    )
+    if invite.get("revoked_at"):
+        return {
+            **base,
+            "state": "revoked",
+            "label": "revoked",
+            "severity": "neutral",
+            "message": "invite has been revoked",
+        }
+    if lease and lease.get("active") is False:
+        reason = "backing lease is inactive"
+        if lease.get("revoked_at"):
+            reason = "backing lease has been revoked"
+        return {
+            **base,
+            "state": "inactive",
+            "label": "inactive",
+            "severity": "bad",
+            "message": reason,
+        }
+    if error:
+        return {
+            **base,
+            "state": "unknown",
+            "label": "unknown",
+            "severity": "warn",
+            "message": "connection audit could not be read",
+        }
+    if event_summary:
+        last_allowed = event_summary.get("last_allowed")
+        reason_code = str(event_summary.get("last_reason_code") or "")
+        healthy_methods = _sequence(event_summary.get("healthy_methods"))
+        if reason_code in {"mcp.auth_required", "lease.missing", "lease.invalid", "oauth.rejected"}:
+            return {
+                **base,
+                "state": "misconfigured",
+                "label": "misconfigured",
+                "severity": "bad",
+                "message": f"client request was rejected before handoff completed ({reason_code})",
+            }
+        if reason_code in {"lease.revoked", "lease.expired", "lease.max_calls_exceeded"}:
+            return {
+                **base,
+                "state": "inactive",
+                "label": "inactive",
+                "severity": "bad",
+                "message": f"client used an inactive lease ({reason_code})",
+            }
+        if last_allowed is False:
+            return {
+                **base,
+                "state": "blocked",
+                "label": "blocked",
+                "severity": "bad",
+                "message": f"latest invite traffic was blocked ({reason_code or 'policy denied'})",
+            }
+        if healthy_methods:
+            return {
+                **base,
+                "state": "connected",
+                "label": "connected",
+                "severity": "good",
+                "message": "client successfully reached MCP using this invite",
+            }
+        return {
+            **base,
+            "state": "seen",
+            "label": "seen",
+            "severity": "warn",
+            "message": "invite traffic was seen, but no initialize or tools/list success yet",
+        }
+    if lease.get("last_used_at"):
+        return {
+            **base,
+            "state": "used",
+            "label": "used",
+            "severity": "warn",
+            "message": "backing lease has been used, but no matching audit event was found",
+        }
+    return {
+        **base,
+        "state": "not_used",
+        "label": "not used",
+        "severity": "warn",
+        "message": "waiting for the recipient to connect with this invite",
+    }
+
+
+def _share_invitation_connection_summary(items: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    counts: Counter[str] = Counter()
+    for item in items:
+        status = _mapping(item.get("connection_status"))
+        counts[str(status.get("state") or "unknown")] += 1
+    return {
+        "connected": counts.get("connected", 0),
+        "waiting": counts.get("not_used", 0),
+        "seen": counts.get("seen", 0) + counts.get("used", 0),
+        "blocked": counts.get("blocked", 0),
+        "misconfigured": counts.get("misconfigured", 0),
+        "inactive": counts.get("inactive", 0),
+        "revoked": counts.get("revoked", 0),
+        "unknown": counts.get("unknown", 0),
     }
 
 

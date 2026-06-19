@@ -678,6 +678,10 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "Invite Setup Snippets" in html
     assert "Use this invite now" in html
     assert "Copy setup packet" in html
+    assert "Connection" in html
+    assert "inviteConnectionDetail" in html
+    assert "connection_summary" in html
+    assert ".connected, .used" in html
     assert "Active invite setup snippets stay available" in html
     assert "Setup snippets are available while this invite remains active." in html
     assert "createInvite" in html
@@ -754,6 +758,7 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
         active_invite_snapshot["status"]["invitations"]["items"][0]["setup_snippets"]["headers"]["Authorization"]
         == "Bearer share-secret"
     )
+    assert active_invite_snapshot["status"]["invitations"]["items"][0]["connection_status"]["state"] == "not_used"
     assert active_invite_snapshot["status"]["invitations"]["items"][0]["setup_snippets"]["headers"][
         "x-snulbug-lease"
     ].startswith("sbl_")

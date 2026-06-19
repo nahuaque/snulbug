@@ -4210,17 +4210,17 @@ def _console_html() -> str:
       border: 1px solid var(--line);
       background: #fff;
     }
-    .ok, .pass, .reachable, .approved, .ready {
+    .ok, .pass, .reachable, .approved, .ready, .connected, .used {
       color: var(--green);
       border-color: #a7d8bf;
       background: #f0fbf5;
     }
-    .fail, .blocked, .denied, .unreachable {
+    .fail, .blocked, .denied, .unreachable, .misconfigured, .inactive {
       color: var(--red);
       border-color: #efb3b8;
       background: #fff5f5;
     }
-    .warn, .pending, .unknown, .confirmed, .not-checked, .review, .skip {
+    .warn, .pending, .unknown, .confirmed, .not-checked, .review, .skip, .not-used, .seen {
       color: var(--yellow);
       border-color: #ecd598;
       background: #fffaf0;
@@ -6232,17 +6232,19 @@ def _console_html() -> str:
     function renderInvites(payload) {
       const invitations = payload.items || [];
       const summary = payload.summary || {};
+      const connectionSummary = payload.connection_summary || {};
       const activeInvites = invitations.filter((invite) => !invite.revoked_at);
       const revokedInvites = invitations.filter((invite) => invite.revoked_at);
       const active = numeric(summary.active || activeInvites.length);
       const revoked = numeric(summary.revoked || revokedInvites.length);
+      const connected = numeric(connectionSummary.connected || 0);
       const visibleInvites = state.showRevokedInvites ? invitations : activeInvites;
       const handoff = inviteHandoffState();
       const capabilities = policyInviteCapabilities();
       const hasCapabilities = capabilities.length > 0;
       const inviteDisabled = handoff.ready !== true || !hasCapabilities;
       $("inviteSummary").textContent =
-        `${active} active, ${revoked} revoked${state.showRevokedInvites ? "" : " hidden"}`;
+        `${active} active, ${connected} connected, ${revoked} revoked${state.showRevokedInvites ? "" : " hidden"}`;
       const createHtml = `<div class="setup-form stack">
         <div>
           <div class="timeline-target">Create task invite</div>
@@ -6397,6 +6399,8 @@ def _console_html() -> str:
       const id = esc(invite.id);
       const revoked = Boolean(invite.revoked_at);
       const status = revoked ? "revoked" : "active";
+      const connection = invite.connection_status || {};
+      const connectionLabel = connection.label || connection.state || "not used";
       const tools = listText(invite.allow_tools);
       const paths = listText(invite.allow_paths);
       const capabilities = listText(invite.capabilities);
@@ -6437,11 +6441,12 @@ def _console_html() -> str:
             <div class="invite-title">${esc(invite.recipient || "share recipient")}</div>
             <div class="timeline-detail">${esc(invite.id || "")}</div>
           </div>
-          ${pill(status)}
+          <div class="review-actions">${pill(status)}${pill(connectionLabel)}</div>
         </div>
         <div class="lease-meta">
           ${leaseMeta("Task", invite.task || "Temporary MCP access", taskDetail)}
           ${leaseMeta("Capabilities", capabilities || tools || "-", capabilityDetail)}
+          ${leaseMeta("Connection", connectionLabel, inviteConnectionDetail(connection))}
           ${leaseMeta("Expiry", shortDateTime(invite.expires_at), expiryDetail)}
           ${leaseMeta("Backing lease", invite.lease_id || "-", invite.lease_header || "")}
         </div>
@@ -6451,6 +6456,19 @@ def _console_html() -> str:
           ${revokeAction}
         </div>
       </div>`;
+    }
+
+    function inviteConnectionDetail(connection) {
+      if (!connection || Object.keys(connection).length === 0) return "waiting for client traffic";
+      const parts = [];
+      if (connection.message) parts.push(connection.message);
+      const eventBits = [];
+      if (connection.last_method) eventBits.push(connection.last_method);
+      if (connection.last_tool) eventBits.push(connection.last_tool);
+      if (connection.last_reason_code) eventBits.push(connection.last_reason_code);
+      if (eventBits.length) parts.push(eventBits.join(" · "));
+      if (connection.last_seen_at) parts.push(`last seen ${shortDateTime(connection.last_seen_at)}`);
+      return parts.join("; ");
     }
 
     function renderEffectiveAccess(payload) {

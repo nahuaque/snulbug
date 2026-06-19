@@ -298,6 +298,68 @@ def test_mcp_share_invite_create_list_and_revoke_redacts_stored_snippets(tmp_pat
     assert "setup_snippets" not in revoked_setup_listing["invitations"][0]
 
 
+def test_mcp_share_invite_connection_status_uses_audit_events(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        allowed_paths=["README.md"],
+        validate=False,
+    )
+    created = create_mcp_share_invite(
+        tmp_path,
+        recipient="local collaborator",
+        task="Read project docs",
+        capabilities=["project_readonly"],
+        ttl="10m",
+    )
+
+    initial = share_status(tmp_path, live_checks=False)
+
+    assert initial["invitations"]["items"][0]["connection_status"]["state"] == "not_used"
+    assert initial["invitations"]["connection_summary"]["waiting"] == 1
+
+    audit_log = tmp_path / "traces" / "audit.jsonl"
+    audit_log.parent.mkdir(parents=True, exist_ok=True)
+    event = {
+        "type": "snulbug.audit",
+        "version": 1,
+        "time": "2026-06-18T18:00:00+00:00",
+        "mcp": {"method": "tools/list"},
+        "decision": {
+            "allowed": True,
+            "reason_code": "mcp.tunnel_safe_rate_limit",
+        },
+        "access": {
+            "allowed": True,
+            "lease": {
+                "allowed": True,
+                "id": created["lease"]["id"],
+                "invite": {
+                    "id": created["invite"]["id"],
+                    "recipient": "local collaborator",
+                    "client_name": "snulbug-share",
+                    "capabilities": ["project_readonly"],
+                },
+            },
+        },
+    }
+    audit_log.write_text(json.dumps(event, sort_keys=True) + "\n", encoding="utf-8")
+
+    connected = share_status(tmp_path, live_checks=False)
+    listing = list_mcp_share_invites(tmp_path)
+    connection = connected["invitations"]["items"][0]["connection_status"]
+
+    assert connection["state"] == "connected"
+    assert connection["last_method"] == "tools/list"
+    assert connection["last_seen_at"] == "2026-06-18T18:00:00+00:00"
+    assert connection["healthy_methods"] == ["tools/list"]
+    assert connected["invitations"]["connection_summary"]["connected"] == 1
+    assert listing["invitations"][0]["connection_status"]["state"] == "connected"
+
+
 def test_mcp_share_invite_cleanup_removes_stale_active_invites(tmp_path):
     create_mcp_share(
         tmp_path,
