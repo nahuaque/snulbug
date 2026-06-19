@@ -630,6 +630,9 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert 'class="console-output"' in html
     assert 'class="token"' not in html
     assert "Capability Requests" in html
+    assert "Effective Access" in html
+    assert 'href="#effectiveAccessSection"' in html
+    assert "renderEffectiveAccess" in html
     assert "Live Decisions" in html
     assert "Tunnel Provider" in html
     assert "renderTunnelProvider" in html
@@ -723,6 +726,8 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "selectRequest" in html
     assert "renderRequestDrawer" in html
     assert "drawer-task" in html
+    assert "drawer-capabilities" in html
+    assert "capabilityMatchText" in html
     assert "requestField" in html
     assert "renderDecisionTimeline" in html
     assert "setInterval(loadSnapshot, 5000)" in html
@@ -780,6 +785,7 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert approved["ok"] is True
     assert approved["headers"]["x-snulbug-lease"].startswith("sbl_")
     assert approved["review"]["reviewer"] == "ui"
+    assert approved["review"]["capabilities"] == ["project_readonly"]
     assert after["summary"]["approved"] == 1
     assert session_model["capability_requests"]["last_review"]["lease_id"] == approved["review"]["lease_id"]
 

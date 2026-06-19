@@ -1430,6 +1430,12 @@ def _add_share_request_args(parser: argparse.ArgumentParser) -> None:
     requests_approve.add_argument("--max-calls", type=int, help="maximum allowed tools/call uses")
     requests_approve.add_argument("--task", help="human-readable lease task override")
     requests_approve.add_argument("--allow-tool", action="append", default=[], help="additional allowed MCP tool")
+    requests_approve.add_argument(
+        "--capability",
+        action="append",
+        default=[],
+        help="policy-declared capability label to grant instead of raw tool/path fields",
+    )
     add_allow_path_arg(requests_approve, help="additional allowed path or path prefix")
     requests_approve.add_argument("--allow-host", action="append", default=[], help="additional allowed URL host")
     requests_approve.add_argument("--allow-command", action="append", default=[], help="additional allowed command")
@@ -1484,6 +1490,7 @@ def _handle_share_requests_command(
             allow_paths=args.allow_path or (),
             allow_hosts=args.allow_host or (),
             allow_commands=args.allow_command or (),
+            capabilities=args.capability or (),
             bind_auth=args.bind_auth,
             reviewer=args.reviewer,
             log=args.log,

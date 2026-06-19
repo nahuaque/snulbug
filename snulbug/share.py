@@ -25,6 +25,7 @@ from .leases import create_lease
 from .presets import DEFAULT_ALLOWED_PATHS, DEFAULT_ALLOWED_TOOLS, McpPolicyOptions, generate_mcp_preset
 from .quickstart import create_mcp_quickstart
 from .redaction import SECRET_REPLACEMENT, build_audit_event
+from .runtime import compile_lua_file
 from .scaffolds import (
     GeneratedArtifact,
     GeneratedClient,
@@ -53,6 +54,7 @@ from .share_session import (
     update_share_session_model,
     write_share_session_model,
 )
+from .simulator import normalize_request
 from .tool_risk import classify_mcp_tool_risks
 from .tunnel import (
     DEFAULT_NGROK_INTERNAL_ENDPOINT_NAME,
@@ -84,6 +86,7 @@ SHARE_CONTRACT_SIGNATURE_FIELD = "snulbug_signature"
 SHARE_CONTRACT_ALGORITHM = "hmac-sha256"
 CAPABILITY_REQUEST_REVIEW_PATH = Path(".snulbug") / "share" / "capability-requests.json"
 SHARE_INVITE_SECRET_STORE_PATH = Path(".snulbug") / "share" / "invite-secrets.json"
+CAPABILITY_MATCH_ALLOWED_ACTIONS = {"continue", "set_context", "rewrite", "respond", "rate_limit"}
 
 
 def create_mcp_share(
@@ -876,6 +879,7 @@ def share_capability_requests(
             stored_request = _mapping(review.get("request"))
             if stored_request:
                 requests[str(request_id)] = dict(stored_request)
+    _enrich_capability_requests_with_policy_labels(share_dir, _manifest, session_model, requests)
     merged = []
     for request_id, request in sorted(requests.items(), key=lambda item: str(item[1].get("last_seen_at") or "")):
         review = _mapping(reviewed_requests.get(request_id))
@@ -911,6 +915,7 @@ def approve_share_capability_request(
     allow_paths: Sequence[str] = (),
     allow_hosts: Sequence[str] = (),
     allow_commands: Sequence[str] = (),
+    capabilities: Sequence[str] = (),
     bind_auth: bool = True,
     reviewer: str | None = None,
     log: str | Path | None = None,
@@ -923,19 +928,32 @@ def approve_share_capability_request(
     if not isinstance(request, Mapping):
         raise ValueError(f"capability request not found: {request_id}")
     suggested = _mapping(request.get("suggested_lease"))
+    suggested_capabilities = _string_list(suggested.get("capabilities"))
+    effective_capabilities = _merge_string_lists(suggested_capabilities, capabilities)
+    if effective_capabilities:
+        effective_allow_tools = _merge_string_lists(["*"], allow_tools)
+    else:
+        effective_allow_tools = _merge_string_lists(
+            _string_list(suggested.get("allow_tools")) or _string_list(request.get("tool")),
+            allow_tools,
+        )
     lease_file = _share_capability_lease_file(share_dir, session_model, manifest)
     lease_header = _share_capability_lease_header(session_model, manifest)
     auth = _mapping(request.get("auth"))
     lease = create_lease(
         lease_file,
         task=task or str(suggested.get("task") or request.get("task") or "Temporary MCP access"),
-        allow_tools=_merge_string_lists(
-            _string_list(suggested.get("allow_tools")) or _string_list(request.get("tool")),
-            allow_tools,
-        ),
-        allow_paths=_merge_string_lists(_string_list(suggested.get("allow_paths")), allow_paths),
-        allow_hosts=_merge_string_lists(_string_list(suggested.get("allow_hosts")), allow_hosts),
-        allow_commands=_merge_string_lists(_string_list(suggested.get("allow_commands")), allow_commands),
+        allow_tools=effective_allow_tools,
+        capabilities=effective_capabilities,
+        allow_paths=()
+        if effective_capabilities
+        else _merge_string_lists(_string_list(suggested.get("allow_paths")), allow_paths),
+        allow_hosts=()
+        if effective_capabilities
+        else _merge_string_lists(_string_list(suggested.get("allow_hosts")), allow_hosts),
+        allow_commands=()
+        if effective_capabilities
+        else _merge_string_lists(_string_list(suggested.get("allow_commands")), allow_commands),
         allow_subjects=_string_list(auth.get("subject")) if bind_auth else (),
         allow_issuers=_string_list(auth.get("issuer")) if bind_auth else (),
         allow_tenants=_string_list(auth.get("tenant")) if bind_auth else (),
@@ -956,6 +974,7 @@ def approve_share_capability_request(
             "lease_header": lease_header,
             "bind_auth": bind_auth,
             "auth_bound": bool(bind_auth and auth),
+            "capabilities": effective_capabilities,
             "request": _capability_request_review_snapshot(request),
         }
     )
@@ -6886,6 +6905,336 @@ def run_mcp_share(
     return None
 
 
+def _enrich_capability_requests_with_policy_labels(
+    share_dir: Path,
+    manifest: Mapping[str, Any] | None,
+    session_model: Mapping[str, Any],
+    requests: dict[str, dict[str, Any]],
+) -> None:
+    if not requests:
+        return
+    resolved = _share_run_resolved_paths(share_dir, session_model, manifest)
+    policy_path = resolved.get("policy")
+    if policy_path is None or not policy_path.is_file():
+        return
+    try:
+        script = compile_lua_file(policy_path)
+    except Exception:
+        return
+    declared = [dict(item) for item in script.capabilities if isinstance(item, Mapping) and item.get("id")]
+    if not declared:
+        return
+    headers = _capability_match_client_headers(manifest)
+    corpus = _capability_match_corpus(requests.values())
+    for request in requests.values():
+        match = _capability_match_for_request(script, declared, request, corpus=corpus, headers=headers)
+        if not match:
+            continue
+        request["capability_match"] = match
+        if match.get("mode") == "declared_capability":
+            selected = str(match.get("selected") or "")
+            if selected:
+                original = dict(_mapping(request.get("suggested_lease")))
+                request["raw_policy_change"] = _drop_empty_json({"suggested_lease": original})
+                request["suggested_lease"] = _capability_label_suggested_lease(request, selected, original)
+
+
+def _capability_match_client_headers(manifest: Mapping[str, Any] | None) -> dict[str, str]:
+    headers = _share_auth_client_headers(manifest or {}, {})
+    headers.setdefault("content-type", "application/json")
+    headers.setdefault("accept", "application/json, text/event-stream")
+    return headers
+
+
+def _capability_match_for_request(
+    script: Any,
+    declared: Sequence[Mapping[str, Any]],
+    request: Mapping[str, Any],
+    *,
+    corpus: Sequence[Mapping[str, Any]],
+    headers: Mapping[str, str],
+) -> dict[str, Any] | None:
+    sample = _capability_match_sample_request(request, headers=headers)
+    if sample is None:
+        return _capability_raw_policy_match("request is not a tools/call capability request")
+    candidates: list[dict[str, Any]] = []
+    for index, capability in enumerate(declared):
+        capability_id = str(capability.get("id") or "")
+        if not capability_id:
+            continue
+        row = _capability_candidate_decision(script, sample, capability, index=index)
+        if row.get("allowed") is True:
+            candidates.append(row)
+    if not candidates:
+        return _capability_raw_policy_match("no declared policy capability covers this request")
+    ranked = [
+        _capability_candidate_with_breadth(script, candidate, corpus, headers=headers, request=request)
+        for candidate in candidates
+    ]
+    ranked.sort(
+        key=lambda item: (
+            float(item.get("score") or 0),
+            int(item.get("order") or 0),
+            str(item.get("id") or ""),
+        )
+    )
+    selected = ranked[0]
+    return _drop_empty_json(
+        {
+            "mode": "declared_capability",
+            "selection": "least_upper_declared_capability",
+            "selected": selected.get("id"),
+            "selected_label": selected.get("label"),
+            "reason": "selected the policy-declared capability with the narrowest simulated coverage",
+            "fallback_required": False,
+            "candidates": [
+                _drop_empty_json(
+                    {
+                        "id": item.get("id"),
+                        "label": item.get("label"),
+                        "allowed_count": item.get("allowed_count"),
+                        "score": item.get("score"),
+                        "default": item.get("default"),
+                        "reason_code": item.get("reason_code"),
+                    }
+                )
+                for item in ranked[:8]
+            ],
+        }
+    )
+
+
+def _capability_raw_policy_match(reason: str) -> dict[str, Any]:
+    return {
+        "mode": "raw_policy_change",
+        "selection": "raw_request",
+        "fallback_required": True,
+        "reason": reason,
+    }
+
+
+def _capability_candidate_decision(
+    script: Any,
+    request: Mapping[str, Any],
+    capability: Mapping[str, Any],
+    *,
+    index: int,
+) -> dict[str, Any]:
+    capability_id = str(capability.get("id") or "")
+    context = _capability_match_context(request, capability_id)
+    try:
+        normalized_request, _body_read = normalize_request(request)
+        trace = script.decide_with_trace(normalized_request, context, None)
+        decision = trace.decision
+        action = str(decision.get("action") or "")
+        allowed = action in CAPABILITY_MATCH_ALLOWED_ACTIONS
+        return _drop_empty_json(
+            {
+                "id": capability_id,
+                "label": capability.get("label"),
+                "description": capability.get("description"),
+                "default": capability.get("default") is True,
+                "order": index,
+                "action": action,
+                "allowed": allowed,
+                "reason_code": decision.get("reason_code"),
+                "reason": decision.get("reason") or decision.get("body"),
+            }
+        )
+    except Exception as exc:
+        return _drop_empty_json(
+            {
+                "id": capability_id,
+                "label": capability.get("label"),
+                "default": capability.get("default") is True,
+                "order": index,
+                "action": "error",
+                "allowed": False,
+                "reason_code": "capability_match.simulation_failed",
+                "reason": str(exc),
+            }
+        )
+
+
+def _capability_candidate_with_breadth(
+    script: Any,
+    candidate: Mapping[str, Any],
+    corpus: Sequence[Mapping[str, Any]],
+    *,
+    headers: Mapping[str, str],
+    request: Mapping[str, Any],
+) -> dict[str, Any]:
+    allowed_count = 0
+    for corpus_request in corpus:
+        sample = _capability_match_sample_request(corpus_request, headers=headers)
+        if sample is None:
+            continue
+        row = _capability_candidate_decision(script, sample, candidate, index=int(candidate.get("order") or 0))
+        if row.get("allowed") is True:
+            allowed_count += 1
+    score = (
+        float(allowed_count)
+        + _capability_default_penalty(candidate)
+        + _capability_affinity_adjustment(candidate, request)
+    )
+    enriched = dict(candidate)
+    enriched["allowed_count"] = allowed_count
+    enriched["score"] = round(score, 3)
+    return enriched
+
+
+def _capability_default_penalty(candidate: Mapping[str, Any]) -> float:
+    return 0.25 if candidate.get("default") is True else 0.0
+
+
+def _capability_affinity_adjustment(candidate: Mapping[str, Any], request: Mapping[str, Any]) -> float:
+    text = " ".join(str(candidate.get(key) or "").lower() for key in ("id", "label", "description")).replace("-", "_")
+    tool = str(request.get("tool") or "").lower().replace("-", "_")
+    suggested = _mapping(request.get("suggested_lease"))
+    paths = " ".join(_string_list(suggested.get("allow_paths"))).lower()
+    adjustment = 0.0
+    if any(token in text for token in ("docs", "documentation")) and any(
+        token in paths for token in ("readme", "docs", "examples")
+    ):
+        adjustment -= 0.35
+    if "git" in text and "git" in tool:
+        adjustment -= 0.3
+    if "search" in text and any(token in tool for token in ("search", "grep", "find")):
+        adjustment -= 0.3
+    if any(token in text for token in ("readonly", "read_only", "read only")) and any(
+        token in tool for token in ("read", "list", "show", "get")
+    ):
+        adjustment -= 0.1
+    if "low_risk" in text or "low-risk" in text:
+        adjustment += 0.15
+    return adjustment
+
+
+def _capability_match_corpus(requests: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    corpus: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for request in requests:
+        sample = _capability_corpus_request(request)
+        key = json.dumps(sample, sort_keys=True, default=str)
+        if key in seen:
+            continue
+        seen.add(key)
+        corpus.append(sample)
+    for tool in DEFAULT_ALLOWED_TOOLS:
+        sample = _capability_corpus_request({"method": "tools/call", "tool": tool})
+        key = json.dumps(sample, sort_keys=True, default=str)
+        if key not in seen:
+            seen.add(key)
+            corpus.append(sample)
+    return corpus
+
+
+def _capability_corpus_request(request: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "method": request.get("method") or "tools/call",
+        "tool": request.get("tool"),
+        "argument_keys": _string_list(request.get("argument_keys")),
+        "suggested_lease": dict(_mapping(request.get("suggested_lease"))),
+    }
+
+
+def _capability_match_sample_request(
+    request: Mapping[str, Any],
+    *,
+    headers: Mapping[str, str],
+) -> dict[str, Any] | None:
+    method = str(request.get("method") or "tools/call")
+    tool = request.get("tool")
+    if method != "tools/call" or not isinstance(tool, str) or not tool:
+        return None
+    arguments = _capability_match_sample_arguments(request)
+    return {
+        "method": "POST",
+        "path": "/mcp",
+        "headers": dict(headers),
+        "body": json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "capability-match",
+                "method": "tools/call",
+                "params": {"name": tool, "arguments": arguments},
+            },
+            sort_keys=True,
+        ),
+    }
+
+
+def _capability_match_sample_arguments(request: Mapping[str, Any]) -> dict[str, Any]:
+    keys = _string_list(request.get("argument_keys"))
+    suggested = _mapping(request.get("suggested_lease"))
+    result: dict[str, Any] = {}
+    for key in keys:
+        result[key] = _capability_match_sample_value(key, suggested)
+    tool = str(request.get("tool") or "")
+    if not result and _capability_tool_needs_path(tool):
+        result["path"] = _first_string(suggested.get("allow_paths")) or "README.md"
+    return result
+
+
+def _capability_match_sample_value(name: str, suggested: Mapping[str, Any]) -> Any:
+    lowered = name.lower()
+    if lowered in {"paths", "files", "filenames"}:
+        return [_first_string(suggested.get("allow_paths")) or "README.md"]
+    if "path" in lowered or "file" in lowered or "directory" in lowered:
+        return _first_string(suggested.get("allow_paths")) or "README.md"
+    if "host" in lowered or "url" in lowered or "uri" in lowered:
+        host = _first_string(suggested.get("allow_hosts"))
+        return f"https://{host}" if host else "https://example.invalid"
+    if "command" in lowered or lowered in {"cmd", "argv"}:
+        return _first_string(suggested.get("allow_commands")) or "status"
+    if "query" in lowered or "pattern" in lowered or "search" in lowered:
+        return "README"
+    if "count" in lowered or "limit" in lowered or "max" in lowered:
+        return 1
+    return "example"
+
+
+def _first_string(value: Any) -> str | None:
+    values = _string_list(value)
+    return values[0] if values else None
+
+
+def _capability_tool_needs_path(name: str) -> bool:
+    lowered = name.lower().replace("-", "_")
+    return any(token in lowered for token in ("read_file", "file_read", "list_project", "search_file", "grep"))
+
+
+def _capability_match_context(request: Mapping[str, Any], capability_id: str) -> dict[str, Any]:
+    return {
+        "lease": {
+            "enabled": True,
+            "required": True,
+            "checked": True,
+            "allowed": True,
+            "method": request.get("method") or "tools/call",
+            "id": "capability-match-preview",
+            "task": "Capability request preview",
+            "capabilities": [capability_id],
+        }
+    }
+
+
+def _capability_label_suggested_lease(
+    request: Mapping[str, Any],
+    capability_id: str,
+    original: Mapping[str, Any],
+) -> dict[str, Any]:
+    return _drop_empty_json(
+        {
+            "task": original.get("task") or request.get("task") or f"Temporary MCP access for {request.get('tool')}",
+            "ttl": original.get("ttl") or "30m",
+            "max_calls": original.get("max_calls"),
+            "allow_tools": ["*"],
+            "capabilities": [capability_id],
+        }
+    )
+
+
 def _observed_capability_requests(
     share_dir: Path,
     session_model: Mapping[str, Any],
@@ -7142,7 +7491,9 @@ def _capability_request_review_snapshot(request: Mapping[str, Any]) -> dict[str,
             "method": request.get("method"),
             "tool": request.get("tool"),
             "argument_keys": request.get("argument_keys"),
+            "capability_match": request.get("capability_match"),
             "suggested_lease": request.get("suggested_lease"),
+            "raw_policy_change": request.get("raw_policy_change"),
             "auth": request.get("auth"),
             "source": request.get("source"),
             "observations": request.get("observations"),

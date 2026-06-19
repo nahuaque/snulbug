@@ -456,6 +456,7 @@ class ShareConsoleServer:
                     allow_paths=_string_list(body.get("allow_paths")),
                     allow_hosts=_string_list(body.get("allow_hosts")),
                     allow_commands=_string_list(body.get("allow_commands")),
+                    capabilities=_string_list(body.get("capabilities")),
                     bind_auth=bool(body.get("bind_auth", True)),
                     reviewer=_string_or_none(body.get("reviewer")),
                 )
@@ -6043,15 +6044,18 @@ def _console_html() -> str:
       const rows = requests.map((request) => {
         const id = esc(request.id);
         const suggested = request.suggested_lease || {};
+        const match = request.capability_match || {};
         const auth = request.auth || {};
         const ttl = esc(suggested.ttl || "10m");
         const maxCalls = esc(suggested.max_calls || "2");
         const reviewer = "local-review";
+        const capabilityText = listText(suggested.capabilities || (match.selected ? [match.selected] : []));
         return `<tr class="request-row" onclick="selectRequest('${id}')">
           <td>${pill(request.status)}<br><span class="muted">${id}</span></td>
           <td>
             <strong>${esc(request.tool || request.method)}</strong><br>
-            ${esc(request.task || request.reason_code)}
+            ${esc(capabilityText || request.task || request.reason_code)}
+            <div class="timeline-detail">${esc(capabilityMatchText(match))}</div>
           </td>
           <td>${esc(auth.subject || "-")}<br><span class="muted">${esc(auth.tenant || auth.issuer || "")}</span></td>
           <td>
@@ -6848,6 +6852,8 @@ def _console_html() -> str:
         return;
       }
       const suggested = request.suggested_lease || {};
+      const rawPolicy = request.raw_policy_change || {};
+      const match = request.capability_match || {};
       const auth = request.auth || {};
       const decision = request.decision || {};
       const sources = request.sources || [];
@@ -6867,6 +6873,7 @@ def _console_html() -> str:
             ${detailRow("Method", request.method)}
             ${detailRow("Tool", request.tool)}
             ${detailRow("Argument keys", listText(request.argument_keys))}
+            ${detailRow("Matched capability", capabilityMatchText(match))}
             ${detailRow("Reason code", request.reason_code || decision.reason_code)}
             ${detailRow("Observations", request.observations)}
             ${detailRow("First seen", request.first_seen_at)}
@@ -6889,10 +6896,12 @@ def _console_html() -> str:
             <div class="detail-grid">
               ${detailRow("TTL", suggested.ttl)}
               ${detailRow("Max calls", suggested.max_calls)}
+              ${detailRow("Capabilities", listText(suggested.capabilities))}
               ${detailRow("Tools", listText(suggested.allow_tools))}
               ${detailRow("Paths", listText(suggested.allow_paths))}
               ${detailRow("Hosts", listText(suggested.allow_hosts))}
               ${detailRow("Commands", listText(suggested.allow_commands))}
+              ${detailRow("Raw fallback", rawPolicy.suggested_lease ? "available if no label is accepted" : "-")}
             </div>
           </div>
           <div>
@@ -6908,6 +6917,9 @@ def _console_html() -> str:
               <input class="wide" id="drawer-tools-${esc(request.id)}" value="${esc(
                 listTextOr(suggested.allow_tools, request.tool)
               )}" aria-label="Allowed tools">
+              <input class="wide" id="drawer-capabilities-${esc(request.id)}" value="${esc(
+                listText(suggested.capabilities)
+              )}" aria-label="Capability labels">
               <input class="wide" id="drawer-paths-${esc(request.id)}" value="${esc(
                 listText(suggested.allow_paths)
               )}" aria-label="Allowed paths">
@@ -6959,6 +6971,14 @@ def _console_html() -> str:
 
     function listTextOr(value, fallback) {
       return listText(value) || text(fallback, "");
+    }
+
+    function capabilityMatchText(match) {
+      if (!match || !Object.keys(match).length) return "-";
+      if (match.mode === "declared_capability") {
+        return `${match.selected_label || match.selected} · policy-declared label`;
+      }
+      return match.reason || "raw policy change request";
     }
 
     function renderTunnelProvider(payload) {
@@ -7214,6 +7234,7 @@ def _console_html() -> str:
             ttl: requestField(id, "ttl", source, "10m"),
             max_calls: requestField(id, "calls", source, "2"),
             allow_tools: requestField(id, "tools", source, ""),
+            capabilities: requestField(id, "capabilities", source, ""),
             allow_paths: requestField(id, "paths", source, ""),
             allow_hosts: requestField(id, "hosts", source, ""),
             allow_commands: requestField(id, "commands", source, ""),

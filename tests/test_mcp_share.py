@@ -1202,6 +1202,11 @@ def test_mcp_share_capability_requests_promote_to_auth_bound_lease(tmp_path):
     assert listing["summary"]["pending"] == 1
     assert request["status"] == "pending"
     assert request["tool"] == "safe_read_file"
+    assert request["capability_match"]["mode"] == "declared_capability"
+    assert request["capability_match"]["selected"] == "project_readonly"
+    assert request["suggested_lease"]["capabilities"] == ["project_readonly"]
+    assert request["suggested_lease"]["allow_tools"] == ["*"]
+    assert request["raw_policy_change"]["suggested_lease"]["allow_tools"] == ["safe_read_file"]
     assert request["auth"]["subject"] == "user-1"
     assert approved["ok"] is True
     assert approved["review"]["status"] == "approved"
@@ -1209,8 +1214,9 @@ def test_mcp_share_capability_requests_promote_to_auth_bound_lease(tmp_path):
     assert approved["headers"]["x-snulbug-lease"].startswith("sbl_")
     assert approved["retry_header"].startswith('-H "x-snulbug-lease: sbl_')
     assert lease["task"] == "Read project docs"
-    assert lease["allow_tools"] == ["safe_read_file"]
-    assert lease["allow_paths"] == ["README.md", "docs"]
+    assert lease["capabilities"] == ["project_readonly"]
+    assert lease["allow_tools"] == ["*"]
+    assert lease["allow_paths"] == []
     assert lease["allow_subjects"] == ["user-1"]
     assert lease["allow_issuers"] == ["https://issuer.example"]
     assert lease["allow_tenants"] == ["tenant-a"]
@@ -1253,6 +1259,38 @@ def test_mcp_share_capability_requests_can_be_denied_without_creating_lease(tmp_
     assert after["leases"] == before["leases"]
     assert listing["summary"]["denied"] == 1
     assert listing["requests"][0]["status"] == "denied"
+
+
+def test_mcp_share_capability_requests_fall_back_when_no_declared_label_covers_request(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    write_share_capability_audit_log(
+        tmp_path,
+        tool="run_command",
+        task="Run a command",
+        argument_keys=["command"],
+        suggested_lease={
+            "task": "Run a command",
+            "ttl": "10m",
+            "max_calls": 1,
+            "allow_tools": ["run_command"],
+            "allow_commands": ["ls"],
+        },
+    )
+
+    request = share_capability_requests(tmp_path)["requests"][0]
+
+    assert request["capability_match"]["mode"] == "raw_policy_change"
+    assert request["capability_match"]["fallback_required"] is True
+    assert request["suggested_lease"]["allow_tools"] == ["run_command"]
+    assert request["suggested_lease"]["allow_commands"] == ["ls"]
+    assert "capabilities" not in request["suggested_lease"]
 
 
 def test_mcp_share_requests_cli_lists_and_approves_from_share_session(tmp_path, capsys, monkeypatch):
@@ -2392,15 +2430,30 @@ def write_share_audit_log(tmp_path):
     )
 
 
-def write_share_capability_audit_log(tmp_path):
+def write_share_capability_audit_log(
+    tmp_path,
+    *,
+    tool="safe_read_file",
+    task="Read project docs",
+    argument_keys=None,
+    suggested_lease=None,
+):
     traces = tmp_path / "traces"
     traces.mkdir(exist_ok=True)
+    argument_keys = ["path"] if argument_keys is None else argument_keys
+    suggested_lease = suggested_lease or {
+        "task": task,
+        "ttl": "10m",
+        "max_calls": 2,
+        "allow_tools": [tool],
+        "allow_paths": ["README.md", "docs"],
+    }
     event = {
         "type": "snulbug.audit",
         "version": 1,
         "time": "2026-06-14T00:03:00+00:00",
         "request": {"method": "POST", "path": "/mcp", "headers": {}},
-        "mcp": {"method": "tools/call", "tool": "safe_read_file"},
+        "mcp": {"method": "tools/call", "tool": tool},
         "decision": {
             "action": "reject",
             "allowed": False,
@@ -2426,18 +2479,12 @@ def write_share_capability_audit_log(tmp_path):
                 "capability_request": {
                     "schema": "snulbug.capability_request.v1",
                     "kind": "task_lease",
-                    "task": "Read project docs",
+                    "task": task,
                     "reason_code": "mcp.docs_capability_requested",
                     "method": "tools/call",
-                    "tool": "safe_read_file",
-                    "argument_keys": ["path"],
-                    "suggested_lease": {
-                        "task": "Read project docs",
-                        "ttl": "10m",
-                        "max_calls": 2,
-                        "allow_tools": ["safe_read_file"],
-                        "allow_paths": ["README.md", "docs"],
-                    },
+                    "tool": tool,
+                    "argument_keys": argument_keys,
+                    "suggested_lease": suggested_lease,
                 },
                 "confirmation": {
                     "approved": False,
