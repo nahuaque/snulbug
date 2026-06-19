@@ -1581,6 +1581,76 @@ def test_share_console_can_start_and_stop_ngrok_agent(tmp_path, monkeypatch):
     assert FakeProcess.instances[0].argv == ["/usr/local/bin/ngrok", "start", "--config", str(agent_config), "--all"]
 
 
+def test_share_console_can_start_and_stop_ssh_tunnel(tmp_path, monkeypatch):
+    create_mcp_share(
+        tmp_path,
+        provider="ssh",
+        hostname="dev@example.com",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    class FakeProcess:
+        instances: list["FakeProcess"] = []
+
+        def __init__(self, argv, **kwargs):
+            self.argv = argv
+            self.kwargs = kwargs
+            self.pid = 8765
+            self.returncode = None
+            self.terminated = False
+            FakeProcess.instances.append(self)
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setattr(share_console.shutil, "which", lambda name: "/usr/bin/ssh" if name == "ssh" else None)
+    monkeypatch.setattr(share_console.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(share_console, "sleep", lambda seconds: None)
+
+    server = ShareConsoleServer(directory=tmp_path, port=0)
+    server.start()
+    try:
+        start = post_json(f"{server.url}/api/tunnel/start", {}, headers=console_headers(server))
+        snapshot = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
+        stop = post_json(f"{server.url}/api/tunnel/stop", {}, headers=console_headers(server))
+    finally:
+        server.stop()
+
+    assert start["ok"] is True
+    assert start["process"]["provider"] == "ssh"
+    assert start["process"]["running"] is True
+    assert snapshot["tunnel_provider"]["process"]["provider"] == "ssh"
+    assert snapshot["tunnel_provider"]["process"]["running"] is True
+    assert stop["ok"] is True
+    assert FakeProcess.instances[0].terminated is True
+    assert FakeProcess.instances[0].argv == [
+        "/usr/bin/ssh",
+        "-N",
+        "-T",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "BatchMode=yes",
+        "-R",
+        "127.0.0.1:18080:127.0.0.1:8080",
+        "dev@example.com",
+    ]
+
+
 def test_share_run_setup_console_serves_wizard_without_session(tmp_path):
     server = ShareConsoleServer(directory=tmp_path, port=0, setup_only=True)
     server.start()

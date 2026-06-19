@@ -65,6 +65,7 @@ TUNNEL_PROVIDER_LABELS = {
     "cloudflare": "Cloudflare Tunnel",
     "tailscale": "Tailscale Funnel",
     "pinggy": "Pinggy",
+    "ssh": "SSH tunnel",
     "holepunch": "Holepunch / Hypertele",
 }
 DEFAULT_DECISION_TIMELINE_LIMIT = 20
@@ -180,7 +181,7 @@ def _setup_defaults() -> dict[str, Any]:
         "providers": [
             {"name": name, "label": label}
             for name, label in TUNNEL_PROVIDER_LABELS.items()
-            if name in {"generic", "ngrok", "cloudflare", "tailscale", "pinggy", "holepunch"}
+            if name in {"generic", "ngrok", "cloudflare", "tailscale", "pinggy", "ssh", "holepunch"}
         ],
     }
 
@@ -707,21 +708,29 @@ class ShareConsoleServer:
             plan = _console_tunnel_start_plan(self.directory)
             if not plan.get("manageable"):
                 return {"ok": False, "error": plan.get("error") or "tunnel provider is not manageable", "process": plan}
-            executable = shutil.which("ngrok")
-            if not executable:
-                plan["error"] = "ngrok executable not found on PATH"
+            command_argv = [str(item) for item in _sequence(plan.get("command_argv"))]
+            if not command_argv:
+                plan["error"] = "managed tunnel command is missing"
                 return {"ok": False, "error": plan["error"], "process": plan}
-            agent_config = Path(str(plan.get("agent_config")))
-            if _ngrok_agent_config_has_placeholder(agent_config):
+            executable_name = command_argv[0]
+            executable = shutil.which(executable_name)
+            if not executable:
+                plan["error"] = f"{executable_name} executable not found on PATH"
+                return {"ok": False, "error": plan["error"], "process": plan}
+            provider = str(plan.get("provider") or "")
+            if provider == "ngrok" and _ngrok_agent_config_has_placeholder(Path(str(plan.get("agent_config")))):
                 plan["error"] = (
                     "ngrok agent config still contains YOUR_NGROK_AUTHTOKEN; replace it or merge the endpoint "
                     "into your existing ngrok config before starting the managed tunnel"
                 )
                 return {"ok": False, "error": plan["error"], "process": plan}
+            if provider == "ssh" and _ssh_tunnel_command_has_placeholder(command_argv):
+                plan["error"] = "SSH tunnel command still contains YOUR_SSH_USER@YOUR_SSH_HOST"
+                return {"ok": False, "error": plan["error"], "process": plan}
             log_path = Path(str(plan["log_path"]))
             log_path.parent.mkdir(parents=True, exist_ok=True)
             log_file = log_path.open("ab")
-            argv = [executable, "start", "--config", str(agent_config), "--all"]
+            argv = [executable, *command_argv[1:]]
             process = subprocess.Popen(  # noqa: S603 - command is fixed; config path comes from the share directory.
                 argv,
                 cwd=str(self.directory),
@@ -833,13 +842,24 @@ def _console_tunnel_process_status(
 def _console_tunnel_start_plan(directory: str | Path) -> dict[str, Any]:
     share_dir = Path(directory)
     provider, bridge, manifest = _console_tunnel_metadata(share_dir)
-    if provider != "ngrok":
-        return {
-            "provider": provider or "generic",
-            "manageable": False,
-            "supported": False,
-            "error": "managed tunnel start/stop is currently available for ngrok shares",
-        }
+    if provider == "ngrok":
+        return _console_ngrok_tunnel_start_plan(share_dir, bridge=bridge, manifest=manifest)
+    if provider == "ssh":
+        return _console_ssh_tunnel_start_plan(share_dir, bridge=bridge)
+    return {
+        "provider": provider or "generic",
+        "manageable": False,
+        "supported": False,
+        "error": "managed tunnel start/stop is currently available for ngrok and ssh shares",
+    }
+
+
+def _console_ngrok_tunnel_start_plan(
+    share_dir: Path,
+    *,
+    bridge: Mapping[str, Any],
+    manifest: Mapping[str, Any] | None,
+) -> dict[str, Any]:
     agent_config = _console_ngrok_agent_config_path(share_dir, bridge=bridge, manifest=manifest)
     command_argv = ["ngrok", "start", "--config", str(agent_config), "--all"]
     log_path = share_dir / ".snulbug" / "share" / "ngrok-agent.log"
@@ -851,9 +871,36 @@ def _console_tunnel_start_plan(directory: str | Path) -> dict[str, Any]:
             "supported": True,
             "agent_config": str(agent_config),
             "agent_config_exists": exists,
+            "command_argv": command_argv,
             "command": _shell_command(command_argv),
             "log_path": str(log_path),
             "error": None if exists else f"ngrok agent config not found: {agent_config}",
+        }
+    )
+
+
+def _console_ssh_tunnel_start_plan(share_dir: Path, *, bridge: Mapping[str, Any]) -> dict[str, Any]:
+    command_argv = [str(item) for item in _sequence(bridge.get("command_argv"))]
+    if not command_argv:
+        return {
+            "provider": "ssh",
+            "manageable": False,
+            "supported": True,
+            "error": "SSH tunnel command is missing from the share metadata; regenerate the share",
+        }
+    log_path = share_dir / ".snulbug" / "share" / "ssh-tunnel.log"
+    return _drop_empty(
+        {
+            "provider": "ssh",
+            "manageable": True,
+            "supported": True,
+            "ssh_target": bridge.get("ssh_target"),
+            "remote_bind": bridge.get("remote_bind"),
+            "remote_port": bridge.get("remote_port"),
+            "client_url": bridge.get("client_url"),
+            "command_argv": command_argv,
+            "command": _shell_command(command_argv),
+            "log_path": str(log_path),
         }
     )
 
@@ -901,6 +948,10 @@ def _ngrok_agent_config_has_placeholder(path: Path) -> bool:
         return "YOUR_NGROK_AUTHTOKEN" in path.read_text(encoding="utf-8")
     except OSError:
         return False
+
+
+def _ssh_tunnel_command_has_placeholder(command_argv: Sequence[str]) -> bool:
+    return any("YOUR_SSH_USER@YOUR_SSH_HOST" in str(item) for item in command_argv)
 
 
 def _shell_command(argv: Sequence[str]) -> str:
@@ -7482,6 +7533,12 @@ def _console_html() -> str:
       const state = process.state || "stopped";
       const manageable = process.manageable !== false;
       const error = process.error ? `<div class="review-panel blocked">${esc(process.error)}</div>` : "";
+      const processDetails = [
+        process.agent_config ? detailRow("Agent config", process.agent_config) : "",
+        process.ssh_target ? detailRow("SSH target", process.ssh_target) : "",
+        process.client_url ? detailRowHtml("Client URL", externalLink(process.client_url, process.client_url)) : "",
+        process.log_path ? detailRow("Log", process.log_path) : ""
+      ].filter(Boolean).join("");
       return `<div class="review-panel ${running ? "ready" : ""}">
         <div class="section-head compact">
           <div>
@@ -7504,10 +7561,7 @@ def _console_html() -> str:
             >Stop tunnel</button>
           </div>
         </div>
-        <div class="detail-grid">
-          ${detailRow("Agent config", process.agent_config)}
-          ${detailRow("Log", process.log_path)}
-        </div>
+        <div class="detail-grid">${processDetails}</div>
         ${error}
       </div>`;
     }

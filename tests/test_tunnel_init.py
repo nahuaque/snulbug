@@ -301,6 +301,54 @@ def test_tunnel_init_pinggy_uses_local_port_from_url(tmp_path):
     assert "ssh -p 443 -R0:localhost:8181 free.pinggy.io" in readme.read_text(encoding="utf-8")
 
 
+def test_tunnel_init_ssh_generates_reverse_tunnel_command_and_script(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    result = init_tunnel_provider(
+        provider="ssh",
+        local_url="http://127.0.0.1:8080/mcp",
+        hostname="dev@example.com",
+    )
+    report = format_tunnel_init_report(result)
+
+    assert result["provider"] == "ssh"
+    assert result["public_url"] == "http://127.0.0.1:18080/mcp"
+    assert result["bridge"]["transport"] == "ssh"
+    assert result["bridge"]["mode"] == "reverse"
+    assert result["bridge"]["ssh_target"] == "dev@example.com"
+    assert result["commands"][0]["command"] == (
+        "ssh -N -T -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o BatchMode=yes "
+        "-R 127.0.0.1:18080:127.0.0.1:8080 dev@example.com"
+    )
+    assert result["doctor"]["command"] == "snulbug mcp share doctor <share-directory>"
+    assert "SSH tunnel MCP URL: ${SSH_TUNNEL_URL}/mcp" in report
+    assert "export SSH_TUNNEL_URL=http://127.0.0.1:18080" in report
+    assert (tmp_path / ".snulbug/configs/ssh-tunnel.sh").is_file()
+    assert "Plain SSH reverse tunnel" in (tmp_path / ".snulbug/configs/README.md").read_text(encoding="utf-8")
+    script = (tmp_path / ".snulbug/configs/ssh-tunnel.sh").read_text(encoding="utf-8")
+    assert "exec ssh -N -T" in script
+    assert "Client MCP URL from the SSH host: http://127.0.0.1:18080/mcp" in script
+
+
+def test_tunnel_init_ssh_uses_public_url_port_for_remote_forward(tmp_path):
+    output_dir = tmp_path / "ssh"
+
+    result = init_tunnel_provider(
+        provider="ssh",
+        local_url="http://127.0.0.1:8181/mcp",
+        public_url="http://127.0.0.1:19090/mcp",
+        hostname="dev@example.com",
+        output_dir=output_dir,
+    )
+
+    assert result["commands"][0]["command"] == (
+        "ssh -N -T -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o BatchMode=yes "
+        "-R 127.0.0.1:19090:127.0.0.1:8181 dev@example.com"
+    )
+    assert result["bridge"]["remote_port"] == 19090
+    assert (output_dir / "ssh-tunnel.sh").is_file()
+
+
 def test_tunnel_init_holepunch_generates_hypertele_bridge_files(tmp_path):
     output_dir = tmp_path / "holepunch"
 

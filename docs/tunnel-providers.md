@@ -2,7 +2,7 @@
 
 `snulbug mcp share create --provider ...` is backed by a tunnel provider
 registry. Built-in providers are `generic`, `ngrok`, `cloudflare`, `tailscale`,
-`pinggy`, and `holepunch`.
+`pinggy`, `ssh`, and `holepunch`.
 
 Use a provider plugin when a tunnel or peer bridge needs custom setup commands,
 generated config files, default public URL handling, request attribution, or

@@ -256,6 +256,37 @@ snulbug mcp share doctor .snulbug/shares/share-... \
   --url "${PINGGY_URL}/mcp"
 ```
 
+### Plain SSH reverse tunnel
+
+Use this when you can SSH to a host where the MCP client or agent runs, and you
+do not want to use a public tunnel provider. The default reverse tunnel binds
+the remote port to `127.0.0.1` on the SSH host:
+
+```bash
+snulbug mcp share create \
+  --provider ssh \
+  --hostname dev@example.com \
+  --upstream http://127.0.0.1:9000 \
+  --allow-tool safe_read_file \
+  --ttl 30m
+export SNULBUG_SHARE_TOKEN=...
+snulbug mcp share run .snulbug/shares/share-...
+ssh -N -T -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o BatchMode=yes \
+  -R 127.0.0.1:18080:127.0.0.1:8080 dev@example.com
+```
+
+The MCP client on the SSH host should use:
+
+```text
+http://127.0.0.1:18080/mcp
+Authorization: Bearer ${SNULBUG_SHARE_TOKEN}
+x-snulbug-lease: YOUR_SHARE_LEASE_TOKEN
+```
+
+Keep the default loopback bind for private handoff. If you need other machines
+to reach the SSH host's forwarded port, change the bind address deliberately and
+configure the SSH server to allow that remote forwarding.
+
 ### Holepunch peer bridge with Hypertele
 
 Use this when both sides can run a local sidecar and you want a private peer

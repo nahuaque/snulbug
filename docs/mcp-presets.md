@@ -135,7 +135,7 @@ snulbug mcp policy preset workspace-firewall \
 ```
 
 `tunnel-safe` is the recommended default for ngrok, Cloudflare Tunnel,
-Tailscale Funnel, Pinggy, Holepunch peer bridges, or similar tunnel
+Tailscale Funnel, Pinggy, SSH reverse tunnels, Holepunch peer bridges, or similar tunnel
 exposure. It requires bearer auth, rejects JSON-RPC batch requests, requires
 task leases for tool calls when a lease store is configured, and rate-limits
 traffic. For share invites, it declares policy-enforced temporary capability

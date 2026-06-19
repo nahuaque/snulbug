@@ -671,6 +671,38 @@ def test_create_mcp_share_ngrok_writes_cloud_endpoint_artifacts(tmp_path):
     assert "Attach" in result["commands"]["provider"][1]
 
 
+def test_create_mcp_share_ssh_writes_reverse_tunnel_artifacts(tmp_path):
+    result = create_mcp_share(
+        tmp_path,
+        provider="ssh",
+        hostname="dev@example.com",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    proxy_config = load_mcp_proxy_config(tmp_path / "snulbug.toml")
+    manifest = json.loads((tmp_path / "share.json").read_text(encoding="utf-8"))
+    session_model = load_share_session_model(tmp_path)
+    script = tmp_path / "tunnel" / "ssh-tunnel.sh"
+
+    assert result["ok"] is True
+    assert script.is_file()
+    assert proxy_config["tunnel_provider"] == "ssh"
+    assert proxy_config["tunnel_public_url"] == "http://127.0.0.1:18080/mcp"
+    assert result["client"]["url"] == "http://127.0.0.1:18080/mcp"
+    assert result["tunnel"]["bridge"]["transport"] == "ssh"
+    assert result["tunnel"]["bridge"]["ssh_target"] == "dev@example.com"
+    assert result["commands"]["provider"][0] == (
+        "ssh -N -T -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o BatchMode=yes "
+        "-R 127.0.0.1:18080:127.0.0.1:8080 dev@example.com"
+    )
+    assert manifest["tunnel"]["bridge"]["mode"] == "reverse"
+    assert session_model["tunnel"]["provider"] == "ssh"
+    assert session_model["tunnel"]["bridge"]["remote_port"] == 18080
+    assert "Plain SSH reverse tunnel" in (tmp_path / "tunnel" / "README.md").read_text(encoding="utf-8")
+
+
 def test_create_mcp_share_cloudflare_access_gate_profile_defaults_to_safe_jwt_validation(tmp_path, monkeypatch):
     result = create_mcp_share(
         tmp_path,

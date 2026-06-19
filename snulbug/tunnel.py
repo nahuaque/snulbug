@@ -24,12 +24,16 @@ DEFAULT_CLOUDFLARE_TUNNEL_HOST = "YOUR-CLOUDFLARE-TUNNEL-HOSTNAME"
 DEFAULT_TAILSCALE_FUNNEL_HOST = "YOUR-HOST.YOUR-TAILNET.ts.net"
 DEFAULT_PINGGY_FORWARDING_HOST = "YOUR-PINGGY-FORWARDING-DOMAIN"
 DEFAULT_HOLEPUNCH_CLIENT_ORIGIN = "http://127.0.0.1:18080"
+DEFAULT_SSH_CLIENT_ORIGIN = "http://127.0.0.1:18080"
+DEFAULT_SSH_TARGET = "YOUR_SSH_USER@YOUR_SSH_HOST"
+DEFAULT_SSH_REMOTE_BIND = "127.0.0.1"
 DEFAULT_PUBLIC_URL_ENVS = {
     "generic": "TUNNEL_URL",
     "ngrok": "NGROK_URL",
     "cloudflare": "CLOUDFLARE_TUNNEL_URL",
     "tailscale": "TAILSCALE_FUNNEL_URL",
     "pinggy": "PINGGY_URL",
+    "ssh": "SSH_TUNNEL_URL",
 }
 DEFAULT_PUBLIC_HOSTS = {
     "generic": DEFAULT_GENERIC_TUNNEL_HOST,
@@ -37,6 +41,7 @@ DEFAULT_PUBLIC_HOSTS = {
     "cloudflare": DEFAULT_CLOUDFLARE_TUNNEL_HOST,
     "tailscale": DEFAULT_TAILSCALE_FUNNEL_HOST,
     "pinggy": DEFAULT_PINGGY_FORWARDING_HOST,
+    "ssh": "127.0.0.1:18080",
 }
 
 
@@ -416,6 +421,106 @@ class PinggyTunnelProvider(TunnelProvider):
         return _drop_empty({"request_id": headers.get("x-request-id") or headers.get("x-correlation-id")})
 
 
+class SshTunnelProvider(TunnelProvider):
+    name = "ssh"
+    public_url_env = DEFAULT_PUBLIC_URL_ENVS["ssh"]
+    default_public_host = DEFAULT_PUBLIC_HOSTS["ssh"]
+    remote_label = "SSH tunnel MCP URL"
+    share_target = "SSH tunnel MCP URL"
+    default_scheme = "http"
+
+    def public_endpoint(self, *, public_url: str | None, hostname: str | None, path: str) -> str:
+        if public_url:
+            return _normalize_url(public_url, path)
+        return _normalize_url(DEFAULT_SSH_CLIENT_ORIGIN, path)
+
+    def build_plan(self, context: TunnelProviderContext) -> dict[str, Any]:
+        local_target = _host_port_from_origin(context.origin)
+        client_target = _host_port_from_origin(_url_origin(context.public_endpoint))
+        ssh_target = _option_str(context.options, "hostname") or DEFAULT_SSH_TARGET
+        remote_bind = DEFAULT_SSH_REMOTE_BIND
+        command_argv = [
+            "ssh",
+            "-N",
+            "-T",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-o",
+            "ServerAliveInterval=30",
+            "-o",
+            "BatchMode=yes",
+            "-R",
+            f"{remote_bind}:{client_target['port']}:{local_target['host']}:{local_target['port']}",
+            ssh_target,
+        ]
+        bridge = {
+            "transport": "ssh",
+            "mode": "reverse",
+            "ssh_target": ssh_target,
+            "remote_bind": remote_bind,
+            "remote_port": client_target["port"],
+            "local_host": local_target["host"],
+            "local_port": local_target["port"],
+            "client_url": context.public_endpoint,
+            "command_argv": command_argv,
+        }
+        return {
+            "commands": [
+                {
+                    "id": "run-ssh-reverse-tunnel",
+                    "title": "Run the reverse SSH tunnel",
+                    "description": (
+                        "Expose the local snulbug gateway on a remote SSH host without using a public tunnel "
+                        "provider. The default binds the remote port to 127.0.0.1 on that SSH host."
+                    ),
+                    "command": _shell_command(command_argv),
+                }
+            ],
+            "traffic_policy": None,
+            "bridge": bridge,
+            "client": self.client(context),
+            "doctor": self.doctor(context),
+        }
+
+    def init_files(self, context: TunnelProviderContext, plan: Mapping[str, Any]) -> list[dict[str, str]]:
+        bridge = plan.get("bridge") if isinstance(plan.get("bridge"), Mapping) else {}
+        command_argv = _string_sequence(bridge.get("command_argv"))
+        command = _shell_command(command_argv) if command_argv else ""
+        return [
+            {
+                "path": "ssh-tunnel.sh",
+                "kind": "ssh-tunnel-script",
+                "contents": _ssh_tunnel_script(command, bridge),
+            }
+        ]
+
+    def readme_notes(self, plan: Mapping[str, Any]) -> str:
+        return _ssh_readme_notes(plan)
+
+    def default_public_url_report_lines(self) -> list[str]:
+        return _provider_default_url_report_lines(
+            self,
+            title="SSH tunnel client URL",
+            note=(
+                "Set this to the MCP URL reachable from the SSH remote side. The default "
+                "`http://127.0.0.1:18080/mcp` is loopback on the SSH host, not on your laptop."
+            ),
+        )
+
+    def matches_request(self, headers: Mapping[str, str], public_url: str | None) -> bool:
+        header_blob = " ".join(f"{name}:{value}" for name, value in headers.items()).lower()
+        return "ssh" in header_blob or "x-snulbug-tunnel-provider:ssh" in header_blob
+
+    def audit_metadata(self, headers: Mapping[str, str], metadata: Mapping[str, Any]) -> dict[str, Any]:
+        return _drop_empty(
+            {
+                "transport": "ssh",
+                "mode": "reverse",
+                "client_loopback": _is_loopback_host(str(metadata.get("host") or "")),
+            }
+        )
+
+
 class HolepunchTunnelProvider(TunnelProvider):
     name = "holepunch"
     public_url_env = None
@@ -542,6 +647,12 @@ def _option_str(options: Mapping[str, Any], key: str) -> str | None:
     return str(value) if value is not None else None
 
 
+def _string_sequence(value: Any) -> list[str]:
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        return [str(item) for item in value]
+    return []
+
+
 def _provider_default_url_report_lines(provider: TunnelProvider, *, title: str, note: str) -> list[str]:
     env = provider.public_url_env
     origin = provider.default_public_origin()
@@ -565,6 +676,7 @@ for _provider in (
     CloudflareTunnelProvider(),
     TailscaleTunnelProvider(),
     PinggyTunnelProvider(),
+    SshTunnelProvider(),
     HolepunchTunnelProvider(),
 ):
     register_tunnel_provider(_provider)
@@ -726,6 +838,7 @@ def init_tunnel_provider(
         output_dir=effective_output_dir,
         doctor_command=doctor_command or _share_doctor_command(None),
         options={
+            "hostname": hostname,
             "ngrok_internal_url": ngrok_internal_url,
             "ngrok_endpoint_name": ngrok_endpoint_name,
         },
@@ -1089,6 +1202,10 @@ def _shell_print_command(lines: Sequence[str]) -> str:
     return f"printf '%s\\n' {quoted}"
 
 
+def _shell_command(argv: Sequence[str]) -> str:
+    return " ".join(shlex.quote(str(part)) for part in argv)
+
+
 def _pinggy_target(origin: str) -> str:
     target = _host_port_from_origin(origin)
     host = "localhost" if target["host"] in {"127.0.0.1", "::1"} else str(target["host"])
@@ -1214,18 +1331,18 @@ def _tunnel_readme(
     doctor = plan["doctor"]["command"]
     provider_notes = _provider_readme_notes(provider, plan)
     commands = "\n\n".join(command_sections)
-    remote_label = "Client bridge MCP URL" if provider == "holepunch" else "Public MCP URL"
+    provider_plugin = get_tunnel_provider(provider)
+    remote_label = provider_plugin.remote_label
     displayed_public_endpoint = _display_public_endpoint(provider, public_endpoint)
     public_url_notes = (
         "\n".join(_default_public_url_report_lines(provider))
         if _is_default_public_endpoint(provider, public_endpoint)
         else ""
     )
-    verify_title = "Verify before sharing bridge details" if provider == "holepunch" else "Verify before sharing"
+    bridge_like = provider in {"holepunch", "ssh"}
+    verify_title = "Verify before sharing bridge details" if bridge_like else "Verify before sharing"
     final_instruction = (
-        "Point MCP clients at the client bridge MCP URL only after `snulbug mcp share doctor` passes.\n"
-        if provider == "holepunch"
-        else "Point MCP clients at the public MCP URL only after `snulbug mcp share doctor` passes.\n"
+        f"Point MCP clients at the {provider_plugin.share_target} only after `snulbug mcp share doctor` passes.\n"
     )
     return (
         f"# snulbug {provider} share provider setup\n\n"
@@ -1276,6 +1393,44 @@ def _ngrok_readme_notes(plan: Mapping[str, Any]) -> str:
         f"{checks}\n\n"
         "Snulbug remains the MCP-aware authorization, lease, recording, audit, and "
         "response-policy boundary behind ngrok.\n\n"
+    )
+
+
+def _ssh_readme_notes(plan: Mapping[str, Any]) -> str:
+    bridge = plan.get("bridge") if isinstance(plan.get("bridge"), Mapping) else {}
+    ssh_target = bridge.get("ssh_target") or DEFAULT_SSH_TARGET
+    remote_bind = bridge.get("remote_bind") or DEFAULT_SSH_REMOTE_BIND
+    remote_port = bridge.get("remote_port") or 18080
+    local_host = bridge.get("local_host") or "127.0.0.1"
+    local_port = bridge.get("local_port") or 8080
+    client_url = bridge.get("client_url") or f"http://127.0.0.1:{remote_port}/mcp"
+    return (
+        "## Plain SSH reverse tunnel\n\n"
+        "This provider uses OpenSSH only. It does not create a public SaaS tunnel. "
+        "The generated command opens a reverse tunnel from the SSH host back to the local snulbug gateway:\n\n"
+        f"- SSH target: `{ssh_target}`\n"
+        f"- Remote bind: `{remote_bind}:{remote_port}`\n"
+        f"- Local target: `{local_host}:{local_port}`\n"
+        f"- MCP client URL from the SSH host: `{client_url}`\n\n"
+        "The default remote bind is `127.0.0.1`, so the MCP URL is reachable from the SSH host itself. "
+        "To expose the remote port to other machines, you must intentionally change the bind address and "
+        "allow it in the SSH server configuration, for example with `GatewayPorts clientspecified`.\n\n"
+        "The command uses `BatchMode=yes`; make sure key-based SSH auth works before starting it from the "
+        "web console.\n\n"
+    )
+
+
+def _ssh_tunnel_script(command: str, bridge: Mapping[str, Any]) -> str:
+    client_url = bridge.get("client_url") or "http://127.0.0.1:18080/mcp"
+    return (
+        "#!/usr/bin/env sh\n"
+        "set -eu\n"
+        "\n"
+        "# Generated by snulbug for a plain reverse SSH MCP tunnel.\n"
+        f"# Client MCP URL from the SSH host: {client_url}\n"
+        "# The remote bind defaults to 127.0.0.1 for safety.\n"
+        "\n"
+        f"exec {command}\n"
     )
 
 
@@ -1837,6 +1992,15 @@ def _provider_hint_check(
             None,
             "Holepunch peer bridges do not expose public hostname or edge-header hints",
             details={"transport": "hypertele"},
+        )
+        return
+    if provider == "ssh":
+        _add_check(
+            checks,
+            "public.provider_hint",
+            None,
+            "Plain SSH tunnels do not expose provider-specific edge headers",
+            details={"transport": "ssh"},
         )
         return
     parsed = urlsplit(url)

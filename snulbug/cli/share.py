@@ -22,7 +22,7 @@ from ..cli_helpers import (
 )
 from .common import read_required_env
 
-PROVIDERS = ("generic", "ngrok", "cloudflare", "tailscale", "pinggy", "holepunch")
+PROVIDERS = ("generic", "ngrok", "cloudflare", "tailscale", "pinggy", "ssh", "holepunch")
 QUICKSTART_TUNNEL_PROVIDERS = ("auto", *PROVIDERS)
 ATTACH_MEMBER_KINDS = ("codespaces", "devcontainer", "holepunch", "container", "generic")
 CLOUDFLARE_ACCESS_PROFILES = ("access-gate", "service-token", "oauth-resource", "audit")
@@ -1179,7 +1179,10 @@ def _add_share_create_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--preset", default="tunnel-safe", help="MCP policy preset")
     parser.add_argument("--upstream", default="http://127.0.0.1:9000", help="upstream MCP HTTP server")
-    parser.add_argument("--hostname", help="provider hostname to use when --url is omitted")
+    parser.add_argument(
+        "--hostname",
+        help="provider hostname to use when --url is omitted; for --provider ssh this is the SSH target user@host",
+    )
     parser.add_argument("--url", "--public-url", dest="url", help="public tunnel or client bridge MCP URL")
     parser.add_argument(
         "--ngrok-internal-url",

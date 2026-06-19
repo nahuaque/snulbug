@@ -241,11 +241,16 @@ format = "text"
 ```
 
 `tunnel_provider` can be `auto`, `generic`, `ngrok`, `cloudflare`, `tailscale`,
-`pinggy`, or `holepunch`. With `auto`, snulbug infers the provider
+`pinggy`, `ssh`, or `holepunch`. With `auto`, snulbug infers the provider
 from request headers and the public host when possible. Set `tunnel_public_url`
 when you want audit logs to record the externally shared MCP URL or client-side
 peer bridge URL even if the request reaches snulbug through a local reverse
 proxy.
+
+Use `tunnel_provider = "ssh"` for a plain reverse SSH tunnel to a host you
+control. The generated share defaults to `http://127.0.0.1:18080/mcp`, which is
+loopback on the SSH host after running the reverse tunnel command, not loopback
+on the laptop running snulbug.
 
 ## Tailscale Funnel / Serve Profiles
 

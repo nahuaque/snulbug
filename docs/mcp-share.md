@@ -651,6 +651,35 @@ snulbug mcp share create \
 
 Use the `audit` profile to observe Cloudflare Access headers before enforcing.
 
+## Plain SSH reverse tunnel
+
+Use `--provider ssh` when you want to avoid a public tunnel provider and can
+SSH to a host where the MCP client or agent will run. Snulbug generates a
+reverse tunnel command that binds the remote port to `127.0.0.1` on the SSH
+host by default:
+
+```bash
+snulbug mcp share create \
+  --provider ssh \
+  --hostname dev@example.com \
+  --upstream http://127.0.0.1:9000 \
+  --allow-tool safe_read_file \
+  --ttl 30m
+snulbug mcp share run .snulbug/shares/share-...
+ssh -N -T -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o BatchMode=yes \
+  -R 127.0.0.1:18080:127.0.0.1:8080 dev@example.com
+```
+
+From the SSH host, point the MCP client at:
+
+```text
+http://127.0.0.1:18080/mcp
+```
+
+This is intentionally not public by default. To expose the remote port beyond
+the SSH host, change the bind address deliberately and configure the SSH server
+for remote forwarding, for example with `GatewayPorts clientspecified`.
+
 ## Close out
 
 When the task is complete:

@@ -276,11 +276,25 @@ header.
 With a `console` event sink, the proxy prints one redacted policy decision per
 request, including the MCP method, operation target, action, and reason code.
 When traffic arrives through ngrok, Cloudflare Tunnel, Tailscale Funnel,
-Pinggy, Holepunch, or a generic forwarder, audit events also include
+Pinggy, SSH, Holepunch, or a generic forwarder, audit events also include
 provider-aware `tunnel` fields such as provider, public URL or peer bridge URL,
 source IP, forwarding chain, and edge request id when available. Set
 `tunnel_provider` and `tunnel_public_url` in `snulbug.toml` when you want
 explicit values instead of auto-detection.
+
+If you do not want a public tunnel provider, use a plain reverse SSH tunnel:
+
+```bash
+snulbug mcp share create \
+  --provider ssh \
+  --hostname dev@example.com \
+  --allow-tool safe_read_file
+snulbug mcp share run .snulbug/shares/share-...
+ssh -N -T -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o BatchMode=yes \
+  -R 127.0.0.1:18080:127.0.0.1:8080 dev@example.com
+```
+
+The MCP client on the SSH host uses `http://127.0.0.1:18080/mcp`.
 
 If the tunnel is protected by Cloudflare Access, enable origin-side checks:
 

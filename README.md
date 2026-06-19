@@ -411,7 +411,7 @@ Workflow:
 - policy evidence diffs that summarize newly allowed tools, MCP path patterns, and argument shapes
 - SARIF output for CI gates on policy diffs, schema drift, and share readiness failures
 - share reports that classify observed MCP tools by risk signals before handoff
-- provider-aware tunnel audit fields for ngrok, Cloudflare, Tailscale, Pinggy, Holepunch, and generic forwarders
+- provider-aware tunnel audit fields for ngrok, Cloudflare, Tailscale, Pinggy, SSH, Holepunch, and generic forwarders
 - Cloudflare Tunnel profiles for Access-gated, service-token, OAuth-resource, and audit-first shares
 - Tailscale Funnel/Serve profiles for public bearer+lease shares, tailnet-only shares, and OAuth-resource shares
 - optional Cloudflare Access origin-side audit/enforcement with Access JWT validation
