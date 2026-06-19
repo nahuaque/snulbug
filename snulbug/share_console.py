@@ -3915,6 +3915,11 @@ def _console_html() -> str:
       border-color: #9ec2df;
       text-decoration: none;
     }
+    .section-nav a.active {
+      color: var(--blue);
+      border-color: #9ec2df;
+      background: #f2f8fd;
+    }
     main {
       max-width: min(1320px, 100vw);
       min-width: 0;
@@ -4091,6 +4096,42 @@ def _console_html() -> str:
     }
     .tab-panel[hidden] {
       display: none;
+    }
+    .workspace-tabs {
+      position: sticky;
+      top: 96px;
+      z-index: 8;
+      padding: 10px 0 12px;
+      margin: 0;
+      background: var(--bg);
+    }
+    .workspace-tab {
+      min-width: 150px;
+      justify-content: space-between;
+    }
+    .workspace-panel {
+      display: grid;
+      gap: 16px;
+    }
+    .workspace-panel[hidden] {
+      display: none;
+    }
+    .panel-shortcuts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      padding: 0 2px;
+    }
+    .panel-shortcuts a {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    .panel-shortcuts a:hover {
+      color: var(--blue);
+      text-decoration: underline;
     }
     .section-subhead {
       display: flex;
@@ -4756,18 +4797,10 @@ def _console_html() -> str:
       </div>
       <nav class="section-nav" aria-label="Console sections">
         <a id="setupNavLink" href="#setupSection" hidden>Setup</a>
-        <a href="#shareWorkflowSection" onclick="setShareTab('readiness')">Readiness</a>
-        <a href="#effectiveAccessSection">Access</a>
-        <a href="#policySection">Policy</a>
-        <a href="#providerSection">Provider</a>
-        <a href="#decisionsSection">Decisions</a>
-        <a href="#requestsSection">Requests</a>
-        <a href="#leasesSection">Leases</a>
-        <a href="#shareWorkflowSection" onclick="setShareTab('invites')">Invites</a>
-        <a href="#authSection">Auth</a>
-        <a href="#schemaSection">Schemas</a>
-        <a href="#riskSection">Risk</a>
-        <a href="#evidenceSection">Evidence</a>
+        <a id="workspace-nav-handoff" href="#shareWorkflowSection">Handoff</a>
+        <a id="workspace-nav-operations" href="#providerSection">Operations</a>
+        <a id="workspace-nav-policy" href="#policySection">Policy &amp; Auth</a>
+        <a id="workspace-nav-evidence" href="#evidenceSection">Evidence</a>
       </nav>
     </header>
     <main>
@@ -4777,6 +4810,57 @@ def _console_html() -> str:
         <div class="section-head"><h2>Share Setup</h2><span id="wizardSummary" class="muted"></span></div>
         <div class="section-body" id="setupWizard"></div>
       </section>
+      <div id="workspaceTabs" class="tab-list workspace-tabs" role="tablist" aria-label="Console workspace">
+        <button
+          id="workspace-tab-handoff"
+          class="tab-button workspace-tab active"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="workspacePanelHandoff"
+          onclick="return setWorkspaceTab('handoff', '#shareWorkflowSection')"
+        >
+          Handoff <span class="tab-button-detail">ready, invite, preview</span>
+        </button>
+        <button
+          id="workspace-tab-operations"
+          class="tab-button workspace-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="workspacePanelOperations"
+          onclick="return setWorkspaceTab('operations', '#providerSection')"
+        >
+          Operations <span class="tab-button-detail">provider, health, live traffic</span>
+        </button>
+        <button
+          id="workspace-tab-policy"
+          class="tab-button workspace-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="workspacePanelPolicy"
+          onclick="return setWorkspaceTab('policy', '#policySection')"
+        >
+          Policy &amp; Auth <span class="tab-button-detail">Lua, auth, schemas, risk</span>
+        </button>
+        <button
+          id="workspace-tab-evidence"
+          class="tab-button workspace-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="workspacePanelEvidence"
+          onclick="return setWorkspaceTab('evidence', '#evidenceSection')"
+        >
+          Evidence <span class="tab-button-detail">doctor, reports, amendments</span>
+        </button>
+      </div>
+      <div id="workspacePanelHandoff" class="workspace-panel" data-workspace-tab="handoff" role="tabpanel">
+      <div class="panel-shortcuts" aria-label="Handoff shortcuts">
+        <a href="#shareWorkflowSection">Readiness and invites</a>
+        <a href="#effectiveAccessSection">Effective access</a>
+      </div>
       <section id="shareWorkflowSection">
         <div class="section-head"><h2>Share Handoff</h2><span id="shareWorkflowSummary" class="muted"></span></div>
         <div class="section-body">
@@ -4827,76 +4911,103 @@ def _console_html() -> str:
         <div class="section-head"><h2>Effective Access</h2><span id="effectiveAccessSummary" class="muted"></span></div>
         <div class="section-body" id="effectiveAccess"></div>
       </section>
-      <section id="policySection">
-        <div class="section-head"><h2>Policy Visibility</h2><span id="policySummary" class="muted"></span></div>
-        <div class="section-body" id="policyVisibility"></div>
-      </section>
-      <div class="overview-grid">
-        <section id="providerSection">
-          <div class="section-head"><h2>Tunnel Provider</h2><span id="providerSummary" class="muted"></span></div>
-          <div class="section-body" id="tunnelProvider"></div>
-        </section>
-        <section id="healthSection">
-          <div class="section-head"><h2>Health</h2><span id="healthSummary" class="muted"></span></div>
-          <div class="section-body" id="health"></div>
-        </section>
       </div>
-      <section id="decisionsSection">
-        <div class="section-head"><h2>Live Decisions</h2><span id="decisionSummary" class="muted"></span></div>
-        <div class="section-body" id="decisionTimeline"></div>
-      </section>
-      <div class="grid-two">
-        <section id="requestsSection">
-          <div class="section-head"><h2>Capability Requests</h2><span id="requestSummary" class="muted"></span></div>
-          <div class="section-body" id="requests"></div>
-        </section>
-        <section id="leasesSection">
-          <div class="section-head"><h2>Active Leases</h2><span id="leaseSummary" class="muted"></span></div>
-          <div class="section-body" id="leases"></div>
-        </section>
-      </div>
-      <section id="authSection">
-        <div class="section-head"><h2>Auth Visibility</h2><span id="authSummary" class="muted"></span></div>
-        <div class="section-body" id="authVisibility"></div>
-      </section>
-      <section id="schemaSection">
-        <div class="section-head">
-          <h2>Tool And Schema Changes</h2><span id="toolSchemaSummary" class="muted"></span>
+      <div id="workspacePanelOperations" class="workspace-panel" data-workspace-tab="operations" role="tabpanel" hidden>
+        <div class="panel-shortcuts" aria-label="Operations shortcuts">
+          <a href="#providerSection">Provider</a>
+          <a href="#healthSection">Health</a>
+          <a href="#decisionsSection">Live decisions</a>
+          <a href="#requestsSection">Requests</a>
+          <a href="#leasesSection">Leases</a>
         </div>
-        <div class="section-body" id="toolSchemaVisibility"></div>
-      </section>
-      <div class="grid-two">
-        <section id="riskSection">
-          <div class="section-head"><h2>Tool Risk</h2><span id="riskSummary" class="muted"></span></div>
-          <div class="section-body" id="toolRisk"></div>
+        <div class="overview-grid">
+          <section id="providerSection">
+            <div class="section-head"><h2>Tunnel Provider</h2><span id="providerSummary" class="muted"></span></div>
+            <div class="section-body" id="tunnelProvider"></div>
+          </section>
+          <section id="healthSection">
+            <div class="section-head"><h2>Health</h2><span id="healthSummary" class="muted"></span></div>
+            <div class="section-body" id="health"></div>
+          </section>
+        </div>
+        <section id="decisionsSection">
+          <div class="section-head"><h2>Live Decisions</h2><span id="decisionSummary" class="muted"></span></div>
+          <div class="section-body" id="decisionTimeline"></div>
         </section>
-        <section id="findingsSection">
-          <div class="section-head"><h2>Findings</h2><span id="findingSummary" class="muted"></span></div>
-          <div class="section-body" id="findings"></div>
+        <div class="grid-two">
+          <section id="requestsSection">
+            <div class="section-head"><h2>Capability Requests</h2><span id="requestSummary" class="muted"></span></div>
+            <div class="section-body" id="requests"></div>
+          </section>
+          <section id="leasesSection">
+            <div class="section-head"><h2>Active Leases</h2><span id="leaseSummary" class="muted"></span></div>
+            <div class="section-body" id="leases"></div>
+          </section>
+        </div>
+        <section id="leasePanel" hidden>
+          <div class="section-head"><h2>New Lease Header</h2></div>
+          <div class="section-body"><div id="leaseOutput" class="console-output"></div></div>
         </section>
       </div>
-      <section id="evidenceSection">
-        <div class="section-head"><h2>Evidence And Commands</h2><span id="evidenceSummary" class="muted"></span></div>
-        <div class="section-body" id="evidence"></div>
-      </section>
-      <section id="doctorPanel" hidden>
-        <div class="section-head"><h2>Share Doctor</h2><span id="doctorSummary" class="muted"></span></div>
-        <div class="section-body" id="doctorChecks"></div>
-      </section>
-      <section id="amendPreviewPanel" hidden>
-        <div class="section-head">
-          <h2>Policy Amendment Preview</h2><span id="amendPreviewSummary" class="muted"></span>
+      <div id="workspacePanelPolicy" class="workspace-panel" data-workspace-tab="policy" role="tabpanel" hidden>
+        <div class="panel-shortcuts" aria-label="Policy and auth shortcuts">
+          <a href="#policySection">Policy</a>
+          <a href="#authSection">Auth</a>
+          <a href="#schemaSection">Schemas</a>
+          <a href="#riskSection">Risk</a>
+          <a href="#findingsSection">Findings</a>
         </div>
-        <div class="section-body" id="amendPreview"></div>
-      </section>
-      <section id="leasePanel" hidden>
-        <div class="section-head"><h2>New Lease Header</h2></div>
-        <div class="section-body"><div id="leaseOutput" class="console-output"></div></div>
-      </section>
-      <section id="reportPanel" hidden>
-        <div class="section-head"><h2>Session Report</h2></div>
-        <div class="section-body"><div id="reportOutput" class="report-output"></div></div>
-      </section>
+        <section id="policySection">
+          <div class="section-head"><h2>Policy Visibility</h2><span id="policySummary" class="muted"></span></div>
+          <div class="section-body" id="policyVisibility"></div>
+        </section>
+        <section id="authSection">
+          <div class="section-head"><h2>Auth Visibility</h2><span id="authSummary" class="muted"></span></div>
+          <div class="section-body" id="authVisibility"></div>
+        </section>
+        <section id="schemaSection">
+          <div class="section-head">
+            <h2>Tool And Schema Changes</h2><span id="toolSchemaSummary" class="muted"></span>
+          </div>
+          <div class="section-body" id="toolSchemaVisibility"></div>
+        </section>
+        <div class="grid-two">
+          <section id="riskSection">
+            <div class="section-head"><h2>Tool Risk</h2><span id="riskSummary" class="muted"></span></div>
+            <div class="section-body" id="toolRisk"></div>
+          </section>
+          <section id="findingsSection">
+            <div class="section-head"><h2>Findings</h2><span id="findingSummary" class="muted"></span></div>
+            <div class="section-body" id="findings"></div>
+          </section>
+        </div>
+      </div>
+      <div id="workspacePanelEvidence" class="workspace-panel" data-workspace-tab="evidence" role="tabpanel" hidden>
+        <div class="panel-shortcuts" aria-label="Evidence shortcuts">
+          <a href="#evidenceSection">Evidence and commands</a>
+          <a href="#doctorPanel">Doctor output</a>
+          <a href="#amendPreviewPanel">Amendment preview</a>
+          <a href="#reportPanel">Session report</a>
+        </div>
+        <section id="evidenceSection">
+          <div class="section-head"><h2>Evidence And Commands</h2><span id="evidenceSummary" class="muted"></span></div>
+          <div class="section-body" id="evidence"></div>
+        </section>
+        <section id="doctorPanel" hidden>
+          <div class="section-head"><h2>Share Doctor</h2><span id="doctorSummary" class="muted"></span></div>
+          <div class="section-body" id="doctorChecks"></div>
+        </section>
+        <section id="amendPreviewPanel" hidden>
+          <div class="section-head">
+            <h2>Policy Amendment Preview</h2><span id="amendPreviewSummary" class="muted"></span>
+          </div>
+          <div class="section-body" id="amendPreview"></div>
+        </section>
+        <section id="reportPanel" hidden>
+          <div class="section-head"><h2>Session Report</h2></div>
+          <div class="section-body"><div id="reportOutput" class="report-output"></div></div>
+        </section>
+      </div>
     </main>
     <aside id="requestDrawer" class="drawer" hidden></aside>
   </div>
@@ -4914,7 +5025,9 @@ def _console_html() -> str:
       lastInviteId: "",
       showInactiveLeases: false,
       showRevokedInvites: false,
-      activeShareTab: "readiness"
+      activeShareTab: "readiness",
+      activeWorkspaceTab: "handoff",
+      workspaceTabInitialized: false
     };
     const scrollPreserveSelectors = [
       ".policy-source",
@@ -4946,6 +5059,49 @@ def _console_html() -> str:
       "leasePanel",
       "reportPanel"
     ];
+    const workspaceTabs = {
+      handoff: {
+        panel: "workspacePanelHandoff",
+        tab: "workspace-tab-handoff",
+        nav: "workspace-nav-handoff"
+      },
+      operations: {
+        panel: "workspacePanelOperations",
+        tab: "workspace-tab-operations",
+        nav: "workspace-nav-operations"
+      },
+      policy: {
+        panel: "workspacePanelPolicy",
+        tab: "workspace-tab-policy",
+        nav: "workspace-nav-policy"
+      },
+      evidence: {
+        panel: "workspacePanelEvidence",
+        tab: "workspace-tab-evidence",
+        nav: "workspace-nav-evidence"
+      }
+    };
+    const sectionWorkspaceTabs = {
+      shareWorkflowSection: "handoff",
+      readinessSection: "handoff",
+      invitesSection: "handoff",
+      effectiveAccessSection: "handoff",
+      providerSection: "operations",
+      healthSection: "operations",
+      decisionsSection: "operations",
+      requestsSection: "operations",
+      leasesSection: "operations",
+      leasePanel: "operations",
+      policySection: "policy",
+      authSection: "policy",
+      schemaSection: "policy",
+      riskSection: "policy",
+      findingsSection: "policy",
+      evidenceSection: "evidence",
+      doctorPanel: "evidence",
+      amendPreviewPanel: "evidence",
+      reportPanel: "evidence"
+    };
     const $ = (id) => document.getElementById(id);
 
     function text(value, fallback = "-") {
@@ -5060,6 +5216,66 @@ def _console_html() -> str:
       }
     }
 
+    function workspaceTabForTarget(target) {
+      if (!target || target === "#") return null;
+      const id = String(target).replace(/^#/, "");
+      if (sectionWorkspaceTabs[id]) return sectionWorkspaceTabs[id];
+      const element = document.getElementById(id);
+      const workspacePanel = element ? element.closest("[data-workspace-tab]") : null;
+      return workspacePanel ? workspacePanel.dataset.workspaceTab : null;
+    }
+
+    function initializeWorkspaceTabFromHash() {
+      if (state.workspaceTabInitialized) return;
+      const tab = workspaceTabForTarget(window.location.hash);
+      if (tab) state.activeWorkspaceTab = tab;
+      state.workspaceTabInitialized = true;
+    }
+
+    function renderWorkspaceTabs() {
+      const active = workspaceTabs[state.activeWorkspaceTab] ? state.activeWorkspaceTab : "handoff";
+      state.activeWorkspaceTab = active;
+      Object.entries(workspaceTabs).forEach(([name, config]) => {
+        const selected = name === active;
+        const panel = $(config.panel);
+        const tab = $(config.tab);
+        const nav = $(config.nav);
+        if (panel) panel.hidden = !selected;
+        if (tab) {
+          tab.classList.toggle("active", selected);
+          tab.setAttribute("aria-selected", selected ? "true" : "false");
+        }
+        if (nav) nav.classList.toggle("active", selected);
+      });
+    }
+
+    function activateWorkspaceTab(tab) {
+      if (!workspaceTabs[tab]) return false;
+      state.activeWorkspaceTab = tab;
+      renderWorkspaceTabs();
+      return true;
+    }
+
+    function navigateToTarget(target) {
+      const tab = workspaceTabForTarget(target);
+      if (tab) activateWorkspaceTab(tab);
+      if (target === "#shareWorkflowSection") renderShareTabs(activeReadinessGate(), currentInvitationsPayload());
+      if (window.history && target && target !== "#") {
+        window.history.replaceState(null, "", target);
+      }
+      const element = target && target !== "#" ? document.querySelector(target) : null;
+      if (element) {
+        window.requestAnimationFrame(() => element.scrollIntoView({ block: "start" }));
+      }
+      return false;
+    }
+
+    function setWorkspaceTab(tab, target = "") {
+      activateWorkspaceTab(tab);
+      if (target) return navigateToTarget(target);
+      return false;
+    }
+
     function captureScrollState() {
       return {
         windowX: window.scrollX,
@@ -5111,6 +5327,8 @@ def _console_html() -> str:
         renderSetupWizard(snapshot.setup_wizard || {}, snapshot);
         return;
       }
+      initializeWorkspaceTabFromHash();
+      renderWorkspaceTabs();
       const readiness = activeReadinessGate(snapshot);
       const metricStatus = state.liveHealthStatus || status;
       renderMetrics(snapshot, metricStatus, readiness);
@@ -5202,6 +5420,11 @@ def _console_html() -> str:
       $("setupNavLink").hidden = !enabled;
       $("metrics").hidden = enabled;
       $("sessionActions").hidden = enabled;
+      $("workspaceTabs").hidden = enabled;
+      Object.values(workspaceTabs).forEach((config) => {
+        const panel = $(config.panel);
+        if (panel && enabled) panel.hidden = true;
+      });
       baseSectionIds.forEach((id) => {
         const element = $(id);
         if (element) element.hidden = enabled;
@@ -7306,6 +7529,7 @@ def _console_html() -> str:
         });
         $("leaseOutput").textContent = payload.retry_header || JSON.stringify(payload.headers || {}, null, 2);
         $("leasePanel").hidden = false;
+        activateWorkspaceTab("operations");
         $("message").textContent = `Created lease ${(payload.lease || {}).id || ""}`;
         await refreshAfterReadinessMutation();
       } catch (error) {
@@ -7325,6 +7549,7 @@ def _console_html() -> str:
         });
         $("leaseOutput").textContent = payload.retry_header || JSON.stringify(payload.headers || {}, null, 2);
         $("leasePanel").hidden = false;
+        activateWorkspaceTab("operations");
         $("message").textContent = `Reactivated lease ${id}`;
         await refreshAfterReadinessMutation();
       } catch (error) {
@@ -7565,6 +7790,7 @@ def _console_html() -> str:
         saveTextAsFile(report, filename);
         $("reportOutput").textContent = report;
         $("reportPanel").hidden = false;
+        activateWorkspaceTab("evidence");
         $("message").textContent = `Downloaded ${filename}`;
       } catch (error) {
         $("message").textContent = `Report download failed: ${error.message}`;
@@ -7843,6 +8069,7 @@ def _console_html() -> str:
       const checks = payload.checks || [];
       const recommendations = payload.recommendations || [];
       $("doctorPanel").hidden = false;
+      activateWorkspaceTab("evidence");
       $("doctorSummary").textContent =
         `${summary.passed || 0} passed, ${summary.failed || 0} failed, ` +
         `${summary.warnings || 0} warnings, ${summary.skipped || 0} skipped`;
@@ -7898,6 +8125,7 @@ def _console_html() -> str:
       const additions = amendment.additions || preview.additions || [];
       const rejected = amendment.rejected || preview.rejected || [];
       $("amendPreviewPanel").hidden = false;
+      activateWorkspaceTab("evidence");
       $("amendPreviewSummary").textContent =
         `${summary.newly_allowed_tools || 0} tools, ` +
         `${summary.newly_allowed_path_patterns || 0} paths, ` +
@@ -7946,6 +8174,15 @@ def _console_html() -> str:
         state.timer = setInterval(loadSnapshot, 5000);
       }
     }
+
+    document.addEventListener("click", (event) => {
+      const link = event.target.closest ? event.target.closest("a[href^='#']") : null;
+      if (!link) return;
+      const target = link.getAttribute("href");
+      if (!workspaceTabForTarget(target)) return;
+      event.preventDefault();
+      navigateToTarget(target);
+    });
 
     $("refreshButton").addEventListener("click", loadSnapshot);
     $("doctorButton").addEventListener("click", runDoctor);

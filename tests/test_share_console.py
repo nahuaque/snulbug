@@ -603,6 +603,16 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
 
     assert "snulbug share console" in html
     assert 'class="section-nav"' in html
+    assert 'id="workspaceTabs"' in html
+    assert 'id="workspacePanelHandoff"' in html
+    assert 'id="workspacePanelOperations"' in html
+    assert 'id="workspacePanelPolicy"' in html
+    assert 'id="workspacePanelEvidence"' in html
+    assert "setWorkspaceTab" in html
+    assert "workspaceTabForTarget" in html
+    assert "navigateToTarget" in html
+    assert "Policy &amp; Auth" in html
+    assert "Evidence and commands" in html
     assert 'class="toolbar-group"' in html
     assert 'class="overview-grid"' in html
     assert 'aria-live="polite"' in html
