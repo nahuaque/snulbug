@@ -3119,8 +3119,15 @@ def _bootstrap_setup_wizard(existing_shares: Sequence[Mapping[str, Any]] = ()) -
             "expose_tunnel",
             "Expose Tunnel",
             "skip",
-            "Run your tunnel provider against the local snulbug gateway port.",
-            _wizard_action("copy_command", "Copy ngrok example", command="ngrok http 8080"),
+            (
+                "For ngrok shares, run the generated internal Agent Endpoint config and attach the "
+                "Traffic Policy to the public Cloud Endpoint."
+            ),
+            _wizard_action(
+                "copy_command",
+                "Copy ngrok agent command",
+                command="ngrok start --config .snulbug/shares/<share>/tunnel/ngrok-agent.yml --all",
+            ),
         ),
         _wizard_step(
             "validate_share",
