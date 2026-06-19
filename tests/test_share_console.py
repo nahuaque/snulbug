@@ -1518,6 +1518,69 @@ def test_share_run_console_starts_as_sidecar(tmp_path):
     assert "Capability Requests" in html
 
 
+def test_share_console_can_start_and_stop_ngrok_agent(tmp_path, monkeypatch):
+    create_mcp_share(
+        tmp_path,
+        provider="ngrok",
+        public_url="https://mcp-dev.ngrok.app/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    agent_config = tmp_path / "tunnel" / "ngrok-agent.yml"
+    agent_config.write_text(
+        agent_config.read_text(encoding="utf-8").replace("YOUR_NGROK_AUTHTOKEN", "test-token"),
+        encoding="utf-8",
+    )
+
+    class FakeProcess:
+        instances: list["FakeProcess"] = []
+
+        def __init__(self, argv, **kwargs):
+            self.argv = argv
+            self.kwargs = kwargs
+            self.pid = 4321
+            self.returncode = None
+            self.terminated = False
+            FakeProcess.instances.append(self)
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setattr(share_console.shutil, "which", lambda name: "/usr/local/bin/ngrok" if name == "ngrok" else None)
+    monkeypatch.setattr(share_console.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(share_console, "sleep", lambda seconds: None)
+
+    server = ShareConsoleServer(directory=tmp_path, port=0)
+    server.start()
+    try:
+        start = post_json(f"{server.url}/api/tunnel/start", {}, headers=console_headers(server))
+        snapshot = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
+        stop = post_json(f"{server.url}/api/tunnel/stop", {}, headers=console_headers(server))
+    finally:
+        server.stop()
+
+    assert start["ok"] is True
+    assert start["process"]["running"] is True
+    assert start["process"]["pid"] == 4321
+    assert "ngrok start --config" in start["process"]["command"]
+    assert snapshot["tunnel_provider"]["process"]["running"] is True
+    assert stop["ok"] is True
+    assert stop["process"]["state"] == "stopped"
+    assert FakeProcess.instances[0].terminated is True
+    assert FakeProcess.instances[0].argv == ["/usr/local/bin/ngrok", "start", "--config", str(agent_config), "--all"]
+
+
 def test_share_run_setup_console_serves_wizard_without_session(tmp_path):
     server = ShareConsoleServer(directory=tmp_path, port=0, setup_only=True)
     server.start()

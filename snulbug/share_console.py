@@ -7,6 +7,9 @@ import json
 import os
 import re
 import secrets
+import shlex
+import shutil
+import subprocess
 import threading
 from collections import deque
 from collections.abc import Mapping, Sequence
@@ -15,7 +18,7 @@ from datetime import datetime, timezone
 from errno import ECONNABORTED, ECONNRESET, EPIPE
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from time import monotonic
+from time import monotonic, sleep
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -282,6 +285,9 @@ class ShareConsoleServer:
     _thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _run_requested: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _initial_health_share: str | None = field(default=None, init=False, repr=False)
+    _tunnel_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _tunnel_process: Any | None = field(default=None, init=False, repr=False)
+    _tunnel_log_file: Any | None = field(default=None, init=False, repr=False)
 
     @property
     def url(self) -> str:
@@ -326,6 +332,7 @@ class ShareConsoleServer:
         self._server.serve_forever()
 
     def stop(self) -> None:
+        self.stop_tunnel_process()
         if self._server is None:
             return
         self._server.shutdown()
@@ -352,6 +359,9 @@ class ShareConsoleServer:
                 return
             if path == "/api/snapshot":
                 _send_json(handler, 200, self.snapshot())
+                return
+            if path == "/api/tunnel/status":
+                _send_json(handler, 200, self.tunnel_process_status())
                 return
             if path == "/api/status":
                 _send_json(
@@ -609,6 +619,15 @@ class ShareConsoleServer:
                 )
                 _send_json(handler, 200, _redact_console_payload(result))
                 return
+            if path == "/api/tunnel/start":
+                result = self.start_tunnel_process()
+                status = 200 if result.get("ok") else 409
+                _send_json(handler, status, _redact_console_payload(result))
+                return
+            if path == "/api/tunnel/stop":
+                result = self.stop_tunnel_process()
+                _send_json(handler, 200, _redact_console_payload(result))
+                return
             if path == "/api/policy/amend-preview":
                 result = preview_mcp_share_policy_amendment(
                     self.directory,
@@ -651,7 +670,7 @@ class ShareConsoleServer:
                 timeout=self.timeout,
                 live_checks=True,
             )
-            return _with_console_invite_setups(self.directory, snapshot)
+            return self._with_tunnel_process(_with_console_invite_setups(self.directory, snapshot))
         if self._initial_health_share != share_key:
             snapshot = build_share_console_snapshot(
                 self.directory,
@@ -660,13 +679,107 @@ class ShareConsoleServer:
             )
             snapshot["initial_health_check"] = True
             self._initial_health_share = share_key
-            return _with_console_invite_setups(self.directory, snapshot)
+            return self._with_tunnel_process(_with_console_invite_setups(self.directory, snapshot))
         snapshot = build_share_console_snapshot(
             self.directory,
             timeout=self.timeout,
             live_checks=False,
         )
-        return _with_console_invite_setups(self.directory, snapshot)
+        return self._with_tunnel_process(_with_console_invite_setups(self.directory, snapshot))
+
+    def tunnel_process_status(self) -> dict[str, Any]:
+        with self._tunnel_lock:
+            self._cleanup_finished_tunnel_locked()
+            return _console_tunnel_process_status(
+                self.directory,
+                process=self._tunnel_process,
+            )
+
+    def start_tunnel_process(self) -> dict[str, Any]:
+        with self._tunnel_lock:
+            self._cleanup_finished_tunnel_locked()
+            if self._tunnel_process is not None and self._tunnel_process.poll() is None:
+                return {
+                    "ok": True,
+                    "message": "tunnel process is already running",
+                    "process": _console_tunnel_process_status(self.directory, process=self._tunnel_process),
+                }
+            plan = _console_tunnel_start_plan(self.directory)
+            if not plan.get("manageable"):
+                return {"ok": False, "error": plan.get("error") or "tunnel provider is not manageable", "process": plan}
+            executable = shutil.which("ngrok")
+            if not executable:
+                plan["error"] = "ngrok executable not found on PATH"
+                return {"ok": False, "error": plan["error"], "process": plan}
+            agent_config = Path(str(plan.get("agent_config")))
+            if _ngrok_agent_config_has_placeholder(agent_config):
+                plan["error"] = (
+                    "ngrok agent config still contains YOUR_NGROK_AUTHTOKEN; replace it or merge the endpoint "
+                    "into your existing ngrok config before starting the managed tunnel"
+                )
+                return {"ok": False, "error": plan["error"], "process": plan}
+            log_path = Path(str(plan["log_path"]))
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_file = log_path.open("ab")
+            argv = [executable, "start", "--config", str(agent_config), "--all"]
+            process = subprocess.Popen(  # noqa: S603 - command is fixed; config path comes from the share directory.
+                argv,
+                cwd=str(self.directory),
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+            )
+            self._tunnel_process = process
+            self._tunnel_log_file = log_file
+            sleep(0.15)
+            status = _console_tunnel_process_status(self.directory, process=process)
+            return {"ok": bool(status.get("running") or status.get("state") == "running"), "process": status}
+
+    def stop_tunnel_process(self) -> dict[str, Any]:
+        with self._tunnel_lock:
+            process = self._tunnel_process
+            if process is None:
+                self._close_tunnel_log_locked()
+                return {
+                    "ok": True,
+                    "message": "tunnel process was not running",
+                    "process": _console_tunnel_process_status(self.directory, process=None),
+                }
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            self._tunnel_process = None
+            self._close_tunnel_log_locked()
+            return {
+                "ok": True,
+                "message": "tunnel process stopped",
+                "process": _console_tunnel_process_status(self.directory, process=None),
+            }
+
+    def _with_tunnel_process(self, snapshot: Mapping[str, Any]) -> dict[str, Any]:
+        result = dict(snapshot)
+        provider = dict(_mapping(result.get("tunnel_provider")))
+        if provider:
+            provider["process"] = self.tunnel_process_status()
+            result["tunnel_provider"] = provider
+        return result
+
+    def _cleanup_finished_tunnel_locked(self) -> None:
+        if self._tunnel_process is not None and self._tunnel_process.poll() is not None:
+            self._tunnel_process = None
+            self._close_tunnel_log_locked()
+
+    def _close_tunnel_log_locked(self) -> None:
+        if self._tunnel_log_file is None:
+            return
+        try:
+            self._tunnel_log_file.close()
+        finally:
+            self._tunnel_log_file = None
 
     def _has_console_secret(self, handler: BaseHTTPRequestHandler) -> bool:
         supplied = handler.headers.get(CONSOLE_SECRET_HEADER, "")
@@ -701,6 +814,97 @@ def _with_console_invite_setups(directory: str | Path, snapshot: Mapping[str, An
         "summary": invitations.get("summary", {}),
     }
     return payload
+
+
+def _console_tunnel_process_status(
+    directory: str | Path,
+    *,
+    process: Any | None,
+) -> dict[str, Any]:
+    plan = _console_tunnel_start_plan(directory)
+    if process is None:
+        return {**plan, "state": "stopped", "running": False}
+    return_code = process.poll()
+    if return_code is None:
+        return {**plan, "state": "running", "running": True, "pid": getattr(process, "pid", None)}
+    return {**plan, "state": "exited", "running": False, "returncode": return_code}
+
+
+def _console_tunnel_start_plan(directory: str | Path) -> dict[str, Any]:
+    share_dir = Path(directory)
+    provider, bridge, manifest = _console_tunnel_metadata(share_dir)
+    if provider != "ngrok":
+        return {
+            "provider": provider or "generic",
+            "manageable": False,
+            "supported": False,
+            "error": "managed tunnel start/stop is currently available for ngrok shares",
+        }
+    agent_config = _console_ngrok_agent_config_path(share_dir, bridge=bridge, manifest=manifest)
+    command_argv = ["ngrok", "start", "--config", str(agent_config), "--all"]
+    log_path = share_dir / ".snulbug" / "share" / "ngrok-agent.log"
+    exists = agent_config.is_file()
+    return _drop_empty(
+        {
+            "provider": "ngrok",
+            "manageable": exists,
+            "supported": True,
+            "agent_config": str(agent_config),
+            "agent_config_exists": exists,
+            "command": _shell_command(command_argv),
+            "log_path": str(log_path),
+            "error": None if exists else f"ngrok agent config not found: {agent_config}",
+        }
+    )
+
+
+def _console_tunnel_metadata(share_dir: Path) -> tuple[str, Mapping[str, Any], Mapping[str, Any] | None]:
+    manifest: Mapping[str, Any] | None = None
+    try:
+        manifest = load_mcp_share(share_dir)
+    except Exception:
+        manifest = None
+    tunnel = _mapping(manifest.get("tunnel")) if manifest is not None else {}
+    bridge = _mapping(tunnel.get("bridge"))
+    provider = str(tunnel.get("provider") or "").strip().lower()
+    try:
+        session_model = load_share_session_model(share_dir)
+    except Exception:
+        session_model = {}
+    session_tunnel = _mapping(session_model.get("tunnel"))
+    if not provider:
+        provider = str(session_tunnel.get("provider") or "").strip().lower()
+    if not bridge:
+        bridge = _mapping(session_tunnel.get("bridge"))
+    return provider, bridge, manifest
+
+
+def _console_ngrok_agent_config_path(
+    share_dir: Path,
+    *,
+    bridge: Mapping[str, Any],
+    manifest: Mapping[str, Any] | None,
+) -> Path:
+    tunnel = _mapping(manifest.get("tunnel")) if manifest is not None else {}
+    traffic_policy = _mapping(tunnel.get("traffic_policy"))
+    value = traffic_policy.get("agent_config") or bridge.get("agent_config") or "ngrok-agent.yml"
+    path = Path(str(value))
+    if path.is_absolute():
+        return path
+    if path.parent == Path("."):
+        return share_dir / "tunnel" / path
+    return _resolve_console_path(share_dir, path)
+
+
+def _ngrok_agent_config_has_placeholder(path: Path) -> bool:
+    try:
+        return "YOUR_NGROK_AUTHTOKEN" in path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+
+def _shell_command(argv: Sequence[str]) -> str:
+    return " ".join(shlex.quote(str(part)) for part in argv)
 
 
 def _cleanup_console_stale_invites(directory: str | Path) -> None:
@@ -7239,13 +7443,17 @@ def _console_html() -> str:
       const auth = payload.auth || {};
       const doctor = payload.doctor || {};
       const localConsole = payload.local_console || {};
+      const process = payload.process || {};
       const commands = payload.commands || [];
       const doctorLabel = doctor.checked
         ? (doctor.ok === true ? "doctor passed" : "doctor needs review")
         : "not checked";
+      const processLabel = process.supported === false
+        ? "manual tunnel"
+        : (process.running ? "agent running" : `agent ${process.state || "stopped"}`);
       const localOrigin = payload.local_url || payload.gateway_url;
       const leaseRequired = auth.lease_required === true ? "yes" : (auth.lease_required === false ? "no" : "-");
-      $("providerSummary").textContent = `${payload.label || provider} · ${doctorLabel}`;
+      $("providerSummary").textContent = `${payload.label || provider} · ${processLabel} · ${doctorLabel}`;
       const overview = `<div class="detail-grid">
         ${detailRow("Provider", payload.label || provider)}
         ${detailRowHtml("Public URL", externalLink(payload.public_url, payload.public_url))}
@@ -7256,9 +7464,52 @@ def _console_html() -> str:
         ${detailRowHtml("Local Console", providerConsoleHtml(localConsole))}
         ${detailRow("Config", (payload.config || {}).path)}
       </div>`;
+      const processHtml = providerProcessHtml(process);
       const doctorHtml = providerDoctorHtml(doctor);
       const commandsHtml = providerCommandsTable(commands);
-      $("tunnelProvider").innerHTML = `<div class="stack">${overview}${doctorHtml}${commandsHtml}</div>`;
+      $("tunnelProvider").innerHTML = `<div class="stack">${overview}${processHtml}${doctorHtml}${commandsHtml}</div>`;
+    }
+
+    function providerProcessHtml(process) {
+      if (!process || process.supported === false) {
+        const detail = (process && process.error) || "This provider is managed outside snulbug.";
+        return `<div class="review-panel">
+          <div class="timeline-target">Managed tunnel</div>
+          <div class="timeline-detail">${esc(detail)}</div>
+        </div>`;
+      }
+      const running = process.running === true;
+      const state = process.state || "stopped";
+      const manageable = process.manageable !== false;
+      const error = process.error ? `<div class="review-panel blocked">${esc(process.error)}</div>` : "";
+      return `<div class="review-panel ${running ? "ready" : ""}">
+        <div class="section-head compact">
+          <div>
+            <div class="timeline-target">Managed tunnel agent ${pill(state)}</div>
+            <div class="timeline-detail">
+              ${process.pid ? `pid ${esc(process.pid)} · ` : ""}${esc(process.command || "")}
+            </div>
+          </div>
+          <div class="review-actions">
+            <button
+              type="button"
+              onclick="startTunnel()"
+              ${running || !manageable ? "disabled" : ""}
+            >Start tunnel</button>
+            <button
+              type="button"
+              class="danger"
+              onclick="stopTunnel()"
+              ${running ? "" : "disabled"}
+            >Stop tunnel</button>
+          </div>
+        </div>
+        <div class="detail-grid">
+          ${detailRow("Agent config", process.agent_config)}
+          ${detailRow("Log", process.log_path)}
+        </div>
+        ${error}
+      </div>`;
     }
 
     function providerAuthControls(auth) {
@@ -8050,6 +8301,42 @@ def _console_html() -> str:
         $("message").textContent = `Health checked: ${reachable}/${checked} reachable`;
       } catch (error) {
         $("message").textContent = `Health check failed: ${error.message}`;
+      }
+    }
+
+    async function startTunnel() {
+      $("message").textContent = "Starting tunnel agent";
+      try {
+        const payload = await api("/api/tunnel/start", {
+          method: "POST",
+          allowFalse: true,
+          body: JSON.stringify({})
+        });
+        if (payload.ok === false) {
+          $("message").textContent = `Tunnel start failed: ${payload.error || "not manageable"}`;
+        } else {
+          const process = payload.process || {};
+          $("message").textContent = process.running
+            ? "Tunnel agent started"
+            : `Tunnel agent ${process.state || "updated"}`;
+        }
+        await loadSnapshot();
+      } catch (error) {
+        $("message").textContent = `Tunnel start failed: ${error.message}`;
+      }
+    }
+
+    async function stopTunnel() {
+      $("message").textContent = "Stopping tunnel agent";
+      try {
+        const payload = await api("/api/tunnel/stop", {
+          method: "POST",
+          body: JSON.stringify({})
+        });
+        $("message").textContent = payload.message || "Tunnel agent stopped";
+        await loadSnapshot();
+      } catch (error) {
+        $("message").textContent = `Tunnel stop failed: ${error.message}`;
       }
     }
 
