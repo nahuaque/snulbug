@@ -183,7 +183,9 @@ snulbug mcp share report .snulbug/shares/share-... \
 
 Before sharing a public URL or client config, run the share doctor. It is the
 single pre-share gate for generated config, policy bundle validity, fabric
-checks, current status, and public tunnel safety:
+checks, current status, public tunnel safety, and behavioral handoff acceptance
+checks such as tools/list allowed, unknown tool blocked, revoked lease blocked,
+and MCP Inspector setup generated:
 
 ```bash
 PUBLIC_MCP_URL=https://YOUR-FORWARDING-DOMAIN/mcp
@@ -196,6 +198,9 @@ snulbug mcp share contract .snulbug/shares/share-... \
   --key-id local-review \
   --output .snulbug/shares/share-.../share-contract.json
 ```
+
+Pass `--invite invite_...` when you want doctor to run the handoff acceptance
+checks against a specific task invite.
 
 To bind the live gateway to that approved contract, run with:
 

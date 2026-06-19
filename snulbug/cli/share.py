@@ -344,6 +344,7 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
         default=True,
         help="probe the local gateway and configured upstreams",
     )
+    share_doctor.add_argument("--invite", "--invite-id", dest="invite_id", help="test a specific share invite")
     share_doctor.add_argument("--conformance-pack", type=Path, help="generated fabric conformance pack to run")
     share_doctor.add_argument(
         "--require-conformance",
@@ -812,6 +813,7 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                 timeout=args.timeout,
                 public_url=args.url,
                 live_checks=args.live_checks,
+                invite_id=args.invite_id,
                 conformance_pack=args.conformance_pack,
                 require_conformance=args.require_conformance,
             )

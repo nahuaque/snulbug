@@ -8,6 +8,7 @@ from typing import Any
 SHARE_SESSION_MODEL_TYPE = "snulbug.share.session"
 SHARE_SESSION_MODEL_VERSION = 1
 SHARE_SESSION_MODEL_PATH = Path(".snulbug") / "share" / "session.json"
+SESSION_MODEL_PRESERVED_KEYS = ("invitations", "capability_requests")
 
 
 def share_session_model_path(directory: str | Path) -> Path:
@@ -193,7 +194,15 @@ def update_share_session_model(
 ) -> dict[str, Any]:
     """Rebuild and write the session model from the current share manifest."""
 
+    existing: Mapping[str, Any] = {}
+    try:
+        existing = load_share_session_model(directory)
+    except (OSError, ValueError, json.JSONDecodeError):
+        existing = {}
     model = build_share_session_model(manifest, directory=directory)
+    for key in SESSION_MODEL_PRESERVED_KEYS:
+        if key not in model and key in existing:
+            model[key] = existing[key]
     write_share_session_model(directory, model, force=True)
     return model
 

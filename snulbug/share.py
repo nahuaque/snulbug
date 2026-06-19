@@ -1320,6 +1320,62 @@ def share_inspector_setup(
     )
 
 
+def _share_acceptance_doctor_checks(
+    directory: str | Path = ".",
+    *,
+    status: Mapping[str, Any] | None = None,
+    invite_id: str | None = None,
+    live_checks: bool = False,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
+    """Run behavioral handoff checks for share doctor."""
+
+    share_dir = Path(directory)
+    status = status if status is not None else share_status(share_dir, live_checks=False)
+    checks: list[dict[str, Any]] = []
+    recommendations: list[str] = []
+    target = _share_acceptance_target(status, invite_id=invite_id)
+    tools = _share_acceptance_tools(status)
+    policy_path = _share_acceptance_policy_path(share_dir, status)
+    script = _share_acceptance_compile_policy(policy_path, checks)
+    _share_acceptance_invite_checks(checks, status, target=target, invite_id=invite_id)
+    _share_acceptance_inspector_check(checks, share_dir, invite_id=invite_id)
+    if script is not None:
+        _share_acceptance_policy_checks(
+            checks,
+            script=script,
+            status=status,
+            target=target,
+            tools=tools,
+        )
+    _share_acceptance_schema_checks(checks, status)
+    _share_acceptance_redaction_checks(checks, status)
+    if live_checks:
+        _share_acceptance_live_check(checks, status, timeout=timeout)
+    else:
+        _add_share_doctor_check(
+            checks,
+            "acceptance.live_tools_list",
+            None,
+            "live tools/list probe skipped; pass --live-checks to exercise the running gateway",
+            component="acceptance",
+        )
+    summary = _share_doctor_summary(checks)
+    if summary["failed"]:
+        recommendations.append("Fix failing share acceptance checks before handing out the MCP URL.")
+    if summary["warnings"]:
+        recommendations.append("Review share acceptance warnings before broadening access.")
+    return {
+        "ok": summary["failed"] == 0,
+        "mode": {"live_checks": live_checks, "timeout": timeout},
+        "checks": checks,
+        "summary": summary,
+        "recommendations": _unique_strings(recommendations),
+        "target": target,
+        "tools": tools[:10],
+    }
+
+
 def revoke_mcp_share_invite(
     directory: str | Path = ".",
     *,
@@ -1705,6 +1761,25 @@ class SharePolicyDoctorCheck(ShareDoctorCheck):
         )
 
 
+class ShareAcceptanceDoctorCheck(ShareDoctorCheck):
+    name = "acceptance"
+    component = "acceptance"
+
+    def run(self, context: ShareDoctorContext) -> ShareDoctorCheckResult:
+        result = _share_acceptance_doctor_checks(
+            context.share_dir,
+            status=context.status,
+            invite_id=context.state.get("invite_id") if isinstance(context.state.get("invite_id"), str) else None,
+            live_checks=context.live_checks,
+            timeout=context.timeout,
+        )
+        return ShareDoctorCheckResult(
+            checks=result["checks"],
+            recommendations=result["recommendations"],
+            artifacts={"acceptance": result},
+        )
+
+
 class ShareCloudflareDoctorCheck(ShareDoctorCheck):
     name = "cloudflare"
     component = "cloudflare"
@@ -1816,6 +1891,7 @@ for _share_doctor_check in (
     ShareStatusDoctorCheck(),
     ShareConfigDoctorCheck(),
     SharePolicyDoctorCheck(),
+    ShareAcceptanceDoctorCheck(),
     ShareCloudflareDoctorCheck(),
     ShareTailscaleDoctorCheck(),
     ShareFabricDoctorCheck(),
@@ -1831,6 +1907,7 @@ def doctor_mcp_share(
     timeout: float = 5.0,
     public_url: str | None = None,
     live_checks: bool = True,
+    invite_id: str | None = None,
     conformance_pack: str | Path | None = None,
     require_conformance: bool = False,
 ) -> dict[str, Any]:
@@ -1873,6 +1950,7 @@ def doctor_mcp_share(
         status=status,
         conformance_pack=conformance_pack,
         require_conformance=require_conformance,
+        state={"invite_id": invite_id},
     )
     doctor_run = run_share_doctor_checks(context)
     checks = doctor_run["checks"]
@@ -1892,6 +1970,7 @@ def doctor_mcp_share(
         "recommendations": _unique_strings(doctor_run["recommendations"]),
         "doctor_plugins": doctor_run["plugins"],
         "doctor_artifacts": artifacts,
+        "acceptance": artifacts.get("acceptance"),
         "status": status,
         "policy": artifacts.get("policy"),
         "cloudflare": artifacts.get("cloudflare"),
@@ -6287,6 +6366,611 @@ def _share_leases_summary(lease_status: Mapping[str, Any]) -> dict[str, Any]:
         "current": lease_status.get("matched"),
         "leases": all_leases,
     }
+
+
+def _share_acceptance_target(status: Mapping[str, Any], *, invite_id: str | None) -> dict[str, Any]:
+    invitations = [
+        _mapping(invite)
+        for invite in _sequence(_mapping(status.get("invitations")).get("items"))
+        if isinstance(invite, Mapping)
+    ]
+    leases = [_mapping(lease) for lease in _sequence(_mapping(status.get("leases")).get("leases"))]
+    leases_by_id = {str(lease.get("id")): lease for lease in leases if lease.get("id")}
+    selected_invite = None
+    for invite in invitations:
+        if invite.get("revoked_at"):
+            continue
+        if invite_id and invite.get("id") != invite_id:
+            continue
+        selected_invite = invite
+        break
+    if selected_invite is not None:
+        lease = leases_by_id.get(str(selected_invite.get("lease_id") or ""), {})
+        return _drop_empty_json(
+            {
+                "kind": "invite",
+                "id": selected_invite.get("id"),
+                "label": selected_invite.get("recipient") or selected_invite.get("client_name"),
+                "lease_id": selected_invite.get("lease_id"),
+                "active": lease.get("active"),
+                "capabilities": _string_list(selected_invite.get("capabilities") or lease.get("capabilities")),
+                "allow_tools": _string_list(selected_invite.get("allow_tools") or lease.get("allow_tools")),
+                "allow_paths": _string_list(selected_invite.get("allow_paths") or lease.get("allow_paths")),
+                "task": selected_invite.get("task") or lease.get("task"),
+                "expires_at": selected_invite.get("expires_at") or lease.get("expires_at"),
+            }
+        )
+    for lease in leases:
+        if lease.get("active") is True:
+            return _drop_empty_json(
+                {
+                    "kind": "lease",
+                    "id": lease.get("id"),
+                    "label": lease.get("task") or lease.get("id"),
+                    "lease_id": lease.get("id"),
+                    "active": True,
+                    "capabilities": _string_list(lease.get("capabilities")),
+                    "allow_tools": _string_list(lease.get("allow_tools")),
+                    "allow_paths": _string_list(lease.get("allow_paths")),
+                    "task": lease.get("task"),
+                    "expires_at": lease.get("expires_at"),
+                }
+            )
+    return {}
+
+
+def _share_acceptance_invite_checks(
+    checks: list[dict[str, Any]],
+    status: Mapping[str, Any],
+    *,
+    target: Mapping[str, Any],
+    invite_id: str | None,
+) -> None:
+    invitations = _mapping(status.get("invitations"))
+    summary = _mapping(invitations.get("summary"))
+    connection_summary = _mapping(invitations.get("connection_summary"))
+    active_invites = int(summary.get("active", 0) or 0)
+    active_leases = int(_mapping(status.get("leases")).get("active_count", 0) or 0)
+    if invite_id and not target:
+        _add_share_doctor_check(
+            checks,
+            "acceptance.invite_selected",
+            False,
+            f"selected invite was not found or is revoked: {invite_id}",
+            component="acceptance",
+        )
+    else:
+        _add_share_doctor_check(
+            checks,
+            "acceptance.active_grant",
+            bool(target),
+            "share has an active invite or lease for handoff"
+            if target
+            else "share has no active invite or lease for handoff",
+            component="acceptance",
+            details={"active_invites": active_invites, "active_leases": active_leases},
+        )
+    _add_share_doctor_check(
+        checks,
+        "acceptance.active_invite",
+        active_invites > 0,
+        f"{active_invites} active invite(s) available"
+        if active_invites
+        else "no active invite exists; lease-only handoff is possible but less explicit",
+        component="acceptance",
+        severity="warning",
+        details={"connection_summary": dict(connection_summary)},
+    )
+
+
+def _share_acceptance_inspector_check(
+    checks: list[dict[str, Any]],
+    share_dir: Path,
+    *,
+    invite_id: str | None,
+) -> None:
+    try:
+        setup = share_inspector_setup(share_dir, invite_id=invite_id, include_secrets=False)
+        inspector = _mapping(setup.get("mcp_inspector"))
+        cli = _mapping(inspector.get("cli"))
+        ok = "tools/list" in str(cli.get("tools_list") or "") and str(inspector.get("url") or "")
+        _add_share_doctor_check(
+            checks,
+            "acceptance.inspector_command",
+            bool(ok),
+            "MCP Inspector tools/list smoke command generated"
+            if ok
+            else "MCP Inspector tools/list smoke command could not be generated",
+            component="acceptance",
+        )
+    except Exception as exc:
+        _add_share_doctor_check(
+            checks,
+            "acceptance.inspector_command",
+            False,
+            f"MCP Inspector setup generation failed: {exc}",
+            component="acceptance",
+        )
+
+
+def _share_acceptance_policy_path(share_dir: Path, status: Mapping[str, Any]) -> Path | None:
+    policy = _mapping(status.get("policy"))
+    value = policy.get("active_policy") or policy.get("path")
+    if not value:
+        return None
+    return _resolve_share_path(share_dir, value)
+
+
+def _share_acceptance_compile_policy(policy_path: Path | None, checks: list[dict[str, Any]]) -> Any:
+    if policy_path is None:
+        _add_share_doctor_check(
+            checks,
+            "acceptance.policy_compiles",
+            False,
+            "active policy path is not configured",
+            component="acceptance",
+        )
+        return None
+    try:
+        script = compile_lua_file(policy_path)
+    except Exception as exc:
+        _add_share_doctor_check(
+            checks,
+            "acceptance.policy_compiles",
+            False,
+            f"active policy failed to compile: {exc}",
+            component="acceptance",
+            details={"policy": str(policy_path)},
+        )
+        return None
+    _add_share_doctor_check(
+        checks,
+        "acceptance.policy_compiles",
+        True,
+        "active policy compiles",
+        component="acceptance",
+        details={"policy": str(policy_path)},
+    )
+    return script
+
+
+def _share_acceptance_policy_checks(
+    checks: list[dict[str, Any]],
+    *,
+    script: Any,
+    status: Mapping[str, Any],
+    target: Mapping[str, Any],
+    tools: Sequence[Mapping[str, Any]],
+) -> None:
+    headers = _share_acceptance_client_headers(status)
+    tools_list = _share_acceptance_simulate(
+        script,
+        _share_acceptance_mcp_request("tools/list", headers=headers),
+        context={},
+    )
+    _add_share_acceptance_decision_check(
+        checks,
+        "acceptance.tools_list_allowed",
+        tools_list,
+        expected_allowed=True,
+        component="acceptance",
+        success="policy allows MCP tools/list",
+        failure="policy blocks MCP tools/list",
+    )
+    if not target:
+        _add_share_doctor_check(
+            checks,
+            "acceptance.representative_tool_allowed",
+            None,
+            "allowed tool simulation skipped because no active grant is available",
+            component="acceptance",
+        )
+        _add_share_doctor_check(
+            checks,
+            "acceptance.unknown_tool_blocked",
+            None,
+            "unknown tool simulation skipped because no active grant is available",
+            component="acceptance",
+        )
+        _add_share_doctor_check(
+            checks,
+            "acceptance.revoked_lease_blocked",
+            None,
+            "revoked lease simulation skipped because no active grant is available",
+            component="acceptance",
+        )
+        return
+    if target.get("kind") == "lease" and not _string_list(target.get("capabilities")):
+        _add_share_doctor_check(
+            checks,
+            "acceptance.representative_tool_allowed",
+            None,
+            "representative tool simulation skipped because no capability-backed invite was selected",
+            component="acceptance",
+        )
+        _add_share_doctor_check(
+            checks,
+            "acceptance.revoked_lease_blocked",
+            None,
+            "revoked lease simulation skipped because no capability-backed invite was selected",
+            component="acceptance",
+        )
+        unknown_tool = {
+            "name": "snulbug.acceptance.disallowed_write_probe",
+            "risk": "high",
+            "categories": ["mutation"],
+            "properties": ["path", "content"],
+            "required": ["path", "content"],
+        }
+        unknown_result = _share_acceptance_simulate(
+            script,
+            _share_acceptance_tool_request(unknown_tool, headers=headers),
+            context=_share_acceptance_context(target, tool=unknown_tool, active=True),
+        )
+        _add_share_acceptance_decision_check(
+            checks,
+            "acceptance.unknown_tool_blocked",
+            unknown_result,
+            expected_allowed=False,
+            component="acceptance",
+            success="policy blocks an unknown high-risk tool",
+            failure="policy allows an unknown high-risk tool",
+        )
+        return
+    tool = _share_acceptance_primary_tool(tools, target)
+    if tool:
+        allowed_result = _share_acceptance_simulate(
+            script,
+            _share_acceptance_tool_request(tool, headers=headers),
+            context=_share_acceptance_context(target, tool=tool, active=True),
+        )
+        _add_share_acceptance_decision_check(
+            checks,
+            "acceptance.representative_tool_allowed",
+            allowed_result,
+            expected_allowed=True,
+            component="acceptance",
+            success=f"policy allows representative tool {tool.get('name')}",
+            failure=f"policy blocks representative tool {tool.get('name')}",
+        )
+        revoked_result = _share_acceptance_simulate(
+            script,
+            _share_acceptance_tool_request(tool, headers=headers),
+            context=_share_acceptance_context(target, tool=tool, active=False, reason_code="lease.revoked"),
+        )
+        _add_share_acceptance_decision_check(
+            checks,
+            "acceptance.revoked_lease_blocked",
+            revoked_result,
+            expected_allowed=False,
+            component="acceptance",
+            success="policy blocks the same tool when the lease is revoked",
+            failure="policy allows a tool even when the lease context is revoked",
+        )
+    else:
+        _add_share_doctor_check(
+            checks,
+            "acceptance.representative_tool_allowed",
+            None,
+            "representative allowed tool simulation skipped because no tool surface is known",
+            component="acceptance",
+        )
+        _add_share_doctor_check(
+            checks,
+            "acceptance.revoked_lease_blocked",
+            None,
+            "revoked lease simulation skipped because no tool surface is known",
+            component="acceptance",
+        )
+    unknown_tool = {
+        "name": "snulbug.acceptance.disallowed_write_probe",
+        "risk": "high",
+        "categories": ["mutation"],
+        "properties": ["path", "content"],
+        "required": ["path", "content"],
+    }
+    unknown_result = _share_acceptance_simulate(
+        script,
+        _share_acceptance_tool_request(unknown_tool, headers=headers),
+        context=_share_acceptance_context(target, tool=unknown_tool, active=True),
+    )
+    _add_share_acceptance_decision_check(
+        checks,
+        "acceptance.unknown_tool_blocked",
+        unknown_result,
+        expected_allowed=False,
+        component="acceptance",
+        success="policy blocks an unknown high-risk tool",
+        failure="policy allows an unknown high-risk tool",
+    )
+
+
+def _share_acceptance_client_headers(status: Mapping[str, Any]) -> dict[str, str]:
+    headers = _mapping(_mapping(status.get("client")).get("headers"))
+    result = {str(name).lower(): str(value) for name, value in headers.items() if value is not None}
+    result.setdefault("content-type", "application/json")
+    result.setdefault("accept", "application/json, text/event-stream")
+    return result
+
+
+def _share_acceptance_tools(status: Mapping[str, Any]) -> list[dict[str, Any]]:
+    tools_by_name: dict[str, dict[str, Any]] = {}
+    for tool in _sequence(_mapping(status.get("tool_risks")).get("tools")):
+        if not isinstance(tool, Mapping):
+            continue
+        name = str(tool.get("name") or "")
+        if name:
+            tools_by_name[name] = {
+                "name": name,
+                "risk": tool.get("level") or tool.get("risk"),
+                "categories": _string_list(tool.get("categories")),
+                "properties": _string_list(tool.get("properties")),
+                "required": _string_list(tool.get("required")),
+                "schema_hash": tool.get("schema_hash"),
+            }
+    for lease in _sequence(_mapping(status.get("leases")).get("leases")):
+        for name in _string_list(_mapping(lease).get("allow_tools")):
+            if name and name != "*" and name not in tools_by_name:
+                tools_by_name[name] = {"name": name, "source": "lease"}
+    return sorted(tools_by_name.values(), key=lambda item: str(item.get("name") or ""))
+
+
+def _share_acceptance_primary_tool(
+    tools: Sequence[Mapping[str, Any]],
+    target: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    allowed = {str(name) for name in _string_list(target.get("allow_tools")) if name and name != "*"}
+    if allowed:
+        for tool in tools:
+            if str(tool.get("name") or "") in allowed:
+                return tool
+        return {"name": sorted(allowed)[0], "source": "lease"}
+    for tool in tools:
+        if str(tool.get("risk") or "low") != "high":
+            return tool
+    return tools[0] if tools else {}
+
+
+def _share_acceptance_mcp_request(method: str, *, headers: Mapping[str, str]) -> dict[str, Any]:
+    return {
+        "method": "POST",
+        "path": "/mcp",
+        "headers": dict(headers),
+        "body": json.dumps({"jsonrpc": "2.0", "id": f"acceptance-{method}", "method": method, "params": {}}),
+    }
+
+
+def _share_acceptance_tool_request(tool: Mapping[str, Any], *, headers: Mapping[str, str]) -> dict[str, Any]:
+    name = str(tool.get("name") or "")
+    return {
+        "method": "POST",
+        "path": "/mcp",
+        "headers": dict(headers),
+        "body": json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": f"acceptance-{_share_acceptance_slug(name)}",
+                "method": "tools/call",
+                "params": {"name": name, "arguments": _share_acceptance_sample_arguments(tool)},
+            },
+            sort_keys=True,
+        ),
+    }
+
+
+def _share_acceptance_sample_arguments(tool: Mapping[str, Any]) -> dict[str, Any]:
+    names = _string_list(tool.get("required")) or _string_list(tool.get("properties"))
+    if not names and _share_acceptance_tool_needs_path(str(tool.get("name") or "")):
+        names = ["path"]
+    result: dict[str, Any] = {}
+    for name in names[:8]:
+        result[name] = _share_acceptance_sample_value(name)
+    return result
+
+
+def _share_acceptance_sample_value(name: str) -> Any:
+    lowered = name.lower()
+    if "content" in lowered or "text" in lowered:
+        return "acceptance test"
+    if lowered in {"paths", "files", "filenames"}:
+        return ["README.md"]
+    if "path" in lowered or "file" in lowered or "directory" in lowered:
+        return "README.md"
+    if "command" in lowered or lowered in {"cmd", "argv"}:
+        return "status"
+    if "url" in lowered or "host" in lowered:
+        return "https://example.invalid"
+    if "count" in lowered or "limit" in lowered or "max" in lowered:
+        return 1
+    if lowered.startswith("is_") or lowered.startswith("enable") or lowered.startswith("include"):
+        return False
+    return "example"
+
+
+def _share_acceptance_tool_needs_path(name: str) -> bool:
+    normalized = name.lower().replace("-", "_")
+    return any(term in normalized for term in ("read_file", "file_read", "list_project", "search_file", "grep"))
+
+
+def _share_acceptance_context(
+    target: Mapping[str, Any],
+    *,
+    tool: Mapping[str, Any],
+    active: bool,
+    reason_code: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "lease": _drop_empty_json(
+            {
+                "enabled": True,
+                "required": True,
+                "checked": True,
+                "allowed": active,
+                "method": "tools/call",
+                "id": target.get("lease_id") or target.get("id"),
+                "task": target.get("task"),
+                "capabilities": _string_list(target.get("capabilities")),
+                "allow_tools": _string_list(target.get("allow_tools")),
+                "allow_paths": _string_list(target.get("allow_paths")),
+                "expires_at": target.get("expires_at"),
+                "reason_code": reason_code,
+            }
+        ),
+        "intent": _drop_empty_json(
+            {
+                "name": tool.get("name"),
+                "level": tool.get("risk"),
+                "categories": _string_list(tool.get("categories")),
+                "source": tool.get("source"),
+            }
+        ),
+    }
+
+
+def _share_acceptance_simulate(
+    script: Any, request: Mapping[str, Any], *, context: Mapping[str, Any]
+) -> dict[str, Any]:
+    try:
+        normalized_request, _body_read = normalize_request(request)
+        trace = script.decide_with_trace(normalized_request, context, None)
+        decision = trace.decision
+        action = str(decision.get("action") or "")
+        return _drop_empty_json(
+            {
+                "ok": True,
+                "allowed": _share_acceptance_action_allowed(action),
+                "action": action,
+                "status": decision.get("status"),
+                "reason_code": decision.get("reason_code"),
+                "reason": decision.get("reason") or decision.get("body"),
+            }
+        )
+    except Exception as exc:
+        return {"ok": False, "allowed": False, "action": "error", "reason_code": "simulation.error", "reason": str(exc)}
+
+
+def _share_acceptance_action_allowed(action: str) -> bool:
+    return action in CAPABILITY_MATCH_ALLOWED_ACTIONS
+
+
+def _add_share_acceptance_decision_check(
+    checks: list[dict[str, Any]],
+    check_id: str,
+    result: Mapping[str, Any],
+    *,
+    expected_allowed: bool,
+    component: str,
+    success: str,
+    failure: str,
+) -> None:
+    ok = result.get("ok") is True and result.get("allowed") is expected_allowed
+    message = success if ok else failure
+    details = {
+        key: result.get(key)
+        for key in ("action", "status", "reason_code", "reason", "allowed")
+        if result.get(key) is not None
+    }
+    _add_share_doctor_check(checks, check_id, ok, message, component=component, details=details)
+
+
+def _share_acceptance_schema_checks(checks: list[dict[str, Any]], status: Mapping[str, Any]) -> None:
+    schemas = _mapping(status.get("schemas"))
+    errors = int(schemas.get("errors", 0) or 0)
+    catalog_count = int(schemas.get("catalog_count", 0) or 0)
+    _add_share_doctor_check(
+        checks,
+        "acceptance.schemas_loaded",
+        None if catalog_count == 0 else errors == 0,
+        "no schema catalog has been discovered yet"
+        if catalog_count == 0
+        else ("schema catalogs loaded without errors" if errors == 0 else f"{errors} schema catalog errors found"),
+        component="acceptance",
+        details={"catalog_count": catalog_count, "errors": errors},
+    )
+    drift = []
+    for tool_value in _sequence(_mapping(status.get("tool_risks")).get("tools")):
+        if not isinstance(tool_value, Mapping):
+            continue
+        tool = _mapping(tool_value)
+        if any(_mapping(signal).get("code") == "schema.variant_conflict" for signal in _sequence(tool.get("signals"))):
+            drift.append(tool)
+    _add_share_doctor_check(
+        checks,
+        "acceptance.no_schema_variant_conflicts",
+        not drift,
+        "no schema variant conflicts detected" if not drift else f"{len(drift)} schema variant conflict(s) detected",
+        component="acceptance",
+        details={"tools": [tool.get("name") for tool in drift[:10]]},
+    )
+
+
+def _share_acceptance_redaction_checks(checks: list[dict[str, Any]], status: Mapping[str, Any]) -> None:
+    traffic = _mapping(status.get("traffic"))
+    exists = traffic.get("exists") is True
+    event_count = int(traffic.get("event_count", 0) or 0)
+    redacted = int(traffic.get("redacted_events", 0) or 0) + int(traffic.get("response_redacted", 0) or 0)
+    if not exists or event_count == 0:
+        _add_share_doctor_check(
+            checks,
+            "acceptance.redaction_evidence",
+            None,
+            "no audit traffic exists yet, so response redaction evidence is unavailable",
+            component="acceptance",
+        )
+        return
+    _add_share_doctor_check(
+        checks,
+        "acceptance.redaction_evidence",
+        True if redacted else False,
+        "audit traffic includes redaction evidence"
+        if redacted
+        else "audit traffic exists but no redaction events have been observed",
+        component="acceptance",
+        severity="warning",
+        details={
+            "event_count": event_count,
+            "redacted_events": traffic.get("redacted_events"),
+            "response_redacted": traffic.get("response_redacted"),
+        },
+    )
+
+
+def _share_acceptance_live_check(
+    checks: list[dict[str, Any]],
+    status: Mapping[str, Any],
+    *,
+    timeout: float,
+) -> None:
+    client = _mapping(status.get("client"))
+    url = str(client.get("url") or "")
+    headers = _mapping(client.get("headers"))
+    if not url:
+        _add_share_doctor_check(
+            checks,
+            "acceptance.live_tools_list",
+            False,
+            "client URL is missing, so live tools/list could not run",
+            component="acceptance",
+        )
+        return
+    probe = _probe_mcp_url(url, headers=headers, timeout=timeout)
+    _add_share_doctor_check(
+        checks,
+        "acceptance.live_tools_list",
+        probe.get("mcp_ok") is True,
+        "live tools/list succeeded through the share gateway"
+        if probe.get("mcp_ok") is True
+        else "live tools/list failed through the share gateway",
+        component="acceptance",
+        details=probe,
+    )
+
+
+def _share_acceptance_slug(value: str) -> str:
+    result = []
+    for char in value.lower():
+        result.append(char if char.isalnum() else "-")
+    return "-".join("".join(result).split("-")).strip("-") or "tool"
 
 
 def _share_invitation_connection_statuses(

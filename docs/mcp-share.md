@@ -187,8 +187,11 @@ snulbug mcp share doctor .snulbug/shares/share-...
 `share doctor` is the pre-share readiness gate. It loads the generated config,
 validates the policy bundle or Lua entrypoint, runs static fabric checks,
 optionally runs a generated fabric conformance pack, checks the current share
-status, and runs the tunnel/public URL doctor. The command exits non-zero when
-any required check fails.
+status, runs the tunnel/public URL doctor, and executes behavioral handoff
+acceptance checks. Those acceptance checks prove the active policy allows
+`tools/list`, can generate MCP Inspector setup, blocks an unknown high-risk
+tool, and blocks the same representative call when the selected lease is
+revoked. The command exits non-zero when any required check fails.
 
 If the provider prints a random public URL after startup, pass the exact MCP URL
 to doctor. This updates `share.json` and `mcp-client.json` before probing:
@@ -198,6 +201,14 @@ commands see the resolved public endpoint.
 ```bash
 snulbug mcp share doctor .snulbug/shares/share-... \
   --url "${PUBLIC_MCP_URL}"
+```
+
+Pass `--invite invite_...` when you want the handoff checks to target a
+specific task invite:
+
+```bash
+snulbug mcp share doctor .snulbug/shares/share-... \
+  --invite invite_...
 ```
 
 Generate a share contract when you want a machine-readable handoff artifact for

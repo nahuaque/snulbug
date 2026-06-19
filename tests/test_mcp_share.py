@@ -360,6 +360,115 @@ def test_mcp_share_inspector_setup_generates_cli_and_config(tmp_path, capsys):
     assert created["lease_token"] in cli_output["mcp_inspector"]["cli"]["tools_list"]
 
 
+def test_mcp_share_doctor_acceptance_checks_pass_for_tunnel_safe_invite(tmp_path, capsys, monkeypatch):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        allowed_paths=["README.md"],
+        validate=False,
+    )
+    created = create_mcp_share_invite(
+        tmp_path,
+        recipient="local collaborator",
+        task="Read project docs",
+        capabilities=["project_readonly"],
+        ttl="10m",
+    )
+
+    def fake_doctor_tunnel(**kwargs):
+        return {
+            "ok": True,
+            "provider": "generic",
+            "url": kwargs["url"],
+            "local_url": "http://127.0.0.1:8080/mcp",
+            "checks": [],
+            "summary": {"passed": 1, "failed": 0, "warnings": 0, "skipped": 0},
+            "recommendations": [],
+        }
+
+    monkeypatch.setattr("snulbug.tunnel.doctor_tunnel", fake_doctor_tunnel)
+    result = doctor_mcp_share(tmp_path, invite_id=created["invite"]["id"], live_checks=False)
+    status = simulator_main(
+        [
+            "mcp",
+            "share",
+            "doctor",
+            str(tmp_path),
+            "--invite",
+            created["invite"]["id"],
+            "--no-live-checks",
+            "--compact",
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+    checks = {check["id"]: check for check in result["checks"]}
+
+    assert result["ok"] is True
+    assert result["acceptance"]["target"]["id"] == created["invite"]["id"]
+    assert checks["acceptance.tools_list_allowed"]["status"] == "pass"
+    assert checks["acceptance.representative_tool_allowed"]["status"] == "pass"
+    assert checks["acceptance.unknown_tool_blocked"]["status"] == "pass"
+    assert checks["acceptance.revoked_lease_blocked"]["status"] == "pass"
+    assert checks["acceptance.inspector_command"]["status"] == "pass"
+    assert checks["acceptance.live_tools_list"]["status"] == "skip"
+    failed_output_checks = [
+        (check.get("id"), check.get("message")) for check in output["checks"] if check.get("status") == "fail"
+    ]
+    assert status == 0, failed_output_checks
+    assert output["ok"] is True
+    assert output["acceptance"]["target"]["id"] == created["invite"]["id"]
+
+
+def test_mcp_share_doctor_acceptance_checks_fail_when_unknown_tool_is_allowed(tmp_path, monkeypatch):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        allowed_paths=["README.md"],
+        validate=False,
+    )
+    created = create_mcp_share_invite(
+        tmp_path,
+        recipient="local collaborator",
+        task="Read project docs",
+        capabilities=["project_readonly"],
+        ttl="10m",
+    )
+    policy_path = tmp_path / "policy.snulbug" / "policy.lua"
+    policy_path.write_text(
+        """
+return function(request, context, state)
+  return { action = "continue", reason_code = "test.allow_all" }
+end
+""",
+        encoding="utf-8",
+    )
+
+    def fake_doctor_tunnel(**kwargs):
+        return {
+            "ok": True,
+            "provider": "generic",
+            "url": kwargs["url"],
+            "local_url": "http://127.0.0.1:8080/mcp",
+            "checks": [],
+            "summary": {"passed": 1, "failed": 0, "warnings": 0, "skipped": 0},
+            "recommendations": [],
+        }
+
+    monkeypatch.setattr("snulbug.tunnel.doctor_tunnel", fake_doctor_tunnel)
+    result = doctor_mcp_share(tmp_path, invite_id=created["invite"]["id"], live_checks=False)
+    checks = {check["id"]: check for check in result["checks"]}
+
+    assert result["ok"] is False
+    assert checks["acceptance.unknown_tool_blocked"]["status"] == "fail"
+    assert checks["acceptance.revoked_lease_blocked"]["status"] == "fail"
+
+
 def test_mcp_share_invite_connection_status_uses_audit_events(tmp_path):
     create_mcp_share(
         tmp_path,
@@ -602,10 +711,11 @@ def test_create_mcp_share_cloudflare_access_gate_profile_defaults_to_safe_jwt_va
 
 
 def test_mcp_share_doctor_builtin_checks_are_registered():
-    assert list_share_doctor_checks()[:8] == (
+    assert list_share_doctor_checks()[:9] == (
         "status",
         "config",
         "policy",
+        "acceptance",
         "cloudflare",
         "tailscale",
         "fabric",
