@@ -364,6 +364,19 @@ def add_mcp_share_command(mcp_subparsers: argparse._SubParsersAction[argparse.Ar
     )
     add_compact_arg(share_client)
 
+    share_inspector = share_subparsers.add_parser("inspector", help="generate MCP Inspector setup for a share")
+    share_inspector.add_argument("directory", type=Path, help="share session directory")
+    share_inspector.add_argument("--invite", "--invite-id", dest="invite_id", help="use a specific share invite")
+    share_inspector.add_argument(
+        "--include-secrets",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="include persisted invite bearer and lease tokens in generated commands",
+    )
+    share_inspector.add_argument("--output", "--out", type=Path, help="write mcp-inspector.json config payload")
+    add_force_arg(share_inspector, help="overwrite --output when it exists")
+    add_compact_arg(share_inspector)
+
     share_close = share_subparsers.add_parser("close", help="close a share session and write closeout artifacts")
     share_close.add_argument("directory", type=Path, help="share session directory")
     share_close.add_argument("--revoke", action=argparse.BooleanOptionalAction, default=True, help="revoke the lease")
@@ -415,6 +428,7 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
         share_capability_requests,
         share_client_config,
         share_contract,
+        share_inspector_setup,
         share_report,
         share_status,
     )
@@ -820,6 +834,18 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
             write_json_output(result, compact=args.compact)
             return status
 
+        if command == "inspector":
+            result = share_inspector_setup(
+                args.directory,
+                invite_id=args.invite_id,
+                include_secrets=args.include_secrets,
+                output=args.output,
+                force=args.force,
+            )
+            status = 0 if result["ok"] else 1
+            write_result_output(result, compact=args.compact, formatter=format_share_inspector_setup_report)
+            return status
+
         if command == "close":
             result = close_mcp_share(
                 args.directory,
@@ -849,6 +875,60 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
             result["output_dir"] = str(args.output_dir)
         write_json_output(result, compact=getattr(args, "compact", False))
         return 1
+
+
+def format_share_inspector_setup_report(result: Mapping[str, Any]) -> str:
+    inspector = _cli_mapping(result.get("mcp_inspector"))
+    ui = _cli_mapping(inspector.get("ui"))
+    cli = _cli_mapping(inspector.get("cli"))
+    config = _cli_mapping(inspector.get("config"))
+    lines = [
+        "# snulbug MCP Inspector setup",
+        "",
+        f"Share: `{result.get('share') or '-'}`",
+        f"URL: `{inspector.get('url') or '-'}`",
+        "",
+        "## UI",
+        "",
+        "Start Inspector:",
+        "",
+        "```bash",
+        str(ui.get("launch_command") or "npx @modelcontextprotocol/inspector"),
+        "```",
+        "",
+        "Open:",
+        "",
+        f"`{ui.get('open_url') or '-'}`",
+        "",
+        "## CLI Smoke Tests",
+        "",
+        "```bash",
+        str(cli.get("tools_list") or ""),
+        "```",
+        "",
+        "```bash",
+        str(cli.get("resources_list") or ""),
+        "```",
+        "",
+        "## Config",
+        "",
+    ]
+    if result.get("written"):
+        lines.extend([f"Wrote `{result['written']}`.", ""])
+    lines.extend(
+        [
+            "Run with config:",
+            "",
+            "```bash",
+            str(config.get("command") or ""),
+            "```",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _cli_mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
 
 
 def _add_quickstart_args(parser: argparse.ArgumentParser) -> None:

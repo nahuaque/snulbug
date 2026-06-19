@@ -77,6 +77,7 @@ CONTAINER_REMOTE_BRIDGE_PORT = 19100
 DEFAULT_SHARE_MEMBER_REGISTRY = Path(".snulbug") / "fabric-members.json"
 DEFAULT_SHARE_MEMBER_DISCOVERY_PROVIDER = "share-members"
 SHARE_MEMBER_KINDS = ("codespaces", "devcontainer", "holepunch", "container", "generic")
+MCP_INSPECTOR_PACKAGE = "@modelcontextprotocol/inspector"
 SHARE_INVITE_SCHEMA = "snulbug.share.invite.v1"
 AUTH_CONFORMANCE_SCHEMA = "snulbug.auth-conformance-pack.v1"
 AUTH_CONFORMANCE_VERSION = 1
@@ -1255,6 +1256,68 @@ def list_mcp_share_invites(
         "connection_summary": _share_invitation_connection_summary(items),
         "session_model": str(share_session_model_path(share_dir)),
     }
+
+
+def share_inspector_setup(
+    directory: str | Path = ".",
+    *,
+    invite_id: str | None = None,
+    include_secrets: bool = False,
+    output: str | Path | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Generate MCP Inspector setup snippets for a share or invite."""
+
+    share_dir, manifest, session_model = _load_share_model_context(directory)
+    client = _mapping(manifest.get("client"))
+    client_name = str(client.get("name") or DEFAULT_SHARE_CLIENT_NAME)
+    client_url = str(client.get("url") or "")
+    if not client_url:
+        raise ValueError("share manifest does not contain a client URL")
+    headers = _string_mapping(_mapping(client.get("headers")))
+    selected_invite: Mapping[str, Any] | None = None
+    if invite_id:
+        invitations = list_mcp_share_invites(share_dir, include_setup=include_secrets)
+        for item in _sequence(invitations.get("invitations")):
+            if isinstance(item, Mapping) and item.get("id") == invite_id:
+                selected_invite = item
+                break
+        if selected_invite is None:
+            raise ValueError(f"invite not found: {invite_id}")
+        client_name = str(selected_invite.get("client_name") or client_name)
+        client_url = str(selected_invite.get("client_url") or client_url)
+        headers = _share_inspector_invite_headers(
+            share_dir,
+            selected_invite,
+            include_secrets=include_secrets,
+        )
+    elif not include_secrets:
+        headers = _share_inspector_placeholder_headers(headers, session_model=session_model)
+
+    snippets = _mcp_inspector_setup_snippets(
+        client_name=client_name,
+        client_url=client_url,
+        headers=headers,
+    )
+    written: str | None = None
+    if output is not None:
+        output_path = Path(output)
+        _write_json(output_path, snippets["config"]["json"], force=force)
+        written = str(output_path)
+        snippets["config"]["path"] = written
+        snippets["config"]["command"] = (
+            f"npx {MCP_INSPECTOR_PACKAGE} --config {shlex.quote(str(output_path))} --server {shlex.quote(client_name)}"
+        )
+    return _drop_empty_json(
+        {
+            "ok": True,
+            "share": str(share_dir),
+            "invite": dict(selected_invite) if selected_invite is not None else None,
+            "include_secrets": include_secrets,
+            "written": written,
+            "mcp_inspector": snippets,
+        }
+    )
 
 
 def revoke_mcp_share_invite(
@@ -6710,6 +6773,7 @@ def _share_action_checklist(result: Mapping[str, Any]) -> list[str]:
     lines = ["", "## Action Checklist", ""]
     doctor = commands.get("doctor") or commands.get("share_doctor")
     client = commands.get("client")
+    inspector = commands.get("inspector")
     close = commands.get("close")
     inspect_audit = commands.get("inspect_audit")
     if isinstance(doctor, str):
@@ -6723,6 +6787,8 @@ def _share_action_checklist(result: Mapping[str, Any]) -> list[str]:
         lines.append("- [ ] Promote and activate the reviewed policy bundle before reusing this share shape.")
     if isinstance(client, str):
         lines.append(f"- [ ] Generate or inspect the MCP client config: `{client}`")
+    if isinstance(inspector, str):
+        lines.append(f"- [ ] Smoke-test with MCP Inspector: `{inspector}`")
     if isinstance(close, str):
         lines.append(f"- [ ] Close the share and revoke its lease when finished: `{close}`")
     if len(lines) == 3:
@@ -6926,7 +6992,7 @@ def _share_report_lines(result: Mapping[str, Any], *, title: str) -> list[str]:
     commands = _mapping(result.get("commands"))
     if commands:
         lines.extend(["", "## Next Commands", ""])
-        for name in ("run", "doctor", "client", "close", "inspect_audit", "inspect_session"):
+        for name in ("run", "doctor", "client", "inspector", "close", "inspect_audit", "inspect_session"):
             command = commands.get(name)
             if isinstance(command, str):
                 lines.append(f"- `{name}`: `{command}`")
@@ -8480,6 +8546,7 @@ def _share_invite_setup_snippets(
         lease_header=lease_header,
         lease_env="SNULBUG_MCP_LEASE_TOKEN",
     )
+    inspector = _mcp_inspector_setup_snippets(client_name=client_name, client_url=client_url, headers=headers)
     return {
         "client_url": client_url,
         "headers": dict(headers),
@@ -8504,11 +8571,7 @@ def _share_invite_setup_snippets(
             "config_toml": codex_config,
             "env": codex_env,
         },
-        "mcp_inspector": {
-            "description": "Use this URL and headers in the MCP Inspector HTTP transport form.",
-            "url": client_url,
-            "headers": dict(headers),
-        },
+        "mcp_inspector": inspector,
         "curl": {
             "description": "Smoke-test the invite by listing tools.",
             "command": curl,
@@ -8520,6 +8583,94 @@ def _share_invite_setup_snippets(
             "SNULBUG_LEASE_TOKEN": lease_token,
         },
     }
+
+
+def _mcp_inspector_setup_snippets(
+    *,
+    client_name: str,
+    client_url: str,
+    headers: Mapping[str, str],
+) -> dict[str, Any]:
+    header_args = _mcp_inspector_header_args(headers)
+    query = urlencode({"transport": "streamable-http", "serverUrl": client_url})
+    ui_url = f"http://localhost:6274/?{query}"
+    config = {
+        "mcpServers": {
+            client_name: {
+                "type": "streamable-http",
+                "url": client_url,
+            }
+        }
+    }
+    base_cli = f"npx {MCP_INSPECTOR_PACKAGE} --cli {shlex.quote(client_url)} --transport http"
+    if header_args:
+        base_cli = f"{base_cli} {header_args}"
+    return {
+        "description": "Test this Snulbug share with MCP Inspector as a real MCP client.",
+        "url": client_url,
+        "headers": dict(headers),
+        "ui": {
+            "description": "Start Inspector, then open this URL to preselect Streamable HTTP and the Snulbug MCP URL.",
+            "launch_command": f"npx {MCP_INSPECTOR_PACKAGE}",
+            "open_url": ui_url,
+        },
+        "cli": {
+            "description": (
+                "Scriptable Inspector checks that should show up in Snulbug audit and invite connection status."
+            ),
+            "tools_list": f"{base_cli} --method tools/list",
+            "resources_list": f"{base_cli} --method resources/list",
+            "prompts_list": f"{base_cli} --method prompts/list",
+        },
+        "config": {
+            "description": (
+                "Inspector config file payload. Headers are supplied by the CLI command or Inspector UI fields."
+            ),
+            "json": config,
+            "command": f"npx {MCP_INSPECTOR_PACKAGE} --config mcp-inspector.json --server {shlex.quote(client_name)}",
+        },
+    }
+
+
+def _mcp_inspector_header_args(headers: Mapping[str, str]) -> str:
+    return " ".join(f"--header {shlex.quote(f'{name}: {value}')}" for name, value in headers.items())
+
+
+def _share_inspector_invite_headers(
+    share_dir: Path,
+    invite: Mapping[str, Any],
+    *,
+    include_secrets: bool,
+) -> dict[str, str]:
+    if include_secrets:
+        store = _load_share_invite_secret_store(share_dir)
+        secret_payload = _mapping(_mapping(store.get("invitations")).get(str(invite.get("id") or "")))
+        headers = _string_mapping(_mapping(secret_payload.get("headers")))
+        if headers:
+            return headers
+    lease_header = str(invite.get("lease_header") or "x-snulbug-lease")
+    return {
+        "Authorization": "Bearer ${SNULBUG_MCP_BEARER_TOKEN}",
+        lease_header: "${SNULBUG_MCP_LEASE_TOKEN}",
+    }
+
+
+def _share_inspector_placeholder_headers(
+    headers: Mapping[str, str],
+    *,
+    session_model: Mapping[str, Any],
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    lease_header = _share_capability_lease_header(session_model, {})
+    for name, value in headers.items():
+        normalized = str(name).lower()
+        if normalized == "authorization":
+            result[str(name)] = "Bearer ${SNULBUG_MCP_BEARER_TOKEN}"
+        elif normalized == str(lease_header).lower() or "lease" in normalized:
+            result[str(name)] = "${SNULBUG_MCP_LEASE_TOKEN}"
+        else:
+            result[str(name)] = str(value)
+    return result
 
 
 def _codex_mcp_config_toml(
@@ -8739,6 +8890,7 @@ def _command_plan(
         "doctor": share_doctor,
         "share_doctor": share_doctor,
         "client": f"uv run snulbug mcp share client {shlex.quote(str(share_dir))}",
+        "inspector": f"uv run snulbug mcp share inspector {shlex.quote(str(share_dir))}",
         "close": f"uv run snulbug mcp share close {shlex.quote(str(share_dir))} --report --revoke",
         "inspect_session": f"uv run snulbug mcp evidence inspect {shlex.quote(str(session))}",
         "inspect_audit": (

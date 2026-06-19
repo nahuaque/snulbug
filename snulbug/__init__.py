@@ -339,6 +339,7 @@ from .share import (
     share_client_config,
     share_contract,
     share_contract_runtime_metadata,
+    share_inspector_setup,
     share_report,
     share_status,
 )
@@ -774,6 +775,7 @@ __all__ = [
     "share_client_config",
     "share_contract",
     "share_contract_runtime_metadata",
+    "share_inspector_setup",
     "share_report",
     "SHARE_SESSION_MODEL_PATH",
     "SHARE_SESSION_MODEL_TYPE",

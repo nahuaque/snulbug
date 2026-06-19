@@ -7442,6 +7442,9 @@ def _console_html() -> str:
       const invite = payload.invite || {};
       const snippets = payload.setup_snippets || {};
       const codex = snippets.codex || {};
+      const inspector = snippets.mcp_inspector || {};
+      const inspectorCli = inspector.cli || {};
+      const inspectorUi = inspector.ui || {};
       const lines = [
         `Invite: ${invite.id || ""}`,
         `Recipient: ${invite.recipient || ""}`,
@@ -7456,6 +7459,13 @@ def _console_html() -> str:
         "",
         "Claude Code:",
         (snippets.claude_code || {}).command || "",
+        "",
+        "MCP Inspector UI:",
+        inspectorUi.launch_command || "",
+        inspectorUi.open_url || "",
+        "",
+        "MCP Inspector CLI:",
+        inspectorCli.tools_list || "",
         "",
         "Codex config.toml:",
         (codex.config_toml || ""),

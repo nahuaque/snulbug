@@ -678,6 +678,8 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "Invite Setup Snippets" in html
     assert "Use this invite now" in html
     assert "Copy setup packet" in html
+    assert "MCP Inspector UI" in html
+    assert "MCP Inspector CLI" in html
     assert "Connection" in html
     assert "inviteConnectionDetail" in html
     assert "connection_summary" in html

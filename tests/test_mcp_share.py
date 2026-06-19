@@ -42,6 +42,7 @@ from snulbug import (
     share_capability_requests,
     share_client_config,
     share_contract,
+    share_inspector_setup,
     share_report,
     share_session_model_path,
     share_status,
@@ -280,10 +281,19 @@ def test_mcp_share_invite_create_list_and_revoke_redacts_stored_snippets(tmp_pat
     assert created["setup_snippets"]["codex"]["env"]["SNULBUG_MCP_LEASE_TOKEN"].startswith("sbl_")
     assert "tools/list" in created["setup_snippets"]["curl"]["command"]
     assert "claude mcp add" in created["setup_snippets"]["claude_code"]["command"]
+    assert "npx @modelcontextprotocol/inspector" in created["setup_snippets"]["mcp_inspector"]["cli"]["tools_list"]
+    assert "--method tools/list" in created["setup_snippets"]["mcp_inspector"]["cli"]["tools_list"]
+    assert created["setup_snippets"]["mcp_inspector"]["config"]["json"]["mcpServers"]["snulbug-share"]["type"] == (
+        "streamable-http"
+    )
     assert listing["summary"] == {"total": 1, "active": 1, "revoked": 0}
     assert listing["invitations"][0]["recipient"] == "frontend agent"
     assert listing["invitations"][0]["setup_snippets"]["headers"]["Authorization"] == "Bearer [REDACTED]"
+    assert "[REDACTED]" in listing["invitations"][0]["setup_snippets"]["mcp_inspector"]["cli"]["tools_list"]
     assert setup_listing["invitations"][0]["setup_snippets"]["headers"]["Authorization"] == "Bearer share-secret"
+    assert (
+        "Bearer share-secret" in setup_listing["invitations"][0]["setup_snippets"]["mcp_inspector"]["cli"]["tools_list"]
+    )
     assert setup_listing["invitations"][0]["setup_snippets"]["headers"]["x-snulbug-lease"].startswith("sbl_")
     assert setup_listing["invitations"][0]["setup_available"] is True
     assert "share-secret" not in json.dumps(listing)
@@ -296,6 +306,58 @@ def test_mcp_share_invite_create_list_and_revoke_redacts_stored_snippets(tmp_pat
     assert active_only["summary"] == {"total": 0, "active": 0, "revoked": 0}
     assert revoked_setup_listing["invitations"][0]["setup_available"] is False
     assert "setup_snippets" not in revoked_setup_listing["invitations"][0]
+
+
+def test_mcp_share_inspector_setup_generates_cli_and_config(tmp_path, capsys):
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://mcp.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    created = create_mcp_share_invite(
+        tmp_path,
+        recipient="local collaborator",
+        task="Read project docs",
+        capabilities=["project_readonly"],
+        ttl="10m",
+    )
+    config_path = tmp_path / "mcp-inspector.json"
+
+    setup = share_inspector_setup(
+        tmp_path,
+        invite_id=created["invite"]["id"],
+        include_secrets=False,
+        output=config_path,
+    )
+    status = simulator_main(
+        [
+            "mcp",
+            "share",
+            "inspector",
+            str(tmp_path),
+            "--invite",
+            created["invite"]["id"],
+            "--include-secrets",
+            "--compact",
+        ]
+    )
+    cli_output = json.loads(capsys.readouterr().out)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+
+    assert setup["ok"] is True
+    assert setup["written"] == str(config_path)
+    assert setup["mcp_inspector"]["ui"]["launch_command"] == "npx @modelcontextprotocol/inspector"
+    assert "transport=streamable-http" in setup["mcp_inspector"]["ui"]["open_url"]
+    assert "serverUrl=https%3A%2F%2Fmcp.example.test%2Fmcp" in setup["mcp_inspector"]["ui"]["open_url"]
+    assert "${SNULBUG_MCP_BEARER_TOKEN}" in setup["mcp_inspector"]["cli"]["tools_list"]
+    assert "${SNULBUG_MCP_LEASE_TOKEN}" in setup["mcp_inspector"]["cli"]["tools_list"]
+    assert config["mcpServers"]["snulbug-share"]["url"] == "https://mcp.example.test/mcp"
+    assert status == 0
+    assert "Bearer share-secret" in cli_output["mcp_inspector"]["cli"]["tools_list"]
+    assert created["lease_token"] in cli_output["mcp_inspector"]["cli"]["tools_list"]
 
 
 def test_mcp_share_invite_connection_status_uses_audit_events(tmp_path):
