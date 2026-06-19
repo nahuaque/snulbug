@@ -23,6 +23,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10.
 
 DEFAULT_CONFIG_PATH = "snulbug.toml"
 REMOVED_EVENT_OUTPUT_KEYS = {"audit_out", "decision_console", "decision_console_format", "webhooks"}
+PROTECTED_RESOURCE_AUTH_MODES = {"oauth-resource", "enterprise-managed"}
 
 DEFAULT_MCP_AUTH_CONFIG = {
     "mode": "off",
@@ -242,6 +243,8 @@ key_fields = [
 
 [mcp.auth]
 # Optional OAuth 2.1 protected-resource mode for public MCP endpoints.
+# Use "enterprise-managed" when an enterprise IdP/client owns the MCP
+# authorization flow and snulbug validates the resulting access token.
 # mode = "oauth-resource"
 # resource = "https://YOUR-TUNNEL.example/mcp"
 # resource_aliases = [] # additional public MCP URLs that intentionally reach this gateway
@@ -732,8 +735,8 @@ def normalize_mcp_auth_config(config: Mapping[str, Any] | None, *, base_dir: str
     mode = normalized.get("mode")
     if not isinstance(mode, str):
         raise ValueError("mcp.auth.mode must be a string")
-    if mode not in {"off", "oauth-resource"}:
-        raise ValueError("mcp.auth.mode must be 'off' or 'oauth-resource'")
+    if mode not in {"off", *PROTECTED_RESOURCE_AUTH_MODES}:
+        raise ValueError("mcp.auth.mode must be 'off', 'oauth-resource', or 'enterprise-managed'")
     for field in (
         "resource",
         "issuer",
@@ -789,9 +792,9 @@ def normalize_mcp_auth_config(config: Mapping[str, Any] | None, *, base_dir: str
     normalized["scope_map"] = _normalize_auth_scope_map(normalized.get("scope_map", {}))
     normalized["claim_policy"] = _normalize_auth_claim_policy(normalized.get("claim_policy", {}))
     normalized["required_claims"] = _normalize_auth_required_claims(normalized.get("required_claims", {}))
-    if normalized["mode"] == "oauth-resource":
+    if normalized["mode"] in PROTECTED_RESOURCE_AUTH_MODES:
         if not normalized.get("resource"):
-            raise ValueError("mcp.auth.resource is required when mode is 'oauth-resource'")
+            raise ValueError("mcp.auth.resource is required when protected-resource auth is enabled")
         normalized["issuers"] = _normalize_auth_issuer_profiles(
             normalized.get("issuers", []),
             parent=normalized,
@@ -1094,7 +1097,7 @@ def _normalize_auth_issuer_profile(
 
 def _validate_oauth_token_config(config: Mapping[str, Any], *, field: str) -> None:
     if not config.get("audience") and not config.get("audiences"):
-        raise ValueError(f"{field}.audience or {field}.audiences is required when mode is 'oauth-resource'")
+        raise ValueError(f"{field}.audience or {field}.audiences is required when protected-resource auth is enabled")
     token_validation = config["token_validation"]
     uses_jwt = token_validation in {"jwt", "jwt_or_introspection", "jwt_and_introspection"}
     uses_introspection = token_validation in {"introspection", "jwt_or_introspection", "jwt_and_introspection"}

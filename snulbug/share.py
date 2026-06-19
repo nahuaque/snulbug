@@ -78,6 +78,13 @@ DEFAULT_SHARE_MEMBER_REGISTRY = Path(".snulbug") / "fabric-members.json"
 DEFAULT_SHARE_MEMBER_DISCOVERY_PROVIDER = "share-members"
 SHARE_MEMBER_KINDS = ("codespaces", "devcontainer", "holepunch", "container", "generic")
 MCP_INSPECTOR_PACKAGE = "@modelcontextprotocol/inspector"
+PROTECTED_RESOURCE_AUTH_MODES = {"oauth-resource", "enterprise-managed"}
+
+
+def _protected_resource_auth_enabled(auth: Mapping[str, Any]) -> bool:
+    return auth.get("mode") in PROTECTED_RESOURCE_AUTH_MODES
+
+
 SHARE_INVITE_SCHEMA = "snulbug.share.invite.v1"
 AUTH_CONFORMANCE_SCHEMA = "snulbug.auth-conformance-pack.v1"
 AUTH_CONFORMANCE_VERSION = 1
@@ -2053,17 +2060,19 @@ def doctor_mcp_share_auth(
     recommendations: list[str] = []
     live: dict[str, Any] = {}
 
-    enabled = auth.get("mode") == "oauth-resource"
+    enabled = _protected_resource_auth_enabled(auth)
     _add_share_doctor_check(
         checks,
         "auth.mode",
         enabled,
-        "OAuth protected-resource mode is enabled" if enabled else "OAuth protected-resource mode is not enabled",
+        "MCP protected-resource auth mode is enabled" if enabled else "MCP protected-resource auth mode is not enabled",
         component="auth",
         details={"mode": auth.get("mode")},
     )
     if not enabled:
-        recommendations.append('Enable [mcp.auth] mode = "oauth-resource" before using auth doctor.')
+        recommendations.append(
+            'Enable [mcp.auth] mode = "oauth-resource" or "enterprise-managed" before using auth doctor.'
+        )
         summary = _share_doctor_summary(checks)
         return {
             "ok": False,
@@ -2900,10 +2909,10 @@ def _run_auth_expected_checks(
     _add_share_doctor_check(
         checks,
         "auth.mode",
-        auth.get("mode") == "oauth-resource",
-        "OAuth protected-resource mode is enabled"
-        if auth.get("mode") == "oauth-resource"
-        else "OAuth protected-resource mode is not enabled",
+        _protected_resource_auth_enabled(auth),
+        "MCP protected-resource auth mode is enabled"
+        if _protected_resource_auth_enabled(auth)
+        else "MCP protected-resource auth mode is not enabled",
         component="auth-conformance",
         details={"mode": auth.get("mode")},
     )
@@ -3383,6 +3392,7 @@ def _auth_doctor_summary(auth: Mapping[str, Any]) -> dict[str, Any]:
     claim_policy = _mapping(auth.get("claim_policy"))
     return {
         "mode": auth.get("mode"),
+        "enterprise_managed": auth.get("mode") == "enterprise-managed",
         "resource": auth.get("resource"),
         "resource_aliases": [str(item) for item in _sequence(auth.get("resource_aliases"))],
         "issuer": auth.get("issuer"),
@@ -4791,14 +4801,14 @@ def _share_cloudflare_profile_doctor_checks(
                     "CF-Access-Client-Secret as environment-placeholder headers."
                 )
     elif profile == "oauth-resource":
-        auth_enabled = auth.get("mode") == "oauth-resource"
+        auth_enabled = _protected_resource_auth_enabled(auth)
         _add_share_doctor_check(
             checks,
             "cloudflare.oauth_resource.auth_enabled",
             auth_enabled,
-            "MCP OAuth protected-resource mode is enabled"
+            "MCP protected-resource auth mode is enabled"
             if auth_enabled
-            else "MCP OAuth protected-resource mode is not enabled",
+            else "MCP protected-resource auth mode is not enabled",
             component="cloudflare",
             details={"auth_mode": auth.get("mode")},
         )
@@ -4936,14 +4946,14 @@ def _add_cloudflare_access_gate_checks(
         else "CF-Ray is not required for Cloudflare Access profile",
         component="cloudflare",
     )
-    not_oauth_resource = auth.get("mode") != "oauth-resource"
+    not_protected_resource = not _protected_resource_auth_enabled(auth)
     _add_share_doctor_check(
         checks,
         "cloudflare.access_gate.not_wrapping_oauth_resource",
-        not_oauth_resource,
-        "Cloudflare Access profile is not wrapping MCP OAuth resource mode"
-        if not_oauth_resource
-        else "Cloudflare Access enforcement can block MCP OAuth protected-resource discovery",
+        not_protected_resource,
+        "Cloudflare Access profile is not wrapping MCP protected-resource auth mode"
+        if not_protected_resource
+        else "Cloudflare Access enforcement can block MCP protected-resource discovery",
         component="cloudflare",
         details={"auth_mode": auth.get("mode")},
     )
@@ -4952,10 +4962,10 @@ def _add_cloudflare_access_gate_checks(
             "Set cloudflare_access_team_domain and cloudflare_access_audience, and keep "
             "cloudflare_access_validate_jwt = true for Cloudflare Access gate profiles."
         )
-    if not not_oauth_resource:
+    if not not_protected_resource:
         recommendations.append(
-            "Use --cloudflare-profile oauth-resource for MCP OAuth shares, or remove [mcp.auth] "
-            "OAuth protected-resource mode from this Access-gated share."
+            "Use --cloudflare-profile oauth-resource for MCP protected-resource auth shares, or remove [mcp.auth] "
+            "protected-resource mode from this Access-gated share."
         )
 
 
@@ -5062,14 +5072,14 @@ def _share_tailscale_profile_doctor_checks(
             component="tailscale",
             prefix="tailscale.funnel_public",
         )
-        not_oauth_resource = auth.get("mode") != "oauth-resource"
+        not_oauth_resource = not _protected_resource_auth_enabled(auth)
         _add_share_doctor_check(
             checks,
             "tailscale.funnel_public.not_oauth_resource",
             not_oauth_resource,
-            "Funnel public profile is using bearer/lease policy rather than MCP OAuth mode"
+            "Funnel public profile is using bearer/lease policy rather than MCP protected-resource auth"
             if not_oauth_resource
-            else "Use --tailscale-profile oauth-resource for MCP OAuth shares",
+            else "Use --tailscale-profile oauth-resource for MCP protected-resource auth shares",
             component="tailscale",
             details={"auth_mode": auth.get("mode")},
         )
@@ -5083,27 +5093,27 @@ def _share_tailscale_profile_doctor_checks(
             component="tailscale",
             prefix="tailscale.serve_tailnet",
         )
-        not_oauth_resource = auth.get("mode") != "oauth-resource"
+        not_oauth_resource = not _protected_resource_auth_enabled(auth)
         _add_share_doctor_check(
             checks,
             "tailscale.serve_tailnet.not_oauth_resource",
             not_oauth_resource,
-            "Serve tailnet profile is using bearer policy rather than MCP OAuth mode"
+            "Serve tailnet profile is using bearer policy rather than MCP protected-resource auth"
             if not_oauth_resource
-            else "Use --tailscale-profile oauth-resource for MCP OAuth shares",
+            else "Use --tailscale-profile oauth-resource for MCP protected-resource auth shares",
             component="tailscale",
             severity="warning",
             details={"auth_mode": auth.get("mode")},
         )
     elif profile == "oauth-resource":
-        auth_enabled = auth.get("mode") == "oauth-resource"
+        auth_enabled = _protected_resource_auth_enabled(auth)
         _add_share_doctor_check(
             checks,
             "tailscale.oauth_resource.auth_enabled",
             auth_enabled,
-            "MCP OAuth protected-resource mode is enabled"
+            "MCP protected-resource auth mode is enabled"
             if auth_enabled
-            else "MCP OAuth protected-resource mode is not enabled",
+            else "MCP protected-resource auth mode is not enabled",
             component="tailscale",
             details={"auth_mode": auth.get("mode")},
         )

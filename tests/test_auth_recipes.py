@@ -84,6 +84,25 @@ def test_generate_cloudflare_access_recipe_uses_access_adapter_not_oauth_mode():
     assert "Cloudflare Access assertion" in result["summary"]
 
 
+def test_generate_okta_xaa_recipe_uses_enterprise_managed_mode():
+    result = generate_mcp_auth_recipe(
+        "okta-xaa",
+        public_url="https://mcp.example.test/mcp",
+        domain="dev-123456.okta.com",
+        client_id="mcp-agent",
+    )
+
+    assert result["ok"] is True
+    assert result["provider"] == "okta-xaa"
+    assert result["issuer"] == "https://dev-123456.okta.com/oauth2/default"
+    assert 'mode = "enterprise-managed"' in result["snulbug_config"]
+    assert "lease_required = true" in result["snulbug_config"]
+    assert "strip_authorization_upstream = true" in result["snulbug_config"]
+    assert result["client_request"]["extension"] == "io.modelcontextprotocol/enterprise-managed-authorization"
+    assert "enterprise-managed authorization extension" in " ".join(result["provider_steps"])
+    assert "share auth doctor" in result["report"]
+
+
 def test_generate_github_oidc_recipe_uses_issuer_and_no_mcp_scopes():
     result = generate_mcp_auth_recipe(
         "github-oidc",
@@ -150,6 +169,25 @@ def test_generate_auth_init_writes_provider_setup_files(tmp_path):
     assert "snulbug auth recipe: Keycloak" in (tmp_path / "auth/keycloak/README.md").read_text(encoding="utf-8")
     assert metadata["written_files"] == result["written_files"]
     assert "share auth doctor" in result["commands"]["doctor"]
+
+
+def test_generate_okta_xaa_auth_init_writes_enterprise_managed_files(tmp_path):
+    result = generate_mcp_auth_init(
+        "okta-xaa",
+        public_url="https://mcp.example.test/mcp",
+        issuer="https://idp.example.test/oauth2/default",
+        client_id="mcp-agent",
+        output_dir=tmp_path / "auth/okta-xaa",
+    )
+
+    config = (tmp_path / "auth/okta-xaa/snulbug.auth.toml").read_text(encoding="utf-8")
+    request = json.loads((tmp_path / "auth/okta-xaa/client-token-request.json").read_text(encoding="utf-8"))
+
+    assert result["ok"] is True
+    assert result["provider"] == "okta-xaa"
+    assert 'mode = "enterprise-managed"' in config
+    assert request["extension"] == "io.modelcontextprotocol/enterprise-managed-authorization"
+    assert result["recipe"]["provider"] == "okta-xaa"
 
 
 def test_share_auth_init_cli_emits_compact_json_and_writes_files(tmp_path, capsys):

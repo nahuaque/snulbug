@@ -19,6 +19,7 @@ DEFAULT_AUTH_SCOPES = (
     "mcp:tool.files.read",
     "mcp:tool.git.status",
 )
+ENTERPRISE_MANAGED_AUTH_EXTENSION = "io.modelcontextprotocol/enterprise-managed-authorization"
 
 DEFAULT_AUTH_INIT_ROOT = Path(".snulbug/auth")
 
@@ -89,6 +90,34 @@ class _CloudflareAccessRecipeProvider(AuthProvider):
         return CloudflareAccessAuthProvider().claim_context(claims)
 
 
+class _EnterpriseManagedAuthorizationRecipeProvider(AuthProvider):
+    name = "okta-xaa"
+    title = "Okta Cross App Access / MCP Enterprise-Managed Authorization"
+    docs = ("https://modelcontextprotocol.io/extensions/auth/enterprise-managed-authorization",)
+    context_key = "enterprise_managed"
+
+    def recipe(self, context: AuthProviderRecipeContext) -> dict[str, Any]:
+        issuer = _provider_issuer(
+            "okta",
+            issuer=context.issuer,
+            domain=context.domain,
+            tenant=context.tenant,
+            realm=context.realm,
+            auth_server_id=context.auth_server_id,
+        )
+        audience = context.audience or context.public_url
+        return _enterprise_managed_authorization_recipe(
+            provider=self.name,
+            title=self.title,
+            docs=self.docs,
+            public_url=context.public_url,
+            issuer=issuer,
+            audience=audience,
+            client_id=context.client_id,
+            scopes=context.scopes,
+        )
+
+
 class _GitHubOidcRecipeProvider(AuthProvider):
     name = "github-oidc"
     title = "GitHub Actions OIDC"
@@ -128,6 +157,7 @@ def _register_builtin_auth_recipe_providers() -> None:
             title="Okta",
             docs=("https://developer.okta.com/docs/guides/customize-authz-server/main/",),
         ),
+        _EnterpriseManagedAuthorizationRecipeProvider(),
         _OAuthRecipeProvider(
             name="entra",
             title="Microsoft Entra ID",
@@ -472,6 +502,69 @@ def _cloudflare_access_recipe(
     }
 
 
+def _enterprise_managed_authorization_recipe(
+    *,
+    provider: str,
+    title: str,
+    docs: Sequence[str],
+    public_url: str,
+    issuer: str,
+    audience: str,
+    client_id: str | None,
+    scopes: Sequence[str],
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "kind": "snulbug.auth.recipe",
+        "provider": provider,
+        "title": title,
+        "public_url": public_url,
+        "issuer": issuer,
+        "audience": audience,
+        "client_id": client_id,
+        "scopes": list(scopes),
+        "summary": (
+            "Use the enterprise IdP/client as the MCP authorization control point. snulbug remains the protected "
+            "MCP resource and local policy gateway: it validates the resulting access token, strips caller tokens "
+            "before upstream forwarding, maps scopes/claims to MCP tools, and still requires task leases."
+        ),
+        "assumptions": [
+            "The MCP client/host supports the enterprise-managed authorization extension.",
+            "The enterprise IdP issues access tokens whose audience/resource indicator is the public MCP URL.",
+            "snulbug is not minting Identity Assertion JWT Authorization Grant tokens; "
+            "it validates the final access token.",
+        ],
+        "provider_steps": [
+            f"Register the snulbug MCP endpoint as the protected resource `{public_url}`.",
+            f"Configure the enterprise authorization server issuer `{issuer}` and audience `{audience}`.",
+            "Enable the MCP enterprise-managed authorization extension for the client/resource pair.",
+            "Assign users, groups, or app policies that may request MCP access.",
+            "Issue or map MCP scopes that match the generated `[mcp.auth.scope_map]` entries.",
+        ],
+        "client_request": {
+            "extension": ENTERPRISE_MANAGED_AUTH_EXTENSION,
+            "resource": public_url,
+            "issuer": issuer,
+            "audience": audience,
+            "client_id": client_id or "<enterprise-managed-client-id>",
+            "scopes": list(scopes),
+        },
+        "snulbug_config": _enterprise_managed_snulbug_config(
+            public_url=public_url,
+            issuer=issuer,
+            audience=audience,
+            scopes=scopes,
+        ),
+        "commands": _auth_recipe_commands(public_url),
+        "notes": [
+            "Do not forward caller OAuth tokens upstream; snulbug strips Authorization by default.",
+            "Keep `lease_required = true` so enterprise identity is necessary but not sufficient for tool use.",
+            "Use Lua or declarative claim-policy rules for tenant, group, device, or route-specific constraints.",
+        ],
+        "docs": list(docs),
+    }
+
+
 def _github_oidc_recipe(
     public_url: str,
     *,
@@ -542,6 +635,37 @@ lease_required = true
 
 [mcp.auth]
 mode = "oauth-resource"
+resource = {json.dumps(public_url)}
+issuer = {json.dumps(issuer)}
+authorization_servers = [{json.dumps(issuer)}]
+audience = {json.dumps(audience)}
+required_scopes = ["mcp:connect"]
+scopes_supported = {scope_list}
+issuer_discovery = true
+token_validation = "jwt"
+strip_authorization_upstream = true
+
+[mcp.auth.scope_map]
+"mcp:tools.read" = ["tools/list", "resources/list"]
+"mcp:tool.files.read" = ["tools/call:filesystem.read_file"]
+"mcp:tool.git.status" = ["tools/call:git.status"]
+"""
+
+
+def _enterprise_managed_snulbug_config(
+    *,
+    public_url: str,
+    issuer: str,
+    audience: str,
+    scopes: Sequence[str],
+) -> str:
+    scope_list = _toml_string_list(scopes)
+    return f"""[mcp.proxy]
+tunnel_public_url = {json.dumps(public_url)}
+lease_required = true
+
+[mcp.auth]
+mode = "enterprise-managed"
 resource = {json.dumps(public_url)}
 issuer = {json.dumps(issuer)}
 authorization_servers = [{json.dumps(issuer)}]

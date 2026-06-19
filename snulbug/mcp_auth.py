@@ -16,6 +16,9 @@ import jwt
 
 from .auth_providers import auth_provider_claim_context
 
+PROTECTED_RESOURCE_AUTH_MODES = {"oauth-resource", "enterprise-managed"}
+ENTERPRISE_MANAGED_AUTH_EXTENSION = "io.modelcontextprotocol/enterprise-managed-authorization"
+
 
 @dataclass(frozen=True)
 class OAuthResourceConfig:
@@ -55,7 +58,7 @@ class OAuthResourceConfig:
 
     @property
     def enabled(self) -> bool:
-        return self.mode == "oauth-resource"
+        return self.mode in PROTECTED_RESOURCE_AUTH_MODES
 
     @property
     def mapped_scopes(self) -> dict[str, tuple[str, ...]]:
@@ -433,7 +436,7 @@ def _auth_introspection_cache(config: OAuthResourceConfig | None) -> TokenIntros
 
 def protected_resource_metadata(config: OAuthResourceConfig) -> dict[str, Any]:
     if not config.enabled:
-        raise ValueError("OAuth protected resource metadata requires oauth-resource mode")
+        raise ValueError("OAuth protected resource metadata requires protected-resource auth mode")
     if not config.resource:
         raise ValueError("OAuth resource metadata requires resource")
     authorization_servers = list(config.authorization_servers)
@@ -456,6 +459,8 @@ def protected_resource_metadata(config: OAuthResourceConfig) -> dict[str, Any]:
     scopes_supported = sorted(scopes)
     if scopes_supported:
         metadata["scopes_supported"] = scopes_supported
+    if config.mode == "enterprise-managed":
+        metadata["extensions"] = {ENTERPRISE_MANAGED_AUTH_EXTENSION: {}}
     return _drop_empty(metadata)
 
 

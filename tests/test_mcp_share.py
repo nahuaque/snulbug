@@ -1868,6 +1868,25 @@ def test_mcp_share_auth_doctor_validates_static_oauth_config(tmp_path):
     assert checks["auth.scope_map.tools_discovered"]["status"] == "skip"
 
 
+def test_mcp_share_auth_doctor_accepts_enterprise_managed_mode(tmp_path):
+    resource = "https://mcp.example.test/mcp"
+    config = write_oauth_share_config(
+        tmp_path,
+        resource=resource,
+        issuer="https://issuer.example.test",
+        mode="enterprise-managed",
+    )
+
+    result = doctor_mcp_share_auth(config=config, public_url=resource, live_checks=False)
+    checks = {check["id"]: check for check in result["checks"]}
+
+    assert result["ok"] is True
+    assert result["auth"]["mode"] == "enterprise-managed"
+    assert result["auth"]["enterprise_managed"] is True
+    assert checks["auth.mode"]["status"] == "pass"
+    assert checks["auth.resource.matches_public_url"]["status"] == "pass"
+
+
 def test_mcp_share_auth_conformance_pack_proves_config_schema_token_and_logs(tmp_path, monkeypatch):
     resource = "https://mcp.example.test/mcp"
     issuer = "https://issuer.example.test"
@@ -2387,6 +2406,7 @@ def write_oauth_share_config(
     *,
     resource: str,
     issuer: str,
+    mode: str = "oauth-resource",
     audience: str | None = None,
     redact_records: bool = True,
     strip_authorization_upstream: bool = True,
@@ -2407,7 +2427,7 @@ redact_records = {str(redact_records).lower()}
 cloudflare_access = {json.dumps(cloudflare_access)}
 
 [mcp.auth]
-mode = "oauth-resource"
+mode = {json.dumps(mode)}
 resource = {json.dumps(resource)}
 issuer = {json.dumps(issuer)}
 authorization_servers = [{json.dumps(issuer)}]

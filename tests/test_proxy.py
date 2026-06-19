@@ -518,6 +518,38 @@ def test_reverse_proxy_oauth_serves_protected_resource_metadata_and_challenges(t
     assert seen["count"] == 0
 
 
+def test_reverse_proxy_enterprise_managed_metadata_advertises_extension(tmp_path):
+    server, seen = start_upstream()
+    policy = write_policy(tmp_path, "continue")
+    jwks_path, _secret = write_hs256_jwks(tmp_path)
+    auth_config = oauth_auth_config(jwks_path)
+    auth_config["mode"] = "enterprise-managed"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        auth_config=auth_config,
+    )
+
+    try:
+        metadata = run_asgi(app, method="GET", path="/.well-known/oauth-protected-resource")
+        challenge = run_asgi(
+            app,
+            path="/mcp",
+            headers=[(b"content-type", b"application/json")],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    metadata_body = json.loads(metadata[1]["body"])
+    assert metadata[0]["status"] == 200
+    assert metadata_body["extensions"] == {"io.modelcontextprotocol/enterprise-managed-authorization": {}}
+    assert metadata_body["resource"] == "https://mcp.example.test/mcp"
+    assert challenge[0]["status"] == 401
+    assert seen["count"] == 0
+
+
 def test_reverse_proxy_oauth_allows_token_adds_lua_context_and_strips_authorization(tmp_path):
     server, seen = start_upstream()
     policy = write_oauth_context_policy(tmp_path)

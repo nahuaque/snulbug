@@ -1153,13 +1153,18 @@ def _share_auth_visibility(
     cloudflare_profile = provider_auth.get("cloudflare_access_profile")
     tailscale_profile = provider_auth.get("tailscale_profile")
 
-    if configured_mode == "oauth-resource":
+    if configured_mode in {"oauth-resource", "enterprise-managed"}:
         provider = _infer_oauth_provider(auth_config, current_auth)
         provider_label = _auth_provider_label(provider)
-        parts = ["OAuth protected resource"]
+        is_enterprise_managed = configured_mode == "enterprise-managed"
+        base_label = "Enterprise-managed auth" if is_enterprise_managed else "OAuth"
         if provider_label:
-            parts.append(provider_label)
+            base_label += f" ({provider_label})"
         detail_bits = []
+        if is_enterprise_managed:
+            detail_bits.append("MCP enterprise-managed authorization")
+        else:
+            detail_bits.append("OAuth protected resource")
         if lease_required is True:
             detail_bits.append("task lease required")
         elif lease_required is False:
@@ -1170,8 +1175,8 @@ def _share_auth_visibility(
             detail_bits.append(str(auth_config.get("issuer")))
         return _drop_empty(
             {
-                "mode": "oauth-resource",
-                "label": "OAuth" + (f" ({provider_label})" if provider_label else ""),
+                "mode": configured_mode,
+                "label": base_label,
                 "detail": " · ".join(detail_bits),
                 "provider": provider,
                 "provider_label": provider_label,

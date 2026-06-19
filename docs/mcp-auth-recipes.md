@@ -39,6 +39,7 @@ Supported providers:
 - `keycloak`
 - `auth0`
 - `okta`
+- `okta-xaa`
 - `entra`
 - `cloudflare-access`
 - `github-oidc`
@@ -52,6 +53,8 @@ provider can be validated against a live dev account:
   [`examples/keycloak_oauth_demo`](../examples/keycloak_oauth_demo/README.md).
 - Auth0: generated setup recipe is available; live provider demo forthcoming.
 - Okta: generated setup recipe is available; live provider demo forthcoming.
+- Okta XAA / MCP Enterprise-Managed Authorization: generated setup recipe is
+  available; live provider demo forthcoming.
 - Microsoft Entra: generated setup recipe is available; live provider demo
   forthcoming.
 - Cloudflare Access: generated origin-side adapter recipe is available; live
@@ -84,6 +87,21 @@ The OAuth provider recipes configure snulbug as an OAuth protected resource:
 ```toml
 [mcp.auth]
 mode = "oauth-resource"
+resource = "https://mcp.example.com/mcp"
+issuer = "https://issuer.example.com"
+audience = "https://mcp.example.com/mcp"
+issuer_discovery = true
+token_validation = "jwt"
+strip_authorization_upstream = true
+```
+
+The Okta XAA recipe uses MCP Enterprise-Managed Authorization. The enterprise
+IdP/client owns the authorization flow, while snulbug validates the final access
+token and adds MCP-specific controls:
+
+```toml
+[mcp.auth]
+mode = "enterprise-managed"
 resource = "https://mcp.example.com/mcp"
 issuer = "https://issuer.example.com"
 audience = "https://mcp.example.com/mcp"
@@ -127,6 +145,11 @@ URL, then issue access tokens for that audience.
 
 Okta should use a custom authorization server with the MCP public URL as the
 authorization server audience.
+
+Okta XAA should register the snulbug MCP endpoint as the protected resource and
+enable the MCP enterprise-managed authorization extension for the client/resource
+pair. Keep `lease_required = true`; enterprise identity is necessary but not
+sufficient for tool use.
 
 Microsoft Entra works best with a stable verified domain for the Application ID
 URI. Temporary tunnel domains may require an `api://...` Application ID URI; in

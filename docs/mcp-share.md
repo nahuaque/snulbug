@@ -268,8 +268,8 @@ observed tools, and the approved contract JSON. The well-known JSON/text
 endpoints give simple HTTP-only agent harnesses the same contract and digest
 without requiring a snulbug binary on the client side.
 
-For OAuth protected-resource shares, run the auth-specific doctor before handing
-the URL to an MCP client:
+For OAuth protected-resource and enterprise-managed authorization shares, run
+the auth-specific doctor before handing the URL to an MCP client:
 
 ```bash
 snulbug mcp share auth doctor .snulbug/shares/share-... \
@@ -279,9 +279,12 @@ snulbug mcp share auth doctor .snulbug/shares/share-... \
 
 `share auth doctor` checks protected-resource metadata, issuer metadata, JWKS or
 introspection reachability, HTTPS/public URL alignment, token redaction
-settings, scope-to-tool mappings, and Cloudflare Access conflicts. Use
-`--no-live-checks` while editing local config, or `--config snulbug.toml` before
-a generated share directory exists.
+settings, scope-to-tool mappings, and Cloudflare Access conflicts. In
+`mode = "enterprise-managed"`, snulbug still validates the resulting access
+token and applies scope maps, claim policy, leases, and Lua policy; it does not
+act as the enterprise authorization server. Use `--no-live-checks` while editing
+local config, or `--config snulbug.toml` before a generated share directory
+exists.
 
 When you want a reviewable auth gate before sharing, generate an auth
 conformance pack from the current config, discovered schemas, sample token

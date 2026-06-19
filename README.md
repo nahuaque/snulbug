@@ -28,8 +28,10 @@ implementation surface. The main use case is protecting local MCP traffic.
 
 ## Auth Model
 
-snulbug can act as an MCP OAuth protected resource, but the useful part is the
-MCP-specific authorization layer on top:
+snulbug can act as an MCP OAuth protected resource, including
+enterprise-managed authorization flows where the enterprise IdP/client owns
+login and consent. The useful part is the MCP-specific authorization layer on
+top:
 
 - validate JWTs with local or remote JWKS, issuer discovery, or token introspection
 - enforce exact resource/audience settings so tunnel URLs do not drift silently
@@ -216,7 +218,8 @@ The running gateway publishes a zero-install trust surface:
 - `https://YOUR-FORWARDING-DOMAIN/.well-known/snulbug/share-contract` approved contract JSON
 - `https://YOUR-FORWARDING-DOMAIN/.well-known/snulbug/share-contract.sha256` binding digest
 
-If the share uses OAuth protected-resource mode, run the auth doctor too:
+If the share uses OAuth protected-resource or enterprise-managed auth mode, run
+the auth doctor too:
 
 ```bash
 snulbug mcp share auth doctor .snulbug/shares/share-... \

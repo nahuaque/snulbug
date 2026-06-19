@@ -6,10 +6,12 @@ import pytest
 
 from snulbug import (
     GatewayTemplate,
+    OAuthResourceConfig,
     default_event_sink_configs,
     format_event_sinks_toml,
     load_mcp_fabric_config,
     load_mcp_proxy_config,
+    protected_resource_metadata,
     render_gateway_toml,
     write_sample_config,
 )
@@ -251,6 +253,44 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
     assert webhook.timeout_ms == 500
     assert webhook.retry_attempts == 1
     assert webhook.signing_secret_env == "SNULBUG_WEBHOOK_SECRET"
+
+
+def test_load_mcp_proxy_config_accepts_enterprise_managed_auth_mode(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.auth]
+        mode = "enterprise-managed"
+        resource = "https://mcp.example.com/mcp"
+        issuer = "https://idp.example.com/oauth2/default"
+        audience = "https://mcp.example.com/mcp"
+        required_scopes = ["mcp:connect"]
+        issuer_discovery = true
+        token_validation = "jwt"
+
+        [mcp.auth.scope_map]
+        "mcp:tools.read" = ["tools/list", "resources/list"]
+        """,
+        encoding="utf-8",
+    )
+
+    result = load_mcp_proxy_config(config)
+    auth = result["auth"]
+    metadata = protected_resource_metadata(
+        OAuthResourceConfig(
+            mode=auth["mode"],
+            resource=auth["resource"],
+            issuer=auth["issuer"],
+            authorization_servers=tuple(auth["authorization_servers"]),
+            required_scopes=tuple(auth["required_scopes"]),
+            scopes_supported=tuple(auth["scopes_supported"]),
+            scope_map={scope: tuple(selectors) for scope, selectors in auth["scope_map"].items()},
+        )
+    )
+
+    assert auth["mode"] == "enterprise-managed"
+    assert auth["scopes_supported"] == ["mcp:connect", "mcp:tools.read"]
+    assert metadata["extensions"] == {"io.modelcontextprotocol/enterprise-managed-authorization": {}}
 
 
 def test_load_mcp_proxy_config_accepts_holepunch_provider(tmp_path):

@@ -118,6 +118,33 @@ def test_share_console_snapshot_summarizes_oauth_share_auth_mode(tmp_path):
     assert "share-secret" not in json.dumps(share_auth)
 
 
+def test_share_console_snapshot_summarizes_enterprise_managed_auth_mode(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="cloudflare",
+        public_url="https://mcp.example.com/mcp",
+        token="share-secret",
+        cloudflare_profile="oauth-resource",
+        auth_issuer="https://dev-123456.okta.com/oauth2/default",
+        auth_required_scopes=["mcp:connect", "mcp:tools.read"],
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace('mode = "oauth-resource"', 'mode = "enterprise-managed"'),
+        encoding="utf-8",
+    )
+
+    snapshot = build_share_console_snapshot(tmp_path)
+    share_auth = snapshot["share_auth"]
+
+    assert share_auth["mode"] == "enterprise-managed"
+    assert share_auth["label"].startswith("Enterprise-managed auth")
+    assert "MCP enterprise-managed authorization" in share_auth["detail"]
+    assert share_auth["lease_required"] is True
+
+
 def test_share_readiness_missing_grant_warns_without_blocking_invite_handoff(tmp_path):
     create_mcp_share(
         tmp_path,

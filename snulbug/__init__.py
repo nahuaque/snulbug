@@ -210,6 +210,8 @@ from .leases import (
 )
 from .manifests import load_manifest, manifest_digest, sign_upstream_manifest, verify_upstream_manifest, write_manifest
 from .mcp_auth import (
+    ENTERPRISE_MANAGED_AUTH_EXTENSION,
+    PROTECTED_RESOURCE_AUTH_MODES,
     OAuthDecision,
     OAuthResourceConfig,
     RemoteIssuerMetadataCache,
@@ -477,6 +479,7 @@ __all__ = [
     "EventSink",
     "EventSinkProvider",
     "EnvCredentialBroker",
+    "ENTERPRISE_MANAGED_AUTH_EXTENSION",
     "FABRIC_CONTROL_ACTION_TYPES",
     "FABRIC_CONTROL_STATE_SCHEMA",
     "FABRIC_MEMBER_REGISTRY_SCHEMA",
@@ -529,6 +532,7 @@ __all__ = [
     "PolicyDenyBackoff",
     "PolicyFabricRuntimeStateStore",
     "POLICY_ACTIVATION_MODES",
+    "PROTECTED_RESOURCE_AUTH_MODES",
     "RedisStateStore",
     "RedactionConfig",
     "RemoteIssuerMetadataCache",
