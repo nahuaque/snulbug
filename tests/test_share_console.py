@@ -1622,6 +1622,97 @@ def test_share_console_can_start_and_stop_ngrok_agent(tmp_path, monkeypatch):
     assert FakeProcess.instances[0].argv == ["/usr/local/bin/ngrok", "start", "--config", str(agent_config), "--all"]
 
 
+def test_share_console_ngrok_process_status_includes_generated_artifacts(tmp_path):
+    create_mcp_share(
+        tmp_path,
+        provider="ngrok",
+        public_url="https://mcp-dev.ngrok.app/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    server = ShareConsoleServer(directory=tmp_path, port=0)
+    server.start()
+    try:
+        snapshot = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
+    finally:
+        server.stop()
+
+    process = snapshot["tunnel_provider"]["process"]
+    assert process["provider"] == "ngrok"
+    assert process["state"] == "stopped"
+    assert process["agent_config"] == str(tmp_path / "tunnel" / "ngrok-agent.yml")
+    assert process["agent_config_exists"] is True
+    assert process["traffic_policy"] == str(tmp_path / "tunnel" / "ngrok-traffic-policy.yml")
+    assert process["traffic_policy_exists"] is True
+    assert process["public_url"] == "https://mcp-dev.ngrok.app/mcp"
+
+
+def test_share_console_ngrok_failed_start_surfaces_endpoint_diagnosis(tmp_path, monkeypatch):
+    create_mcp_share(
+        tmp_path,
+        provider="ngrok",
+        public_url="https://mcp-dev.ngrok.app/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+    agent_config = tmp_path / "tunnel" / "ngrok-agent.yml"
+    agent_config.write_text(
+        agent_config.read_text(encoding="utf-8").replace("YOUR_NGROK_AUTHTOKEN", "test-token"),
+        encoding="utf-8",
+    )
+
+    class FakeProcess:
+        instances: list["FakeProcess"] = []
+
+        def __init__(self, argv, **kwargs):
+            self.argv = argv
+            self.kwargs = kwargs
+            self.pid = 4321
+            self.returncode = 1
+            stdout = kwargs["stdout"]
+            stdout.write(
+                b"ERROR: failed to start tunnel: The endpoint 'https://mcp-dev.ngrok.app' is already online.\n"
+                b"ERROR: ERR_NGROK_334\n"
+            )
+            stdout.flush()
+            FakeProcess.instances.append(self)
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setattr(share_console.shutil, "which", lambda name: "/usr/local/bin/ngrok" if name == "ngrok" else None)
+    monkeypatch.setattr(share_console.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(share_console, "sleep", lambda seconds: None)
+
+    server = ShareConsoleServer(directory=tmp_path, port=0)
+    try:
+        start = server.start_tunnel_process()
+        snapshot = server.snapshot()
+    finally:
+        server.stop()
+
+    assert start["ok"] is False
+    assert start["process"]["state"] == "exited"
+    assert start["process"]["returncode"] == 1
+    assert start["process"]["diagnosis"]["code"] == "ngrok.endpoint_already_online"
+    assert "Stop the existing ngrok endpoint" in start["process"]["diagnosis"]["recommendation"]
+    assert "ERR_NGROK_334" in start["process"]["log_tail"]
+    assert snapshot["tunnel_provider"]["process"]["diagnosis"]["code"] == "ngrok.endpoint_already_online"
+    assert FakeProcess.instances[0].argv == ["/usr/local/bin/ngrok", "start", "--config", str(agent_config), "--all"]
+
+
 def test_share_console_can_start_and_stop_ssh_tunnel(tmp_path, monkeypatch):
     create_mcp_share(
         tmp_path,
