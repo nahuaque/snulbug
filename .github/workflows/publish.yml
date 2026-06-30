@@ -35,19 +35,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
-      - name: Verify
-        run: |
-          uv run ruff format --check .
-          uv run ruff check .
-          PYTHONDONTWRITEBYTECODE=1 uv run pytest
-
-      - name: Build distributions
-        run: uv build
-
-      - name: Smoke test built wheel
-        run: |
-          uv run --isolated --with dist/snulbug-*.whl snulbug --help
-          uv run --isolated --with dist/snulbug-*.whl python -m snulbug --help
+      - name: Release QA
+        run: uv run snulbug release-qa
 
       - name: Publish to TestPyPI
         if: inputs.repository == 'testpypi'

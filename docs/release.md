@@ -5,18 +5,23 @@
 3. Run verification:
 
 ```bash
-uv run ruff format --check .
-uv run ruff check .
-uv run bandit -r snulbug -lll
-PYTHONDONTWRITEBYTECODE=1 uv run pytest
-uv build
-uv run snulbug --help
-uv run python -m snulbug --help
-uv run --isolated --with dist/snulbug-*.whl snulbug --help
-uv run --isolated --with dist/snulbug-*.whl python -m snulbug --help
+uv run snulbug release-qa
 ```
 
-4. Inspect the distributions:
+The release QA suite runs:
+
+- version consistency between `pyproject.toml` and `snulbug.__version__`
+- README image URL checks for PyPI rendering
+- `ruff format --check`
+- `ruff check`
+- Bandit high-severity scan
+- pytest with bytecode disabled
+- `uv build`
+- distribution inspection for required files and cache artifacts
+- source CLI/module smoke tests
+- isolated built-wheel CLI/module smoke tests
+
+4. Optionally inspect the distributions by hand:
 
 ```bash
 tar -tzf dist/snulbug-*.tar.gz | sed -n '1,120p'

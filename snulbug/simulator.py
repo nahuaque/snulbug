@@ -130,6 +130,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     bundle_pack.add_argument("output", type=Path, help="output tar.gz path")
     add_compact_arg(bundle_pack)
 
+    release_qa = subparsers.add_parser("release-qa", help="run the local pre-release QA suite")
+    release_qa.add_argument("--skip-bandit", action="store_true", help="skip the Bandit high-severity security scan")
+    release_qa.add_argument("--skip-tests", action="store_true", help="skip the pytest suite")
+    release_qa.add_argument("--skip-build", action="store_true", help="skip distribution build and inspection")
+    release_qa.add_argument("--skip-smoke", action="store_true", help="skip source and built-wheel CLI smoke tests")
+    release_qa.add_argument("--dry-run", action="store_true", help="print the release QA plan without running it")
+    release_qa.add_argument("--keep-going", action="store_true", help="continue running gates after a failure")
+    add_compact_arg(release_qa)
+
     bundle_states = ("observed", "proposed", "approved", "active")
 
     mcp = subparsers.add_parser("mcp", help="work with local-dev MCP policy helpers and presets")
@@ -207,6 +216,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             status = 1
 
         write_json_output(result, compact=args.compact)
+        return status
+
+    if args.command == "release-qa":
+        from .release_qa import run_release_qa
+
+        result, status = run_release_qa(
+            include_bandit=not args.skip_bandit,
+            include_tests=not args.skip_tests,
+            include_build=not args.skip_build,
+            include_smoke=not args.skip_smoke,
+            dry_run=args.dry_run,
+            keep_going=args.keep_going,
+        )
+        write_result_output(result, compact=args.compact)
         return status
 
     if args.command == "mcp":
