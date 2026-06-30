@@ -43,6 +43,7 @@ from snulbug import (
     list_leases,
     load_record_log,
     revoke_lease,
+    revoke_mcp_share_invite,
     sign_upstream_manifest,
 )
 from snulbug.mcp_auth import RemoteIssuerMetadataCache, RemoteJwksCache, TokenIntrospectionCache
@@ -3883,6 +3884,66 @@ def test_invite_backed_task_lease_records_recipient_in_audit(tmp_path):
     assert invite["lease_token"] not in json.dumps(audit)
 
 
+def test_revoked_invite_backing_lease_cannot_authorize(tmp_path):
+    server, seen = start_mcp_upstream({"read_file": "Read a file"})
+    create_mcp_share(
+        tmp_path,
+        provider="generic",
+        public_url="https://share.example.test/mcp",
+        token="share-secret",
+        allowed_tools=["read_file"],
+        allowed_paths=["README.md"],
+        validate=False,
+    )
+    invite = create_mcp_share_invite(
+        tmp_path,
+        recipient="frontend agent",
+        task="Read README for collaborator",
+        allow_tools=["read_file"],
+        allow_paths=["README.md"],
+        ttl="30m",
+        client_name="codex",
+    )
+    revoke_mcp_share_invite(tmp_path, invite_id=invite["invite"]["id"])
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+        lease_file=tmp_path / "leases.json",
+        lease_required=True,
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            headers=[(b"x-snulbug-lease", invite["lease_token"].encode("ascii"))],
+            body=(
+                b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call",'
+                b'"params":{"name":"read_file","arguments":{"path":"README.md"}}}'
+            ),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    record = load_record_log(record_log)[0]
+    leases = list_leases(tmp_path / "leases.json")
+    assert sent[0]["status"] == 200
+    assert payload["error"]["code"] == -32000
+    assert "lease.revoked" in payload["error"]["message"]
+    assert seen["calls"] == []
+    assert record["metadata"]["lease"]["blocked"] is True
+    assert record["metadata"]["lease"]["reason_code"] == "lease.revoked"
+    assert record["metadata"]["lease"]["invite"]["id"] == invite["invite"]["id"]
+    assert record["metadata"]["access"]["reason_code"] == "lease.revoked"
+    backing_lease = next(item for item in leases["leases"] if item["id"] == invite["lease"]["id"])
+    assert backing_lease["active"] is False
+    assert backing_lease["revoked_at"]
+
+
 def test_mcp_task_lease_required_blocks_missing_token_before_upstream(tmp_path):
     server, seen = start_mcp_upstream({"read_file": "Read a file"})
     policy = write_policy(tmp_path, "continue")
@@ -3957,6 +4018,107 @@ def test_mcp_task_lease_blocks_revoked_presented_token_even_when_not_required(tm
     assert records[0]["metadata"]["access"]["allowed"] is False
     assert records[0]["metadata"]["access"]["reason_code"] == "lease.revoked"
     assert records[0]["metadata"]["access"]["lease"]["required"] is False
+
+
+def test_mcp_task_lease_blocks_expired_presented_token_even_when_not_required(tmp_path):
+    server, seen = start_mcp_upstream({"read_file": "Read a file"})
+    lease_file = tmp_path / "leases.json"
+    create_lease(
+        lease_file,
+        task="Read README only",
+        allow_tools=["read_file"],
+        allow_paths=["README.md"],
+        ttl="30m",
+        token="sbl_expired-token",
+    )
+    lease_store = json.loads(lease_file.read_text(encoding="utf-8"))
+    lease_store["leases"][0]["expires_at"] = "2000-01-01T00:00:00+00:00"
+    lease_file.write_text(json.dumps(lease_store), encoding="utf-8")
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+        lease_file=lease_file,
+        lease_required=False,
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            headers=[(b"x-snulbug-lease", b"sbl_expired-token")],
+            body=(
+                b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call",'
+                b'"params":{"name":"read_file","arguments":{"path":"README.md"}}}'
+            ),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    records = load_record_log(record_log)
+    leases = list_leases(lease_file)
+    assert sent[0]["status"] == 200
+    assert payload["error"]["code"] == -32000
+    assert "lease.expired" in payload["error"]["message"]
+    assert seen["calls"] == []
+    assert records[0]["metadata"]["lease"]["blocked"] is True
+    assert records[0]["metadata"]["lease"]["reason_code"] == "lease.expired"
+    assert records[0]["metadata"]["access"]["reason_code"] == "lease.expired"
+    assert leases["leases"][0]["active"] is False
+    assert leases["leases"][0]["use_count"] == 0
+
+
+def test_mcp_task_lease_blocks_after_max_calls_without_incrementing(tmp_path):
+    server, seen = start_mcp_upstream({"read_file": "Read a file"})
+    lease_file = tmp_path / "leases.json"
+    create_lease(
+        lease_file,
+        task="Read README once",
+        allow_tools=["read_file"],
+        allow_paths=["README.md"],
+        ttl="30m",
+        max_calls=1,
+        token="sbl_one-shot-token",
+    )
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+        lease_file=lease_file,
+        lease_required=True,
+    )
+    body = (
+        b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call",'
+        b'"params":{"name":"read_file","arguments":{"path":"README.md"}}}'
+    )
+
+    try:
+        first = run_asgi(app, headers=[(b"x-snulbug-lease", b"sbl_one-shot-token")], body=body)
+        second = run_asgi(app, headers=[(b"x-snulbug-lease", b"sbl_one-shot-token")], body=body)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    first_payload = json.loads(first[1]["body"])
+    second_payload = json.loads(second[1]["body"])
+    records = load_record_log(record_log)
+    leases = list_leases(lease_file)
+    assert first[0]["status"] == 200
+    assert first_payload["result"]["content"][0]["text"] == "called read_file"
+    assert second[0]["status"] == 200
+    assert second_payload["error"]["code"] == -32000
+    assert "lease.max_calls_exceeded" in second_payload["error"]["message"]
+    assert seen["calls"] == [{"method": "tools/call", "tool": "read_file"}]
+    assert records[0]["metadata"]["lease"]["allowed"] is True
+    assert records[1]["metadata"]["lease"]["blocked"] is True
+    assert records[1]["metadata"]["lease"]["reason_code"] == "lease.max_calls_exceeded"
+    assert records[1]["metadata"]["access"]["reason_code"] == "lease.max_calls_exceeded"
+    assert leases["leases"][0]["use_count"] == 1
 
 
 def test_mcp_task_lease_blocks_disallowed_path_before_upstream(tmp_path):
