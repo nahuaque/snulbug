@@ -94,6 +94,7 @@ CONSOLE_ASSETS = {
     "prism.js": ("application/javascript; charset=utf-8", CONSOLE_ASSET_DIR / "prism.js"),
 }
 _PROVIDER_CONSOLE_CACHE: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+_NGROK_LOCAL_API_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 def build_share_console_snapshot(
@@ -1021,6 +1022,8 @@ def _console_ngrok_tunnel_start_plan(
     log_path = share_dir / ".snulbug" / "share" / "ngrok-agent.log"
     exists = agent_config.is_file()
     policy_exists = traffic_policy.is_file()
+    public_url = _console_tunnel_public_url(bridge=bridge, manifest=manifest)
+    internal_url = bridge.get("internal_url") or bridge.get("ngrok_internal_url")
     return _drop_empty(
         {
             "provider": "ngrok",
@@ -1030,8 +1033,15 @@ def _console_ngrok_tunnel_start_plan(
             "agent_config_exists": exists,
             "traffic_policy": str(traffic_policy),
             "traffic_policy_exists": policy_exists,
-            "public_url": _console_tunnel_public_url(bridge=bridge, manifest=manifest),
-            "internal_url": bridge.get("internal_url") or bridge.get("ngrok_internal_url"),
+            "public_url": public_url,
+            "internal_url": internal_url,
+            "ngrok_local_api": _cached_ngrok_local_api_status(
+                {
+                    "provider": "ngrok",
+                    "public_url": public_url,
+                    "internal_url": internal_url,
+                }
+            ),
             "command_argv": command_argv,
             "command": _shell_command(command_argv),
             "log_path": str(log_path),
@@ -1829,6 +1839,154 @@ def _probe_provider_console(url: str, *, timeout: float) -> dict[str, Any]:
     except OSError as exc:
         return {"checked": True, "reachable": False, "status": None, "error": str(exc)}
     return {"checked": True, "reachable": status < 500, "status": status, "error": None}
+
+
+def _cached_ngrok_local_api_status(plan: Mapping[str, Any]) -> dict[str, Any]:
+    api_url = _ngrok_local_api_url()
+    now = monotonic()
+    cached = _NGROK_LOCAL_API_CACHE.get(api_url)
+    if cached is not None:
+        checked_at, payload = cached
+        if now - checked_at < DEFAULT_PROVIDER_CONSOLE_PROBE_TTL_SECONDS:
+            result = dict(payload)
+            result["cached"] = True
+            result["cache_ttl_seconds"] = DEFAULT_PROVIDER_CONSOLE_PROBE_TTL_SECONDS
+            return result
+    result = _ngrok_local_api_status(plan, api_url=api_url)
+    result["cached"] = False
+    result["cache_ttl_seconds"] = DEFAULT_PROVIDER_CONSOLE_PROBE_TTL_SECONDS
+    _NGROK_LOCAL_API_CACHE[api_url] = (now, dict(result))
+    return result
+
+
+def _ngrok_local_api_url() -> str:
+    template = DEFAULT_TUNNEL_PROVIDER_CONSOLES.get("ngrok") or {}
+    console_url = str(template.get("url") or "http://127.0.0.1:4040")
+    parsed = urlsplit(console_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return "http://127.0.0.1:4040/api/tunnels"
+    return f"{parsed.scheme}://{parsed.netloc}/api/tunnels"
+
+
+def _ngrok_local_api_status(plan: Mapping[str, Any], *, api_url: str) -> dict[str, Any]:
+    probe = _probe_ngrok_local_api(api_url, timeout=0.35)
+    expected_internal = str(plan.get("internal_url") or "")
+    expected_public = str(plan.get("public_url") or "")
+    summary = (
+        _summarize_ngrok_local_api(
+            _mapping(probe.get("payload")),
+            expected_internal_url=expected_internal,
+            expected_public_url=expected_public,
+        )
+        if probe.get("reachable") is True
+        else {
+            "tunnel_count": 0,
+            "tunnels": [],
+            "internal_agent_running": False,
+            "public_endpoint_in_local_agent": False,
+            "warnings": [],
+            "notes": [],
+        }
+    )
+    return {
+        **summary,
+        **{key: value for key, value in probe.items() if key != "payload"},
+        "api_url": api_url,
+        "expected_internal_url": expected_internal,
+        "expected_public_url": expected_public,
+    }
+
+
+def _probe_ngrok_local_api(api_url: str, *, timeout: float) -> dict[str, Any]:
+    parsed = urlsplit(api_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return {"checked": False, "reachable": None, "status": None, "error": "unsupported ngrok API URL"}
+    conn_class = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    path = parsed.path or "/api/tunnels"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    try:
+        connection = conn_class(
+            parsed.hostname,
+            parsed.port,
+            timeout=max(0.05, min(float(timeout or 0.25), 0.5)),
+        )
+        try:
+            connection.request("GET", path)
+            response = connection.getresponse()
+            raw = response.read(64 * 1024)
+            status = int(response.status)
+        finally:
+            connection.close()
+    except OSError as exc:
+        return {"checked": True, "reachable": False, "status": None, "error": str(exc)}
+    try:
+        payload = json.loads(raw.decode("utf-8")) if raw else {}
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return {"checked": True, "reachable": False, "status": status, "error": f"invalid ngrok API JSON: {exc}"}
+    return {"checked": True, "reachable": status < 500, "status": status, "error": None, "payload": payload}
+
+
+def _summarize_ngrok_local_api(
+    payload: Mapping[str, Any],
+    *,
+    expected_internal_url: str,
+    expected_public_url: str,
+) -> dict[str, Any]:
+    tunnels = [_ngrok_tunnel_row(item) for item in _sequence(payload.get("tunnels")) if isinstance(item, Mapping)]
+    internal_origin = _url_origin_or_empty(expected_internal_url)
+    public_origin = _url_origin_or_empty(expected_public_url)
+    internal_running = bool(internal_origin) and any(
+        _url_origin_or_empty(str(row.get("public_url") or "")) == internal_origin for row in tunnels
+    )
+    public_visible = bool(public_origin) and any(
+        _url_origin_or_empty(str(row.get("public_url") or "")) == public_origin for row in tunnels
+    )
+    notes: list[str] = []
+    warnings: list[str] = []
+    if expected_internal_url and not internal_running:
+        warnings.append("generated ngrok internal Agent Endpoint is not active in the local ngrok agent")
+    if public_visible:
+        warnings.append("public Cloud Endpoint appears in the local agent; verify this is not old `ngrok http` mode")
+    if internal_running and expected_public_url and not public_visible:
+        notes.append(
+            "local agent is connected to the private internal endpoint; "
+            "attach Traffic Policy to the public Cloud Endpoint"
+        )
+    if not tunnels:
+        notes.append("ngrok local API is reachable but reports no active tunnels")
+    return {
+        "tunnel_count": len(tunnels),
+        "tunnels": tunnels,
+        "internal_agent_running": internal_running,
+        "public_endpoint_in_local_agent": public_visible,
+        "warnings": warnings,
+        "notes": notes,
+    }
+
+
+def _ngrok_tunnel_row(value: Mapping[str, Any]) -> dict[str, Any]:
+    config = _mapping(value.get("config"))
+    metrics = _mapping(value.get("metrics"))
+    return _drop_empty(
+        {
+            "name": value.get("name"),
+            "public_url": value.get("public_url"),
+            "proto": value.get("proto"),
+            "addr": config.get("addr"),
+            "inspect": value.get("uri"),
+            "conns": _mapping(metrics.get("conns")).get("count"),
+        }
+    )
+
+
+def _url_origin_or_empty(value: str) -> str:
+    if not value:
+        return ""
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 def _decision_timeline(
@@ -4906,6 +5064,57 @@ def _console_html() -> str:
       gap: 8px;
       align-items: center;
     }
+    .handoff-progress {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+    }
+    .handoff-step {
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fff;
+      display: grid;
+      gap: 6px;
+      min-height: 106px;
+    }
+    .handoff-step.ready {
+      border-left-color: var(--green);
+      background: #f8fdfb;
+    }
+    .handoff-step.active {
+      border-color: #9ec2df;
+      border-left-color: var(--blue);
+      background: #f6fbff;
+    }
+    .handoff-step.blocked {
+      border-left-color: var(--red);
+      background: #fff8f8;
+    }
+    .handoff-step-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .handoff-step-title {
+      font-weight: 760;
+    }
+    .handoff-step-number {
+      width: 26px;
+      height: 26px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      background: var(--surface);
+      font-size: 12px;
+      font-weight: 780;
+      flex: 0 0 auto;
+    }
     .setup-form {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -5387,6 +5596,7 @@ def _console_html() -> str:
       <section id="shareWorkflowSection">
         <div class="section-head"><h2>Share Handoff</h2><span id="shareWorkflowSummary" class="muted"></span></div>
         <div class="section-body">
+          <div id="handoffProgress" class="handoff-progress"></div>
           <div class="tab-list" role="tablist" aria-label="Share handoff">
             <button
               id="share-tab-readiness"
@@ -5912,6 +6122,7 @@ def _console_html() -> str:
       const readinessPanel = $("readinessSection");
       const invitesPanel = $("invitesSection");
       if (!readinessTab || !invitesTab || !readinessPanel || !invitesPanel) return;
+      renderHandoffProgress(readiness, invitationsPayload);
       const invitesEnabled = inviteTabUnlocked(readiness, invitationsPayload);
       if (!invitesEnabled && state.activeShareTab === "invites") {
         state.activeShareTab = "readiness";
@@ -5936,6 +6147,80 @@ def _console_html() -> str:
       $("shareWorkflowSummary").textContent = readinessReady
         ? "Ready for task invites"
         : (activeInvites > 0 ? "Existing invites available" : "Review readiness before inviting");
+    }
+
+    function renderHandoffProgress(readiness = activeReadinessGate(), invitationsPayload = {}) {
+      const target = $("handoffProgress");
+      if (!target) return;
+      const readinessDecision = (readiness || {}).decision || "unknown";
+      const readinessReady = readinessDecision === "ready";
+      const reviewed = Boolean((readiness || {}).reviewed);
+      const summary = (readiness || {}).summary || {};
+      const items = invitationsPayload.items || [];
+      const activeInvites = activeInviteCount(invitationsPayload);
+      const connected = numeric(((invitationsPayload.connection_summary || {}).connected));
+      const setupAvailable = items.some((invite) => !invite.revoked_at && invite.setup_available === true);
+      const blocked = readinessDecision === "blocked";
+      const invitesUnlocked = inviteTabUnlocked(readiness, invitationsPayload);
+      const steps = [
+        {
+          number: 1,
+          title: "Check readiness",
+          state: blocked ? "blocked" : "ready",
+          label: blocked ? "blocked" : "checked",
+          detail: `${numeric(summary.failed)} failed · ${numeric(summary.warnings)} warnings`,
+          action: "readiness"
+        },
+        {
+          number: 2,
+          title: "Review warnings",
+          state: readinessReady ? "ready" : (blocked ? "blocked" : "active"),
+          label: readinessReady ? (reviewed ? "reviewed" : "clean") : (blocked ? "blocked" : "review"),
+          detail: readinessReady ? "readiness is green" : "acknowledge warnings or fix failures",
+          action: "readiness"
+        },
+        {
+          number: 3,
+          title: "Create invite",
+          state: activeInvites ? "ready" : (readinessReady ? "active" : "blocked"),
+          label: activeInvites ? `${activeInvites} active` : (readinessReady ? "next" : "locked"),
+          detail: activeInvites ? "setup packet available" : "mint a task-scoped client packet",
+          action: "invites",
+          disabled: !invitesUnlocked
+        },
+        {
+          number: 4,
+          title: "Confirm handoff",
+          state: connected ? "ready" : (activeInvites ? "active" : "blocked"),
+          label: connected ? `${connected} connected` : (setupAvailable ? "copy/test" : "waiting"),
+          detail: connected ? "invite has been used" : "copy setup or run the smoke test",
+          action: "invites",
+          disabled: !invitesUnlocked
+        }
+      ];
+      target.innerHTML = steps.map(handoffStepHtml).join("");
+    }
+
+    function handoffStepHtml(step) {
+      const action = step.action === "invites" ? "invites" : "readiness";
+      const button = action === "invites"
+        ? [
+            `<button type="button" onclick="setShareTab('invites')" ${step.disabled ? "disabled" : ""}>`,
+            "Open invites",
+            "</button>"
+          ].join("")
+        : `<button type="button" onclick="setShareTab('readiness')">Review readiness</button>`;
+      return `<div class="handoff-step ${esc(step.state)}">
+        <div class="handoff-step-head">
+          <span class="handoff-step-number">${esc(step.number)}</span>
+          ${pill(step.label)}
+        </div>
+        <div>
+          <div class="handoff-step-title">${esc(step.title)}</div>
+          <div class="timeline-detail">${esc(step.detail)}</div>
+        </div>
+        <div class="review-actions">${button}</div>
+      </div>`;
     }
 
     function setSetupMode(enabled) {
@@ -6404,6 +6689,7 @@ def _console_html() -> str:
           </div>
           <div class="review-actions">
             <button type="button" onclick="runDoctor()">Run doctor</button>
+            <button type="button" class="primary" onclick="setShareTab('invites')">Continue to invites</button>
             <button type="button" onclick="downloadReport()">Download report</button>
           </div>
         </div>`;
@@ -6443,7 +6729,10 @@ def _console_html() -> str:
       if (failures > 0) return "";
       if (payload.reviewed) {
         const reviewedAt = (payload.review || {}).reviewed_at;
-        return `<span class="timeline-detail">Reviewed${reviewedAt ? ` ${esc(reviewedAt)}` : ""}</span>`;
+        return [
+          `<span class="timeline-detail">Reviewed${reviewedAt ? ` ${esc(reviewedAt)}` : ""}</span>`,
+          `<button type="button" class="primary" onclick="setShareTab('invites')">Continue to invites</button>`
+        ].join("");
       }
       return `<button type="button" class="primary" onclick="markReadinessReviewed()">Mark readiness reviewed</button>`;
     }
@@ -7872,6 +8161,7 @@ def _console_html() -> str:
         <summary>Recent tunnel log</summary>
         <div class="details-body"><pre class="console-output">${esc(process.log_tail)}</pre></div>
       </details>` : "";
+      const ngrokApiHtml = ngrokLocalApiHtml(process.ngrok_local_api);
       const processDetails = [
         process.public_url
           ? detailRowHtml("Public endpoint", externalLink(process.public_url, process.public_url))
@@ -7912,8 +8202,49 @@ def _console_html() -> str:
         <div class="detail-grid">${processDetails}</div>
         ${error}
         ${diagnosisHtml}
+        ${ngrokApiHtml}
         ${logHtml}
       </div>`;
+    }
+
+    function ngrokLocalApiHtml(api) {
+      if (!api || !Object.keys(api).length) return "";
+      const reachable = api.checked ? healthLabel(api.reachable) : "not checked";
+      const rows = (api.tunnels || []).map((row) => (
+        `<tr>
+          <td>${esc(row.name || "-")}</td>
+          <td>${externalLink(row.public_url, row.public_url)}</td>
+          <td>${esc(row.addr || "-")}</td>
+        </tr>`
+      )).join("");
+      const warningHtml = (api.warnings || []).length
+        ? [
+            '<div class="review-panel warn">',
+            (api.warnings || []).map((item) => `<div>${esc(item)}</div>`).join(""),
+            "</div>"
+          ].join("")
+        : "";
+      const noteHtml = (api.notes || []).length
+        ? `<ul class="recommendations">${(api.notes || []).map((item) => `<li>${esc(item)}</li>`).join("")}</ul>`
+        : "";
+      const emptyRows = rows || '<tr><td colspan="3">No active ngrok tunnels reported.</td></tr>';
+      return `<details class="compact-details" data-state-key="ngrok-local-api">
+        <summary>ngrok local agent ${pill(reachable)}</summary>
+        <div class="details-body stack">
+          <div class="detail-grid">
+            ${detailRowHtml("Local API", externalLink(api.api_url, api.api_url))}
+            ${detailRow("Active tunnels", api.tunnel_count)}
+            ${detailRow("Internal endpoint active", api.internal_agent_running ? "yes" : "no")}
+            ${detailRow("Public endpoint visible locally", api.public_endpoint_in_local_agent ? "yes" : "no")}
+          </div>
+          ${warningHtml}
+          ${noteHtml}
+          <table>
+            <thead><tr><th>Name</th><th>Public URL</th><th>Local target</th></tr></thead>
+            <tbody>${emptyRows}</tbody>
+          </table>
+        </div>
+      </details>`;
     }
 
     function providerAuthControls(auth) {
@@ -8288,8 +8619,9 @@ def _console_html() -> str:
         });
         state.lastInviteSetup = formatInviteSetup(payload);
         state.lastInviteId = (payload.invite || {}).id || "";
+        state.activeShareTab = "invites";
         setInviteFeedback("Created", "ok");
-        $("message").textContent = `Created invite ${(payload.invite || {}).id || ""}`;
+        $("message").textContent = `Created invite ${(payload.invite || {}).id || ""}; copy the setup packet next`;
         await refreshAfterReadinessMutation();
       } catch (error) {
         setInviteFeedback("Create failed", "fail");
@@ -8554,6 +8886,9 @@ def _console_html() -> str:
           })
         });
         state.liveHealthReadiness = payload.readiness_gate || null;
+        if ((payload.readiness_gate || {}).decision === "ready") {
+          state.activeShareTab = "invites";
+        }
         if (state.liveHealthReadiness) {
           renderMetrics(
             state.snapshot || {},
@@ -8563,7 +8898,7 @@ def _console_html() -> str:
           renderReadinessGate(state.liveHealthReadiness);
           renderShareTabs(state.liveHealthReadiness, currentInvitationsPayload());
         }
-        $("message").textContent = "Readiness reviewed";
+        $("message").textContent = "Readiness reviewed; create a task invite next";
         await loadSnapshot();
       } catch (error) {
         $("message").textContent = `Review failed: ${error.message}`;

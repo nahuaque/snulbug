@@ -674,6 +674,10 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "Tunnel Provider" in html
     assert "renderTunnelProvider" in html
     assert "providerCommandsTable" in html
+    assert "ngrokLocalApiHtml" in html
+    assert "ngrok local agent" in html
+    assert "Internal endpoint active" in html
+    assert "Public endpoint visible locally" in html
     assert "Copy bearer token" in html
     assert "copyBearerToken" in html
     assert "bearerCopyStatus" in html
@@ -699,6 +703,13 @@ def test_share_console_serves_dashboard_and_approves_capability_request(tmp_path
     assert "cleanupInactiveLeases" in html
     assert 'id="shareWorkflowSection"' in html
     assert "Share Handoff" in html
+    assert 'id="handoffProgress"' in html
+    assert "renderHandoffProgress" in html
+    assert "handoffStepHtml" in html
+    assert "Check readiness" in html
+    assert "Create invite" in html
+    assert "Confirm handoff" in html
+    assert "Continue to invites" in html
     assert 'role="tablist"' in html
     assert "setShareTab('readiness')" in html
     assert "setShareTab('invites')" in html
@@ -1647,6 +1658,60 @@ def test_share_console_ngrok_process_status_includes_generated_artifacts(tmp_pat
     assert process["traffic_policy"] == str(tmp_path / "tunnel" / "ngrok-traffic-policy.yml")
     assert process["traffic_policy_exists"] is True
     assert process["public_url"] == "https://mcp-dev.ngrok.app/mcp"
+
+
+def test_share_console_ngrok_process_status_summarizes_local_agent_api(tmp_path, monkeypatch):
+    monkeypatch.setattr(share_console, "_NGROK_LOCAL_API_CACHE", {})
+    calls = []
+
+    def fake_probe(api_url, *, timeout):
+        calls.append((api_url, timeout))
+        return {
+            "checked": True,
+            "reachable": True,
+            "status": 200,
+            "error": None,
+            "payload": {
+                "tunnels": [
+                    {
+                        "name": "snulbug-mcp-internal",
+                        "public_url": "https://snulbug-mcp.internal",
+                        "proto": "https",
+                        "config": {"addr": "http://127.0.0.1:8080"},
+                    }
+                ]
+            },
+        }
+
+    monkeypatch.setattr(share_console, "_probe_ngrok_local_api", fake_probe)
+    create_mcp_share(
+        tmp_path,
+        provider="ngrok",
+        public_url="https://mcp-dev.ngrok.app/mcp",
+        token="share-secret",
+        allowed_tools=["safe_read_file"],
+        validate=False,
+    )
+
+    server = ShareConsoleServer(directory=tmp_path, port=0)
+    server.start()
+    try:
+        snapshot = read_json(f"{server.url}/api/snapshot", headers=console_headers(server))
+    finally:
+        server.stop()
+
+    api = snapshot["tunnel_provider"]["process"]["ngrok_local_api"]
+    assert calls == [("http://127.0.0.1:4040/api/tunnels", 0.35)]
+    assert api["reachable"] is True
+    assert api["tunnel_count"] == 1
+    assert api["internal_agent_running"] is True
+    assert api["public_endpoint_in_local_agent"] is False
+    assert api["tunnels"][0]["public_url"] == "https://snulbug-mcp.internal"
+    assert api["tunnels"][0]["addr"] == "http://127.0.0.1:8080"
+    assert api["notes"] == [
+        "local agent is connected to the private internal endpoint; attach Traffic Policy to the public Cloud Endpoint"
+    ]
+    assert api["warnings"] == []
 
 
 def test_share_console_ngrok_failed_start_surfaces_endpoint_diagnosis(tmp_path, monkeypatch):
