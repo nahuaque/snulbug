@@ -6,6 +6,18 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-06-30
+
+- Added the local share console as the default companion UI for `snulbug mcp share run`, including setup flows, readiness review, health checks, live decisions, pending requests, policy visibility, auth visibility, lease management, tool/schema drift, tunnel status, and one-click session reports.
+- Added task-scoped share invites with policy-declared capability labels, invite setup snippets, console-secret-gated sensitive views, invite cleanup, and invite metadata in lease/audit records.
+- Changed generated MCP share configs to require active task leases by default for tool calls, and hardened lease authorization around inactive, revoked, and stale invite-backed leases.
+- Added MCP-native just-in-time capability requests, policy deny backoff, policy-aware tool catalog projection, and richer Lua policy DSL helpers for access, auth, leases, workspace rules, upstream routing, and capability requests.
+- Added OAuth DPoP validation with replay protection, Redis-backed DPoP replay caching when Redis state is enabled, enterprise-managed MCP auth support, auth runtime visibility, and stronger OAuth + lease composition.
+- Added ngrok management and diagnostics in the share console, improved ngrok setup guidance, provider-local console visibility, public tunnel health checks, and SSH reverse tunnel support.
+- Added MCP Inspector setup generation and share doctor acceptance checks so handoff flows can prove client connectivity and policy behavior before sharing.
+- Added plugin extension points for auth providers, credential brokers, discovery providers, evidence exporters, tool risk analyzers, upstream transports, and share doctor/conformance checks.
+- Added `snulbug release-qa` with version, README, formatting, linting, Bandit, pytest, build, distribution inspection, and source/built-wheel smoke-test gates, and wired it into release documentation and publishing workflow.
+
 ## [0.1.1] - 2026-06-16
 
 - Fixed PyPI/TestPyPI project metadata and README logo URLs to point at the

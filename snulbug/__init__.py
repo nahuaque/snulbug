@@ -1,6 +1,6 @@
 """Local-dev MCP policy proxy and programmable Lua ASGI policy layer."""
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 from .auth_providers import (
     AuthProvider,
