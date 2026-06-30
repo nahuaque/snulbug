@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import tempfile
 import zipfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -48,7 +49,7 @@ def build_release_qa_steps(
             ReleaseQAStep(
                 "tests",
                 "Test",
-                command=("uv", "run", "pytest"),
+                command=("uv", "run", "pytest", "-q"),
                 env={"PYTHONDONTWRITEBYTECODE": "1"},
             )
         )
@@ -257,6 +258,7 @@ def _inspect_wheel(path: Path) -> tuple[bool, str | None, dict[str, Any]]:
         names = set(archive.namelist())
     required = {
         "snulbug/__init__.py",
+        "snulbug/release_qa.py",
         "snulbug/py.typed",
     }
     missing = sorted(required - names)
@@ -282,6 +284,7 @@ def _inspect_sdist(path: Path, *, version: str) -> tuple[bool, str | None, dict[
         f"{prefix}LICENSE",
         f"{prefix}pyproject.toml",
         f"{prefix}snulbug/__init__.py",
+        f"{prefix}snulbug/release_qa.py",
         f"{prefix}docs/release.md",
         f"{prefix}tests/test_share_console.py",
     }
@@ -304,13 +307,25 @@ def _smoke_built_wheel(root: Path, args: Sequence[str]) -> tuple[bool, str | Non
     wheel = _built_wheel(root, version=version)
     if wheel is None:
         return False, f"built wheel for version {version} not found in dist/", {"version": version}
-    command = ("uv", "run", "--isolated", "--with", str(wheel), *args)
-    completed = subprocess.run(command, cwd=root)  # noqa: S603 - release QA executes fixed tool commands.
+    wheel_path = wheel.resolve()
+    command = ("uv", "run", "--isolated", "--with", str(wheel_path), *args)
+    with tempfile.TemporaryDirectory(prefix="snulbug-release-qa-") as temp_dir:
+        completed = subprocess.run(  # noqa: S603 - release QA executes fixed tool commands.
+            command,
+            cwd=temp_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    output = completed.stdout or ""
     details = {
         "command": list(command),
         "returncode": completed.returncode,
-        "wheel": str(wheel),
+        "wheel": str(wheel_path),
+        "output": output[-4000:],
     }
     if completed.returncode != 0:
         return False, "built wheel smoke test failed", details
+    if "release-qa" not in output:
+        return False, "built wheel help output does not include the release-qa command", details
     return True, None, details
