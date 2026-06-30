@@ -34,6 +34,7 @@ from snulbug import (
     JsonlEventSink,
     McpFacadeProxyApp,
     OAuthResourceConfig,
+    RedisStateStore,
     build_fabric_audit_metadata,
     create_lease,
     create_mcp_share,
@@ -45,6 +46,70 @@ from snulbug import (
     sign_upstream_manifest,
 )
 from snulbug.mcp_auth import RemoteIssuerMetadataCache, RemoteJwksCache, TokenIntrospectionCache
+
+
+class FakeRedisClient:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+        self._lock = threading.RLock()
+
+    def get(self, key: str) -> str | None:
+        with self._lock:
+            return self.values.get(key)
+
+    def set(self, key: str, value: str, *, ex: int | None = None) -> bool:
+        del ex
+        with self._lock:
+            self.values[key] = str(value)
+            return True
+
+    def delete(self, key: str) -> int:
+        with self._lock:
+            existed = key in self.values
+            self.values.pop(key, None)
+            return int(existed)
+
+    def incrby(self, key: str, amount: int) -> int:
+        with self._lock:
+            value = int(self.values.get(key) or "0") + amount
+            self.values[key] = str(value)
+            return value
+
+    def expire(self, key: str, ex: int) -> bool:
+        del ex
+        return key in self.values
+
+    def pipeline(self) -> "FakeRedisPipeline":
+        return FakeRedisPipeline(self)
+
+
+class FakeRedisPipeline:
+    def __init__(self, client: FakeRedisClient) -> None:
+        self.client = client
+
+    def __enter__(self) -> "FakeRedisPipeline":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        return None
+
+    def watch(self, key: str) -> None:
+        del key
+
+    def get(self, key: str) -> str | None:
+        return self.client.get(key)
+
+    def unwatch(self) -> None:
+        return None
+
+    def multi(self) -> None:
+        return None
+
+    def set(self, key: str, value: str, *, ex: int | None = None) -> bool:
+        return self.client.set(key, value, ex=ex)
+
+    def execute(self) -> list[Any]:
+        return []
 
 
 def audit_event_sinks(path: Path) -> list[dict[str, Any]]:
@@ -749,6 +814,47 @@ def test_reverse_proxy_oauth_dpop_rejects_replayed_proof(tmp_path):
     assert second[0]["status"] == 401
     assert seen["count"] == 1
     assert records[1]["metadata"]["auth"]["reason_code"] == "oauth.dpop_replayed_proof"
+
+
+def test_reverse_proxy_oauth_dpop_uses_redis_state_store_for_replay_cache(tmp_path):
+    server, seen = start_upstream()
+    policy = write_oauth_context_policy(tmp_path)
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    dpop_key = make_dpop_key()
+    token = make_oauth_token(
+        secret,
+        scopes=["mcp:connect", "mcp:tools"],
+        extra_claims={"cnf": {"jkt": dpop_key["jkt"]}},
+    )
+    proof = make_dpop_proof(dpop_key, token=token)
+    auth_config = oauth_auth_config(jwks_path)
+    auth_config["dpop_mode"] = "required"
+    redis_client = FakeRedisClient()
+    redis_store = RedisStateStore(client=redis_client)
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        state_store=redis_store,
+        auth_config=auth_config,
+    )
+    headers = [
+        (b"content-type", b"application/json"),
+        (b"authorization", f"DPoP {token}".encode("ascii")),
+        (b"dpop", proof.encode("ascii")),
+    ]
+    body = b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+
+    try:
+        first = run_asgi(app, path="/mcp", headers=headers, body=body)
+        second = run_asgi(app, path="/mcp", headers=headers, body=body)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert first[0]["status"] == 200
+    assert second[0]["status"] == 401
+    assert seen["count"] == 1
+    assert any(key.startswith("auth:dpop:jti:") for key in redis_client.values)
 
 
 def test_reverse_proxy_oauth_provider_claim_helpers(tmp_path):

@@ -9,7 +9,7 @@ import os
 import subprocess
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import SplitResult, urlsplit
@@ -41,6 +41,7 @@ from .leases import (
 from .manifests import load_manifest, verify_upstream_manifest
 from .mcp_auth import (
     OAuthResourceConfig,
+    StateDpopReplayCache,
     auth_runtime_summary,
     evaluate_oauth_request,
     oauth_resource_metadata_url,
@@ -57,7 +58,7 @@ from .schema_policy import (
     mcp_schema_error_response,
     observe_mcp_tool_schemas,
 )
-from .state import MemoryStateStore, PolicyStateStore, SQLiteStateStore, StateLimits
+from .state import MemoryStateStore, PolicyStateStore, RedisStateStore, SQLiteStateStore, StateLimits
 from .tool_catalog import CatalogProjectionConfig, project_mcp_tool_catalog_response
 from .tool_risk import classify_mcp_tool
 from .tunnel import TunnelAuditConfig, build_tunnel_audit_metadata
@@ -2201,6 +2202,13 @@ def create_proxy_application(
         header=lease_header,
     )
     oauth_config = _oauth_resource_config(auth_config)
+    if (
+        oauth_config.enabled
+        and oauth_config.dpop_mode != "off"
+        and oauth_config.dpop_replay_cache is None
+        and isinstance(effective_state_store, RedisStateStore)
+    ):
+        oauth_config = replace(oauth_config, dpop_replay_cache=StateDpopReplayCache(effective_state_store))
     catalog_config = CatalogProjectionConfig(projection=catalog_projection)
     proxy = _proxy_app(
         upstream,
@@ -2827,7 +2835,12 @@ def _state_store(value: str) -> PolicyStateStore | None:
         return MemoryStateStore()
     if value.startswith("sqlite:"):
         return SQLiteStateStore(value.removeprefix("sqlite:"))
-    raise ValueError("state must be 'memory', 'none', or 'sqlite:/path/to/state.sqlite3'")
+    if value.startswith(("redis://", "rediss://")):
+        return RedisStateStore(value)
+    if value.startswith("redis:"):
+        url = value.removeprefix("redis:") or None
+        return RedisStateStore(url)
+    raise ValueError("state must be 'memory', 'none', 'sqlite:/path/to/state.sqlite3', or 'redis://host/db'")
 
 
 def _schema_metadata(request_metadata: Mapping[str, Any], observe_metadata: Mapping[str, Any]) -> dict[str, Any]:

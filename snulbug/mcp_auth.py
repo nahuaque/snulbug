@@ -342,6 +342,38 @@ class DpopReplayCache:
             self._entries.pop(oldest_key, None)
 
 
+class StateDpopReplayCache(DpopReplayCache):
+    """DPoP proof replay cache backed by the policy state-store CAS primitive."""
+
+    def __init__(self, store: Any, *, key_prefix: str = "auth:dpop:jti:") -> None:
+        self.store = store
+        self.key_prefix = key_prefix
+        self._lock = threading.RLock()
+        self._metrics = _new_cache_metrics()
+
+    def add_once(self, key: str, *, ttl_seconds: float, max_entries: int) -> bool:
+        del max_entries
+        ttl = max(1.0, float(ttl_seconds))
+        stored = self.store.cas(f"{self.key_prefix}{key}", None, "seen", ttl=ttl)
+        with self._lock:
+            if stored:
+                self._metrics["misses"] += 1
+                self._metrics["fetches"] += 1
+                self._metrics["last_fetch_at"] = time.time()
+            else:
+                self._metrics["hits"] += 1
+        return bool(stored)
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "backend": "state_store",
+                "entries": None,
+                "entries_unknown": True,
+                "totals": _cache_metrics_snapshot(self._metrics),
+            }
+
+
 class AuthRuntimeDecisionStats:
     """Per-process OAuth decision counters for live diagnostics."""
 

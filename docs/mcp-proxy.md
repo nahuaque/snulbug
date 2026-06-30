@@ -458,6 +458,11 @@ For DPoP requests, snulbug verifies:
 snulbug also strips both `Authorization` and `DPoP` before forwarding upstream
 when `strip_authorization_upstream = true`.
 
+The DPoP replay cache is in-process by default. When `[mcp.proxy] state` uses a
+Redis URL, snulbug stores DPoP `jti` replay markers in Redis with TTL-backed
+atomic `cas`, so replay protection is shared across workers and remote data
+plane nodes using the same Redis state.
+
 Claim policies are a declarative pre-Lua guard for common identity-to-tool
 rules. Each rule matches a claim value and allows exact tool names, tool-name
 prefixes, or selector patterns:
@@ -822,7 +827,8 @@ Use warn mode while introducing the proxy to an existing workflow by setting
 `schema_validation_action = "warn"` in `snulbug.toml`.
 
 Schema snapshots live in the configured state adapter. Use SQLite if you want
-learned schemas to survive proxy restarts.
+learned schemas to survive proxy restarts, or Redis when multiple proxy workers
+or remote data-plane members must share state.
 
 ## Policy Deny Backoff
 
@@ -868,7 +874,9 @@ return-path controls to successful JSON-RPC responses:
   or schema change is rejected until the proxy state is reset or reviewed.
 
 Tool pins live in the configured state adapter. The default in-memory state pins
-for the current proxy process. SQLite-backed state keeps pins across restarts:
+for the current proxy process. SQLite-backed state keeps pins across restarts;
+Redis-backed state shares pins, schema observations, policy state, and DPoP
+replay markers across workers:
 
 ```toml
 [mcp.proxy]
@@ -1218,6 +1226,22 @@ with:
 [mcp.proxy]
 state = "sqlite:policy-state.sqlite3"
 ```
+
+Use Redis-backed shared state:
+
+```bash
+snulbug mcp share run --config snulbug.toml
+```
+
+with:
+
+```toml
+[mcp.proxy]
+state = "redis://localhost:6379/0"
+```
+
+Redis state shares policy state, learned schemas, tool pins, and DPoP `jti`
+replay markers across proxy workers and remote data-plane members.
 
 Disable state:
 

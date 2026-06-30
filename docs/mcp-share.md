@@ -347,7 +347,9 @@ The default `optional` mode keeps ordinary Bearer tokens working, but any
 access token with `cnf.jkt` or request carrying `Authorization: DPoP ...` /
 `DPoP: ...` must pass proof validation. snulbug rejects Bearer downgrades for
 DPoP-bound tokens, blocks replayed proof `jti` values, and strips proof material
-before upstream forwarding.
+before upstream forwarding. If the share uses Redis state, replayed `jti`
+markers are stored in Redis so DPoP replay protection is shared across workers
+or remote data-plane members.
 
 To exercise the full auth model locally without an external identity provider,
 run the auth lab:

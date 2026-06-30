@@ -53,7 +53,10 @@ When DPoP is enabled, snulbug verifies the proof JWT signature, `htu`, `htm`,
 `ath`, `iat`, `jti`, and access-token `cnf.jkt` binding, then strips the caller
 `Authorization` and `DPoP` headers before forwarding upstream. DPoP reduces
 stolen-token replay risk at snulbug's resource boundary; it does not replace
-issuer-side token minting, rotation, revocation, or client registration.
+issuer-side token minting, rotation, revocation, or client registration. DPoP
+proof replay state is in-process by default, but moves to Redis automatically
+when Redis proxy state is enabled, which shares `jti` replay protection across
+workers and data-plane nodes.
 When `[mcp.auth.claim_policy]` is configured, snulbug can also map sanitized
 JWT/introspection claims such as tenant, subject, group, or client ID to exact
 tool names, prefixes, or selectors before Lua or the upstream runs.

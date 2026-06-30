@@ -34,7 +34,7 @@ login and consent. The useful part is the MCP-specific authorization layer on
 top:
 
 - validate JWTs with local or remote JWKS, issuer discovery, or token introspection
-- validate DPoP-bound access tokens and reject Bearer downgrades or replayed proofs
+- validate DPoP-bound access tokens and reject Bearer downgrades or replayed proofs, using Redis for the replay cache when Redis state is enabled
 - enforce exact resource/audience settings so tunnel URLs do not drift silently
 - trust multiple issuer or tenant profiles for facade and fabric gateways
 - map OAuth scopes to concrete MCP methods and tools
