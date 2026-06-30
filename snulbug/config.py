@@ -51,6 +51,21 @@ DEFAULT_MCP_AUTH_CONFIG = {
     "realm": "mcp",
     "leeway_seconds": 60.0,
     "strip_authorization_upstream": True,
+    "dpop_mode": "optional",
+    "dpop_signing_alg_values_supported": [
+        "ES256",
+        "ES384",
+        "ES512",
+        "PS256",
+        "PS384",
+        "PS512",
+        "RS256",
+        "RS384",
+        "RS512",
+        "EdDSA",
+    ],
+    "dpop_proof_max_age_seconds": 300.0,
+    "dpop_replay_cache_max_entries": 10000,
     "scope_map": {},
     "claim_policy": {
         "enabled": False,
@@ -270,6 +285,10 @@ key_fields = [
 # realm = "mcp"
 # leeway_seconds = 60.0
 # strip_authorization_upstream = true
+# dpop_mode = "optional" # off, optional, or required
+# dpop_signing_alg_values_supported = ["ES256", "RS256", "PS256", "EdDSA"]
+# dpop_proof_max_age_seconds = 300
+# dpop_replay_cache_max_entries = 10000
 #
 # Optional MCP-aware scope-to-method/tool mapping:
 # [mcp.auth.scope_map]
@@ -750,6 +769,7 @@ def normalize_mcp_auth_config(config: Mapping[str, Any] | None, *, base_dir: str
         "introspection_client_secret_env",
         "resource_metadata_url",
         "realm",
+        "dpop_mode",
     ):
         value = normalized.get(field)
         if value is not None and not isinstance(value, str):
@@ -758,6 +778,18 @@ def normalize_mcp_auth_config(config: Mapping[str, Any] | None, *, base_dir: str
             normalized[field] = None if field != "realm" else "mcp"
     for field in ("authorization_servers", "resource_aliases", "audiences", "required_scopes", "scopes_supported"):
         normalized[field] = _normalize_auth_string_list(normalized.get(field), field=field)
+    if normalized["dpop_mode"] not in {"off", "optional", "required"}:
+        raise ValueError("mcp.auth.dpop_mode must be 'off', 'optional', or 'required'")
+    normalized["dpop_signing_alg_values_supported"] = _normalize_auth_string_list(
+        normalized.get("dpop_signing_alg_values_supported"),
+        field="dpop_signing_alg_values_supported",
+    )
+    if not normalized["dpop_signing_alg_values_supported"]:
+        raise ValueError("mcp.auth.dpop_signing_alg_values_supported must not be empty")
+    _validate_dpop_signing_algorithms(
+        normalized["dpop_signing_alg_values_supported"],
+        field="mcp.auth.dpop_signing_alg_values_supported",
+    )
     jwks_path = normalized.get("jwks_path")
     if jwks_path in (None, ""):
         normalized["jwks_path"] = None
@@ -777,6 +809,7 @@ def normalize_mcp_auth_config(config: Mapping[str, Any] | None, *, base_dir: str
         "jwks_fetch_timeout",
         "introspection_cache_seconds",
         "introspection_fetch_timeout",
+        "dpop_proof_max_age_seconds",
     ):
         if not isinstance(normalized.get(field), int | float) or float(normalized[field]) < 0:
             raise ValueError(f"mcp.auth.{field} must be a non-negative number")
@@ -788,6 +821,11 @@ def normalize_mcp_auth_config(config: Mapping[str, Any] | None, *, base_dir: str
     if not isinstance(normalized.get("leeway_seconds"), int | float) or float(normalized["leeway_seconds"]) < 0:
         raise ValueError("mcp.auth.leeway_seconds must be a non-negative number")
     normalized["leeway_seconds"] = float(normalized["leeway_seconds"])
+    if (
+        not isinstance(normalized.get("dpop_replay_cache_max_entries"), int)
+        or normalized["dpop_replay_cache_max_entries"] <= 0
+    ):
+        raise ValueError("mcp.auth.dpop_replay_cache_max_entries must be a positive integer")
     if not isinstance(normalized.get("strip_authorization_upstream"), bool):
         raise ValueError("mcp.auth.strip_authorization_upstream must be a boolean")
     normalized["scope_map"] = _normalize_auth_scope_map(normalized.get("scope_map", {}))
@@ -1022,6 +1060,10 @@ def _normalize_auth_issuer_profile(
         "realm",
         "leeway_seconds",
         "strip_authorization_upstream",
+        "dpop_mode",
+        "dpop_signing_alg_values_supported",
+        "dpop_proof_max_age_seconds",
+        "dpop_replay_cache_max_entries",
         "scope_map",
         "claim_policy",
         "required_claims",
@@ -1042,6 +1084,7 @@ def _normalize_auth_issuer_profile(
         "introspection_client_secret_env",
         "resource_metadata_url",
         "realm",
+        "dpop_mode",
     ):
         item = profile.get(field)
         if item is not None and not isinstance(item, str):
@@ -1050,6 +1093,18 @@ def _normalize_auth_issuer_profile(
             profile[field] = None if field != "realm" else "mcp"
     for field in ("authorization_servers", "resource_aliases", "audiences", "required_scopes", "scopes_supported"):
         profile[field] = _normalize_auth_string_list(profile.get(field), field=f"issuers[{index}].{field}")
+    if profile["dpop_mode"] not in {"off", "optional", "required"}:
+        raise ValueError(f"mcp.auth.issuers[{index}].dpop_mode must be 'off', 'optional', or 'required'")
+    profile["dpop_signing_alg_values_supported"] = _normalize_auth_string_list(
+        profile.get("dpop_signing_alg_values_supported"),
+        field=f"issuers[{index}].dpop_signing_alg_values_supported",
+    )
+    if not profile["dpop_signing_alg_values_supported"]:
+        raise ValueError(f"mcp.auth.issuers[{index}].dpop_signing_alg_values_supported must not be empty")
+    _validate_dpop_signing_algorithms(
+        profile["dpop_signing_alg_values_supported"],
+        field=f"mcp.auth.issuers[{index}].dpop_signing_alg_values_supported",
+    )
 
     jwks_path = profile.get("jwks_path")
     if jwks_path in (None, ""):
@@ -1071,6 +1126,7 @@ def _normalize_auth_issuer_profile(
         "jwks_fetch_timeout",
         "introspection_cache_seconds",
         "introspection_fetch_timeout",
+        "dpop_proof_max_age_seconds",
     ):
         if not isinstance(profile.get(field), int | float) or float(profile[field]) < 0:
             raise ValueError(f"mcp.auth.issuers[{index}].{field} must be a non-negative number")
@@ -1082,6 +1138,11 @@ def _normalize_auth_issuer_profile(
     if not isinstance(profile.get("leeway_seconds"), int | float) or float(profile["leeway_seconds"]) < 0:
         raise ValueError(f"mcp.auth.issuers[{index}].leeway_seconds must be a non-negative number")
     profile["leeway_seconds"] = float(profile["leeway_seconds"])
+    if (
+        not isinstance(profile.get("dpop_replay_cache_max_entries"), int)
+        or profile["dpop_replay_cache_max_entries"] <= 0
+    ):
+        raise ValueError(f"mcp.auth.issuers[{index}].dpop_replay_cache_max_entries must be a positive integer")
     if not isinstance(profile.get("strip_authorization_upstream"), bool):
         raise ValueError(f"mcp.auth.issuers[{index}].strip_authorization_upstream must be a boolean")
     profile["scope_map"] = _normalize_auth_scope_map(profile.get("scope_map", {}))
@@ -1113,6 +1174,12 @@ def _validate_oauth_token_config(config: Mapping[str, Any], *, field: str) -> No
             f"{field}.introspection_endpoint or {field}.issuer discovery is required "
             "when token introspection is enabled"
         )
+
+
+def _validate_dpop_signing_algorithms(values: Sequence[str], *, field: str) -> None:
+    for value in values:
+        if value == "none" or value.startswith("HS"):
+            raise ValueError(f"{field} must contain only asymmetric signing algorithms")
 
 
 def _auth_scopes_supported(config: Mapping[str, Any]) -> list[str]:

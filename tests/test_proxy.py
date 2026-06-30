@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import socket
 import sys
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,8 @@ from urllib.parse import parse_qs
 
 import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import ec
+from jwt.algorithms import ECAlgorithm
 
 from snulbug import (
     EVENT_RELOAD_FAILED,
@@ -505,6 +509,18 @@ def test_reverse_proxy_oauth_serves_protected_resource_metadata_and_challenges(t
     assert metadata[0]["status"] == 200
     assert metadata_body == {
         "authorization_servers": ["https://issuer.example.test"],
+        "dpop_signing_alg_values_supported": [
+            "ES256",
+            "ES384",
+            "ES512",
+            "PS256",
+            "PS384",
+            "PS512",
+            "RS256",
+            "RS384",
+            "RS512",
+            "EdDSA",
+        ],
         "resource": "https://mcp.example.test/mcp",
         "scopes_supported": ["mcp:connect"],
     }
@@ -594,6 +610,145 @@ def test_reverse_proxy_oauth_allows_token_adds_lua_context_and_strips_authorizat
     assert audit["auth"]["scopes"] == ["mcp:connect", "mcp:tools"]
     assert token not in json.dumps(record)
     assert token not in json.dumps(audit)
+
+
+def test_reverse_proxy_oauth_dpop_allows_bound_token_and_strips_proof(tmp_path):
+    server, seen = start_upstream()
+    policy = write_oauth_context_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    dpop_key = make_dpop_key()
+    token = make_oauth_token(
+        secret,
+        scopes=["mcp:connect", "mcp:tools"],
+        extra_claims={"cnf": {"jkt": dpop_key["jkt"]}},
+    )
+    proof = make_dpop_proof(dpop_key, token=token)
+    auth_config = oauth_auth_config(jwks_path)
+    auth_config["dpop_mode"] = "required"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        event_sinks=audit_event_sinks(audit_log),
+        auth_config=auth_config,
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"DPoP {token}".encode("ascii")),
+                (b"dpop", proof.encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    record = load_record_log(record_log)[0]
+    audit = json.loads(audit_log.read_text(encoding="utf-8"))
+    proof_metadata = record["metadata"]["auth"]["proof_of_possession"]
+    assert sent[0]["status"] == 200
+    assert seen["count"] == 1
+    assert "authorization" not in payload["headers"]
+    assert "dpop" not in payload["headers"]
+    assert proof_metadata["reason_code"] == "oauth.dpop_allowed"
+    assert proof_metadata["jkt"] == dpop_key["jkt"]
+    assert record["result"]["decision"]["context"]["auth_subject"] == "user-1"
+    assert audit["auth"]["proof_of_possession"]["jkt"] == dpop_key["jkt"]
+    assert token not in json.dumps(record)
+    assert proof not in json.dumps(record)
+    assert proof not in json.dumps(audit)
+
+
+def test_reverse_proxy_oauth_dpop_rejects_bearer_downgrade_for_bound_token(tmp_path):
+    server, seen = start_upstream()
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    dpop_key = make_dpop_key()
+    token = make_oauth_token(
+        secret,
+        scopes=["mcp:connect", "mcp:tools"],
+        extra_claims={"cnf": {"jkt": dpop_key["jkt"]}},
+    )
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        auth_config=oauth_auth_config(jwks_path),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            path="/mcp",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {token}".encode("ascii")),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    headers = sent_headers(sent)
+    record = load_record_log(record_log)[0]
+    assert sent[0]["status"] == 401
+    assert seen["count"] == 0
+    assert headers["www-authenticate"].startswith("DPoP ")
+    assert 'error="invalid_token"' in headers["www-authenticate"]
+    assert record["metadata"]["auth"]["reason_code"] == "oauth.dpop_bearer_downgrade"
+
+
+def test_reverse_proxy_oauth_dpop_rejects_replayed_proof(tmp_path):
+    server, seen = start_upstream()
+    policy = write_oauth_context_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
+    jwks_path, secret = write_hs256_jwks(tmp_path)
+    dpop_key = make_dpop_key()
+    token = make_oauth_token(
+        secret,
+        scopes=["mcp:connect", "mcp:tools"],
+        extra_claims={"cnf": {"jkt": dpop_key["jkt"]}},
+    )
+    proof = make_dpop_proof(dpop_key, token=token)
+    auth_config = oauth_auth_config(jwks_path)
+    auth_config["dpop_mode"] = "required"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}",
+        policy,
+        record_out=record_log,
+        auth_config=auth_config,
+    )
+    request = {
+        "body": b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"authorization", f"DPoP {token}".encode("ascii")),
+            (b"dpop", proof.encode("ascii")),
+        ],
+    }
+
+    try:
+        first = run_asgi(app, path="/mcp", headers=request["headers"], body=request["body"])
+        second = run_asgi(app, path="/mcp", headers=request["headers"], body=request["body"])
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    records = load_record_log(record_log)
+    assert first[0]["status"] == 200
+    assert second[0]["status"] == 401
+    assert seen["count"] == 1
+    assert records[1]["metadata"]["auth"]["reason_code"] == "oauth.dpop_replayed_proof"
 
 
 def test_reverse_proxy_oauth_provider_claim_helpers(tmp_path):
@@ -1059,6 +1214,7 @@ def test_reverse_proxy_oauth_brokers_single_upstream_credential_without_token_pa
     assert record["metadata"]["auth"]["anti_passthrough"] == {
         "enabled": True,
         "authorization_header_present": True,
+        "dpop_header_present": False,
         "strip_authorization_upstream": True,
         "client_authorization": "stripped",
         "reason_code": "oauth.client_authorization_stripped",
@@ -4207,6 +4363,50 @@ def make_oauth_token(
         algorithm="HS256",
         headers={"kid": key_id},
     )
+
+
+def make_dpop_key() -> dict[str, Any]:
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    public_jwk = json.loads(ECAlgorithm.to_jwk(private_key.public_key()))
+    return {
+        "private_key": private_key,
+        "public_jwk": public_jwk,
+        "jkt": dpop_jwk_thumbprint(public_jwk),
+    }
+
+
+def make_dpop_proof(
+    key: dict[str, Any],
+    *,
+    token: str,
+    htm: str = "POST",
+    htu: str = "https://mcp.example.test/mcp",
+    jti: str | None = None,
+    iat: int | None = None,
+) -> str:
+    now = int(time.time())
+    return jwt.encode(
+        {
+            "jti": jti or uuid.uuid4().hex,
+            "htm": htm,
+            "htu": htu,
+            "iat": iat if iat is not None else now,
+            "ath": base64url_sha256(token.encode("ascii")),
+        },
+        key["private_key"],
+        algorithm="ES256",
+        headers={"typ": "dpop+jwt", "jwk": key["public_jwk"]},
+    )
+
+
+def dpop_jwk_thumbprint(jwk: dict[str, Any]) -> str:
+    required = {"crv": jwk["crv"], "kty": jwk["kty"], "x": jwk["x"], "y": jwk["y"]}
+    raw = json.dumps(required, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return base64url_sha256(raw)
+
+
+def base64url_sha256(value: bytes) -> str:
+    return base64.urlsafe_b64encode(hashlib.sha256(value).digest()).rstrip(b"=").decode("ascii")
 
 
 def oauth_auth_config(

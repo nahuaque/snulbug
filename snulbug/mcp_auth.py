@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import http.client
 import json
 import os
@@ -18,6 +20,19 @@ from .auth_providers import auth_provider_claim_context
 
 PROTECTED_RESOURCE_AUTH_MODES = {"oauth-resource", "enterprise-managed"}
 ENTERPRISE_MANAGED_AUTH_EXTENSION = "io.modelcontextprotocol/enterprise-managed-authorization"
+DEFAULT_DPOP_SIGNING_ALGORITHMS = (
+    "ES256",
+    "ES384",
+    "ES512",
+    "PS256",
+    "PS384",
+    "PS512",
+    "RS256",
+    "RS384",
+    "RS512",
+    "EdDSA",
+)
+_DPOP_PRIVATE_JWK_FIELDS = {"d", "p", "q", "dp", "dq", "qi", "oth"}
 
 
 @dataclass(frozen=True)
@@ -50,6 +65,11 @@ class OAuthResourceConfig:
     realm: str = "mcp"
     leeway_seconds: float = 60.0
     strip_authorization_upstream: bool = True
+    dpop_mode: str = "optional"
+    dpop_signing_alg_values_supported: tuple[str, ...] = DEFAULT_DPOP_SIGNING_ALGORITHMS
+    dpop_proof_max_age_seconds: float = 300.0
+    dpop_replay_cache_max_entries: int = 10000
+    dpop_replay_cache: Any = None
     scope_map: Mapping[str, tuple[str, ...]] | None = None
     claim_policy: Mapping[str, Any] | None = None
     required_claims: Mapping[str, tuple[str, ...]] | None = None
@@ -84,6 +104,31 @@ class OAuthDecision:
     headers: list[tuple[bytes, bytes]]
     metadata: dict[str, Any]
     context: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _TokenPresentation:
+    token: str
+    scheme: str
+
+
+@dataclass(frozen=True)
+class _DpopDecision:
+    allowed: bool
+    enabled: bool
+    status: int = 200
+    reason_code: str = "oauth.dpop_not_required"
+    error: str = "invalid_dpop_proof"
+    metadata: dict[str, Any] | None = None
+    context: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class _DpopProof:
+    claims: dict[str, Any]
+    header: dict[str, Any]
+    jwk: dict[str, Any]
+    thumbprint: str
 
 
 class RemoteJwksCache:
@@ -249,6 +294,54 @@ class TokenIntrospectionCache:
             return result
 
 
+class DpopReplayCache:
+    """Bounded in-process DPoP proof replay cache keyed by proof key + jti."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._entries: dict[str, float] = {}
+        self._metrics = _new_cache_metrics()
+
+    def add_once(self, key: str, *, ttl_seconds: float, max_entries: int) -> bool:
+        now = time.monotonic()
+        expires_at = now + max(0.0, ttl_seconds)
+        with self._lock:
+            self._prune(now=now, max_entries=max_entries)
+            if float(self._entries.get(key, 0.0)) > now:
+                self._metrics["hits"] += 1
+                return False
+            self._metrics["misses"] += 1
+            self._metrics["fetches"] += 1
+            self._metrics["last_fetch_at"] = time.time()
+            self._entries[key] = expires_at
+            self._prune(now=now, max_entries=max_entries)
+            return True
+
+    def snapshot(self) -> dict[str, Any]:
+        now = time.monotonic()
+        with self._lock:
+            self._prune(now=now, max_entries=0)
+            expires_in = [max(0.0, expires_at - now) for expires_at in self._entries.values()]
+            result = {
+                "entries": len(self._entries),
+                "totals": _cache_metrics_snapshot(self._metrics),
+            }
+            if expires_in:
+                result["min_expires_in_seconds"] = round(min(expires_in), 3)
+                result["max_expires_in_seconds"] = round(max(expires_in), 3)
+            return result
+
+    def _prune(self, *, now: float, max_entries: int) -> None:
+        expired = [key for key, expires_at in self._entries.items() if expires_at <= now]
+        for key in expired:
+            self._entries.pop(key, None)
+        if max_entries <= 0:
+            return
+        while len(self._entries) > max_entries:
+            oldest_key = min(self._entries, key=self._entries.__getitem__)
+            self._entries.pop(oldest_key, None)
+
+
 class AuthRuntimeDecisionStats:
     """Per-process OAuth decision counters for live diagnostics."""
 
@@ -377,6 +470,7 @@ def _scope_denial_key(metadata: Mapping[str, Any]) -> str | None:
 _GLOBAL_REMOTE_JWKS_CACHE = RemoteJwksCache()
 _GLOBAL_ISSUER_METADATA_CACHE = RemoteIssuerMetadataCache()
 _GLOBAL_TOKEN_INTROSPECTION_CACHE = TokenIntrospectionCache()
+_GLOBAL_DPOP_REPLAY_CACHE = DpopReplayCache()
 _GLOBAL_AUTH_DECISION_STATS = AuthRuntimeDecisionStats()
 
 
@@ -388,6 +482,7 @@ def auth_runtime_snapshot(config: OAuthResourceConfig | None = None) -> dict[str
             "jwks": _auth_jwks_cache(config).snapshot(),
             "issuer_metadata": _auth_issuer_metadata_cache(config).snapshot(),
             "introspection": _auth_introspection_cache(config).snapshot(),
+            "dpop_replay": _auth_dpop_replay_cache(config).snapshot(),
         },
         "decisions": _GLOBAL_AUTH_DECISION_STATS.snapshot(),
     }
@@ -434,6 +529,12 @@ def _auth_introspection_cache(config: OAuthResourceConfig | None) -> TokenIntros
     return _GLOBAL_TOKEN_INTROSPECTION_CACHE
 
 
+def _auth_dpop_replay_cache(config: OAuthResourceConfig | None) -> DpopReplayCache:
+    if config is not None and isinstance(config.dpop_replay_cache, DpopReplayCache):
+        return config.dpop_replay_cache
+    return _GLOBAL_DPOP_REPLAY_CACHE
+
+
 def protected_resource_metadata(config: OAuthResourceConfig) -> dict[str, Any]:
     if not config.enabled:
         raise ValueError("OAuth protected resource metadata requires protected-resource auth mode")
@@ -459,6 +560,8 @@ def protected_resource_metadata(config: OAuthResourceConfig) -> dict[str, Any]:
     scopes_supported = sorted(scopes)
     if scopes_supported:
         metadata["scopes_supported"] = scopes_supported
+    if config.dpop_mode != "off":
+        metadata["dpop_signing_alg_values_supported"] = list(config.dpop_signing_alg_values_supported)
     if config.mode == "enterprise-managed":
         metadata["extensions"] = {ENTERPRISE_MANAGED_AUTH_EXTENSION: {}}
     return _drop_empty(metadata)
@@ -485,6 +588,16 @@ def oauth_bearer_challenge(config: OAuthResourceConfig, *, error: str | None = N
     return ", ".join(parts)
 
 
+def oauth_dpop_challenge(config: OAuthResourceConfig, *, error: str | None = None) -> str:
+    parts = [
+        f'DPoP realm="{_quote_header(config.realm)}"',
+        f'algs="{_quote_header(" ".join(config.dpop_signing_alg_values_supported))}"',
+    ]
+    if error:
+        parts.append(f'error="{_quote_header(error)}"')
+    return ", ".join(parts)
+
+
 def evaluate_oauth_request(
     scope: Mapping[str, Any],
     *,
@@ -500,22 +613,45 @@ def evaluate_oauth_request(
             metadata={"enabled": False},
             context={},
         )
-    token = _bearer_token(scope.get("headers", []))
-    if not token:
-        return _recorded_auth_decision(_reject(config, reason_code="oauth.missing_token", error="invalid_token"))
+    try:
+        presentation = _authorization_presentation(scope.get("headers", []))
+    except ValueError as exc:
+        return _recorded_auth_decision(
+            _reject(
+                config,
+                status=400,
+                reason_code="oauth.invalid_authorization",
+                error="invalid_request",
+                details={"error": str(exc)},
+            )
+        )
+    if presentation is None:
+        return _recorded_auth_decision(
+            _reject(
+                config,
+                reason_code="oauth.missing_token",
+                error="invalid_token",
+                challenge_scheme="dpop" if config.dpop_mode == "required" else "bearer",
+            )
+        )
     if config.profiles:
-        return _recorded_auth_decision(_evaluate_oauth_profiles(token, parent_config=config, body=body))
-    return _recorded_auth_decision(_evaluate_oauth_token(token, config=config, challenge_config=config, body=body))
+        return _recorded_auth_decision(
+            _evaluate_oauth_profiles(presentation, parent_config=config, scope=scope, body=body)
+        )
+    return _recorded_auth_decision(
+        _evaluate_oauth_token(presentation, config=config, challenge_config=config, scope=scope, body=body)
+    )
 
 
 def _evaluate_oauth_profiles(
-    token: str,
+    presentation: _TokenPresentation,
     *,
     parent_config: OAuthResourceConfig,
+    scope: Mapping[str, Any],
     body: bytes | None,
 ) -> OAuthDecision:
     decisions = [
-        _evaluate_oauth_token(token, config=profile, challenge_config=parent_config, body=body)
+        _evaluate_oauth_token(presentation, config=profile, challenge_config=parent_config, scope=scope, body=body)
         for profile in parent_config.profiles
     ]
     for decision in decisions:
@@ -551,20 +687,37 @@ def _evaluate_oauth_profiles(
 
 
 def _evaluate_oauth_token(
-    token: str,
+    presentation: _TokenPresentation,
     *,
     config: OAuthResourceConfig,
     challenge_config: OAuthResourceConfig,
+    scope: Mapping[str, Any],
     body: bytes | None,
 ) -> OAuthDecision:
     try:
-        claims, validation_method = _verify_token_with_method(token, config=config)
+        claims, validation_method = _verify_token_with_method(presentation.token, config=config)
     except Exception as exc:
         return _reject(
             challenge_config,
             reason_code="oauth.invalid_token",
             error="invalid_token",
             details={**_auth_profile_metadata(config), "error_kind": type(exc).__name__},
+        )
+    dpop_decision = evaluate_dpop_proof(
+        scope,
+        token=presentation.token,
+        token_scheme=presentation.scheme,
+        claims=claims,
+        config=config,
+    )
+    if not dpop_decision.allowed:
+        return _reject(
+            challenge_config,
+            status=dpop_decision.status,
+            reason_code=dpop_decision.reason_code,
+            error=dpop_decision.error,
+            challenge_scheme="dpop",
+            details={**_auth_profile_metadata(config), "proof_of_possession": dpop_decision.metadata or {}},
         )
     scopes = _claim_scopes(claims)
     missing = [scope_name for scope_name in config.required_scopes if scope_name not in scopes]
@@ -585,6 +738,8 @@ def _evaluate_oauth_token(
             details={**_auth_profile_metadata(config), "required_claims": required_claims_decision},
         )
     context = oauth_context(claims, scopes=scopes, config=config)
+    if dpop_decision.enabled:
+        context["proof_of_possession"] = dpop_decision.context or {}
     if required_claims_decision["enabled"]:
         context["required_claims"] = required_claims_decision
     scope_map_decision = evaluate_scope_map(body=body, scopes=scopes, config=config)
@@ -622,6 +777,8 @@ def _evaluate_oauth_token(
                 "allowed": True,
                 "reason_code": "oauth.allowed",
                 "validation_method": validation_method,
+                "token_scheme": presentation.scheme,
+                "proof_of_possession": dpop_decision.metadata if dpop_decision.enabled else None,
                 "required_claims": required_claims_decision if required_claims_decision["enabled"] else None,
                 "scope_map": scope_map_decision if scope_map_decision["enabled"] else None,
                 "scope_match": scope_match,
@@ -635,6 +792,151 @@ def _evaluate_oauth_token(
 def verify_token(token: str, *, config: OAuthResourceConfig) -> dict[str, Any]:
     claims, _validation_method = _verify_token_with_method(token, config=config)
     return claims
+
+
+def evaluate_dpop_proof(
+    scope: Mapping[str, Any],
+    *,
+    token: str,
+    token_scheme: str,
+    claims: Mapping[str, Any],
+    config: OAuthResourceConfig,
+) -> _DpopDecision:
+    try:
+        header_value = _single_header_value(scope.get("headers", []), "dpop")
+    except ValueError as exc:
+        return _dpop_reject(
+            "oauth.dpop_invalid_header",
+            "DPoP proof header is invalid",
+            metadata={"error": str(exc)},
+        )
+    cnf_jkt = _token_confirmation_jkt(claims)
+    supports_dpop = config.dpop_mode != "off"
+    attempted_dpop = token_scheme == "dpop" or bool(header_value)
+    token_bound = bool(cnf_jkt)
+
+    if not supports_dpop:
+        if attempted_dpop:
+            return _dpop_reject("oauth.dpop_not_enabled", "DPoP proof was presented but DPoP is disabled")
+        return _DpopDecision(allowed=True, enabled=False)
+    if token_bound and token_scheme == "bearer":
+        return _dpop_reject(
+            "oauth.dpop_bearer_downgrade",
+            "DPoP-bound access token was presented with the Bearer scheme",
+            metadata={"token_bound": True, "token_scheme": token_scheme},
+            error="invalid_token",
+        )
+    required = config.dpop_mode == "required" or attempted_dpop or token_bound
+    if not required:
+        return _DpopDecision(allowed=True, enabled=False)
+    if not header_value:
+        return _dpop_reject(
+            "oauth.dpop_missing_proof",
+            "DPoP proof header is required",
+            metadata={"token_bound": token_bound, "token_scheme": token_scheme},
+        )
+    if not token_bound:
+        return _dpop_reject(
+            "oauth.dpop_unbound_token",
+            "DPoP access token is missing cnf.jkt confirmation",
+            metadata={"token_scheme": token_scheme},
+            error="invalid_token",
+        )
+    try:
+        proof = _decode_dpop_proof(header_value, config=config)
+    except Exception as exc:
+        return _dpop_reject(
+            "oauth.dpop_invalid_proof",
+            "DPoP proof is invalid",
+            metadata={"error_kind": type(exc).__name__},
+        )
+
+    metadata = _dpop_proof_metadata(proof, token_scheme=token_scheme, token_bound=True)
+    if proof.thumbprint != cnf_jkt:
+        return _dpop_reject(
+            "oauth.dpop_key_mismatch",
+            "DPoP proof key does not match access-token cnf.jkt",
+            metadata={**metadata, "token_jkt": cnf_jkt},
+            error="invalid_token",
+        )
+    expected_method = str(scope.get("method", "GET")).upper()
+    if str(proof.claims.get("htm") or "").upper() != expected_method:
+        return _dpop_reject(
+            "oauth.dpop_method_mismatch",
+            "DPoP proof htm does not match request method",
+            metadata={**metadata, "expected_method": expected_method},
+        )
+    try:
+        expected_htu = _dpop_accepted_htu(scope, config=config)
+    except ValueError as exc:
+        return _dpop_reject(
+            "oauth.dpop_invalid_request_uri",
+            "request URI could not be normalized for DPoP validation",
+            metadata={**metadata, "error": str(exc)},
+        )
+    proof_htu = proof.claims.get("htu")
+    normalized_proof_htu = _normalize_dpop_htu(proof_htu) if isinstance(proof_htu, str) else None
+    if normalized_proof_htu not in expected_htu:
+        return _dpop_reject(
+            "oauth.dpop_uri_mismatch",
+            "DPoP proof htu does not match the protected resource URI",
+            metadata={
+                **metadata,
+                "expected_htu": sorted(expected_htu),
+                "proof_htu": normalized_proof_htu or proof_htu,
+            },
+        )
+    expected_ath = _dpop_access_token_hash(token)
+    if proof.claims.get("ath") != expected_ath:
+        return _dpop_reject(
+            "oauth.dpop_ath_mismatch",
+            "DPoP proof ath does not match the access token",
+            metadata=metadata,
+        )
+    iat = _numeric_claim(proof.claims.get("iat"))
+    now = time.time()
+    if iat is None:
+        return _dpop_reject("oauth.dpop_missing_iat", "DPoP proof iat is required", metadata=metadata)
+    if iat < now - config.dpop_proof_max_age_seconds - config.leeway_seconds:
+        return _dpop_reject("oauth.dpop_expired_proof", "DPoP proof iat is too old", metadata=metadata)
+    if iat > now + config.leeway_seconds:
+        return _dpop_reject("oauth.dpop_future_proof", "DPoP proof iat is in the future", metadata=metadata)
+    jti = proof.claims.get("jti")
+    if not isinstance(jti, str) or not jti:
+        return _dpop_reject("oauth.dpop_missing_jti", "DPoP proof jti is required", metadata=metadata)
+    if len(jti) > 512:
+        return _dpop_reject("oauth.dpop_invalid_jti", "DPoP proof jti is too large", metadata=metadata)
+    replay_key = _dpop_replay_key(proof.thumbprint, jti=jti, htm=expected_method, htu=str(normalized_proof_htu))
+    cache = _auth_dpop_replay_cache(config)
+    if not cache.add_once(
+        replay_key,
+        ttl_seconds=config.dpop_proof_max_age_seconds + config.leeway_seconds,
+        max_entries=config.dpop_replay_cache_max_entries,
+    ):
+        return _dpop_reject("oauth.dpop_replayed_proof", "DPoP proof jti has already been used", metadata=metadata)
+
+    allowed_metadata = {
+        **metadata,
+        "allowed": True,
+        "reason_code": "oauth.dpop_allowed",
+        "proof_age_seconds": round(max(0.0, now - iat), 3),
+    }
+    context = {
+        "enabled": True,
+        "bound": True,
+        "jkt": proof.thumbprint,
+        "jti": jti,
+        "htu": normalized_proof_htu,
+        "htm": expected_method,
+        "alg": proof.header.get("alg"),
+    }
+    return _DpopDecision(
+        allowed=True,
+        enabled=True,
+        reason_code="oauth.dpop_allowed",
+        metadata=allowed_metadata,
+        context=context,
+    )
 
 
 def verify_jwt(token: str, *, config: OAuthResourceConfig) -> dict[str, Any]:
@@ -968,6 +1270,7 @@ def _reject(
     status: int = 401,
     reason_code: str,
     error: str,
+    challenge_scheme: str = "bearer",
     details: Mapping[str, Any] | None = None,
 ) -> OAuthDecision:
     metadata = {
@@ -984,10 +1287,43 @@ def _reject(
         headers=[
             (b"content-type", b"text/plain; charset=utf-8"),
             (b"content-length", str(len(body)).encode("ascii")),
-            (b"www-authenticate", oauth_bearer_challenge(config, error=error).encode("latin-1")),
+            (
+                b"www-authenticate",
+                (
+                    oauth_dpop_challenge(config, error=error)
+                    if challenge_scheme == "dpop"
+                    else oauth_bearer_challenge(config, error=error)
+                ).encode("latin-1"),
+            ),
         ],
         metadata=metadata,
         context={"auth": metadata},
+    )
+
+
+def _dpop_reject(
+    reason_code: str,
+    reason: str,
+    *,
+    metadata: Mapping[str, Any] | None = None,
+    status: int = 401,
+    error: str = "invalid_dpop_proof",
+) -> _DpopDecision:
+    return _DpopDecision(
+        allowed=False,
+        enabled=True,
+        status=status,
+        reason_code=reason_code,
+        error=error,
+        metadata=_drop_empty(
+            {
+                "enabled": True,
+                "allowed": False,
+                "reason_code": reason_code,
+                "reason": reason,
+                **dict(metadata or {}),
+            }
+        ),
     )
 
 
@@ -1373,6 +1709,7 @@ def _profile_error_metadata(decision: OAuthDecision) -> dict[str, Any]:
             "required_claims": metadata.get("required_claims"),
             "scope_match": metadata.get("scope_match"),
             "claim_policy": metadata.get("claim_policy"),
+            "proof_of_possession": metadata.get("proof_of_possession"),
             "error_kind": metadata.get("error_kind"),
         }
     )
@@ -1382,6 +1719,8 @@ def _profile_failure_rank(decision: OAuthDecision) -> int:
     reason_code = str(decision.metadata.get("reason_code") or "")
     if reason_code == "oauth.required_claims_denied":
         return 30
+    if reason_code.startswith("oauth.dpop_"):
+        return 35
     if reason_code == "oauth.invalid_token":
         return 40
     return 10
@@ -1501,16 +1840,179 @@ def _selector_matches(configured: str, requested: str) -> bool:
     return False
 
 
-def _bearer_token(raw_headers: Any) -> str | None:
+def _authorization_presentation(raw_headers: Any) -> _TokenPresentation | None:
+    presentations: list[_TokenPresentation] = []
     for name, value in raw_headers or []:
         raw_name = name if isinstance(name, bytes) else str(name).encode("latin-1")
         if raw_name.lower() != b"authorization":
             continue
         raw_value = value.decode("latin-1") if isinstance(value, bytes) else str(value)
         scheme, _, token = raw_value.partition(" ")
-        if scheme.lower() == "bearer" and token:
-            return token.strip()
-    return None
+        normalized_scheme = scheme.lower()
+        if normalized_scheme not in {"bearer", "dpop"} or not token:
+            continue
+        presentations.append(_TokenPresentation(token=token.strip(), scheme=normalized_scheme))
+    if len(presentations) > 1:
+        raise ValueError("multiple Authorization headers are not supported")
+    return presentations[0] if presentations else None
+
+
+def _single_header_value(raw_headers: Any, header_name: str) -> str | None:
+    matches: list[str] = []
+    wanted = header_name.lower().encode("latin-1")
+    for name, value in raw_headers or []:
+        raw_name = name if isinstance(name, bytes) else str(name).encode("latin-1")
+        if raw_name.lower() != wanted:
+            continue
+        matches.append(value.decode("latin-1") if isinstance(value, bytes) else str(value))
+    if len(matches) > 1:
+        raise ValueError(f"multiple {header_name} headers are not supported")
+    return matches[0].strip() if matches and matches[0].strip() else None
+
+
+def _decode_dpop_proof(proof_jwt: str, *, config: OAuthResourceConfig) -> _DpopProof:
+    header = jwt.get_unverified_header(proof_jwt)
+    if str(header.get("typ") or "").lower() != "dpop+jwt":
+        raise ValueError("DPoP proof typ must be dpop+jwt")
+    algorithm = header.get("alg")
+    if not isinstance(algorithm, str) or algorithm == "none" or algorithm.startswith("HS"):
+        raise ValueError("DPoP proof alg must be an asymmetric signing algorithm")
+    if algorithm not in set(config.dpop_signing_alg_values_supported):
+        raise ValueError("DPoP proof alg is not configured as supported")
+    jwk = header.get("jwk")
+    if not isinstance(jwk, Mapping):
+        raise ValueError("DPoP proof header must include a public jwk")
+    normalized_jwk = _public_dpop_jwk(jwk)
+    key = jwt.PyJWK.from_dict(normalized_jwk, algorithm=algorithm).key
+    try:
+        decoded = jwt.decode(
+            proof_jwt,
+            key=key,
+            algorithms=[algorithm],
+            options={
+                "verify_aud": False,
+                "verify_exp": False,
+                "verify_iat": False,
+                "verify_iss": False,
+                "verify_nbf": False,
+            },
+        )
+    except jwt.PyJWTError as exc:
+        raise ValueError(str(exc)) from exc
+    if not isinstance(decoded, Mapping):
+        raise ValueError("DPoP proof payload must be a JSON object")
+    return _DpopProof(
+        claims=dict(decoded),
+        header=dict(header),
+        jwk=normalized_jwk,
+        thumbprint=_jwk_thumbprint(normalized_jwk),
+    )
+
+
+def _public_dpop_jwk(jwk: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = {str(key): value for key, value in jwk.items() if value not in (None, "")}
+    kty = normalized.get("kty")
+    if kty not in {"EC", "RSA", "OKP"}:
+        raise ValueError("DPoP proof jwk must be an asymmetric public key")
+    if any(field in normalized for field in _DPOP_PRIVATE_JWK_FIELDS):
+        raise ValueError("DPoP proof jwk must not include private key material")
+    return normalized
+
+
+def _jwk_thumbprint(jwk: Mapping[str, Any]) -> str:
+    kty = jwk.get("kty")
+    if kty == "EC":
+        required = ("crv", "kty", "x", "y")
+    elif kty == "RSA":
+        required = ("e", "kty", "n")
+    elif kty == "OKP":
+        required = ("crv", "kty", "x")
+    else:
+        raise ValueError("unsupported JWK kty for thumbprint")
+    thumbprint_input = {key: jwk.get(key) for key in required}
+    if any(not isinstance(value, str) or not value for value in thumbprint_input.values()):
+        raise ValueError("JWK is missing thumbprint fields")
+    raw = json.dumps(thumbprint_input, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return _base64url(hashlib.sha256(raw).digest())
+
+
+def _token_confirmation_jkt(claims: Mapping[str, Any]) -> str | None:
+    cnf = claims.get("cnf")
+    if not isinstance(cnf, Mapping):
+        return None
+    jkt = cnf.get("jkt")
+    return jkt if isinstance(jkt, str) and jkt else None
+
+
+def _dpop_access_token_hash(token: str) -> str:
+    return _base64url(hashlib.sha256(token.encode("ascii")).digest())
+
+
+def _dpop_replay_key(jkt: str, *, jti: str, htm: str, htu: str) -> str:
+    return hashlib.sha256(f"{jkt}\x00{jti}\x00{htm}\x00{htu}".encode("utf-8")).hexdigest()
+
+
+def _dpop_proof_metadata(proof: _DpopProof, *, token_scheme: str, token_bound: bool) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "enabled": True,
+            "token_scheme": token_scheme,
+            "token_bound": token_bound,
+            "jkt": proof.thumbprint,
+            "jti": proof.claims.get("jti"),
+            "htm": proof.claims.get("htm"),
+            "htu": proof.claims.get("htu"),
+            "alg": proof.header.get("alg"),
+        }
+    )
+
+
+def _dpop_accepted_htu(scope: Mapping[str, Any], *, config: OAuthResourceConfig) -> set[str]:
+    accepted = {
+        normalized
+        for value in (config.resource, *config.resource_aliases, _request_uri_from_scope(scope))
+        if isinstance(value, str) and (normalized := _normalize_dpop_htu(value))
+    }
+    return accepted
+
+
+def _request_uri_from_scope(scope: Mapping[str, Any]) -> str:
+    scheme = str(scope.get("scheme") or "http")
+    host = _single_header_value(scope.get("headers", []), "host")
+    if not host:
+        server = scope.get("server")
+        if isinstance(server, Sequence) and not isinstance(server, str | bytes | bytearray) and len(server) >= 2:
+            host = f"{server[0]}:{server[1]}"
+    if not host:
+        return ""
+    path = str(scope.get("path") or "/")
+    query = scope.get("query_string") or b""
+    query_string = query.decode("ascii", errors="ignore") if isinstance(query, bytes) else str(query)
+    return f"{scheme}://{host}{path}{'?' + query_string if query_string else ''}"
+
+
+def _normalize_dpop_htu(value: Any) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    hostname = parsed.hostname.lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    netloc = hostname
+    if port is not None and not (
+        (parsed.scheme == "http" and port == 80) or (parsed.scheme == "https" and port == 443)
+    ):
+        netloc = f"{hostname}:{port}"
+    path = parsed.path or "/"
+    return urlunsplit((parsed.scheme.lower(), netloc, path, parsed.query, ""))
+
+
+def _base64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
 
 
 def _quote_header(value: str) -> str:

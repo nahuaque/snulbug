@@ -2122,6 +2122,12 @@ def doctor_mcp_share_auth(
         realm=str(auth.get("realm") or "mcp"),
         leeway_seconds=float(auth.get("leeway_seconds") or 60.0),
         strip_authorization_upstream=bool(auth.get("strip_authorization_upstream", True)),
+        dpop_mode=str(auth.get("dpop_mode") or "optional"),
+        dpop_signing_alg_values_supported=tuple(
+            str(item) for item in _sequence(auth.get("dpop_signing_alg_values_supported"))
+        ),
+        dpop_proof_max_age_seconds=float(auth.get("dpop_proof_max_age_seconds") or 300.0),
+        dpop_replay_cache_max_entries=int(auth.get("dpop_replay_cache_max_entries") or 10000),
         scope_map={
             str(scope): tuple(str(selector) for selector in _sequence(selectors))
             for scope, selectors in _mapping(auth.get("scope_map")).items()
@@ -3415,6 +3421,12 @@ def _auth_doctor_summary(auth: Mapping[str, Any]) -> dict[str, Any]:
         "introspection_fetch_timeout": auth.get("introspection_fetch_timeout"),
         "resource_metadata_url": auth.get("resource_metadata_url"),
         "strip_authorization_upstream": auth.get("strip_authorization_upstream"),
+        "dpop_mode": auth.get("dpop_mode"),
+        "dpop_signing_alg_values_supported": [
+            str(item) for item in _sequence(auth.get("dpop_signing_alg_values_supported"))
+        ],
+        "dpop_proof_max_age_seconds": auth.get("dpop_proof_max_age_seconds"),
+        "dpop_replay_cache_max_entries": auth.get("dpop_replay_cache_max_entries"),
         "scope_map": {
             str(scope): [str(selector) for selector in _sequence(selectors)] for scope, selectors in scope_map.items()
         },
@@ -4420,6 +4432,7 @@ def _auth_issuer_profile_summary(profile: Any) -> dict[str, Any]:
         "jwks_path": str(jwks_path) if jwks_path else None,
         "jwks_url": item.get("jwks_url"),
         "token_validation": item.get("token_validation"),
+        "dpop_mode": item.get("dpop_mode"),
         "scope_map": {
             str(scope): [str(selector) for selector in _sequence(selectors)] for scope, selectors in scope_map.items()
         },
@@ -6142,6 +6155,10 @@ def _share_contract_auth_config(value: Any) -> dict[str, Any]:
             "resource_metadata_url": auth.get("resource_metadata_url"),
             "jwks_path": str(auth.get("jwks_path")) if auth.get("jwks_path") else None,
             "strip_authorization_upstream": auth.get("strip_authorization_upstream"),
+            "dpop_mode": auth.get("dpop_mode"),
+            "dpop_signing_alg_values_supported": auth.get("dpop_signing_alg_values_supported"),
+            "dpop_proof_max_age_seconds": auth.get("dpop_proof_max_age_seconds"),
+            "dpop_replay_cache_max_entries": auth.get("dpop_replay_cache_max_entries"),
             "scope_map": auth.get("scope_map"),
             "required_claims": auth.get("required_claims"),
             "claim_policy": _share_contract_claim_policy(auth.get("claim_policy")),
@@ -6164,6 +6181,7 @@ def _share_contract_auth_issuer_config(value: Mapping[str, Any]) -> dict[str, An
             "jwks_url": value.get("jwks_url"),
             "issuer_metadata_url": value.get("issuer_metadata_url"),
             "jwks_path": str(value.get("jwks_path")) if value.get("jwks_path") else None,
+            "dpop_mode": value.get("dpop_mode"),
             "scope_map": value.get("scope_map"),
             "required_claims": value.get("required_claims"),
             "claim_policy": _share_contract_claim_policy(value.get("claim_policy")),

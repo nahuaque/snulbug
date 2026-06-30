@@ -2622,6 +2622,10 @@ def _oauth_resource_config_from_normalized(normalized: Mapping[str, Any]) -> OAu
         realm=normalized["realm"],
         leeway_seconds=normalized["leeway_seconds"],
         strip_authorization_upstream=normalized["strip_authorization_upstream"],
+        dpop_mode=normalized["dpop_mode"],
+        dpop_signing_alg_values_supported=tuple(normalized["dpop_signing_alg_values_supported"]),
+        dpop_proof_max_age_seconds=normalized["dpop_proof_max_age_seconds"],
+        dpop_replay_cache_max_entries=normalized["dpop_replay_cache_max_entries"],
         scope_map={scope: tuple(selectors) for scope, selectors in normalized["scope_map"].items()},
         claim_policy=normalized["claim_policy"],
         required_claims={claim: tuple(values) for claim, values in normalized.get("required_claims", {}).items()},
@@ -3244,19 +3248,21 @@ def _strip_authorization_header(raw_headers: Any) -> list[tuple[bytes, bytes]]:
     for name, value in raw_headers or []:
         raw_name = name if isinstance(name, bytes) else str(name).encode("latin-1")
         raw_value = value if isinstance(value, bytes) else str(value).encode("latin-1")
-        if raw_name.lower() == b"authorization":
+        if raw_name.lower() in {b"authorization", b"dpop"}:
             continue
         stripped.append((raw_name, raw_value))
     return stripped
 
 
 def _anti_passthrough_metadata(scope: Scope, config: OAuthResourceConfig) -> dict[str, Any]:
-    authorization_present = any(
-        (name if isinstance(name, bytes) else str(name).encode("latin-1")).lower() == b"authorization"
+    header_names = {
+        (name if isinstance(name, bytes) else str(name).encode("latin-1")).lower()
         for name, _value in scope.get("headers", []) or []
-    )
+    }
+    authorization_present = b"authorization" in header_names
+    dpop_present = b"dpop" in header_names
     if config.strip_authorization_upstream:
-        disposition = "stripped" if authorization_present else "absent"
+        disposition = "stripped" if authorization_present or dpop_present else "absent"
         reason_code = (
             "oauth.client_authorization_stripped" if authorization_present else "oauth.client_authorization_absent"
         )
@@ -3266,6 +3272,7 @@ def _anti_passthrough_metadata(scope: Scope, config: OAuthResourceConfig) -> dic
     return {
         "enabled": True,
         "authorization_header_present": authorization_present,
+        "dpop_header_present": dpop_present,
         "strip_authorization_upstream": config.strip_authorization_upstream,
         "client_authorization": disposition,
         "reason_code": reason_code,

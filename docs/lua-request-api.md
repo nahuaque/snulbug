@@ -460,6 +460,9 @@ end
 Available helpers:
 
 - `auth.claims()`: return the sanitized `context.auth` table.
+  When OAuth DPoP validation ran, `context.auth.proof_of_possession` includes
+  safe metadata such as `enabled`, `bound`, `jkt`, `jti`, `htu`, `htm`, and
+  `alg`; it never includes the raw proof JWT or access token.
 - `auth.subject()`: return the JWT subject claim.
 - `auth.issuer()`: return the JWT issuer claim.
 - `auth.profile_id()`: return the matched `[[mcp.auth.issuers]]` profile id.

@@ -342,6 +342,13 @@ For opaque or revocation-sensitive tokens, set
 `introspection_endpoint`. The auth doctor probes remote JWKS and can POST an
 active token to introspection during live checks.
 
+For proof-of-possession OAuth clients, set `mcp.auth.dpop_mode = "required"`.
+The default `optional` mode keeps ordinary Bearer tokens working, but any
+access token with `cnf.jkt` or request carrying `Authorization: DPoP ...` /
+`DPoP: ...` must pass proof validation. snulbug rejects Bearer downgrades for
+DPoP-bound tokens, blocks replayed proof `jti` values, and strips proof material
+before upstream forwarding.
+
 To exercise the full auth model locally without an external identity provider,
 run the auth lab:
 

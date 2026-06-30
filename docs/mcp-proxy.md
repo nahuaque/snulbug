@@ -360,6 +360,10 @@ jwks_path = "auth/jwks.json"
 # introspection_client_secret_env = "SNULBUG_INTROSPECTION_CLIENT_SECRET"
 # introspection_cache_seconds = 30
 # introspection_fetch_timeout = 5
+dpop_mode = "optional" # off, optional, or required
+# dpop_signing_alg_values_supported = ["ES256", "RS256", "PS256", "EdDSA"]
+# dpop_proof_max_age_seconds = 300
+# dpop_replay_cache_max_entries = 10000
 strip_authorization_upstream = true
 
 [mcp.auth.scope_map]
@@ -399,6 +403,9 @@ With this enabled, snulbug:
   discovered issuer `jwks_uri`
 - optionally validates opaque or revocation-sensitive tokens with OAuth token
   introspection
+- validates DPoP proof JWTs for DPoP-bound access tokens, rejects Bearer
+  downgrades, strips caller proof material before upstream calls, and blocks
+  replayed `jti` values with a bounded in-process cache
 - maps OAuth scopes to MCP methods/tools using `[mcp.auth.scope_map]`
 - maps OAuth claims such as tenant, subject, client ID, group, or nested custom
   claims to allowed MCP tools using `[mcp.auth.claim_policy]`
@@ -427,6 +434,29 @@ tool-specific selectors such as `tools/call:git.status`. A selector ending in
 `*` matches by prefix, for example `tools/call:filesystem.*`. MCP handshake
 messages such as `initialize`, `ping`, and `notifications/*` are allowed once
 `required_scopes` has passed, so you do not need to map protocol setup traffic.
+
+### DPoP-bound OAuth Tokens
+
+Set `dpop_mode = "required"` when a public share should only accept
+proof-of-possession access tokens. In the default `optional` mode, ordinary
+Bearer access tokens still work, but any token with `cnf.jkt`, any
+`Authorization: DPoP ...` request, or any request carrying a `DPoP` proof
+header must pass DPoP validation.
+
+For DPoP requests, snulbug verifies:
+
+- proof JWT signature using the public JWK embedded in the proof header
+- proof `typ = "dpop+jwt"` and an allowed asymmetric signing algorithm
+- `htm` matches the HTTP method
+- `htu` matches the configured `resource`, one of `resource_aliases`, or the
+  local request URI
+- `ath` matches the access token hash
+- access-token `cnf.jkt` matches the proof public-key thumbprint
+- `iat` is inside `dpop_proof_max_age_seconds` plus auth leeway
+- `jti` has not been seen before in the replay cache
+
+snulbug also strips both `Authorization` and `DPoP` before forwarding upstream
+when `strip_authorization_upstream = true`.
 
 Claim policies are a declarative pre-Lua guard for common identity-to-tool
 rules. Each rule matches a claim value and allows exact tool names, tool-name

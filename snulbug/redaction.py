@@ -19,6 +19,7 @@ DEFAULT_SECRET_KEYS = {
     "cookie",
     "cf-access-client-secret",
     "cf-access-jwt-assertion",
+    "dpop",
     "password",
     "refresh_token",
     "secret",

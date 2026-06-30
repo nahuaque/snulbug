@@ -20,13 +20,13 @@ Use these controls:
 - response caps and response secret redaction for MCP tool/resource/prompt
   results
 - `tools/list` description/schema pinning for silent upstream tool changes
-- optional OAuth protected-resource mode with JWT/JWKS validation, bearer
-  challenges, sanitized `context.auth`, and upstream authorization-header
-  stripping
+- optional OAuth protected-resource mode with JWT/JWKS validation, DPoP proof
+  validation, bearer/DPoP challenges, sanitized `context.auth`, and upstream
+  authorization-header stripping
 - OAuth scope-to-MCP selector mapping so scopes can authorize exact methods and
   tools such as `tools/list` or `tools/call:git.status`
-- token anti-passthrough: caller OAuth bearer tokens terminate at snulbug, and
-  separate upstream credentials can be brokered from snulbug config
+- token anti-passthrough: caller OAuth bearer/DPoP tokens terminate at
+  snulbug, and separate upstream credentials can be brokered from snulbug config
 
 For hostile third-party scripts, add an external isolation boundary. A separate process, container, VM, or WebAssembly runtime is a stronger boundary than the in-process Lua runtime.
 
@@ -49,6 +49,11 @@ revocation-sensitive tokens. It is not an authorization server and does not mint
 tokens. When
 `[mcp.auth.scope_map]` is configured, snulbug also rejects MCP methods/tools
 whose selector is not covered by the token's scopes.
+When DPoP is enabled, snulbug verifies the proof JWT signature, `htu`, `htm`,
+`ath`, `iat`, `jti`, and access-token `cnf.jkt` binding, then strips the caller
+`Authorization` and `DPoP` headers before forwarding upstream. DPoP reduces
+stolen-token replay risk at snulbug's resource boundary; it does not replace
+issuer-side token minting, rotation, revocation, or client registration.
 When `[mcp.auth.claim_policy]` is configured, snulbug can also map sanitized
 JWT/introspection claims such as tenant, subject, group, or client ID to exact
 tool names, prefixes, or selectors before Lua or the upstream runs.

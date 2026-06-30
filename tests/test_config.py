@@ -212,6 +212,21 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         "realm": "mcp",
         "leeway_seconds": 30.0,
         "strip_authorization_upstream": True,
+        "dpop_mode": "optional",
+        "dpop_signing_alg_values_supported": [
+            "ES256",
+            "ES384",
+            "ES512",
+            "PS256",
+            "PS384",
+            "PS512",
+            "RS256",
+            "RS384",
+            "RS512",
+            "EdDSA",
+        ],
+        "dpop_proof_max_age_seconds": 300.0,
+        "dpop_replay_cache_max_entries": 10000,
         "scope_map": {
             "mcp:tools.read": ["tools/list", "resources/list"],
             "mcp:tool.files.read": ["tools/call:filesystem.read_file"],
@@ -482,6 +497,59 @@ def test_load_mcp_proxy_config_accepts_resource_aliases_and_extra_audiences(tmp_
 
     assert result["auth"]["resource_aliases"] == ["https://preview.example.com/mcp"]
     assert result["auth"]["audiences"] == ["https://preview.example.com/mcp"]
+
+
+def test_load_mcp_proxy_config_accepts_oauth_dpop_settings(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.proxy]
+        policy = "policy.snulbug/policy.lua"
+
+        [mcp.auth]
+        mode = "oauth-resource"
+        resource = "https://mcp.example.com/mcp"
+        issuer = "https://issuer.example.com"
+        audience = "https://mcp.example.com/mcp"
+        required_scopes = ["mcp:connect"]
+        jwks_url = "https://issuer.example.com/jwks.json"
+        dpop_mode = "required"
+        dpop_signing_alg_values_supported = ["ES256", "EdDSA"]
+        dpop_proof_max_age_seconds = 120
+        dpop_replay_cache_max_entries = 500
+        """,
+        encoding="utf-8",
+    )
+
+    result = load_mcp_proxy_config(config)
+
+    assert result["auth"]["dpop_mode"] == "required"
+    assert result["auth"]["dpop_signing_alg_values_supported"] == ["ES256", "EdDSA"]
+    assert result["auth"]["dpop_proof_max_age_seconds"] == 120.0
+    assert result["auth"]["dpop_replay_cache_max_entries"] == 500
+
+
+def test_load_mcp_proxy_config_rejects_symmetric_dpop_algorithm(tmp_path):
+    config = tmp_path / "snulbug.toml"
+    config.write_text(
+        """
+        [mcp.proxy]
+        policy = "policy.snulbug/policy.lua"
+
+        [mcp.auth]
+        mode = "oauth-resource"
+        resource = "https://mcp.example.com/mcp"
+        issuer = "https://issuer.example.com"
+        audience = "https://mcp.example.com/mcp"
+        required_scopes = ["mcp:connect"]
+        jwks_url = "https://issuer.example.com/jwks.json"
+        dpop_signing_alg_values_supported = ["HS256"]
+        """,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="asymmetric signing algorithms"):
+        load_mcp_proxy_config(config)
 
 
 def test_load_mcp_proxy_config_rejects_introspection_without_endpoint_or_discovery(tmp_path):

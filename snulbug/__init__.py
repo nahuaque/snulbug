@@ -212,6 +212,7 @@ from .manifests import load_manifest, manifest_digest, sign_upstream_manifest, v
 from .mcp_auth import (
     ENTERPRISE_MANAGED_AUTH_EXTENSION,
     PROTECTED_RESOURCE_AUTH_MODES,
+    DpopReplayCache,
     OAuthDecision,
     OAuthResourceConfig,
     RemoteIssuerMetadataCache,
@@ -463,6 +464,7 @@ __all__ = [
     "DEFAULT_SHARE_CONSOLE_PORT",
     "DEFAULT_SCHEMA_POLICY_ALLOWED_PATHS",
     "DiscoveryProvider",
+    "DpopReplayCache",
     "EvidenceExportContext",
     "EvidenceExporter",
     "EVENT_DISCOVERY_DEGRADED",

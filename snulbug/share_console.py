@@ -2003,6 +2003,8 @@ def _auth_config_visibility(share_dir: Path) -> dict[str, Any]:
             "jwks_path": str(auth.get("jwks_path")) if auth.get("jwks_path") else None,
             "jwks_url": auth.get("jwks_url"),
             "token_validation": auth.get("token_validation"),
+            "dpop_mode": auth.get("dpop_mode"),
+            "dpop_signing_alg_values_supported": _string_list(auth.get("dpop_signing_alg_values_supported")),
         }
     )
 
@@ -2064,6 +2066,7 @@ def _auth_current_visibility(auth: Mapping[str, Any]) -> dict[str, Any]:
             "scopes": _string_list(auth.get("scopes")),
             "groups": _string_list(auth.get("groups")),
             "provider": _mapping(auth.get("provider")),
+            "proof_of_possession": _mapping(auth.get("proof_of_possession")),
         }
     )
 
@@ -7091,6 +7094,7 @@ def _console_html() -> str:
       const current = payload.current || {};
       const scopeMatch = payload.scope_match || {};
       const jwks = payload.jwks || {};
+      const proof = current.proof_of_possession || {};
       const denials = payload.denials || {};
       const config = payload.config || {};
       const authMode = shareAuth || {};
@@ -7108,6 +7112,7 @@ def _console_html() -> str:
           ${detailRow("Issuer", authMode.issuer || config.issuer)}
           ${detailRow("Resource", authMode.resource || config.resource)}
           ${detailRow("Scopes", listText(authMode.required_scopes || config.required_scopes))}
+          ${detailRow("DPoP", config.dpop_mode)}
           ${detailRow("Task lease", taskLease)}
           ${detailRow("Lease header", authMode.lease_header)}
           ${detailRow("Client headers", listText(authMode.client_header_names))}
@@ -7124,6 +7129,7 @@ def _console_html() -> str:
         ${detailRow("Tenant", current.tenant)}
         ${detailRow("Groups", listText(current.groups))}
         ${detailRow("Profile", current.profile_id)}
+        ${detailRow("DPoP proof", proof.jkt ? `${proof.alg || "-"} · ${proof.jkt}` : "")}
         ${detailRow("Scope match", scopeMatchText(scopeMatch))}
         ${detailRow("JWKS/cache", cacheText(jwks))}
       </div>`;
@@ -7135,6 +7141,7 @@ def _console_html() -> str:
           ${detailRow("Audience", config.audience)}
           ${detailRow("Scope map", config.scope_map_count)}
           ${detailRow("Token validation", config.token_validation)}
+          ${detailRow("DPoP mode", config.dpop_mode)}
           ${detailRow("JWKS", config.jwks_url || config.jwks_path)}
         </div>
       </div>` : "";

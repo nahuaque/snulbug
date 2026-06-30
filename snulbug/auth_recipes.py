@@ -644,6 +644,7 @@ scopes_supported = {scope_list}
 issuer_discovery = true
 token_validation = "jwt"
 strip_authorization_upstream = true
+dpop_mode = "optional" # set to "required" for DPoP-only clients
 
 [mcp.auth.scope_map]
 "mcp:tools.read" = ["tools/list", "resources/list"]
@@ -675,6 +676,7 @@ scopes_supported = {scope_list}
 issuer_discovery = true
 token_validation = "jwt"
 strip_authorization_upstream = true
+dpop_mode = "optional" # set to "required" for DPoP-only clients
 
 [mcp.auth.scope_map]
 "mcp:tools.read" = ["tools/list", "resources/list"]
