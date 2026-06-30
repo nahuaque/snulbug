@@ -1956,6 +1956,11 @@ def _auth_visibility(share_dir: Path, status: Mapping[str, Any]) -> dict[str, An
     result["scope_match"] = _auth_scope_match_visibility(latest_scope_match)
     result["runtime"] = _auth_runtime_visibility(latest_runtime)
     result["jwks"] = _mapping(_mapping(result["runtime"].get("caches")).get("jwks"))
+    result["dpop"] = _auth_dpop_visibility(
+        config=_mapping(result.get("config")),
+        current=_mapping(result.get("current")),
+        runtime=_mapping(result.get("runtime")),
+    )
     result["denials"] = {
         "total": int(result["summary"]["denied"]),
         "reason_codes": _counter_rows(reason_counts),
@@ -1989,10 +1994,12 @@ def _auth_config_visibility(share_dir: Path) -> dict[str, Any]:
         return {"config": str(config_path), "exists": True, "error": str(exc)}
     auth = _mapping(proxy_config.get("auth"))
     scope_map = _mapping(auth.get("scope_map"))
+    state_value = proxy_config.get("state")
     return _drop_empty(
         {
             "config": str(config_path),
             "exists": True,
+            "proxy_state": state_value,
             "mode": auth.get("mode"),
             "resource": auth.get("resource"),
             "issuer": auth.get("issuer"),
@@ -2005,6 +2012,9 @@ def _auth_config_visibility(share_dir: Path) -> dict[str, Any]:
             "token_validation": auth.get("token_validation"),
             "dpop_mode": auth.get("dpop_mode"),
             "dpop_signing_alg_values_supported": _string_list(auth.get("dpop_signing_alg_values_supported")),
+            "dpop_proof_max_age_seconds": auth.get("dpop_proof_max_age_seconds"),
+            "dpop_replay_cache_max_entries": auth.get("dpop_replay_cache_max_entries"),
+            "dpop_replay_cache_backend": _configured_dpop_replay_backend(state_value),
         }
     )
 
@@ -2098,6 +2108,66 @@ def _auth_runtime_visibility(runtime: Mapping[str, Any]) -> dict[str, Any]:
             "decisions": dict(_mapping(runtime.get("decisions"))),
         }
     )
+
+
+def _auth_dpop_visibility(
+    *,
+    config: Mapping[str, Any],
+    current: Mapping[str, Any],
+    runtime: Mapping[str, Any],
+) -> dict[str, Any]:
+    mode = str(config.get("dpop_mode") or "").strip() or "off"
+    proof = _mapping(current.get("proof_of_possession"))
+    replay_cache = _mapping(_mapping(runtime.get("caches")).get("dpop_replay"))
+    backend = _dpop_replay_backend_label(
+        replay_cache.get("backend") or config.get("dpop_replay_cache_backend"),
+        proxy_state=config.get("proxy_state"),
+    )
+    return _drop_empty(
+        {
+            "enabled": mode != "off",
+            "mode": mode,
+            "status": _dpop_status(mode, proof),
+            "proof_seen": bool(proof),
+            "proof_allowed": proof.get("allowed"),
+            "proof_reason_code": proof.get("reason_code"),
+            "proof_alg": proof.get("alg"),
+            "proof_jkt": proof.get("jkt"),
+            "proof_max_age_seconds": config.get("dpop_proof_max_age_seconds"),
+            "replay_cache_backend": backend,
+            "replay_cache": replay_cache,
+            "replay_cache_max_entries": config.get("dpop_replay_cache_max_entries"),
+        }
+    )
+
+
+def _configured_dpop_replay_backend(state_value: Any) -> str:
+    raw = str(state_value or "").strip().lower()
+    if raw.startswith(("redis://", "rediss://", "redis:")):
+        return "redis"
+    if raw:
+        return "process"
+    return ""
+
+
+def _dpop_replay_backend_label(value: Any, *, proxy_state: Any = None) -> str:
+    raw = str(value or "").strip().lower()
+    if raw == "state_store":
+        configured = _configured_dpop_replay_backend(proxy_state)
+        return configured or "state_store"
+    if raw:
+        return raw
+    return _configured_dpop_replay_backend(proxy_state)
+
+
+def _dpop_status(mode: str, proof: Mapping[str, Any]) -> str:
+    if mode == "off":
+        return "off"
+    if proof.get("allowed") is True:
+        return "proof_validated"
+    if proof.get("allowed") is False:
+        return "proof_rejected"
+    return "proof_not_seen"
 
 
 def _auth_visibility_event(
@@ -7095,6 +7165,9 @@ def _console_html() -> str:
       const scopeMatch = payload.scope_match || {};
       const jwks = payload.jwks || {};
       const proof = current.proof_of_possession || {};
+      const dpop = payload.dpop || {};
+      const runtime = payload.runtime || {};
+      const runtimeCaches = runtime.caches || {};
       const denials = payload.denials || {};
       const config = payload.config || {};
       const authMode = shareAuth || {};
@@ -7112,7 +7185,8 @@ def _console_html() -> str:
           ${detailRow("Issuer", authMode.issuer || config.issuer)}
           ${detailRow("Resource", authMode.resource || config.resource)}
           ${detailRow("Scopes", listText(authMode.required_scopes || config.required_scopes))}
-          ${detailRow("DPoP", config.dpop_mode)}
+          ${detailRow("DPoP", dpopSummary(dpop, config))}
+          ${detailRow("DPoP replay", dpopReplayText(dpop))}
           ${detailRow("Task lease", taskLease)}
           ${detailRow("Lease header", authMode.lease_header)}
           ${detailRow("Client headers", listText(authMode.client_header_names))}
@@ -7129,7 +7203,7 @@ def _console_html() -> str:
         ${detailRow("Tenant", current.tenant)}
         ${detailRow("Groups", listText(current.groups))}
         ${detailRow("Profile", current.profile_id)}
-        ${detailRow("DPoP proof", proof.jkt ? `${proof.alg || "-"} · ${proof.jkt}` : "")}
+        ${detailRow("DPoP proof", dpopProofText(dpop, proof))}
         ${detailRow("Scope match", scopeMatchText(scopeMatch))}
         ${detailRow("JWKS/cache", cacheText(jwks))}
       </div>`;
@@ -7142,9 +7216,15 @@ def _console_html() -> str:
           ${detailRow("Scope map", config.scope_map_count)}
           ${detailRow("Token validation", config.token_validation)}
           ${detailRow("DPoP mode", config.dpop_mode)}
+          ${detailRow("DPoP replay backend", dpop.replay_cache_backend || config.dpop_replay_cache_backend)}
+          ${detailRow("DPoP max proof age", secondsText(config.dpop_proof_max_age_seconds))}
           ${detailRow("JWKS", config.jwks_url || config.jwks_path)}
         </div>
       </div>` : "";
+      const runtimeHtml = `<div>
+        <h2>Runtime Caches</h2>
+        ${authRuntimeCacheTable(runtimeCaches)}
+      </div>`;
       const denialsHtml = `<div class="grid-two">
         <div>
           <h2>Denial Reasons</h2>
@@ -7187,8 +7267,31 @@ def _console_html() -> str:
           )).join("")}</tbody>
         </table>
       </div>` : "";
-      $("authVisibility").innerHTML =
-        `<div class="stack">${shareAuthHtml}${currentHtml}${configHtml}${denialsHtml}${actorsHtml}${eventsHtml}</div>`;
+      const panelHtml =
+        shareAuthHtml + currentHtml + configHtml + runtimeHtml + denialsHtml + actorsHtml + eventsHtml;
+      $("authVisibility").innerHTML = `<div class="stack">${panelHtml}</div>`;
+    }
+
+    function dpopSummary(dpop, config) {
+      const mode = dpop.mode || config.dpop_mode;
+      if (!mode || mode === "off") return "off";
+      return [mode, dpop.status].filter(Boolean).join(" · ");
+    }
+
+    function dpopReplayText(dpop) {
+      const cache = dpop.replay_cache || {};
+      const backend = dpop.replay_cache_backend || cache.backend;
+      const text = cacheText(cache);
+      if (!backend && text === "-") return "-";
+      return [backend, text !== "-" ? text : ""].filter(Boolean).join(" · ");
+    }
+
+    function dpopProofText(dpop, proof) {
+      const reason = dpop.proof_reason_code || proof.reason_code;
+      const key = dpop.proof_jkt || proof.jkt;
+      const alg = dpop.proof_alg || proof.alg;
+      if (key) return [reason, alg, key].filter(Boolean).join(" · ");
+      return reason || dpop.status || "-";
     }
 
     function scopeMatchText(scopeMatch) {
@@ -7203,12 +7306,42 @@ def _console_html() -> str:
     function cacheText(cache) {
       if (!cache || !Object.keys(cache).length) return "-";
       const parts = [
-        `entries ${cache.entries || 0}`,
+        cache.entries_unknown ? "entries shared" : `entries ${cache.entries || 0}`,
         `hits ${cache.hits || 0}`,
         `misses ${cache.misses || 0}`,
         `failures ${cache.failures || 0}`
       ];
       return parts.join(", ");
+    }
+
+    function authRuntimeCacheTable(caches) {
+      const rows = Object.keys(caches || {}).sort().map((name) => ({ name, cache: caches[name] || {} }));
+      if (!rows.length) return '<div class="empty">No runtime cache data yet.</div>';
+      return `<table>
+        <thead><tr><th>Cache</th><th>Backend</th><th>State</th></tr></thead>
+        <tbody>${rows.map((row) => (
+          `<tr>
+            <td>${esc(cacheLabel(row.name))}</td>
+            <td>${esc(row.cache.backend || "-")}</td>
+            <td>${esc(cacheText(row.cache))}</td>
+          </tr>`
+        )).join("")}</tbody>
+      </table>`;
+    }
+
+    function cacheLabel(name) {
+      const labels = {
+        dpop_replay: "DPoP replay",
+        issuer_metadata: "Issuer metadata",
+        introspection: "Introspection",
+        jwks: "JWKS"
+      };
+      return labels[name] || name;
+    }
+
+    function secondsText(value) {
+      if (value === undefined || value === null || value === "") return "";
+      return `${value}s`;
     }
 
     function counterTable(rows, label) {

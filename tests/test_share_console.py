@@ -1305,12 +1305,40 @@ def test_share_console_snapshot_summarizes_auth_visibility(tmp_path):
         allowed_tools=["safe_read_file"],
         validate=False,
     )
+    config_path = tmp_path / "snulbug.toml"
+    config_text = config_path.read_text(encoding="utf-8").replace(
+        'state = "memory"',
+        'state = "redis://localhost:6379/0"',
+        1,
+    )
+    config_text += """
+
+[mcp.auth]
+mode = "oauth-resource"
+resource = "https://mcp.example.test/mcp"
+issuer = "https://issuer.example"
+audience = "https://mcp.example.test/mcp"
+required_scopes = ["mcp:connect"]
+jwks_url = "https://issuer.example/jwks"
+token_validation = "jwt"
+dpop_mode = "required"
+dpop_proof_max_age_seconds = 180
+dpop_replay_cache_max_entries = 5000
+
+[mcp.auth.scope_map]
+"mcp:tools.read" = ["tools/list"]
+"""
+    config_path.write_text(config_text, encoding="utf-8")
     write_auth_visibility_log(tmp_path)
 
     snapshot = build_share_console_snapshot(tmp_path)
     auth = snapshot["auth_visibility"]
+    share_auth = snapshot["share_auth"]
 
     assert auth["exists"] is True
+    assert share_auth["mode"] == "oauth-resource"
+    assert share_auth["label"] == "OAuth"
+    assert share_auth["issuer"] == "https://issuer.example"
     assert auth["summary"]["auth_events"] == 2
     assert auth["summary"]["denied"] == 1
     assert auth["current"]["subject"] == "user-1"
@@ -1324,6 +1352,19 @@ def test_share_console_snapshot_summarizes_auth_visibility(tmp_path):
     assert auth["jwks"]["entries"] == 1
     assert auth["jwks"]["hits"] == 2
     assert auth["jwks"]["misses"] == 1
+    assert auth["config"]["mode"] == "oauth-resource"
+    assert auth["config"]["proxy_state"] == "redis://localhost:6379/0"
+    assert auth["config"]["dpop_mode"] == "required"
+    assert auth["config"]["dpop_replay_cache_backend"] == "redis"
+    assert auth["dpop"]["mode"] == "required"
+    assert auth["dpop"]["status"] == "proof_validated"
+    assert auth["dpop"]["proof_seen"] is True
+    assert auth["dpop"]["proof_allowed"] is True
+    assert auth["dpop"]["proof_alg"] == "ES256"
+    assert auth["dpop"]["replay_cache_backend"] == "redis"
+    assert auth["dpop"]["replay_cache"]["entries_unknown"] is True
+    assert auth["dpop"]["replay_cache"]["hits"] == 1
+    assert auth["dpop"]["replay_cache"]["misses"] == 1
     assert auth["denials"]["total"] == 1
     assert {"value": "oauth.scope_map_denied", "count": 1} in auth["denials"]["reason_codes"]
     assert {"value": "tools/call:git.push", "count": 1} in auth["denials"]["scope_denials"]
@@ -1951,6 +1992,12 @@ def write_auth_visibility_log(tmp_path: Path) -> None:
             "tenant": "tenant-a",
             "groups": ["dev"],
             "scopes": ["mcp:tools.read"],
+            "proof_of_possession": {
+                "allowed": True,
+                "reason_code": "oauth.dpop_allowed",
+                "alg": "ES256",
+                "jkt": "demo-thumbprint",
+            },
             "scope_map": {
                 "enabled": True,
                 "allowed": True,
@@ -1960,7 +2007,18 @@ def write_auth_visibility_log(tmp_path: Path) -> None:
                 "target": {"method": "tools/list", "selectors": ["tools/list"]},
             },
             "runtime": {
-                "caches": {"jwks": {"entries": 1, "hits": 1, "misses": 1, "fetches": 1, "failures": 0}},
+                "caches": {
+                    "jwks": {"entries": 1, "hits": 1, "misses": 1, "fetches": 1, "failures": 0},
+                    "dpop_replay": {
+                        "backend": "state_store",
+                        "entries": None,
+                        "entries_unknown": True,
+                        "hits": 0,
+                        "misses": 1,
+                        "fetches": 1,
+                        "failures": 0,
+                    },
+                },
                 "decisions": {"total": 1, "allowed": 1, "reason_codes": {"oauth.allowed": 1}},
             },
         },
@@ -1981,6 +2039,12 @@ def write_auth_visibility_log(tmp_path: Path) -> None:
             "tenant": "tenant-a",
             "groups": ["dev"],
             "scopes": ["mcp:tools.read"],
+            "proof_of_possession": {
+                "allowed": True,
+                "reason_code": "oauth.dpop_allowed",
+                "alg": "ES256",
+                "jkt": "demo-thumbprint",
+            },
             "scope_map": {
                 "enabled": True,
                 "allowed": False,
@@ -1988,7 +2052,18 @@ def write_auth_visibility_log(tmp_path: Path) -> None:
                 "target": {"method": "tools/call", "tool": "git.push", "selectors": ["tools/call:git.push"]},
             },
             "runtime": {
-                "caches": {"jwks": {"entries": 1, "hits": 2, "misses": 1, "fetches": 1, "failures": 0}},
+                "caches": {
+                    "jwks": {"entries": 1, "hits": 2, "misses": 1, "fetches": 1, "failures": 0},
+                    "dpop_replay": {
+                        "backend": "state_store",
+                        "entries": None,
+                        "entries_unknown": True,
+                        "hits": 1,
+                        "misses": 1,
+                        "fetches": 1,
+                        "failures": 0,
+                    },
+                },
                 "decisions": {
                     "total": 2,
                     "allowed": 1,

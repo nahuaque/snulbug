@@ -527,10 +527,16 @@ def auth_runtime_summary(config: OAuthResourceConfig | None = None) -> dict[str,
     caches = snapshot["caches"]
     return {
         "caches": {
-            name: {
-                "entries": cache.get("entries", 0),
-                **dict(cache.get("totals") if isinstance(cache.get("totals"), Mapping) else {}),
-            }
+            name: _drop_empty(
+                {
+                    "backend": cache.get("backend"),
+                    "entries_unknown": cache.get("entries_unknown"),
+                    "min_expires_in_seconds": cache.get("min_expires_in_seconds"),
+                    "max_expires_in_seconds": cache.get("max_expires_in_seconds"),
+                    "entries": cache.get("entries", 0),
+                    **dict(cache.get("totals") if isinstance(cache.get("totals"), Mapping) else {}),
+                }
+            )
             for name, cache in caches.items()
             if isinstance(cache, Mapping)
         },

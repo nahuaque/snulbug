@@ -820,6 +820,7 @@ def test_reverse_proxy_oauth_dpop_rejects_replayed_proof(tmp_path):
 def test_reverse_proxy_oauth_dpop_uses_redis_state_store_for_replay_cache(tmp_path):
     server, seen = start_upstream()
     policy = write_oauth_context_policy(tmp_path)
+    record_log = tmp_path / "records.jsonl"
     jwks_path, secret = write_hs256_jwks(tmp_path)
     dpop_key = make_dpop_key()
     token = make_oauth_token(
@@ -835,6 +836,7 @@ def test_reverse_proxy_oauth_dpop_uses_redis_state_store_for_replay_cache(tmp_pa
     app = create_proxy_application(
         f"http://127.0.0.1:{server.server_port}",
         policy,
+        record_out=record_log,
         state_store=redis_store,
         auth_config=auth_config,
     )
@@ -852,10 +854,16 @@ def test_reverse_proxy_oauth_dpop_uses_redis_state_store_for_replay_cache(tmp_pa
         server.shutdown()
         server.server_close()
 
+    records = load_record_log(record_log)
+    replay_cache = records[-1]["metadata"]["auth"]["runtime"]["caches"]["dpop_replay"]
     assert first[0]["status"] == 200
     assert second[0]["status"] == 401
     assert seen["count"] == 1
     assert any(key.startswith("auth:dpop:jti:") for key in redis_client.values)
+    assert replay_cache["backend"] == "state_store"
+    assert replay_cache["entries_unknown"] is True
+    assert replay_cache["hits"] == 1
+    assert replay_cache["misses"] == 1
 
 
 def test_reverse_proxy_oauth_provider_claim_helpers(tmp_path):

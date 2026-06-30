@@ -576,7 +576,10 @@ counters for JWKS, issuer-metadata, and introspection caches. The same runtime
 summary tracks allowed/denied auth decisions, reason-code counts, JWKS refreshes
 after key rotation, issuer/JWKS/introspection fetch failures, and scope-denial
 counts by MCP selector such as `tools/call:git.status`. These counters never
-include bearer tokens or introspected token bodies.
+include bearer tokens or introspected token bodies. When DPoP is enabled,
+runtime metadata also includes the DPoP replay cache with its backend, hit/miss
+counts, and failure count; the share console surfaces this as process-local or
+Redis-backed replay protection.
 
 For public MCP shares, treat `mcp.auth.resource` and `mcp.auth.audience` as exact
 resource indicators: they should match the public MCP URL a client uses, such as

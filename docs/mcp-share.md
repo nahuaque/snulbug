@@ -351,6 +351,12 @@ before upstream forwarding. If the share uses Redis state, replayed `jti`
 markers are stored in Redis so DPoP replay protection is shared across workers
 or remote data-plane members.
 
+The share console auth panel shows the active auth mode, issuer/resource,
+required scopes, current subject/tenant/groups, DPoP proof status, and DPoP
+replay-cache backend. The runtime cache table shows JWKS, issuer metadata,
+introspection, and DPoP replay counters so you can tell whether a public share is
+using process-local replay protection or Redis-backed shared replay protection.
+
 To exercise the full auth model locally without an external identity provider,
 run the auth lab:
 
