@@ -743,7 +743,7 @@ def test_create_mcp_share_cloudflare_access_gate_profile_defaults_to_safe_jwt_va
 
 
 def test_mcp_share_doctor_builtin_checks_are_registered():
-    assert list_share_doctor_checks()[:9] == (
+    assert list_share_doctor_checks()[:10] == (
         "status",
         "config",
         "policy",
@@ -751,6 +751,7 @@ def test_mcp_share_doctor_builtin_checks_are_registered():
         "cloudflare",
         "tailscale",
         "fabric",
+        "mcp-spec",
         "conformance",
         "tunnel",
     )
@@ -809,7 +810,10 @@ def test_mcp_share_doctor_runs_custom_check_plugin(tmp_path, monkeypatch):
     assert result["ok"] is True
     assert checks["fixture.context_loaded"]["status"] == "pass"
     assert checks["fixture.context_loaded"]["details"]["config_loaded"] is True
+    assert checks["mcp2025.spec.target"]["status"] == "pass"
     assert "fixture-share-check" in [plugin["name"] for plugin in result["doctor_plugins"]]
+    assert "mcp-spec" in [plugin["name"] for plugin in result["doctor_plugins"]]
+    assert result["doctor_artifacts"]["mcp_spec"]["spec_version"] == "2025-11-25"
     assert result["doctor_artifacts"]["fixture"] == {
         "provider": "generic",
         "url": "https://mcp.example.test/mcp",

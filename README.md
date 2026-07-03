@@ -186,9 +186,9 @@ snulbug mcp share report .snulbug/shares/share-... \
 
 Before sharing a public URL or client config, run the share doctor. It is the
 single pre-share gate for generated config, policy bundle validity, fabric
-checks, current status, public tunnel safety, and behavioral handoff acceptance
-checks such as tools/list allowed, unknown tool blocked, revoked lease blocked,
-and MCP Inspector setup generated:
+checks, MCP 2025-11-25 public-share readiness, current status, public tunnel
+safety, and behavioral handoff acceptance checks such as tools/list allowed,
+unknown tool blocked, revoked lease blocked, and MCP Inspector setup generated:
 
 ```bash
 PUBLIC_MCP_URL=https://YOUR-FORWARDING-DOMAIN/mcp

@@ -186,9 +186,14 @@ snulbug mcp share doctor .snulbug/shares/share-...
 
 `share doctor` is the pre-share readiness gate. It loads the generated config,
 validates the policy bundle or Lua entrypoint, runs static fabric checks,
-optionally runs a generated fabric conformance pack, checks the current share
-status, runs the tunnel/public URL doctor, and executes behavioral handoff
-acceptance checks. Those acceptance checks prove the active policy allows
+checks MCP 2025-11-25 public-share readiness, optionally runs a generated
+fabric conformance pack, checks the current share status, runs the tunnel/public
+URL doctor, and executes behavioral handoff acceptance checks. The MCP spec
+checks cover Streamable HTTP headers and GET/SSE behavior, public Origin guard
+configuration, OAuth protected-resource metadata, incremental scope challenge
+readiness, schema catalog visibility, and explicit policy coverage for
+server-to-client requests such as sampling, elicitation, and roots. Those
+acceptance checks prove the active policy allows
 `tools/list`, can generate MCP Inspector setup, blocks an unknown high-risk
 tool, and blocks the same representative call when the selected lease is
 revoked. The command exits non-zero when any required check fails.

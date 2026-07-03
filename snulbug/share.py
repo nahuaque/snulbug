@@ -1871,6 +1871,28 @@ class ShareConformanceDoctorCheck(ShareDoctorCheck):
         )
 
 
+class ShareMcpSpecDoctorCheck(ShareDoctorCheck):
+    name = "mcp-spec"
+    component = "mcp-spec"
+
+    def run(self, context: ShareDoctorContext) -> ShareDoctorCheckResult:
+        from .mcp_spec_conformance import run_mcp_2025_11_25_conformance
+
+        conformance = run_mcp_2025_11_25_conformance(
+            url=context.url,
+            headers=context.headers,
+            proxy_config=context.proxy_config,
+            status=context.status,
+            live_checks=context.live_checks,
+            timeout=context.timeout,
+        )
+        return ShareDoctorCheckResult(
+            checks=conformance["checks"],
+            recommendations=conformance["recommendations"],
+            artifacts={"mcp_spec": conformance["result"]},
+        )
+
+
 class ShareTunnelDoctorCheck(ShareDoctorCheck):
     name = "tunnel"
     component = "tunnel"
@@ -1902,6 +1924,7 @@ for _share_doctor_check in (
     ShareCloudflareDoctorCheck(),
     ShareTailscaleDoctorCheck(),
     ShareFabricDoctorCheck(),
+    ShareMcpSpecDoctorCheck(),
     ShareConformanceDoctorCheck(),
     ShareTunnelDoctorCheck(),
 ):
@@ -1983,6 +2006,7 @@ def doctor_mcp_share(
         "cloudflare": artifacts.get("cloudflare"),
         "tailscale": artifacts.get("tailscale"),
         "fabric": artifacts.get("fabric"),
+        "mcp_spec": artifacts.get("mcp_spec"),
         "conformance": artifacts.get("conformance"),
         "tunnel": tunnel,
         "tunnel_doctor": tunnel,

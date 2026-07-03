@@ -616,24 +616,45 @@ def oauth_resource_metadata_url(config: OAuthResourceConfig) -> str:
     return "/.well-known/oauth-protected-resource"
 
 
-def oauth_bearer_challenge(config: OAuthResourceConfig, *, error: str | None = None) -> str:
+def oauth_bearer_challenge(
+    config: OAuthResourceConfig,
+    *,
+    error: str | None = None,
+    scope: str | Sequence[str] | None = None,
+) -> str:
     parts = [
         f'Bearer realm="{_quote_header(config.realm)}"',
         f'resource_metadata="{_quote_header(oauth_resource_metadata_url(config))}"',
     ]
     if error:
         parts.append(f'error="{_quote_header(error)}"')
+    challenge_scope = _challenge_scope_value(scope)
+    if challenge_scope:
+        parts.append(f'scope="{_quote_header(challenge_scope)}"')
     return ", ".join(parts)
 
 
-def oauth_dpop_challenge(config: OAuthResourceConfig, *, error: str | None = None) -> str:
+def oauth_dpop_challenge(
+    config: OAuthResourceConfig,
+    *,
+    error: str | None = None,
+    scope: str | Sequence[str] | None = None,
+) -> str:
     parts = [
         f'DPoP realm="{_quote_header(config.realm)}"',
         f'algs="{_quote_header(" ".join(config.dpop_signing_alg_values_supported))}"',
     ]
     if error:
         parts.append(f'error="{_quote_header(error)}"')
+    challenge_scope = _challenge_scope_value(scope)
+    if challenge_scope:
+        parts.append(f'scope="{_quote_header(challenge_scope)}"')
     return ", ".join(parts)
+
+
+def _challenge_scope_value(scope: str | Sequence[str] | None) -> str:
+    scopes = _sequence_strings(scope)
+    return " ".join(_ordered_unique(scopes))
 
 
 def evaluate_oauth_request(
@@ -1318,6 +1339,7 @@ def _reject(
         **dict(details or {}),
     }
     body = b"authentication required"
+    challenge_scope = _challenge_scope_for_reject(config, details)
     return OAuthDecision(
         allowed=False,
         status=status,
@@ -1328,15 +1350,33 @@ def _reject(
             (
                 b"www-authenticate",
                 (
-                    oauth_dpop_challenge(config, error=error)
+                    oauth_dpop_challenge(config, error=error, scope=challenge_scope)
                     if challenge_scheme == "dpop"
-                    else oauth_bearer_challenge(config, error=error)
+                    else oauth_bearer_challenge(config, error=error, scope=challenge_scope)
                 ).encode("latin-1"),
             ),
         ],
         metadata=metadata,
         context={"auth": metadata},
     )
+
+
+def _challenge_scope_for_reject(
+    config: OAuthResourceConfig,
+    details: Mapping[str, Any] | None,
+) -> list[str]:
+    scopes: list[str] = []
+    detail_mapping = details if isinstance(details, Mapping) else {}
+    scopes.extend(_sequence_strings(detail_mapping.get("missing_scopes")))
+    scope_map = detail_mapping.get("scope_map")
+    if isinstance(scope_map, Mapping):
+        scopes.extend(_sequence_strings(scope_map.get("accepted_scopes")))
+    scope_match = detail_mapping.get("scope_match")
+    if isinstance(scope_match, Mapping):
+        scopes.extend(_sequence_strings(scope_match.get("accepted_scopes")))
+    if not scopes:
+        scopes.extend(config.required_scopes)
+    return _ordered_unique(scopes)
 
 
 def _dpop_reject(

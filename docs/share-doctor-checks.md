@@ -9,11 +9,21 @@ Built-ins currently cover:
 - `status`: share session status, leases, recordings, contracts, and findings
 - `config`: proxy/fabric config loading
 - `policy`: policy bundle/entrypoint readiness
+- `acceptance`: behavioral handoff checks for tools/list, invite setup, unknown-tool blocks, and revoked leases
 - `cloudflare`: Cloudflare Access/OAuth profile safety
 - `tailscale`: Tailscale Funnel/Serve profile safety
 - `fabric`: fabric doctor checks
+- `mcp-spec`: MCP 2025-11-25 public-share readiness checks
 - `conformance`: generated fabric conformance pack checks
 - `tunnel`: provider-specific tunnel doctor checks
+
+The `mcp-spec` check is not a formal MCP certification suite. It tracks the
+share-facing obligations that matter before handing out a public or tunneled MCP
+URL: Streamable HTTP `Accept` and `MCP-Protocol-Version` headers, GET/SSE
+behavior when live checks are enabled, public Origin guard configuration, OAuth
+protected-resource metadata, incremental scope challenge readiness, Client ID
+Metadata Document setup, schema catalog visibility, and explicit policy coverage
+for server-to-client requests such as sampling, elicitation, and roots.
 
 External checks can register the same surface from Python:
 
