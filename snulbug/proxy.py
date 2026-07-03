@@ -96,6 +96,26 @@ class ProxyConfig:
 
 
 @dataclass(frozen=True)
+class StreamableHttpEdgeConfig:
+    enabled: bool = True
+    endpoint_path: str = "/mcp"
+    require_accept: bool = True
+    require_content_type: bool = True
+    require_protocol_version: bool = False
+    protocol_version: str = "2025-11-25"
+    require_session_id: bool = False
+    allow_get: bool = False
+    allow_delete: bool = False
+    allowed_origins: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        path = self.endpoint_path or "/mcp"
+        if not path.startswith("/"):
+            path = f"/{path}"
+        object.__setattr__(self, "endpoint_path", path.rstrip("/") or "/")
+
+
+@dataclass(frozen=True)
 class FacadeUpstream:
     name: str
     tool_prefix: str
@@ -1697,6 +1717,322 @@ class ProxyRecorderMiddleware:
         return self.record_out is not None or self.event_dispatcher is not None
 
 
+class StreamableHttpEdgeMiddleware:
+    """Enforce the MCP Streamable HTTP boundary before Lua/upstream work."""
+
+    def __init__(self, app: ASGIApp, *, config: StreamableHttpEdgeConfig | None = None) -> None:
+        self.app = app
+        self.config = config or StreamableHttpEdgeConfig()
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http" or not self._targets_endpoint(scope):
+            await self.app(scope, receive, send)
+            return
+
+        method = str(scope.get("method", "GET")).upper()
+        headers = _headers_to_mapping(scope.get("headers", []))
+        origin = _single_header(headers.get("origin"))
+        common = {
+            "enabled": True,
+            "endpoint_path": self.config.endpoint_path,
+            "method": method,
+            "origin": origin,
+            "origin_guard_configured": bool(self.config.allowed_origins),
+        }
+
+        if not self._origin_allowed(origin):
+            await self._reject(
+                scope,
+                send,
+                status=403,
+                reason="Origin is not allowed for this MCP endpoint",
+                reason_code="mcp.transport.origin_denied",
+                metadata={**common, "allowed": False},
+            )
+            return
+
+        session_id = _single_header(headers.get("mcp-session-id"))
+        if session_id and not _valid_mcp_session_id(session_id):
+            await self._reject(
+                scope,
+                send,
+                status=400,
+                reason="MCP-Session-Id is malformed",
+                reason_code="mcp.transport.invalid_session_id",
+                metadata={**common, "allowed": False, "session_id_present": True},
+            )
+            return
+
+        if method == "OPTIONS":
+            _set_proxy_metadata(scope, {"mcp_transport": {**common, "allowed": True, "preflight": True}})
+            await _send_response(
+                send,
+                status=204,
+                headers=self._edge_headers(
+                    origin=origin,
+                    extra=[
+                        (b"content-length", b"0"),
+                        (b"access-control-allow-methods", self._allow_header().encode("ascii")),
+                        (
+                            b"access-control-allow-headers",
+                            b"Accept, Authorization, Content-Type, DPoP, Last-Event-ID, MCP-Protocol-Version, "
+                            b"MCP-Session-Id, x-snulbug-lease",
+                        ),
+                    ],
+                ),
+                body=b"",
+            )
+            return
+
+        if method == "GET":
+            if not self.config.allow_get:
+                await self._reject(
+                    scope,
+                    send,
+                    status=405,
+                    reason="Streamable HTTP GET/SSE is not enabled on this gateway",
+                    reason_code="mcp.transport.get_not_supported",
+                    metadata={**common, "allowed": False},
+                    allow=True,
+                )
+                return
+            accept = str(_single_header(headers.get("accept")) or "")
+            if "text/event-stream" not in accept.lower():
+                await self._reject(
+                    scope,
+                    send,
+                    status=406,
+                    reason="Streamable HTTP GET requires Accept: text/event-stream",
+                    reason_code="mcp.transport.get_accept_required",
+                    metadata={**common, "allowed": False, "accept": accept},
+                )
+                return
+            _set_proxy_metadata(
+                scope,
+                {
+                    "mcp_transport": {
+                        **common,
+                        "allowed": True,
+                        "last_event_id_present": bool(_single_header(headers.get("last-event-id"))),
+                        "session_id_present": bool(session_id),
+                    }
+                },
+            )
+            await self.app(scope, receive, self._versioned_send(send, origin=origin))
+            return
+
+        if method == "DELETE":
+            if not self.config.allow_delete:
+                await self._reject(
+                    scope,
+                    send,
+                    status=405,
+                    reason="Streamable HTTP session termination is not enabled on this gateway",
+                    reason_code="mcp.transport.delete_not_supported",
+                    metadata={**common, "allowed": False},
+                    allow=True,
+                )
+                return
+            if self.config.require_session_id and not session_id:
+                await self._reject(
+                    scope,
+                    send,
+                    status=400,
+                    reason="DELETE requires MCP-Session-Id",
+                    reason_code="mcp.transport.session_required",
+                    metadata={**common, "allowed": False, "session_id_present": False},
+                )
+                return
+            _set_proxy_metadata(
+                scope,
+                {"mcp_transport": {**common, "allowed": True, "session_id_present": bool(session_id)}},
+            )
+            await self.app(scope, receive, self._versioned_send(send, origin=origin))
+            return
+
+        if method != "POST":
+            await self._reject(
+                scope,
+                send,
+                status=405,
+                reason="MCP Streamable HTTP only accepts POST, OPTIONS, and explicitly enabled GET/DELETE",
+                reason_code="mcp.transport.method_not_allowed",
+                metadata={**common, "allowed": False},
+                allow=True,
+            )
+            return
+
+        protocol = _single_header(headers.get("mcp-protocol-version"))
+        if protocol:
+            if protocol != self.config.protocol_version:
+                await self._reject(
+                    scope,
+                    send,
+                    status=400,
+                    reason=f"Unsupported MCP-Protocol-Version: {protocol}",
+                    reason_code="mcp.transport.unsupported_protocol_version",
+                    metadata={
+                        **common,
+                        "allowed": False,
+                        "protocol_version": protocol,
+                        "supported_protocol_version": self.config.protocol_version,
+                    },
+                )
+                return
+        elif self.config.require_protocol_version:
+            await self._reject(
+                scope,
+                send,
+                status=400,
+                reason="MCP-Protocol-Version is required",
+                reason_code="mcp.transport.protocol_version_required",
+                metadata={**common, "allowed": False, "supported_protocol_version": self.config.protocol_version},
+            )
+            return
+
+        accept = str(_single_header(headers.get("accept")) or "")
+        accept_lower = accept.lower()
+        if self.config.require_accept and (
+            "application/json" not in accept_lower or "text/event-stream" not in accept_lower
+        ):
+            await self._reject(
+                scope,
+                send,
+                status=406,
+                reason="POST requires Accept: application/json, text/event-stream",
+                reason_code="mcp.transport.accept_required",
+                metadata={**common, "allowed": False, "accept": accept},
+            )
+            return
+
+        content_type = str(_single_header(headers.get("content-type")) or "")
+        if self.config.require_content_type and "application/json" not in content_type.lower():
+            await self._reject(
+                scope,
+                send,
+                status=415,
+                reason="POST requires Content-Type: application/json",
+                reason_code="mcp.transport.content_type_required",
+                metadata={**common, "allowed": False, "content_type": content_type},
+            )
+            return
+
+        body: bytes | None = None
+        replay_receive = receive
+        request: Any = None
+        if self.config.require_session_id:
+            body, replay_receive = await _capture_body(receive)
+            request = _jsonrpc_request(body)
+            initialized = isinstance(request, Mapping) and request.get("method") == "initialize"
+            if not initialized and not session_id:
+                await self._reject(
+                    scope,
+                    send,
+                    status=400,
+                    reason="MCP-Session-Id is required after initialize",
+                    reason_code="mcp.transport.session_required",
+                    metadata={**common, "allowed": False, "session_id_present": False},
+                )
+                return
+
+        metadata = {
+            **common,
+            "allowed": True,
+            "accept": accept,
+            "content_type": content_type,
+            "protocol_version": protocol,
+            "supported_protocol_version": self.config.protocol_version,
+            "session_id_present": bool(session_id),
+        }
+        if request is not None and isinstance(request, Mapping):
+            metadata["jsonrpc_method"] = request.get("method")
+        _set_proxy_metadata(scope, {"mcp_transport": _drop_empty(metadata)})
+        await self.app(scope, replay_receive, self._versioned_send(send, origin=origin))
+
+    def _targets_endpoint(self, scope: Scope) -> bool:
+        path = str(scope.get("path", "/")).rstrip("/") or "/"
+        return path == self.config.endpoint_path
+
+    def _origin_allowed(self, origin: str | None) -> bool:
+        if not origin or not self.config.allowed_origins:
+            return True
+        normalized = _normalize_origin(origin)
+        for allowed in self.config.allowed_origins:
+            if allowed == "*":
+                return True
+            if _normalize_origin(allowed) == normalized:
+                return True
+        return False
+
+    def _allow_header(self) -> str:
+        methods = ["POST", "OPTIONS"]
+        if self.config.allow_get:
+            methods.append("GET")
+        if self.config.allow_delete:
+            methods.append("DELETE")
+        return ", ".join(methods)
+
+    def _edge_headers(
+        self,
+        *,
+        origin: str | None,
+        extra: Sequence[tuple[bytes, bytes]] = (),
+    ) -> list[tuple[bytes, bytes]]:
+        headers = [(b"mcp-protocol-version", self.config.protocol_version.encode("ascii"))]
+        if origin and self._origin_allowed(origin):
+            headers.append((b"access-control-allow-origin", origin.encode("latin-1", errors="ignore")))
+            headers.append((b"vary", b"Origin"))
+        headers.extend(extra)
+        return headers
+
+    def _versioned_send(self, send: Send, *, origin: str | None) -> Send:
+        async def wrapped(message: dict[str, Any]) -> None:
+            if message.get("type") == "http.response.start":
+                headers = list(message.get("headers", []))
+                message = dict(message)
+                message["headers"] = _merge_headers(headers, self._edge_headers(origin=origin))
+            await send(message)
+
+        return wrapped
+
+    async def _reject(
+        self,
+        scope: Scope,
+        send: Send,
+        *,
+        status: int,
+        reason: str,
+        reason_code: str,
+        metadata: Mapping[str, Any],
+        allow: bool = False,
+    ) -> None:
+        transport_metadata = _drop_empty({**dict(metadata), "reason_code": reason_code})
+        _set_proxy_metadata(scope, {"mcp_transport": transport_metadata})
+        _attach_proxy_reject_trace(
+            scope,
+            action="reject",
+            status=status,
+            body=reason,
+            reason=reason,
+            reason_code=reason_code,
+            context={"mcp_transport": transport_metadata},
+        )
+        response = _json_response(
+            {
+                "error": reason,
+                "reason_code": reason_code,
+            },
+            status=status,
+        )
+        headers = list(response["headers"])
+        extras: list[tuple[bytes, bytes]] = []
+        origin = str(metadata.get("origin") or "") or None
+        if allow:
+            extras.append((b"allow", self._allow_header().encode("ascii")))
+        headers = _merge_headers(headers, self._edge_headers(origin=origin, extra=extras))
+        await _send_response(send, status=response["status"], headers=headers, body=response["body"])
+
+
 class ShareContractMiddleware:
     """Expose the approved share contract and attach its digest to runtime metadata."""
 
@@ -2157,6 +2493,16 @@ def create_proxy_application(
     response_redact_secrets: bool = True,
     response_block_instructions: bool = False,
     server_to_client_request_action: str = "block",
+    streamable_http_hardening: bool = True,
+    streamable_http_endpoint_path: str = "/mcp",
+    streamable_http_require_accept: bool = True,
+    streamable_http_require_content_type: bool = True,
+    streamable_http_require_protocol_version: bool = False,
+    streamable_http_protocol_version: str = "2025-11-25",
+    streamable_http_require_session_id: bool = False,
+    streamable_http_allow_get: bool = False,
+    streamable_http_allow_delete: bool = False,
+    streamable_http_allowed_origins: Sequence[str] = (),
     tool_pinning: bool = True,
     tool_pinning_action: str = "block",
     catalog_projection: str = "off",
@@ -2214,6 +2560,18 @@ def create_proxy_application(
     schema_policy = SchemaPolicyConfig(
         enabled=schema_validation,
         action=schema_validation_action,
+    )
+    streamable_http_config = StreamableHttpEdgeConfig(
+        enabled=streamable_http_hardening,
+        endpoint_path=streamable_http_endpoint_path,
+        require_accept=streamable_http_require_accept,
+        require_content_type=streamable_http_require_content_type,
+        require_protocol_version=streamable_http_require_protocol_version,
+        protocol_version=streamable_http_protocol_version,
+        require_session_id=streamable_http_require_session_id,
+        allow_get=streamable_http_allow_get,
+        allow_delete=streamable_http_allow_delete,
+        allowed_origins=tuple(str(origin) for origin in streamable_http_allowed_origins),
     )
     facade_health_policy = FacadeHealthPolicy(
         enabled=facade_health_routing,
@@ -2306,6 +2664,8 @@ def create_proxy_application(
             config=cloudflare_access_config,
             context_scope_key=lua_config.context_scope_key,
         )
+    if streamable_http_config.enabled:
+        app = StreamableHttpEdgeMiddleware(app, config=streamable_http_config)
     if share_contract is not None:
         app = ShareContractMiddleware(app, contract=share_contract)
     if record_out is not None or event_dispatcher is not None:
@@ -2351,6 +2711,16 @@ def run_proxy(
     response_redact_secrets: bool = True,
     response_block_instructions: bool = False,
     server_to_client_request_action: str = "block",
+    streamable_http_hardening: bool = True,
+    streamable_http_endpoint_path: str = "/mcp",
+    streamable_http_require_accept: bool = True,
+    streamable_http_require_content_type: bool = True,
+    streamable_http_require_protocol_version: bool = False,
+    streamable_http_protocol_version: str = "2025-11-25",
+    streamable_http_require_session_id: bool = False,
+    streamable_http_allow_get: bool = False,
+    streamable_http_allow_delete: bool = False,
+    streamable_http_allowed_origins: Sequence[str] = (),
     tool_pinning: bool = True,
     tool_pinning_action: str = "block",
     catalog_projection: str = "off",
@@ -2412,6 +2782,16 @@ def run_proxy(
         response_redact_secrets=response_redact_secrets,
         response_block_instructions=response_block_instructions,
         server_to_client_request_action=server_to_client_request_action,
+        streamable_http_hardening=streamable_http_hardening,
+        streamable_http_endpoint_path=streamable_http_endpoint_path,
+        streamable_http_require_accept=streamable_http_require_accept,
+        streamable_http_require_content_type=streamable_http_require_content_type,
+        streamable_http_require_protocol_version=streamable_http_require_protocol_version,
+        streamable_http_protocol_version=streamable_http_protocol_version,
+        streamable_http_require_session_id=streamable_http_require_session_id,
+        streamable_http_allow_get=streamable_http_allow_get,
+        streamable_http_allow_delete=streamable_http_allow_delete,
+        streamable_http_allowed_origins=streamable_http_allowed_origins,
         tool_pinning=tool_pinning,
         tool_pinning_action=tool_pinning_action,
         catalog_projection=catalog_projection,
@@ -2488,6 +2868,16 @@ def proxy_config_run_kwargs(
         "response_redact_secrets": proxy_config["response_redact_secrets"],
         "response_block_instructions": proxy_config["response_block_instructions"],
         "server_to_client_request_action": proxy_config["server_to_client_request_action"],
+        "streamable_http_hardening": proxy_config["streamable_http_hardening"],
+        "streamable_http_endpoint_path": proxy_config["streamable_http_endpoint_path"],
+        "streamable_http_require_accept": proxy_config["streamable_http_require_accept"],
+        "streamable_http_require_content_type": proxy_config["streamable_http_require_content_type"],
+        "streamable_http_require_protocol_version": proxy_config["streamable_http_require_protocol_version"],
+        "streamable_http_protocol_version": proxy_config["streamable_http_protocol_version"],
+        "streamable_http_require_session_id": proxy_config["streamable_http_require_session_id"],
+        "streamable_http_allow_get": proxy_config["streamable_http_allow_get"],
+        "streamable_http_allow_delete": proxy_config["streamable_http_allow_delete"],
+        "streamable_http_allowed_origins": proxy_config["streamable_http_allowed_origins"],
         "tool_pinning": proxy_config["tool_pinning"],
         "tool_pinning_action": proxy_config["tool_pinning_action"],
         "catalog_projection": proxy_config["catalog_projection"],
@@ -3923,6 +4313,25 @@ def _single_header(value: Any) -> str | None:
             if isinstance(item, str):
                 return item
     return None
+
+
+def _valid_mcp_session_id(value: str) -> bool:
+    if not value or len(value) > 256:
+        return False
+    return all(0x21 <= ord(char) <= 0x7E for char in value)
+
+
+def _normalize_origin(value: str) -> str:
+    raw = str(value).strip().rstrip("/")
+    parsed = urlsplit(raw)
+    if parsed.scheme and parsed.netloc:
+        scheme = parsed.scheme.lower()
+        host = (parsed.hostname or "").lower()
+        netloc = host
+        if parsed.port is not None:
+            netloc = f"{netloc}:{parsed.port}"
+        return f"{scheme}://{netloc}"
+    return raw.lower()
 
 
 def _ensure_scope_state(scope: Scope) -> dict[str, Any]:

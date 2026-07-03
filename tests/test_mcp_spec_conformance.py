@@ -19,6 +19,7 @@ def test_mcp_2025_conformance_recognizes_latest_client_headers():
     assert result["result"]["ok"] is True
     assert checks["mcp2025.transport.accept_header"]["status"] == "pass"
     assert checks["mcp2025.transport.protocol_version_header"]["status"] == "pass"
+    assert checks["mcp2025.transport.edge_hardening"]["status"] == "warn"
     assert checks["mcp2025.transport.origin_guard"]["status"] == "skip"
     assert checks["mcp2025.transport.streamable_get"]["status"] == "skip"
     assert checks["mcp2025.schemas.catalog_loaded"]["status"] == "pass"
@@ -44,11 +45,37 @@ def test_mcp_2025_conformance_surfaces_public_oauth_share_gaps():
 
     assert result["result"]["ok"] is True
     assert checks["mcp2025.transport.accept_header"]["status"] == "warn"
+    assert checks["mcp2025.transport.edge_hardening"]["status"] == "warn"
     assert checks["mcp2025.transport.origin_guard"]["status"] == "warn"
     assert checks["mcp2025.auth.protected_resource_metadata"]["status"] == "pass"
     assert checks["mcp2025.auth.incremental_scope_challenge"]["status"] == "pass"
     assert checks["mcp2025.auth.client_id_metadata_documents"]["status"] == "warn"
     assert checks["mcp2025.schemas.catalog_loaded"]["status"] == "warn"
+
+
+def test_mcp_2025_conformance_recognizes_streamable_edge_hardening():
+    result = run_mcp_2025_11_25_conformance(
+        url="https://share.example.test/mcp",
+        headers={
+            "Accept": "application/json, text/event-stream",
+            "MCP-Protocol-Version": LATEST_MCP_SPEC_VERSION,
+        },
+        proxy_config={
+            "streamable_http_hardening": True,
+            "streamable_http_require_accept": True,
+            "streamable_http_require_content_type": True,
+            "streamable_http_allow_get": False,
+            "streamable_http_allow_delete": False,
+            "streamable_http_allowed_origins": ["https://client.example.test"],
+            "streamable_http_protocol_version": LATEST_MCP_SPEC_VERSION,
+        },
+        status={"schemas": {"catalog_count": 1, "tool_count": 2}},
+        live_checks=False,
+    )
+    checks = {check["id"]: check for check in result["checks"]}
+
+    assert checks["mcp2025.transport.edge_hardening"]["status"] == "pass"
+    assert checks["mcp2025.transport.origin_guard"]["status"] == "pass"
 
 
 def test_mcp_2025_conformance_warns_when_task_tools_lack_server_capability():

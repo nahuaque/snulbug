@@ -478,7 +478,7 @@ def _send_mcp(app: Any, name: str, payload: dict[str, Any]) -> dict[str, Any]:
             "path": "/mcp",
             "raw_path": b"/mcp",
             "query_string": b"",
-            "headers": [(b"content-type", b"application/json")],
+            "headers": [(b"content-type", b"application/json"), (b"accept", b"application/json, text/event-stream")],
             "client": ("127.0.0.1", 1234),
             "state": {},
         },

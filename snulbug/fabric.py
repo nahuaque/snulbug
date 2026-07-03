@@ -2401,6 +2401,7 @@ def _probe_mcp_tools_list(url: str, *, headers: Mapping[str, str], timeout: floa
     body = json.dumps(_FABRIC_DOCTOR_REQUEST, separators=(",", ":")).encode("utf-8")
     request_headers = {
         "Host": parsed.netloc,
+        "Accept": "application/json, text/event-stream",
         "Content-Type": "application/json",
         "Content-Length": str(len(body)),
         "User-Agent": "snulbug-fabric-doctor",

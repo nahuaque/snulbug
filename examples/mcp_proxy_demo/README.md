@@ -75,6 +75,7 @@ Send an allowed tool call:
 ```bash
 curl -i http://127.0.0.1:8080/mcp \
   -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
   -H 'authorization: Bearer local-dev-secret' \
   --data @examples/mcp_proxy_demo/requests/safe-tool.json
 ```
@@ -84,6 +85,7 @@ Send a blocked tool call:
 ```bash
 curl -i http://127.0.0.1:8080/mcp \
   -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
   -H 'authorization: Bearer local-dev-secret' \
   --data @examples/mcp_proxy_demo/requests/blocked-tool.json
 ```
@@ -93,6 +95,7 @@ Send an unauthenticated request:
 ```bash
 curl -i http://127.0.0.1:8080/mcp \
   -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
   --data @examples/mcp_proxy_demo/requests/tools-list.json
 ```
 

@@ -38,6 +38,16 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         response_redact_secrets = false
         response_block_instructions = true
         server_to_client_request_action = "warn"
+        streamable_http_hardening = true
+        streamable_http_endpoint_path = "mcp"
+        streamable_http_require_accept = true
+        streamable_http_require_content_type = true
+        streamable_http_require_protocol_version = true
+        streamable_http_protocol_version = "2025-11-25"
+        streamable_http_require_session_id = true
+        streamable_http_allow_get = false
+        streamable_http_allow_delete = true
+        streamable_http_allowed_origins = ["https://client.example.test"]
         tool_pinning = true
         tool_pinning_action = "warn"
         schema_validation = true
@@ -147,6 +157,16 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
     assert result["response_redact_secrets"] is False
     assert result["response_block_instructions"] is True
     assert result["server_to_client_request_action"] == "warn"
+    assert result["streamable_http_hardening"] is True
+    assert result["streamable_http_endpoint_path"] == "/mcp"
+    assert result["streamable_http_require_accept"] is True
+    assert result["streamable_http_require_content_type"] is True
+    assert result["streamable_http_require_protocol_version"] is True
+    assert result["streamable_http_protocol_version"] == "2025-11-25"
+    assert result["streamable_http_require_session_id"] is True
+    assert result["streamable_http_allow_get"] is False
+    assert result["streamable_http_allow_delete"] is True
+    assert result["streamable_http_allowed_origins"] == ["https://client.example.test"]
     assert result["tool_pinning"] is True
     assert result["tool_pinning_action"] == "warn"
     assert result["schema_validation"] is True
@@ -1130,6 +1150,16 @@ def test_mcp_share_run_cli_loads_config_before_running(monkeypatch, tmp_path):
     assert calls[0]["response_redact_secrets"] is True
     assert calls[0]["response_block_instructions"] is False
     assert calls[0]["server_to_client_request_action"] == "block"
+    assert calls[0]["streamable_http_hardening"] is True
+    assert calls[0]["streamable_http_endpoint_path"] == "/mcp"
+    assert calls[0]["streamable_http_require_accept"] is True
+    assert calls[0]["streamable_http_require_content_type"] is True
+    assert calls[0]["streamable_http_require_protocol_version"] is False
+    assert calls[0]["streamable_http_protocol_version"] == "2025-11-25"
+    assert calls[0]["streamable_http_require_session_id"] is False
+    assert calls[0]["streamable_http_allow_get"] is False
+    assert calls[0]["streamable_http_allow_delete"] is False
+    assert calls[0]["streamable_http_allowed_origins"] == []
     assert calls[0]["tool_pinning"] is True
     assert calls[0]["tool_pinning_action"] == "block"
     assert calls[0]["schema_validation"] is True

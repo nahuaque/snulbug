@@ -7768,7 +7768,7 @@ def _probe_mcp_url(url: str, *, headers: Mapping[str, Any], timeout: float) -> d
         return {"reachable": False, "status": None, "error": f"unsupported URL: {url}"}
     body = json.dumps({"jsonrpc": "2.0", "id": "snulbug-share-status", "method": "tools/list", "params": {}})
     request_headers = {
-        "accept": "application/json",
+        "accept": "application/json, text/event-stream",
         "content-type": "application/json",
         "x-snulbug-internal-probe": "share-status",
         "user-agent": "snulbug-share-status",

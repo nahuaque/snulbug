@@ -93,6 +93,16 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "response_redact_secrets": True,
     "response_block_instructions": False,
     "server_to_client_request_action": "block",
+    "streamable_http_hardening": True,
+    "streamable_http_endpoint_path": "/mcp",
+    "streamable_http_require_accept": True,
+    "streamable_http_require_content_type": True,
+    "streamable_http_require_protocol_version": False,
+    "streamable_http_protocol_version": "2025-11-25",
+    "streamable_http_require_session_id": False,
+    "streamable_http_allow_get": False,
+    "streamable_http_allow_delete": False,
+    "streamable_http_allowed_origins": [],
     "tool_pinning": True,
     "tool_pinning_action": "block",
     "schema_validation": True,
@@ -200,6 +210,16 @@ response_max_bytes = 262144
 response_redact_secrets = true
 response_block_instructions = false
 server_to_client_request_action = "block"
+streamable_http_hardening = true
+streamable_http_endpoint_path = "/mcp"
+streamable_http_require_accept = true
+streamable_http_require_content_type = true
+streamable_http_require_protocol_version = false
+streamable_http_protocol_version = "2025-11-25"
+streamable_http_require_session_id = false
+streamable_http_allow_get = false
+streamable_http_allow_delete = false
+streamable_http_allowed_origins = []
 tool_pinning = true
 tool_pinning_action = "block"
 schema_validation = true
@@ -537,6 +557,8 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         "state",
         "tool_pinning_action",
         "server_to_client_request_action",
+        "streamable_http_endpoint_path",
+        "streamable_http_protocol_version",
         "schema_validation_action",
         "lease_header",
         "tunnel_provider",
@@ -582,6 +604,13 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         "confirm",
         "response_redact_secrets",
         "response_block_instructions",
+        "streamable_http_hardening",
+        "streamable_http_require_accept",
+        "streamable_http_require_content_type",
+        "streamable_http_require_protocol_version",
+        "streamable_http_require_session_id",
+        "streamable_http_allow_get",
+        "streamable_http_allow_delete",
         "tool_pinning",
         "schema_validation",
         "facade_health_routing",
@@ -606,6 +635,12 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         raise ValueError("mcp.proxy.tool_pinning_action must be 'warn' or 'block'")
     if normalized["server_to_client_request_action"] not in {"allow", "warn", "block"}:
         raise ValueError("mcp.proxy.server_to_client_request_action must be 'allow', 'warn', or 'block'")
+    if not normalized["streamable_http_endpoint_path"].startswith("/"):
+        normalized["streamable_http_endpoint_path"] = f"/{normalized['streamable_http_endpoint_path']}"
+    normalized["streamable_http_allowed_origins"] = _normalize_string_list(
+        normalized.get("streamable_http_allowed_origins", []),
+        field="streamable_http_allowed_origins",
+    )
     if normalized["schema_validation_action"] not in {"warn", "block"}:
         raise ValueError("mcp.proxy.schema_validation_action must be 'warn' or 'block'")
     if normalized["catalog_projection"] not in CATALOG_PROJECTION_MODES:

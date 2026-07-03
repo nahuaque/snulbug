@@ -109,6 +109,37 @@ curl -sS "${NGROK_URL}/mcp" \
   -d '{"jsonrpc":"2.0","id":"tools-list","method":"tools/list","params":{}}'
 ```
 
+## Streamable HTTP edge hardening
+
+`snulbug` enforces MCP Streamable HTTP safety checks at the gateway boundary
+before Lua policy or upstream forwarding runs. Generated configs enable these
+defaults:
+
+```toml
+[mcp.proxy]
+streamable_http_hardening = true
+streamable_http_endpoint_path = "/mcp"
+streamable_http_require_accept = true
+streamable_http_require_content_type = true
+streamable_http_require_protocol_version = false
+streamable_http_protocol_version = "2025-11-25"
+streamable_http_require_session_id = false
+streamable_http_allow_get = false
+streamable_http_allow_delete = false
+streamable_http_allowed_origins = []
+```
+
+The guard rejects malformed MCP POSTs, explicit unsupported
+`MCP-Protocol-Version` values, disallowed browser `Origin` headers, malformed
+`MCP-Session-Id` headers, and accidental GET/DELETE forwarding unless those
+methods are explicitly enabled. GET returns HTTP 405 by default, which is valid
+for gateways that do not provide resumable SSE streams.
+
+Set `streamable_http_allowed_origins` when a browser-based MCP client will call
+the public URL directly. Curl, CLI clients, and agent harnesses usually do not
+send `Origin`, so they continue to work with the standard MCP headers shown
+above.
+
 Before sharing the public URL, verify that the tunnel reaches snulbug and that
 unauthenticated MCP traffic is blocked:
 

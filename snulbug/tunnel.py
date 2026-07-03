@@ -1724,7 +1724,7 @@ def _post_json(url: str, *, headers: Mapping[str, str], timeout: float) -> HttpP
     parsed = urlsplit(url)
     body = json.dumps(_DOCTOR_REQUEST, separators=(",", ":")).encode("utf-8")
     request_headers = {
-        "accept": "application/json",
+        "accept": "application/json, text/event-stream",
         "content-type": "application/json",
         "user-agent": "snulbug-tunnel-doctor",
         **dict(headers),

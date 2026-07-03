@@ -129,7 +129,7 @@ def _send_mcp_request(
     authorization: str | None,
 ) -> dict[str, Any]:
     body = json.dumps(payload, sort_keys=True).encode("utf-8")
-    headers = [(b"content-type", b"application/json")]
+    headers = [(b"content-type", b"application/json"), (b"accept", b"application/json, text/event-stream")]
     if authorization is not None:
         headers.append((b"authorization", authorization.encode("latin-1")))
 

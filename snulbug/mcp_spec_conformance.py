@@ -42,6 +42,7 @@ def run_mcp_2025_11_25_conformance(
     )
     _check_accept_header(checks, recommendations, normalized_headers)
     _check_protocol_version_header(checks, recommendations, normalized_headers)
+    _check_edge_hardening(checks, recommendations, proxy_config=config)
     _check_origin_guard(checks, recommendations, url=url, proxy_config=config)
     _check_streamable_get(
         checks,
@@ -159,6 +160,50 @@ def _check_origin_guard(
         recommendations.append(
             "Add an explicit Origin allowlist/validation rule before treating a public Streamable HTTP share as "
             "hardened."
+        )
+
+
+def _check_edge_hardening(
+    checks: list[dict[str, Any]],
+    recommendations: list[str],
+    *,
+    proxy_config: Mapping[str, Any],
+) -> None:
+    enabled = proxy_config.get("streamable_http_hardening") is True
+    require_accept = proxy_config.get("streamable_http_require_accept") is True
+    require_content_type = proxy_config.get("streamable_http_require_content_type") is True
+    allow_get = proxy_config.get("streamable_http_allow_get") is True
+    allow_delete = proxy_config.get("streamable_http_allow_delete") is True
+    require_session = proxy_config.get("streamable_http_require_session_id") is True
+    protocol = proxy_config.get("streamable_http_protocol_version")
+    details = {
+        "enabled": enabled,
+        "require_accept": require_accept,
+        "require_content_type": require_content_type,
+        "allow_get": allow_get,
+        "allow_delete": allow_delete,
+        "require_session_id": require_session,
+        "protocol_version": protocol,
+    }
+    ok = enabled and require_accept and require_content_type and not allow_get
+    _add_check(
+        checks,
+        "mcp2025.transport.edge_hardening",
+        "pass" if ok else "warn",
+        "snulbug edge hardening enforces Streamable HTTP request shape"
+        if ok
+        else "snulbug Streamable HTTP edge hardening is incomplete or relaxed",
+        details=details,
+    )
+    if not enabled:
+        recommendations.append("Enable `mcp.proxy.streamable_http_hardening` before sharing a public MCP URL.")
+    if not require_accept:
+        recommendations.append("Require Streamable HTTP POST clients to advertise JSON and SSE response support.")
+    if not require_content_type:
+        recommendations.append("Require `Content-Type: application/json` on Streamable HTTP POST requests.")
+    if allow_get:
+        recommendations.append(
+            "Only enable Streamable HTTP GET/SSE when the upstream and client support resumable streams."
         )
 
 
@@ -443,6 +488,7 @@ def _normalize_headers(headers: Mapping[str, str] | None) -> dict[str, str]:
 
 def _origin_guard_configured(proxy_config: Mapping[str, Any]) -> bool:
     candidates: list[Any] = [
+        proxy_config.get("streamable_http_allowed_origins"),
         proxy_config.get("origin_allowlist"),
         proxy_config.get("allowed_origins"),
         proxy_config.get("origin_validation"),

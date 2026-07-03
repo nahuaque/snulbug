@@ -59,7 +59,11 @@ def _post_json(port: int, payload: dict) -> dict:
             "POST",
             "/mcp",
             body=body,
-            headers={"content-type": "application/json", "content-length": str(len(body))},
+            headers={
+                "content-type": "application/json",
+                "accept": "application/json, text/event-stream",
+                "content-length": str(len(body)),
+            },
         )
         response = connection.getresponse()
         return {"status": response.status, "body": json.loads(response.read().decode("utf-8"))}

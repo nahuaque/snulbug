@@ -178,6 +178,131 @@ def test_reverse_proxy_forwards_allowed_request_to_upstream(tmp_path):
     assert audit["decision"]["reason_code"] == "test.allowed"
 
 
+def test_streamable_http_edge_rejects_post_without_required_accept(tmp_path):
+    server, seen = start_upstream()
+    policy = write_policy(tmp_path, "continue")
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/api",
+        policy,
+        streamable_http_require_accept=True,
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            headers=[(b"content-type", b"application/json"), (b"accept", b"")],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    assert sent[0]["status"] == 406
+    assert payload["reason_code"] == "mcp.transport.accept_required"
+    assert seen["count"] == 0
+
+
+def test_streamable_http_edge_rejects_unsupported_protocol_version(tmp_path):
+    server, seen = start_upstream()
+    policy = write_policy(tmp_path, "continue")
+    app = create_proxy_application(f"http://127.0.0.1:{server.server_port}/api", policy)
+
+    try:
+        sent = run_asgi(
+            app,
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"accept", b"application/json, text/event-stream"),
+                (b"mcp-protocol-version", b"2099-01-01"),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    assert sent[0]["status"] == 400
+    assert payload["reason_code"] == "mcp.transport.unsupported_protocol_version"
+    assert seen["count"] == 0
+
+
+def test_streamable_http_edge_rejects_disallowed_origin(tmp_path):
+    server, seen = start_upstream()
+    policy = write_policy(tmp_path, "continue")
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/api",
+        policy,
+        streamable_http_allowed_origins=("https://allowed.example",),
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            headers=[
+                (b"origin", b"https://attacker.example"),
+                (b"content-type", b"application/json"),
+                (b"accept", b"application/json, text/event-stream"),
+            ],
+            body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    assert sent[0]["status"] == 403
+    assert payload["reason_code"] == "mcp.transport.origin_denied"
+    assert seen["count"] == 0
+
+
+def test_streamable_http_edge_returns_405_for_get_without_forwarding(tmp_path):
+    server, seen = start_upstream()
+    policy = write_policy(tmp_path, "continue")
+    app = create_proxy_application(f"http://127.0.0.1:{server.server_port}/api", policy)
+
+    try:
+        sent = run_asgi(app, method="GET", headers=[(b"accept", b"text/event-stream")])
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    headers = dict(sent[0]["headers"])
+    payload = json.loads(sent[1]["body"])
+    assert sent[0]["status"] == 405
+    assert headers[b"allow"] == b"POST, OPTIONS"
+    assert payload["reason_code"] == "mcp.transport.get_not_supported"
+    assert seen["count"] == 0
+
+
+def test_streamable_http_edge_can_require_session_id_after_initialize(tmp_path):
+    server, seen = start_upstream()
+    policy = write_policy(tmp_path, "continue")
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/api",
+        policy,
+        streamable_http_require_session_id=True,
+    )
+    headers = [(b"content-type", b"application/json"), (b"accept", b"application/json, text/event-stream")]
+
+    try:
+        initialize = run_asgi(
+            app,
+            headers=headers,
+            body=b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+        )
+        tools = run_asgi(app, headers=headers, body=b'{"jsonrpc":"2.0","id":2,"method":"tools/list"}')
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert initialize[0]["status"] == 200
+    assert tools[0]["status"] == 400
+    assert json.loads(tools[1]["body"])["reason_code"] == "mcp.transport.session_required"
+    assert seen["count"] == 1
+
+
 def test_reverse_proxy_records_policy_deny_backoff_metadata(tmp_path):
     server, seen = start_upstream()
     policy = tmp_path / "policy.lua"
@@ -4648,6 +4773,17 @@ def start_mutating_tools_upstream():
     return server, state
 
 
+def mcp_test_headers(method: str, headers=None) -> list[tuple[bytes, bytes]]:
+    result = list(headers or [])
+    names = {name.lower() for name, _value in result}
+    if method.upper() == "POST":
+        if b"content-type" not in names:
+            result.append((b"content-type", b"application/json"))
+        if b"accept" not in names:
+            result.append((b"accept", b"application/json, text/event-stream"))
+    return result
+
+
 def run_asgi(app, *, method="POST", path="/mcp", headers=None, body=b"", query_string=b"") -> list[dict[str, Any]]:
     scope = {
         "type": "http",
@@ -4658,7 +4794,7 @@ def run_asgi(app, *, method="POST", path="/mcp", headers=None, body=b"", query_s
         "path": path,
         "raw_path": path.encode("ascii"),
         "query_string": query_string,
-        "headers": headers or [],
+        "headers": mcp_test_headers(method, headers),
         "client": ("127.0.0.1", 1234),
         "state": {},
     }
@@ -4731,7 +4867,7 @@ async def run_asgi_once(
         "path": path,
         "raw_path": path.encode("ascii"),
         "query_string": query_string,
-        "headers": headers or [],
+        "headers": mcp_test_headers(method, headers),
         "client": ("127.0.0.1", 1234),
         "state": {},
     }
