@@ -934,6 +934,34 @@ Lua policies can make narrower decisions with helpers such as
 `mcp.is_completion_request(request)`, `mcp.completion_ref_type(request)`, and
 `cap.completion_ref_type(request, { "ref/prompt" })`.
 
+## Progress And Cancellation Controls
+
+MCP progress and cancellation are protocol-control messages, not normal tool
+calls. Snulbug tracks active `_meta.progressToken` values, validates
+`notifications/progress`, rate-limits noisy progress streams, checks that
+progress values increase for known tokens, and verifies that
+`notifications/cancelled` targets an active same-direction request when state is
+available. Task-augmented requests must be cancelled through `tasks/cancel`, not
+plain `notifications/cancelled`.
+
+```toml
+[mcp.proxy]
+progress_policy_action = "warn" # allow | warn | block
+progress_rate_limit = 60
+progress_rate_window_seconds = 60.0
+progress_state_ttl_seconds = 3600.0
+```
+
+The default `warn` mode preserves interoperability while adding audit metadata.
+Use `block` when you want malformed progress, unknown progress tokens,
+non-monotonic progress, over-limit progress notification bursts, invalid
+cancellation targets, and task cancellation mismatches to stop before they reach
+the peer.
+
+Progress state uses the same configured state adapter as policy state. In-memory
+state is process-local, SQLite keeps local progress state across restarts, and
+Redis shares progress/cancellation mediation across workers.
+
 ## Response Controls
 
 Request policy runs before upstream calls. The proxy also applies MCP-aware

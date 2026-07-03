@@ -4006,6 +4006,55 @@ def test_mcp_completion_policy_warns_and_audits_completion_response(tmp_path):
     }
 
 
+def test_mcp_progress_policy_blocks_non_monotonic_progress_before_upstream(tmp_path):
+    server, seen = start_mcp_upstream({"slow_tool": "Slow tool"})
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+        progress_policy_action="block",
+    )
+
+    try:
+        run_asgi(
+            app,
+            body=(
+                b'{"jsonrpc":"2.0","id":"task-call","method":"tools/call",'
+                b'"params":{"name":"slow_tool","task":{},'
+                b'"_meta":{"progressToken":"progress-1"}}}'
+            ),
+        )
+        run_asgi(
+            app,
+            body=(
+                b'{"jsonrpc":"2.0","method":"notifications/progress",'
+                b'"params":{"progressToken":"progress-1","progress":10}}'
+            ),
+        )
+        sent = run_asgi(
+            app,
+            body=(
+                b'{"jsonrpc":"2.0","method":"notifications/progress",'
+                b'"params":{"progressToken":"progress-1","progress":5}}'
+            ),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    records = load_record_log(record_log)
+    assert payload["error"]["data"]["reason_code"] == "request.progress_non_monotonic"
+    assert seen["calls"] == [
+        {"method": "tools/call", "tool": "slow_tool"},
+        {"method": "notifications/progress", "tool": None},
+    ]
+    assert records[-1]["metadata"]["protocol_policy"]["blocked"] is True
+    assert records[-1]["metadata"]["protocol_policy"]["reason_code"] == "request.progress_non_monotonic"
+
+
 def test_mcp_output_schema_validation_blocks_invalid_structured_content(tmp_path):
     server, seen = start_mcp_upstream(
         {"read_file": "Read a file"},

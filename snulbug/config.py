@@ -94,6 +94,10 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "response_block_instructions": False,
     "server_to_client_request_action": "block",
     "completion_policy_action": "warn",
+    "progress_policy_action": "warn",
+    "progress_rate_limit": 60,
+    "progress_rate_window_seconds": 60.0,
+    "progress_state_ttl_seconds": 3600.0,
     "streamable_http_hardening": True,
     "streamable_http_endpoint_path": "/mcp",
     "streamable_http_require_accept": True,
@@ -212,6 +216,10 @@ response_redact_secrets = true
 response_block_instructions = false
 server_to_client_request_action = "block"
 completion_policy_action = "warn"
+progress_policy_action = "warn"
+progress_rate_limit = 60
+progress_rate_window_seconds = 60.0
+progress_state_ttl_seconds = 3600.0
 streamable_http_hardening = true
 streamable_http_endpoint_path = "/mcp"
 streamable_http_require_accept = true
@@ -560,6 +568,7 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         "tool_pinning_action",
         "server_to_client_request_action",
         "completion_policy_action",
+        "progress_policy_action",
         "streamable_http_endpoint_path",
         "streamable_http_protocol_version",
         "schema_validation_action",
@@ -589,8 +598,14 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         value = normalized.get(field)
         if not isinstance(value, int) or value <= 0:
             raise ValueError(f"mcp.proxy.{field} must be a positive integer")
+    if not isinstance(normalized.get("progress_rate_limit"), int) or normalized["progress_rate_limit"] <= 0:
+        raise ValueError("mcp.proxy.progress_rate_limit must be a positive integer")
     if not isinstance(normalized.get("timeout"), int | float) or float(normalized["timeout"]) <= 0:
         raise ValueError("mcp.proxy.timeout must be a positive number")
+    for field in ("progress_rate_window_seconds", "progress_state_ttl_seconds"):
+        value = normalized.get(field)
+        if not isinstance(value, int | float) or float(value) <= 0:
+            raise ValueError(f"mcp.proxy.{field} must be a positive number")
     if (
         not isinstance(normalized.get("facade_health_failure_threshold"), int)
         or normalized["facade_health_failure_threshold"] <= 0
@@ -640,6 +655,8 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         raise ValueError("mcp.proxy.server_to_client_request_action must be 'allow', 'warn', or 'block'")
     if normalized["completion_policy_action"] not in {"allow", "warn", "block"}:
         raise ValueError("mcp.proxy.completion_policy_action must be 'allow', 'warn', or 'block'")
+    if normalized["progress_policy_action"] not in {"allow", "warn", "block"}:
+        raise ValueError("mcp.proxy.progress_policy_action must be 'allow', 'warn', or 'block'")
     if not normalized["streamable_http_endpoint_path"].startswith("/"):
         normalized["streamable_http_endpoint_path"] = f"/{normalized['streamable_http_endpoint_path']}"
     normalized["streamable_http_allowed_origins"] = _normalize_string_list(
@@ -724,6 +741,8 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
     if normalized.get("lease_file"):
         normalized["lease_file"] = _resolve_path(base, normalized["lease_file"])
     normalized["timeout"] = float(normalized["timeout"])
+    normalized["progress_rate_window_seconds"] = float(normalized["progress_rate_window_seconds"])
+    normalized["progress_state_ttl_seconds"] = float(normalized["progress_state_ttl_seconds"])
     normalized["cloudflare_access_jwks_cache_seconds"] = float(normalized["cloudflare_access_jwks_cache_seconds"])
     normalized["cloudflare_access_jwks_fetch_timeout"] = float(normalized["cloudflare_access_jwks_fetch_timeout"])
     normalized["cloudflare_access_leeway_seconds"] = float(normalized["cloudflare_access_leeway_seconds"])

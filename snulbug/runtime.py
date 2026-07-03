@@ -1518,12 +1518,16 @@ return function(source, source_name, instruction_limit)
       is_task_notification = false,
       is_task_request = false,
       is_completion_request = false,
+      is_progress_notification = false,
+      is_cancelled_notification = false,
       is_server_to_client_request = false,
       is_sampling_request = false,
       is_elicitation_request = false,
       is_roots_request = false,
       task = {},
       completion = {},
+      progress = {},
+      cancellation = {},
       sampling = {},
       elicitation = {},
     }
@@ -1569,10 +1573,37 @@ return function(source, source_name, instruction_limit)
       call.task_status = call.params.status
     end
     if type(call.params._meta) == "table" then
+      if type(call.params._meta.progressToken) == "string" or type(call.params._meta.progressToken) == "number" then
+        call.progress_token = call.params._meta.progressToken
+      end
       local related_task = call.params._meta["io.modelcontextprotocol/related-task"]
       if type(related_task) == "table" and type(related_task.taskId) == "string" then
         call.related_task_id = related_task.taskId
       end
+    end
+
+    if call.method == "notifications/progress" then
+      call.is_progress_notification = true
+      call.progress = {
+        token = call.params.progressToken,
+        value = call.params.progress,
+        total = call.params.total,
+      }
+      if type(call.params.message) == "string" then
+        call.progress.message = call.params.message
+      end
+      return call
+    end
+
+    if call.method == "notifications/cancelled" then
+      call.is_cancelled_notification = true
+      call.cancellation = {
+        request_id = call.params.requestId,
+      }
+      if type(call.params.reason) == "string" then
+        call.cancellation.reason = call.params.reason
+      end
+      return call
     end
 
     if call.method == "sampling/createMessage" then
@@ -1802,6 +1833,14 @@ return function(source, source_name, instruction_limit)
     return mcp.call(request).is_completion_request
   end
 
+  function mcp.is_progress_notification(request)
+    return mcp.call(request).is_progress_notification
+  end
+
+  function mcp.is_cancelled_notification(request)
+    return mcp.call(request).is_cancelled_notification
+  end
+
   function mcp.is_server_to_client_request(request)
     return mcp.call(request).is_server_to_client_request
   end
@@ -1872,6 +1911,30 @@ return function(source, source_name, instruction_limit)
       return keys
     end
     return {}
+  end
+
+  function mcp.progress_token(request)
+    return mcp.call(request).progress_token or mcp.call(request).progress.token
+  end
+
+  function mcp.progress_value(request)
+    return mcp.call(request).progress.value
+  end
+
+  function mcp.progress_total(request)
+    return mcp.call(request).progress.total
+  end
+
+  function mcp.progress_message(request)
+    return mcp.call(request).progress.message
+  end
+
+  function mcp.cancelled_request_id(request)
+    return mcp.call(request).cancellation.request_id
+  end
+
+  function mcp.cancelled_reason(request)
+    return mcp.call(request).cancellation.reason
   end
 
   function mcp.sampling_tools_requested(request)

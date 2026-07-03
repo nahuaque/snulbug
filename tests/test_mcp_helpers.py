@@ -568,6 +568,72 @@ def test_mcp_completion_helpers_identify_reference_and_arguments():
     assert blocked["body"] == "MCP completion reference type not allowed: ref/resource"
 
 
+def test_mcp_progress_and_cancellation_helpers_identify_protocol_messages():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return decision.allow("test.progress", {
+            is_progress = mcp.is_progress_notification(request),
+            is_cancelled = mcp.is_cancelled_notification(request),
+            progress_token = tostring(mcp.progress_token(request) or ""),
+            progress = mcp.progress_value(request) or -1,
+            total = mcp.progress_total(request) or -1,
+            message = mcp.progress_message(request) or "",
+            cancelled_request_id = tostring(mcp.cancelled_request_id(request) or ""),
+            cancelled_reason = mcp.cancelled_reason(request) or ""
+          })
+        end
+        """
+    )
+
+    progress = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","method":"notifications/progress",'
+                '"params":{"progressToken":"tok-1","progress":3,"total":10,"message":"working"}}'
+            )
+        }
+    )
+    cancelled = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","method":"notifications/cancelled",'
+                '"params":{"requestId":"req-1","reason":"user stopped"}}'
+            )
+        }
+    )
+    call_with_token = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","id":"req-1","method":"tools/call",'
+                '"params":{"name":"slow_tool","_meta":{"progressToken":"tok-2"}}}'
+            )
+        }
+    )
+
+    assert progress["context"] == {
+        "is_progress": True,
+        "is_cancelled": False,
+        "progress_token": "tok-1",
+        "progress": 3,
+        "total": 10,
+        "message": "working",
+        "cancelled_request_id": "",
+        "cancelled_reason": "",
+    }
+    assert cancelled["context"] == {
+        "is_progress": False,
+        "is_cancelled": True,
+        "progress_token": "",
+        "progress": -1,
+        "total": -1,
+        "message": "",
+        "cancelled_request_id": "req-1",
+        "cancelled_reason": "user stopped",
+    }
+    assert call_with_token["context"]["progress_token"] == "tok-2"
+
+
 def test_decision_helpers_build_supported_actions():
     script = compile_lua_script(
         """

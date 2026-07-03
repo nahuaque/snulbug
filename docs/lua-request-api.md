@@ -51,7 +51,7 @@ end
 Available helpers:
 
 - `mcp.body(request)`: parsed JSON-RPC body table, or `nil` for missing/malformed JSON.
-- `mcp.call(request)`: normalized JSON-RPC call table with `method`, `params`, `args`, `tool`, `id`, `batch`, `invalid`, `error`, `is_tool_call`, `is_read`, `is_write`, `is_task_augmented`, `is_task_method`, `is_task_notification`, `is_task_request`, `is_completion_request`, `is_server_to_client_request`, `is_sampling_request`, `is_elicitation_request`, `is_roots_request`, `task_id`, `task_status`, `task_operation`, `task_ttl_ms`, and `related_task_id` fields.
+- `mcp.call(request)`: normalized JSON-RPC call table with `method`, `params`, `args`, `tool`, `id`, `batch`, `invalid`, `error`, `is_tool_call`, `is_read`, `is_write`, `is_task_augmented`, `is_task_method`, `is_task_notification`, `is_task_request`, `is_completion_request`, `is_progress_notification`, `is_cancelled_notification`, `is_server_to_client_request`, `is_sampling_request`, `is_elicitation_request`, `is_roots_request`, `task_id`, `task_status`, `task_operation`, `task_ttl_ms`, `related_task_id`, and `progress_token` fields.
 - `mcp.arg(request_or_call, key)`: read one tool/prompt argument from a request or normalized call.
 - `mcp.arg_keys(request_or_call)`: sorted list of observed tool/prompt argument keys.
 - `mcp.method(request)`: JSON-RPC method string, or `nil`.
@@ -63,6 +63,8 @@ Available helpers:
 - `mcp.is_task_notification(request)`: true for `notifications/tasks/status`.
 - `mcp.is_task_request(request)`: true for task-augmented requests, task methods, or task status notifications.
 - `mcp.is_completion_request(request)`: true for `completion/complete`.
+- `mcp.is_progress_notification(request)`: true for `notifications/progress`.
+- `mcp.is_cancelled_notification(request)`: true for `notifications/cancelled`.
 - `mcp.is_server_to_client_request(request)`: true for upstream requests aimed back at the MCP client, currently `sampling/createMessage`, `elicitation/create`, or `roots/list`.
 - `mcp.is_sampling_request(request)`: true for `sampling/createMessage`.
 - `mcp.is_elicitation_request(request)`: true for `elicitation/create`.
@@ -79,6 +81,12 @@ Available helpers:
 - `mcp.completion_argument_name(request)`: argument name being completed.
 - `mcp.completion_argument_value(request)`: current partial argument value.
 - `mcp.completion_context_keys(request)`: sorted keys from `params.context.arguments`.
+- `mcp.progress_token(request)`: original request `_meta.progressToken`, or progress notification `params.progressToken`.
+- `mcp.progress_value(request)`: numeric `params.progress` from `notifications/progress`, or `nil`.
+- `mcp.progress_total(request)`: numeric `params.total` from `notifications/progress`, or `nil`.
+- `mcp.progress_message(request)`: optional progress message string, or `nil`.
+- `mcp.cancelled_request_id(request)`: `params.requestId` from `notifications/cancelled`, or `nil`.
+- `mcp.cancelled_reason(request)`: optional cancellation reason string, or `nil`.
 - `mcp.sampling_tools_requested(request)`: true when a `sampling/createMessage` request includes a non-empty `params.tools` array.
 - `mcp.sampling_tool_names(request)`: sorted tool names from sampling-with-tools requests.
 - `mcp.sampling_tool_choice_mode(request)`: `auto`, `required`, `none`, or `nil`.
@@ -121,6 +129,27 @@ methods in replay/simulation or nonstandard flows:
 return function(request)
   return cap.server_to_client_method(request, {})
     or decision.allow("mcp.server_to_client_allowed")
+end
+```
+
+MCP progress and cancellation messages are mediated by the proxy runtime, but
+Lua policies can still inspect them when replaying, simulating, or handling
+nonstandard flows:
+
+```lua
+return function(request)
+  if mcp.is_progress_notification(request) then
+    return decision.allow("mcp.progress_observed", {
+      progress = mcp.progress_value(request),
+      total = mcp.progress_total(request)
+    })
+  end
+  if mcp.is_cancelled_notification(request) then
+    return decision.allow("mcp.cancel_observed", {
+      request_id = mcp.cancelled_request_id(request)
+    })
+  end
+  return decision.allow("mcp.allowed")
 end
 ```
 

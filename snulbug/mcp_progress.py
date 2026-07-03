@@ -72,9 +72,9 @@ def mcp_progress_response_metadata(payload: Any) -> dict[str, Any]:
     if not messages:
         return {}
     progress = [_progress_notification_metadata(item, source="response") for item in messages]
-    progress = [item for item in progress if item.get("progress_notification")]
+    progress = [item for item in progress if item]
     cancelled = [_cancelled_notification_metadata(item, source="response") for item in messages]
-    cancelled = [item for item in cancelled if item.get("cancelled_notification")]
+    cancelled = [item for item in cancelled if item]
     return _drop_empty(
         {
             "count": len(messages),
