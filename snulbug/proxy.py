@@ -47,6 +47,7 @@ from .mcp_auth import (
     oauth_resource_metadata_url,
     protected_resource_metadata,
 )
+from .mcp_client_requests import mcp_server_to_client_request_metadata
 from .mcp_tasks import mcp_task_request_metadata
 from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
 from .policy_backoff import PolicyBackoffConfig
@@ -2134,6 +2135,7 @@ def create_proxy_application(
     response_max_bytes: int | None = 256 * 1024,
     response_redact_secrets: bool = True,
     response_block_instructions: bool = False,
+    server_to_client_request_action: str = "block",
     tool_pinning: bool = True,
     tool_pinning_action: str = "block",
     catalog_projection: str = "off",
@@ -2184,6 +2186,7 @@ def create_proxy_application(
         max_body_bytes=response_max_bytes,
         redact_secrets=response_redact_secrets,
         block_instruction_like_content=response_block_instructions,
+        server_to_client_request_action=server_to_client_request_action,
         tool_pinning=tool_pinning,
         tool_pinning_action=tool_pinning_action,
     )
@@ -2326,6 +2329,7 @@ def run_proxy(
     response_max_bytes: int | None = 256 * 1024,
     response_redact_secrets: bool = True,
     response_block_instructions: bool = False,
+    server_to_client_request_action: str = "block",
     tool_pinning: bool = True,
     tool_pinning_action: str = "block",
     catalog_projection: str = "off",
@@ -2386,6 +2390,7 @@ def run_proxy(
         response_max_bytes=response_max_bytes,
         response_redact_secrets=response_redact_secrets,
         response_block_instructions=response_block_instructions,
+        server_to_client_request_action=server_to_client_request_action,
         tool_pinning=tool_pinning,
         tool_pinning_action=tool_pinning_action,
         catalog_projection=catalog_projection,
@@ -2461,6 +2466,7 @@ def proxy_config_run_kwargs(
         "response_max_bytes": proxy_config["response_max_bytes"],
         "response_redact_secrets": proxy_config["response_redact_secrets"],
         "response_block_instructions": proxy_config["response_block_instructions"],
+        "server_to_client_request_action": proxy_config["server_to_client_request_action"],
         "tool_pinning": proxy_config["tool_pinning"],
         "tool_pinning_action": proxy_config["tool_pinning_action"],
         "catalog_projection": proxy_config["catalog_projection"],
@@ -3707,6 +3713,9 @@ def _mcp_request_metadata(request: Mapping[str, Any] | None) -> dict[str, Any]:
     task_metadata = mcp_task_request_metadata(request)
     if task_metadata:
         metadata["mcp_task"] = task_metadata
+    server_to_client_metadata = mcp_server_to_client_request_metadata(request)
+    if server_to_client_metadata:
+        metadata["mcp_server_to_client"] = server_to_client_metadata
     return metadata
 
 

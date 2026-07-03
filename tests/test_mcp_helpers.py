@@ -434,6 +434,83 @@ def test_mcp_task_helpers_identify_official_task_requests():
     }
 
 
+def test_mcp_server_to_client_helpers_identify_sampling_elicitation_and_roots_requests():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          local blocked = cap.server_to_client_method(request, {
+            "sampling/createMessage",
+            "elicitation/create",
+            "roots/list"
+          })
+          if blocked ~= nil then
+            return blocked
+          end
+          local names = mcp.sampling_tool_names(request)
+          return decision.allow("test.server_to_client", {
+            method = mcp.method(request),
+            is_server_to_client = mcp.is_server_to_client_request(request),
+            is_sampling = mcp.is_sampling_request(request),
+            is_elicitation = mcp.is_elicitation_request(request),
+            is_roots = mcp.is_roots_request(request),
+            tools_requested = mcp.sampling_tools_requested(request),
+            first_tool = names[1],
+            tool_choice = mcp.sampling_tool_choice_mode(request),
+            elicitation_mode = mcp.elicitation_mode(request),
+            elicitation_url = mcp.elicitation_url(request)
+          })
+        end
+        """
+    )
+
+    sampling = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","id":"sample","method":"sampling/createMessage",'
+                '"params":{"messages":[],"tools":[{"name":"read_secret"}],"toolChoice":{"mode":"required"}}}'
+            )
+        }
+    )
+    elicitation = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","id":"elicit","method":"elicitation/create",'
+                '"params":{"mode":"url","url":"https://accounts.example.test/auth"}}'
+            )
+        }
+    )
+    roots = script.decide({"body": '{"jsonrpc":"2.0","id":"roots","method":"roots/list"}'})
+
+    assert sampling["context"] == {
+        "method": "sampling/createMessage",
+        "is_server_to_client": True,
+        "is_sampling": True,
+        "is_elicitation": False,
+        "is_roots": False,
+        "tools_requested": True,
+        "first_tool": "read_secret",
+        "tool_choice": "required",
+    }
+    assert elicitation["context"] == {
+        "method": "elicitation/create",
+        "is_server_to_client": True,
+        "is_sampling": False,
+        "is_elicitation": True,
+        "is_roots": False,
+        "tools_requested": False,
+        "elicitation_mode": "url",
+        "elicitation_url": "https://accounts.example.test/auth",
+    }
+    assert roots["context"] == {
+        "method": "roots/list",
+        "is_server_to_client": True,
+        "is_sampling": False,
+        "is_elicitation": False,
+        "is_roots": True,
+        "tools_requested": False,
+    }
+
+
 def test_decision_helpers_build_supported_actions():
     script = compile_lua_script(
         """

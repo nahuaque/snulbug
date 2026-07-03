@@ -1515,7 +1515,13 @@ return function(source, source_name, instruction_limit)
       is_task_method = false,
       is_task_notification = false,
       is_task_request = false,
+      is_server_to_client_request = false,
+      is_sampling_request = false,
+      is_elicitation_request = false,
+      is_roots_request = false,
       task = {},
+      sampling = {},
+      elicitation = {},
     }
     request.__mcp_call_cached = true
     request.__mcp_call = call
@@ -1563,6 +1569,73 @@ return function(source, source_name, instruction_limit)
       if type(related_task) == "table" and type(related_task.taskId) == "string" then
         call.related_task_id = related_task.taskId
       end
+    end
+
+    if call.method == "sampling/createMessage" then
+      call.is_server_to_client_request = true
+      call.is_sampling_request = true
+      call.direction = "server_to_client"
+      call.sampling = {}
+      if type(call.params.messages) == "table" then
+        call.sampling.message_count = #call.params.messages
+      end
+      if type(call.params.maxTokens) == "number" then
+        call.sampling.max_tokens = call.params.maxTokens
+      end
+      if type(call.params.includeContext) == "string" then
+        call.sampling.include_context = call.params.includeContext
+      end
+      if type(call.params.systemPrompt) == "string" and call.params.systemPrompt ~= "" then
+        call.sampling.has_system_prompt = true
+      end
+      if type(call.params.tools) == "table" then
+        call.sampling.tools_count = #call.params.tools
+        call.sampling.tools_requested = #call.params.tools > 0
+        call.sampling.tool_names = {}
+        for _, tool in ipairs(call.params.tools) do
+          if type(tool) == "table" and type(tool.name) == "string" then
+            table.insert(call.sampling.tool_names, tool.name)
+          end
+        end
+        table.sort(call.sampling.tool_names)
+      end
+      if type(call.params.toolChoice) == "table" and type(call.params.toolChoice.mode) == "string" then
+        call.sampling.tool_choice_mode = call.params.toolChoice.mode
+      end
+      return call
+    end
+
+    if call.method == "elicitation/create" then
+      call.is_server_to_client_request = true
+      call.is_elicitation_request = true
+      call.direction = "server_to_client"
+      call.elicitation = {
+        mode = "form",
+      }
+      if type(call.params.mode) == "string" and call.params.mode ~= "" then
+        call.elicitation.mode = call.params.mode
+      end
+      if type(call.params.url) == "string" then
+        call.elicitation.url = call.params.url
+      end
+      if type(call.params.elicitationId) == "string" then
+        call.elicitation.id = call.params.elicitationId
+      end
+      if type(call.params.requestedSchema) == "table" then
+        call.elicitation.requested_schema = true
+        if type(call.params.requestedSchema.type) == "string" then
+          call.elicitation.requested_schema_type = call.params.requestedSchema.type
+        end
+      end
+      return call
+    end
+
+    if call.method == "roots/list" then
+      call.is_server_to_client_request = true
+      call.is_roots_request = true
+      call.direction = "server_to_client"
+      call.is_read = true
+      return call
     end
 
     if starts_with(call.method, "tasks/") then
@@ -1688,6 +1761,22 @@ return function(source, source_name, instruction_limit)
     return mcp.call(request).is_task_request
   end
 
+  function mcp.is_server_to_client_request(request)
+    return mcp.call(request).is_server_to_client_request
+  end
+
+  function mcp.is_sampling_request(request)
+    return mcp.call(request).is_sampling_request
+  end
+
+  function mcp.is_elicitation_request(request)
+    return mcp.call(request).is_elicitation_request
+  end
+
+  function mcp.is_roots_request(request)
+    return mcp.call(request).is_roots_request
+  end
+
   function mcp.task_id(request)
     return mcp.call(request).task_id
   end
@@ -1714,6 +1803,30 @@ return function(source, source_name, instruction_limit)
       return info.execution.taskSupport
     end
     return nil
+  end
+
+  function mcp.sampling_tools_requested(request)
+    return mcp.call(request).sampling.tools_requested == true
+  end
+
+  function mcp.sampling_tool_names(request)
+    local names = mcp.call(request).sampling.tool_names
+    if type(names) == "table" then
+      return names
+    end
+    return {}
+  end
+
+  function mcp.sampling_tool_choice_mode(request)
+    return mcp.call(request).sampling.tool_choice_mode
+  end
+
+  function mcp.elicitation_mode(request)
+    return mcp.call(request).elicitation.mode
+  end
+
+  function mcp.elicitation_url(request)
+    return mcp.call(request).elicitation.url
   end
 
   function mcp.tool_name(request)
@@ -2291,6 +2404,31 @@ return function(source, source_name, instruction_limit)
       return nil
     end
     return rejection(options, "MCP task method not allowed: " .. tostring(method), "mcp.task_method_not_allowed")
+  end
+
+  function cap.server_to_client_method(request_or_method, allowed, options)
+    local method = request_or_method
+    local is_server_to_client = false
+    if type(request_or_method) == "table" then
+      local call = mcp.call(request_or_method)
+      method = call.method
+      is_server_to_client = call.is_server_to_client_request == true
+    else
+      is_server_to_client = method == "sampling/createMessage"
+        or method == "elicitation/create"
+        or method == "roots/list"
+    end
+    if not is_server_to_client then
+      return nil
+    end
+    if value_allowed(method, allowed) then
+      return nil
+    end
+    return rejection(
+      options,
+      "MCP server-to-client method not allowed: " .. tostring(method),
+      "mcp.server_to_client_method_not_allowed"
+    )
   end
 
   function cap.tool(request_or_name, allowed, options)

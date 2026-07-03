@@ -51,7 +51,7 @@ end
 Available helpers:
 
 - `mcp.body(request)`: parsed JSON-RPC body table, or `nil` for missing/malformed JSON.
-- `mcp.call(request)`: normalized JSON-RPC call table with `method`, `params`, `args`, `tool`, `id`, `batch`, `invalid`, `error`, `is_tool_call`, `is_read`, `is_write`, `is_task_augmented`, `is_task_method`, `is_task_notification`, `is_task_request`, `task_id`, `task_status`, `task_operation`, `task_ttl_ms`, and `related_task_id` fields.
+- `mcp.call(request)`: normalized JSON-RPC call table with `method`, `params`, `args`, `tool`, `id`, `batch`, `invalid`, `error`, `is_tool_call`, `is_read`, `is_write`, `is_task_augmented`, `is_task_method`, `is_task_notification`, `is_task_request`, `is_server_to_client_request`, `is_sampling_request`, `is_elicitation_request`, `is_roots_request`, `task_id`, `task_status`, `task_operation`, `task_ttl_ms`, and `related_task_id` fields.
 - `mcp.arg(request_or_call, key)`: read one tool/prompt argument from a request or normalized call.
 - `mcp.arg_keys(request_or_call)`: sorted list of observed tool/prompt argument keys.
 - `mcp.method(request)`: JSON-RPC method string, or `nil`.
@@ -62,12 +62,21 @@ Available helpers:
 - `mcp.is_task_method(request)`: true for official MCP `tasks/get`, `tasks/result`, `tasks/list`, and `tasks/cancel`.
 - `mcp.is_task_notification(request)`: true for `notifications/tasks/status`.
 - `mcp.is_task_request(request)`: true for task-augmented requests, task methods, or task status notifications.
+- `mcp.is_server_to_client_request(request)`: true for upstream requests aimed back at the MCP client, currently `sampling/createMessage`, `elicitation/create`, or `roots/list`.
+- `mcp.is_sampling_request(request)`: true for `sampling/createMessage`.
+- `mcp.is_elicitation_request(request)`: true for `elicitation/create`.
+- `mcp.is_roots_request(request)`: true for `roots/list`.
 - `mcp.task_id(request)`: official MCP task ID from `params.taskId`, or `nil`.
 - `mcp.related_task_id(request)`: related task ID from `_meta["io.modelcontextprotocol/related-task"]`, or `nil`.
 - `mcp.task_status(request)`: task status from task notifications or task status payloads, or `nil`.
 - `mcp.task_operation(request)`: `get`, `result`, `list`, `cancel`, or `status` for MCP task methods/notifications.
 - `mcp.task_ttl_ms(request)`: requested task TTL from `params.task.ttl`, or `nil`.
 - `mcp.task_support()`: schema-aware `execution.taskSupport` for the current tool when supplied in policy context.
+- `mcp.sampling_tools_requested(request)`: true when a `sampling/createMessage` request includes a non-empty `params.tools` array.
+- `mcp.sampling_tool_names(request)`: sorted tool names from sampling-with-tools requests.
+- `mcp.sampling_tool_choice_mode(request)`: `auto`, `required`, `none`, or `nil`.
+- `mcp.elicitation_mode(request)`: `form`, `url`, or `nil`.
+- `mcp.elicitation_url(request)`: URL from URL-mode elicitation, or `nil`.
 - `mcp.tool_name(request)`: `params.name` for `tools/call`, or `nil`.
 - `mcp.tool_allowed(request, allowed)`: true when the request is not a tool call or the tool is allowed.
 - `mcp.allow_tools(request, allowed, options)`: returns `nil` when allowed, otherwise a `reject` decision.
@@ -92,6 +101,19 @@ return function(request)
       task_id = mcp.task_id(request),
       task_operation = mcp.task_operation(request)
     })
+end
+```
+
+MCP server-to-client requests are also distinct from normal client-originated
+tool calls. They let an upstream server ask the client/model/user for more work
+or more data. In HTTP proxy mode, snulbug blocks these on the response path by
+default before they reach the client. Lua policies can still identify the same
+methods in replay/simulation or nonstandard flows:
+
+```lua
+return function(request)
+  return cap.server_to_client_method(request, {})
+    or decision.allow("mcp.server_to_client_allowed")
 end
 ```
 
@@ -353,6 +375,7 @@ Available guards:
 - `cap.allowed(value, allowed)`: boolean membership check for array or map allowlists.
 - `cap.method(request_or_method, allowed, options)`: allow listed JSON-RPC methods.
 - `cap.mcp_task_method(request_or_method, allowed, options)`: allow listed official MCP `tasks/*` methods; non-task methods pass through.
+- `cap.server_to_client_method(request_or_method, allowed, options)`: allow listed upstream-to-client methods; non-server-to-client methods pass through.
 - `cap.tool(request_or_name, allowed, options)`: allow listed MCP tools; non-tool calls pass through.
 - `cap.arg_string(request_or_call, key, options)`: require a non-empty string argument.
 - `cap.arg_path(request_or_call, key, allowed_paths, options)`: require a relative path argument under listed roots.

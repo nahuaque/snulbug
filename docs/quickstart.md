@@ -170,6 +170,7 @@ path = "traces/audit.jsonl"
 type = "console"
 format = "text"
 response_block_instructions = false
+server_to_client_request_action = "block"
 tool_pinning = true
 tool_pinning_action = "block"
 schema_validation = true

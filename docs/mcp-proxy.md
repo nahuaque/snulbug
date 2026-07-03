@@ -206,6 +206,7 @@ max_body_bytes = 65536
 response_max_bytes = 262144
 response_redact_secrets = true
 response_block_instructions = false
+server_to_client_request_action = "block"
 tool_pinning = true
 tool_pinning_action = "block"
 schema_validation = true
@@ -872,6 +873,11 @@ return-path controls to successful JSON-RPC responses:
   instruction-like phrases such as "ignore previous instructions". It is off by
   default because local files may legitimately contain security examples or
   prompt text.
+- `server_to_client_request_action` controls upstream requests aimed back at
+  the MCP client/user/model. The default `block` stops `sampling/createMessage`
+  including sampling-with-tools, `elicitation/create` including URL-mode
+  elicitation, and `roots/list` before they reach the client. Use `warn` to
+  audit without blocking or `allow` only for a trusted upstream/client pair.
 - `tool_pinning` hashes `tools/list` names, descriptions, and input schemas on
   first sight. With `tool_pinning_action = "block"`, a later silent description
   or schema change is rejected until the proxy state is reset or reviewed.

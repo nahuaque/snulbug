@@ -702,6 +702,7 @@ tunnel_public_url = {json.dumps(proxy_url)}
 tool_pinning = false
 schema_validation = false
 response_redact_secrets = true
+server_to_client_request_action = "block"
 redact_records = true
 timeout = 5.0
 
@@ -820,6 +821,7 @@ def _auth_lab_proxy_app(proxy_config: Mapping[str, Any]) -> Any:
         response_max_bytes=proxy_config["response_max_bytes"],
         response_redact_secrets=proxy_config["response_redact_secrets"],
         response_block_instructions=proxy_config["response_block_instructions"],
+        server_to_client_request_action=proxy_config["server_to_client_request_action"],
         tool_pinning=proxy_config["tool_pinning"],
         tool_pinning_action=proxy_config["tool_pinning_action"],
         schema_validation=proxy_config["schema_validation"],

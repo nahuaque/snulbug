@@ -10228,6 +10228,7 @@ def _container_proxy_values(
         "response_max_bytes": 262144,
         "response_redact_secrets": True,
         "response_block_instructions": False,
+        "server_to_client_request_action": "block",
         "tool_pinning": True,
         "tool_pinning_action": "block",
         "schema_validation": True,

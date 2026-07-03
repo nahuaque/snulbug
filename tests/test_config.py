@@ -37,6 +37,7 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         response_max_bytes = 131072
         response_redact_secrets = false
         response_block_instructions = true
+        server_to_client_request_action = "warn"
         tool_pinning = true
         tool_pinning_action = "warn"
         schema_validation = true
@@ -145,6 +146,7 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
     assert result["response_max_bytes"] == 131072
     assert result["response_redact_secrets"] is False
     assert result["response_block_instructions"] is True
+    assert result["server_to_client_request_action"] == "warn"
     assert result["tool_pinning"] is True
     assert result["tool_pinning_action"] == "warn"
     assert result["schema_validation"] is True
@@ -1127,6 +1129,7 @@ def test_mcp_share_run_cli_loads_config_before_running(monkeypatch, tmp_path):
     assert calls[0]["response_max_bytes"] == 262144
     assert calls[0]["response_redact_secrets"] is True
     assert calls[0]["response_block_instructions"] is False
+    assert calls[0]["server_to_client_request_action"] == "block"
     assert calls[0]["tool_pinning"] is True
     assert calls[0]["tool_pinning_action"] == "block"
     assert calls[0]["schema_validation"] is True

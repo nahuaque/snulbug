@@ -101,3 +101,12 @@ def test_oauth_scope_target_supports_mcp_tasks_methods():
     assert target["task_method"] == "tasks/result"
     assert target["task_id"] == "task_123"
     assert target["selectors"] == ["tasks/result:task_123", "tasks/result"]
+
+
+def test_oauth_scope_target_supports_server_to_client_methods():
+    target = mcp_scope_target(
+        b'{"jsonrpc":"2.0","id":"sample-1","method":"sampling/createMessage","params":{"messages":[]}}'
+    )
+
+    assert target["server_to_client_method"] == "sampling/createMessage"
+    assert target["selectors"] == ["server-to-client:sampling/createMessage", "sampling/createMessage"]

@@ -92,6 +92,7 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "response_max_bytes": 262144,
     "response_redact_secrets": True,
     "response_block_instructions": False,
+    "server_to_client_request_action": "block",
     "tool_pinning": True,
     "tool_pinning_action": "block",
     "schema_validation": True,
@@ -198,6 +199,7 @@ max_body_bytes = 65536
 response_max_bytes = 262144
 response_redact_secrets = true
 response_block_instructions = false
+server_to_client_request_action = "block"
 tool_pinning = true
 tool_pinning_action = "block"
 schema_validation = true
@@ -534,6 +536,7 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         "host",
         "state",
         "tool_pinning_action",
+        "server_to_client_request_action",
         "schema_validation_action",
         "lease_header",
         "tunnel_provider",
@@ -601,6 +604,8 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
             raise ValueError(f"mcp.proxy.{field} must be a non-negative number")
     if normalized["tool_pinning_action"] not in {"warn", "block"}:
         raise ValueError("mcp.proxy.tool_pinning_action must be 'warn' or 'block'")
+    if normalized["server_to_client_request_action"] not in {"allow", "warn", "block"}:
+        raise ValueError("mcp.proxy.server_to_client_request_action must be 'allow', 'warn', or 'block'")
     if normalized["schema_validation_action"] not in {"warn", "block"}:
         raise ValueError("mcp.proxy.schema_validation_action must be 'warn' or 'block'")
     if normalized["catalog_projection"] not in CATALOG_PROJECTION_MODES:

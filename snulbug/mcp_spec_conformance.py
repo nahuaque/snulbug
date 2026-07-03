@@ -365,21 +365,27 @@ def _check_server_to_client_mediation(
     *,
     proxy_config: Mapping[str, Any],
 ) -> None:
-    mediation = _mapping(proxy_config.get("server_to_client_policy") or proxy_config.get("client_capability_policy"))
-    configured = bool(mediation)
+    action = proxy_config.get("server_to_client_request_action")
+    legacy_mediation = _mapping(
+        proxy_config.get("server_to_client_policy") or proxy_config.get("client_capability_policy")
+    )
+    configured = action in {"block", "warn", "allow"} or bool(legacy_mediation)
+    hardened = action == "block"
     _add_check(
         checks,
         "mcp2025.server_to_client.mediation",
-        "pass" if configured else "warn",
-        "server-to-client MCP request mediation is configured"
+        "pass" if hardened else "warn" if configured else "warn",
+        "server-to-client MCP requests are blocked by response policy"
+        if hardened
+        else "server-to-client MCP request mediation is configured in non-blocking mode"
         if configured
         else "server-to-client sampling, elicitation, and roots requests are not explicitly mediated",
-        details={"configured": configured},
+        details={"configured": configured, "action": action},
     )
-    if not configured:
+    if not hardened:
         recommendations.append(
-            "Add policy coverage for server-to-client MCP requests such as sampling/createMessage, "
-            "elicitation/create, and roots/list."
+            'Use `mcp.proxy.server_to_client_request_action = "block"` for public shares unless the upstream '
+            "and client are explicitly trusted to handle sampling/createMessage, elicitation/create, and roots/list."
         )
 
 

@@ -411,6 +411,40 @@ def test_mcp_record_cli_can_redact_record_itself(tmp_path, capsys):
     assert "ghp_" not in record_log.read_text(encoding="utf-8")
 
 
+def test_build_audit_event_extracts_server_to_client_response_metadata(tmp_path):
+    policy = write_policy(tmp_path)
+    request = {
+        "method": "POST",
+        "path": "/mcp",
+        "headers": {},
+        "body": json.dumps({"jsonrpc": "2.0", "id": "call-1", "method": "tools/call", "params": {"name": "agent.run"}}),
+    }
+    record = record_policy_request(policy, request, recorded_at="2026-06-12T00:00:00+00:00")
+    record["response"] = {
+        "status": 200,
+        "headers": {"content-type": "application/json"},
+        "body": json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "sample-1",
+                "method": "sampling/createMessage",
+                "params": {
+                    "messages": [{"role": "user", "content": {"type": "text", "text": "think"}}],
+                    "tools": [{"name": "shell"}],
+                },
+            }
+        ),
+    }
+
+    audit = build_audit_event(record)
+
+    server_to_client = audit["mcp_response"]["server_to_client"]
+    assert server_to_client["count"] == 1
+    assert server_to_client["requests"][0]["method"] == "sampling/createMessage"
+    assert server_to_client["requests"][0]["sampling"]["tools_requested"] is True
+    assert server_to_client["requests"][0]["sampling"]["tool_names"] == ["shell"]
+
+
 def write_policy(tmp_path):
     path = tmp_path / "policy.lua"
     path.write_text(

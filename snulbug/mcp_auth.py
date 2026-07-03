@@ -17,6 +17,7 @@ from urllib.parse import SplitResult, urlencode, urlsplit, urlunsplit
 import jwt
 
 from .auth_providers import auth_provider_claim_context
+from .mcp_client_requests import is_mcp_server_to_client_request_method
 from .mcp_tasks import is_mcp_task_method
 
 PROTECTED_RESOURCE_AUTH_MODES = {"oauth-resource", "enterprise-managed"}
@@ -1327,6 +1328,9 @@ def mcp_scope_target(body: bytes | None) -> dict[str, Any]:
         if isinstance(task_id, str) and task_id:
             target["task_id"] = task_id
             selectors.insert(0, f"{method}:{task_id}")
+    elif is_mcp_server_to_client_request_method(method):
+        target["server_to_client_method"] = method
+        selectors.insert(0, f"server-to-client:{method}")
     return target
 
 

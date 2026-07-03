@@ -402,6 +402,7 @@ def format_decision_console_line(event: Mapping[str, Any]) -> str:
     mcp = event.get("mcp") if isinstance(event.get("mcp"), Mapping) else {}
     trace = event.get("trace") if isinstance(event.get("trace"), Mapping) else {}
     metadata = event.get("metadata") if isinstance(event.get("metadata"), Mapping) else {}
+    response_policy = metadata.get("response_policy") if isinstance(metadata.get("response_policy"), Mapping) else {}
     lease = metadata.get("lease") if isinstance(metadata.get("lease"), Mapping) else {}
     tunnel = event.get("tunnel") if isinstance(event.get("tunnel"), Mapping) else {}
     cloudflare_access = (
@@ -474,6 +475,16 @@ def format_decision_console_line(event: Mapping[str, Any]) -> str:
         parts.append(f"mcp.task_operation={task['task_operation']}")
     if task.get("task_augmented") is True:
         parts.append("mcp.task_augmented=true")
+    server_to_client = response_policy.get("server_to_client") if isinstance(response_policy, Mapping) else {}
+    if isinstance(server_to_client, Mapping) and server_to_client.get("count"):
+        parts.append(f"mcp.server_to_client.count={server_to_client['count']}")
+        if server_to_client.get("blocked"):
+            parts.append("mcp.server_to_client.blocked=true")
+        requests = server_to_client.get("requests")
+        if isinstance(requests, Sequence) and not isinstance(requests, str | bytes | bytearray) and requests:
+            first = requests[0]
+            if isinstance(first, Mapping) and first.get("method"):
+                parts.append(f"mcp.server_to_client.method={first['method']}")
     if mcp.get("request_id") is not None:
         parts.append(f"mcp.id={mcp['request_id']}")
     if trace.get("duration_ms") is not None:
@@ -643,6 +654,12 @@ def _audit_event_names(event: Mapping[str, Any]) -> set[str]:
             names.add("mcp.response.warning")
         if response_policy.get("reason_code"):
             names.add(str(response_policy["reason_code"]))
+        server_to_client = response_policy.get("server_to_client")
+        if isinstance(server_to_client, Mapping) and server_to_client.get("count"):
+            names.add("mcp.server_to_client.request")
+            for item in server_to_client.get("requests", []):
+                if isinstance(item, Mapping) and isinstance(item.get("method"), str):
+                    names.add(f"mcp.server_to_client.{item['method']}")
         tool_pinning = response_policy.get("tool_pinning")
         if isinstance(tool_pinning, Mapping) and tool_pinning.get("changed"):
             names.add("mcp.tool.changed")
