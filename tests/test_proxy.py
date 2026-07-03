@@ -597,6 +597,7 @@ def test_reverse_proxy_oauth_serves_protected_resource_metadata_and_challenges(t
         in challenge_headers["www-authenticate"]
     )
     assert 'error="invalid_token"' in challenge_headers["www-authenticate"]
+    assert 'scope="mcp:connect"' in challenge_headers["www-authenticate"]
     assert seen["count"] == 0
 
 
@@ -1375,13 +1376,22 @@ def test_reverse_proxy_oauth_blocks_insufficient_scope_before_lua_and_upstream(t
 
     record = load_record_log(record_log)[0]
     audit = json.loads(audit_log.read_text(encoding="utf-8"))
-    assert sent[0]["status"] == 401
+    challenge_headers = sent_headers(sent)
+    assert sent[0]["status"] == 403
     assert seen["count"] == 0
+    assert 'error="insufficient_scope"' in challenge_headers["www-authenticate"]
+    assert 'scope="mcp:connect"' in challenge_headers["www-authenticate"]
+    assert (
+        'resource_metadata="https://mcp.example.test/.well-known/oauth-protected-resource"'
+        in challenge_headers["www-authenticate"]
+    )
     assert record["result"]["action"] == "challenge"
     assert record["metadata"]["auth"]["allowed"] is False
     assert record["metadata"]["auth"]["reason_code"] == "oauth.insufficient_scope"
     assert record["metadata"]["auth"]["missing_scopes"] == ["mcp:connect"]
+    assert record["metadata"]["auth"]["challenge_scope"] == ["mcp:connect"]
     assert audit["auth"]["reason_code"] == "oauth.insufficient_scope"
+    assert audit["auth"]["challenge_scope"] == ["mcp:connect"]
     assert token not in json.dumps(record)
 
 
@@ -1645,11 +1655,15 @@ def test_reverse_proxy_oauth_scope_map_blocks_unmapped_tool_before_lua_and_upstr
 
     record = load_record_log(record_log)[0]
     audit = json.loads(audit_log.read_text(encoding="utf-8"))
+    challenge_headers = sent_headers(sent)
     scope_map = record["metadata"]["auth"]["scope_map"]
     assert sent[0]["status"] == 403
     assert seen["count"] == 0
+    assert 'error="insufficient_scope"' in challenge_headers["www-authenticate"]
+    assert 'scope="mcp:tool.git.status"' in challenge_headers["www-authenticate"]
     assert record["result"]["action"] == "challenge"
     assert record["metadata"]["auth"]["reason_code"] == "oauth.scope_map_denied"
+    assert record["metadata"]["auth"]["challenge_scope"] == ["mcp:tool.git.status"]
     assert scope_map["target"]["tool"] == "git.status"
     assert scope_map["candidate_selectors"] == ["tools/call:git.status", "tools/call"]
     assert scope_map["accepted_scopes"] == ["mcp:tool.git.status"]
@@ -1659,6 +1673,7 @@ def test_reverse_proxy_oauth_scope_map_blocks_unmapped_tool_before_lua_and_upstr
     assert runtime_decisions["reason_codes"]["oauth.scope_map_denied"] >= 1
     assert runtime_decisions["scope_denials"]["tools/call:git.status"] >= 1
     assert audit["auth"]["scope_map"]["reason_code"] == "oauth.scope_map_denied"
+    assert audit["auth"]["challenge_scope"] == ["mcp:tool.git.status"]
     assert token not in json.dumps(record)
 
 

@@ -804,6 +804,7 @@ return function(source, source_name, instruction_limit)
 
   function access.missing_scope(scope, options)
     return access_challenge({
+      status = 403,
       body = "insufficient scope",
       reason_code = "oauth.missing_scope",
       error = "insufficient_scope",
@@ -816,6 +817,7 @@ return function(source, source_name, instruction_limit)
 
   function access.scope_denied(selector, options)
     return access_challenge({
+      status = 403,
       body = "insufficient scope",
       reason_code = "oauth.scope_map_denied",
       error = "insufficient_scope",

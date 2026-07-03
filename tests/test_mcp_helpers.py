@@ -578,7 +578,7 @@ def test_access_missing_scope_builder_returns_standard_challenge():
 
     assert decision == {
         "action": "challenge",
-        "status": 401,
+        "status": 403,
         "body": "insufficient scope",
         "error": "insufficient_scope",
         "reason": "insufficient scope",

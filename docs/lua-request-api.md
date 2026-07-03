@@ -227,9 +227,10 @@ end
 Available builders:
 
 - `access.missing_scope(scope, options)`: `decision.challenge` with
-  `reason_code = "oauth.missing_scope"` and `error = "insufficient_scope"`.
+  `status = 403`, `reason_code = "oauth.missing_scope"`, and
+  `error = "insufficient_scope"`.
 - `access.scope_denied(selector, options)`: `decision.challenge` with
-  `reason_code = "oauth.scope_map_denied"`.
+  `status = 403` and `reason_code = "oauth.scope_map_denied"`.
 - `access.wrong_subject(subject_or_subjects, options)`: `decision.reject` with
   `reason_code = "oauth.subject_denied"`.
 - `access.wrong_tenant(tenant_or_tenants, options)`: `decision.reject` with

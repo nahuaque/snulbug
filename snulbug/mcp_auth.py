@@ -785,6 +785,7 @@ def _evaluate_oauth_token(
     if missing:
         return _reject(
             challenge_config,
+            status=403,
             reason_code="oauth.insufficient_scope",
             error="insufficient_scope",
             details={**_auth_profile_metadata(config), "missing_scopes": missing},
@@ -1343,14 +1344,17 @@ def _reject(
     challenge_scheme: str = "bearer",
     details: Mapping[str, Any] | None = None,
 ) -> OAuthDecision:
-    metadata = {
-        "enabled": True,
-        "allowed": False,
-        "reason_code": reason_code,
-        **dict(details or {}),
-    }
-    body = b"authentication required"
     challenge_scope = _challenge_scope_for_reject(config, details)
+    metadata = _drop_empty(
+        {
+            "enabled": True,
+            "allowed": False,
+            "reason_code": reason_code,
+            "challenge_scope": challenge_scope,
+            **dict(details or {}),
+        }
+    )
+    body = b"authentication required"
     return OAuthDecision(
         allowed=False,
         status=status,

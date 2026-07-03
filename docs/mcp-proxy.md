@@ -398,8 +398,13 @@ required_claims = { tenant = ["tenant-a"] }
 With this enabled, snulbug:
 
 - serves `GET /.well-known/oauth-protected-resource`
-- challenges missing or invalid tokens with `WWW-Authenticate: Bearer ...`
-- rejects insufficient scopes before Lua and upstream calls
+- challenges missing or invalid tokens with 401 `WWW-Authenticate: Bearer ...`
+- rejects insufficient scopes with 403 `WWW-Authenticate: Bearer ...` before
+  Lua and upstream calls
+- includes MCP 2025-11-25 `WWW-Authenticate` scope hints for incremental
+  consent. Missing required scopes advertise the missing `required_scopes`;
+  scope-map denials advertise the accepted scope for the current MCP
+  method/tool selector.
 - validates JWT signatures from `jwks_path`, a cached remote `jwks_url`, or a
   discovered issuer `jwks_uri`
 - optionally validates opaque or revocation-sensitive tokens with OAuth token
@@ -435,6 +440,9 @@ tool-specific selectors such as `tools/call:git.status`. A selector ending in
 `*` matches by prefix, for example `tools/call:filesystem.*`. MCP handshake
 messages such as `initialize`, `ping`, and `notifications/*` are allowed once
 `required_scopes` has passed, so you do not need to map protocol setup traffic.
+When a request is rejected for insufficient scope, audit metadata includes
+`auth.challenge_scope`, the exact scopes snulbug advertised in the
+`WWW-Authenticate` challenge.
 
 ### DPoP-bound OAuth Tokens
 
