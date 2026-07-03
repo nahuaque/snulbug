@@ -54,6 +54,13 @@ from .mcp_completion import (
     mcp_completion_error_response,
     mcp_completion_request_metadata,
 )
+from .mcp_progress import (
+    ProgressPolicyConfig,
+    enforce_mcp_progress_request_policy,
+    enforce_mcp_progress_response_policy,
+    mcp_progress_error_response,
+    mcp_progress_request_metadata,
+)
 from .mcp_tasks import mcp_task_request_metadata
 from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
 from .policy_backoff import PolicyBackoffConfig
@@ -212,6 +219,8 @@ class ReverseProxyApp:
         timeout: float = 30.0,
         response_policy: ResponsePolicyConfig | None = None,
         completion_policy: CompletionPolicyConfig | None = None,
+        progress_policy: ProgressPolicyConfig | None = None,
+        protocol_state_store: PolicyStateStore | None = None,
         tool_pin_store: PolicyStateStore | None = None,
         schema_policy: SchemaPolicyConfig | None = None,
         tool_schema_store: PolicyStateStore | None = None,
@@ -227,6 +236,8 @@ class ReverseProxyApp:
         self._upstream = parsed
         self.response_policy = response_policy or ResponsePolicyConfig()
         self.completion_policy = completion_policy or CompletionPolicyConfig()
+        self.progress_policy = progress_policy or ProgressPolicyConfig()
+        self.protocol_state_store = protocol_state_store
         self.tool_pin_store = tool_pin_store
         self.schema_policy = schema_policy or SchemaPolicyConfig()
         self.tool_schema_store = tool_schema_store
@@ -313,6 +324,31 @@ class ReverseProxyApp:
                 body=response["body"],
             )
             return
+        progress_allowed, progress_request_metadata = enforce_mcp_progress_request_policy(
+            request,
+            config=self.progress_policy,
+            state_store=self.protocol_state_store,
+        )
+        if not progress_allowed and isinstance(request, Mapping):
+            response = mcp_progress_error_response(request, progress_request_metadata)
+            _set_proxy_metadata(
+                scope,
+                {
+                    **_mcp_request_metadata(request),
+                    "lease": lease_metadata,
+                    "access": _composed_access_metadata(scope, lease=lease_metadata),
+                    "schema_validation": schema_request_metadata,
+                    **_completion_policy_metadata(completion_metadata),
+                    "protocol_policy": progress_request_metadata,
+                },
+            )
+            await _send_response(
+                send,
+                status=response["status"],
+                headers=response["headers"],
+                body=response["body"],
+            )
+            return
         try:
             credential_broker = credential_metadata(self.upstream_credential)
             if credential_broker:
@@ -338,6 +374,12 @@ class ReverseProxyApp:
             request=request,
             config=self.schema_policy,
             tool_schema_store=self.tool_schema_store,
+        )
+        response, progress_response_metadata = enforce_mcp_progress_response_policy(
+            response,
+            request=request,
+            config=self.progress_policy,
+            state_store=self.protocol_state_store,
         )
         lease_catalog_metadata = preview_mcp_lease_catalog(scope, config=self.lease_policy)
         response, catalog_metadata = project_mcp_tool_catalog_response(
@@ -366,6 +408,7 @@ class ReverseProxyApp:
                     schema_response_metadata,
                 ),
                 **_completion_policy_metadata(completion_metadata),
+                **_progress_policy_metadata(progress_request_metadata, progress_response_metadata),
                 "response_policy": response_metadata,
                 "catalog_projection": catalog_metadata,
                 "lease_catalog": lease_catalog_metadata,
@@ -652,6 +695,8 @@ class McpFacadeProxyApp:
         timeout: float = 30.0,
         response_policy: ResponsePolicyConfig | None = None,
         completion_policy: CompletionPolicyConfig | None = None,
+        progress_policy: ProgressPolicyConfig | None = None,
+        protocol_state_store: PolicyStateStore | None = None,
         tool_pin_store: PolicyStateStore | None = None,
         schema_policy: SchemaPolicyConfig | None = None,
         tool_schema_store: PolicyStateStore | None = None,
@@ -664,6 +709,8 @@ class McpFacadeProxyApp:
         self.timeout = timeout
         self.response_policy = response_policy or ResponsePolicyConfig()
         self.completion_policy = completion_policy or CompletionPolicyConfig()
+        self.progress_policy = progress_policy or ProgressPolicyConfig()
+        self.protocol_state_store = protocol_state_store
         self.tool_pin_store = tool_pin_store
         self.schema_policy = schema_policy or SchemaPolicyConfig()
         self.tool_schema_store = tool_schema_store
@@ -1015,15 +1062,62 @@ class McpFacadeProxyApp:
                 )
                 return
 
-            method = request.get("method")
-            if method == "tools/list":
-                await self._list_tools(routes, scope, request, body, send, controls=controls)
-                return
-            if method == "tools/call":
-                await self._call_tool(routes, scope, request, send, controls=controls)
+            progress_allowed, progress_request_metadata = enforce_mcp_progress_request_policy(
+                request,
+                config=self.progress_policy,
+                state_store=self.protocol_state_store,
+            )
+            if not progress_allowed:
+                response = mcp_progress_error_response(request, progress_request_metadata)
+                _set_proxy_metadata(
+                    scope,
+                    {
+                        **_mcp_request_metadata(request),
+                        "facade": True,
+                        "operation": request.get("method"),
+                        "protocol_policy": progress_request_metadata,
+                        "route_revision": routes.revision,
+                        "route_fingerprint": routes.fingerprint,
+                    },
+                )
+                await _send_response(
+                    send,
+                    status=response["status"],
+                    headers=response["headers"],
+                    body=response["body"],
+                )
                 return
 
-            await self._forward_to_default(routes, scope, body, send)
+            method = request.get("method")
+            if method == "tools/list":
+                await self._list_tools(
+                    routes,
+                    scope,
+                    request,
+                    body,
+                    send,
+                    controls=controls,
+                    progress_request_metadata=progress_request_metadata,
+                )
+                return
+            if method == "tools/call":
+                await self._call_tool(
+                    routes,
+                    scope,
+                    request,
+                    send,
+                    controls=controls,
+                    progress_request_metadata=progress_request_metadata,
+                )
+                return
+
+            await self._forward_to_default(
+                routes,
+                scope,
+                body,
+                send,
+                progress_request_metadata=progress_request_metadata,
+            )
         finally:
             await self._release_routes(routes)
 
@@ -1035,6 +1129,7 @@ class McpFacadeProxyApp:
         body: bytes,
         send: Send,
         controls: Mapping[str, Any],
+        progress_request_metadata: Mapping[str, Any],
     ) -> None:
         responses = []
         skipped: list[str] = []
