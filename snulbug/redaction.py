@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .mcp_client_requests import mcp_server_to_client_request_metadata, mcp_server_to_client_requests_from_payload
+from .mcp_completion import mcp_completion_request_metadata, mcp_completion_response_metadata
 from .mcp_tasks import mcp_task_request_metadata, mcp_task_response_metadata
 
 SECRET_REPLACEMENT = "[REDACTED]"
@@ -253,6 +254,9 @@ def _merge_jsonrpc_summary(summary: dict[str, Any], body: Mapping[str, Any]) -> 
     task_metadata = mcp_task_request_metadata(body)
     if task_metadata:
         summary["task"] = task_metadata
+    completion_metadata = mcp_completion_request_metadata(body)
+    if completion_metadata:
+        summary["completion"] = completion_metadata
     server_to_client_metadata = mcp_server_to_client_request_metadata(body)
     if server_to_client_metadata:
         summary["server_to_client"] = server_to_client_metadata
@@ -286,6 +290,9 @@ def _mcp_response_summary(response: Mapping[str, Any]) -> dict[str, Any]:
     task_metadata = mcp_task_response_metadata(payload)
     if task_metadata:
         summary["task"] = task_metadata
+    completion_metadata = mcp_completion_response_metadata(payload)
+    if completion_metadata:
+        summary["completion"] = completion_metadata
     server_to_client_requests = mcp_server_to_client_requests_from_payload(payload)
     if server_to_client_requests:
         summary["server_to_client"] = {

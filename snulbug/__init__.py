@@ -234,6 +234,7 @@ from .mcp_capabilities import (
     capability_request_from_decision,
     mcp_capability_error_response,
 )
+from .mcp_completion import CompletionPolicyConfig
 from .mcp_schema_policy import (
     DEFAULT_SCHEMA_POLICY_ALLOWED_PATHS,
     MCP_SCHEMA_POLICY_SCHEMA,
@@ -482,6 +483,7 @@ __all__ = [
     "EventSink",
     "EventSinkProvider",
     "EnvCredentialBroker",
+    "CompletionPolicyConfig",
     "ENTERPRISE_MANAGED_AUTH_EXTENSION",
     "FABRIC_CONTROL_ACTION_TYPES",
     "FABRIC_CONTROL_STATE_SCHEMA",

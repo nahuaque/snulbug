@@ -93,6 +93,7 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "response_redact_secrets": True,
     "response_block_instructions": False,
     "server_to_client_request_action": "block",
+    "completion_policy_action": "warn",
     "streamable_http_hardening": True,
     "streamable_http_endpoint_path": "/mcp",
     "streamable_http_require_accept": True,
@@ -210,6 +211,7 @@ response_max_bytes = 262144
 response_redact_secrets = true
 response_block_instructions = false
 server_to_client_request_action = "block"
+completion_policy_action = "warn"
 streamable_http_hardening = true
 streamable_http_endpoint_path = "/mcp"
 streamable_http_require_accept = true
@@ -557,6 +559,7 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         "state",
         "tool_pinning_action",
         "server_to_client_request_action",
+        "completion_policy_action",
         "streamable_http_endpoint_path",
         "streamable_http_protocol_version",
         "schema_validation_action",
@@ -635,6 +638,8 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         raise ValueError("mcp.proxy.tool_pinning_action must be 'warn' or 'block'")
     if normalized["server_to_client_request_action"] not in {"allow", "warn", "block"}:
         raise ValueError("mcp.proxy.server_to_client_request_action must be 'allow', 'warn', or 'block'")
+    if normalized["completion_policy_action"] not in {"allow", "warn", "block"}:
+        raise ValueError("mcp.proxy.completion_policy_action must be 'allow', 'warn', or 'block'")
     if not normalized["streamable_http_endpoint_path"].startswith("/"):
         normalized["streamable_http_endpoint_path"] = f"/{normalized['streamable_http_endpoint_path']}"
     normalized["streamable_http_allowed_origins"] = _normalize_string_list(

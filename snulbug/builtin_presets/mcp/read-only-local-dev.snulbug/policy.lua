@@ -12,6 +12,7 @@ local read_methods = {
   ["resources/read"] = true,
   ["prompts/list"] = true,
   ["prompts/get"] = true,
+  ["completion/complete"] = true,
 }
 
 local token = "local-dev-secret"

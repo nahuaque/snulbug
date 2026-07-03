@@ -48,6 +48,12 @@ from .mcp_auth import (
     protected_resource_metadata,
 )
 from .mcp_client_requests import mcp_server_to_client_request_metadata
+from .mcp_completion import (
+    CompletionPolicyConfig,
+    enforce_mcp_completion_request_policy,
+    mcp_completion_error_response,
+    mcp_completion_request_metadata,
+)
 from .mcp_tasks import mcp_task_request_metadata
 from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
 from .policy_backoff import PolicyBackoffConfig
@@ -205,6 +211,7 @@ class ReverseProxyApp:
         *,
         timeout: float = 30.0,
         response_policy: ResponsePolicyConfig | None = None,
+        completion_policy: CompletionPolicyConfig | None = None,
         tool_pin_store: PolicyStateStore | None = None,
         schema_policy: SchemaPolicyConfig | None = None,
         tool_schema_store: PolicyStateStore | None = None,
@@ -219,6 +226,7 @@ class ReverseProxyApp:
         self.config = ProxyConfig(upstream=upstream.rstrip("/"), timeout=timeout)
         self._upstream = parsed
         self.response_policy = response_policy or ResponsePolicyConfig()
+        self.completion_policy = completion_policy or CompletionPolicyConfig()
         self.tool_pin_store = tool_pin_store
         self.schema_policy = schema_policy or SchemaPolicyConfig()
         self.tool_schema_store = tool_schema_store
@@ -282,6 +290,29 @@ class ReverseProxyApp:
                 body=response["body"],
             )
             return
+        completion_allowed, completion_metadata = enforce_mcp_completion_request_policy(
+            request,
+            config=self.completion_policy,
+        )
+        if not completion_allowed and isinstance(request, Mapping):
+            response = mcp_completion_error_response(request, completion_metadata)
+            _set_proxy_metadata(
+                scope,
+                {
+                    **_mcp_request_metadata(request),
+                    "lease": lease_metadata,
+                    "access": _composed_access_metadata(scope, lease=lease_metadata),
+                    "schema_validation": schema_request_metadata,
+                    "completion_policy": completion_metadata,
+                },
+            )
+            await _send_response(
+                send,
+                status=response["status"],
+                headers=response["headers"],
+                body=response["body"],
+            )
+            return
         try:
             credential_broker = credential_metadata(self.upstream_credential)
             if credential_broker:
@@ -334,6 +365,7 @@ class ReverseProxyApp:
                     schema_observe_metadata,
                     schema_response_metadata,
                 ),
+                **_completion_policy_metadata(completion_metadata),
                 "response_policy": response_metadata,
                 "catalog_projection": catalog_metadata,
                 "lease_catalog": lease_catalog_metadata,
@@ -619,6 +651,7 @@ class McpFacadeProxyApp:
         *,
         timeout: float = 30.0,
         response_policy: ResponsePolicyConfig | None = None,
+        completion_policy: CompletionPolicyConfig | None = None,
         tool_pin_store: PolicyStateStore | None = None,
         schema_policy: SchemaPolicyConfig | None = None,
         tool_schema_store: PolicyStateStore | None = None,
@@ -630,6 +663,7 @@ class McpFacadeProxyApp:
     ) -> None:
         self.timeout = timeout
         self.response_policy = response_policy or ResponsePolicyConfig()
+        self.completion_policy = completion_policy or CompletionPolicyConfig()
         self.tool_pin_store = tool_pin_store
         self.schema_policy = schema_policy or SchemaPolicyConfig()
         self.tool_schema_store = tool_schema_store
@@ -1444,6 +1478,37 @@ class McpFacadeProxyApp:
         )
 
     async def _forward_to_default(self, routes: FacadeRouteTable, scope: Scope, body: bytes, send: Send) -> None:
+        try:
+            request = json.loads(body.decode("utf-8")) if body else {}
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            request = {}
+        completion_allowed, completion_metadata = enforce_mcp_completion_request_policy(
+            request if isinstance(request, Mapping) else None,
+            config=self.completion_policy,
+        )
+        if not completion_allowed and isinstance(request, Mapping):
+            response = mcp_completion_error_response(request, completion_metadata)
+            _set_proxy_metadata(
+                scope,
+                {
+                    **_mcp_request_metadata(request),
+                    "facade": True,
+                    "operation": "default",
+                    "upstream": routes.default.name,
+                    "upstream_transport": routes.default.transport,
+                    "upstream_metadata": _upstream_metadata(routes.default),
+                    "completion_policy": completion_metadata,
+                    "route_revision": routes.revision,
+                    "route_fingerprint": routes.fingerprint,
+                },
+            )
+            await _send_response(
+                send,
+                status=response["status"],
+                headers=response["headers"],
+                body=response["body"],
+            )
+            return
         if not self._should_route_upstream(routes.default):
             _set_proxy_metadata(
                 scope,
@@ -1469,7 +1534,6 @@ class McpFacadeProxyApp:
         health_events: list[dict[str, Any]] = []
         health_failures: list[dict[str, Any]] = []
         try:
-            request = json.loads(body.decode("utf-8")) if body else {}
             response = await self._forward(
                 routes,
                 routes.default,
@@ -1536,6 +1600,7 @@ class McpFacadeProxyApp:
                 "upstream": routes.default.name,
                 "upstream_transport": routes.default.transport,
                 "upstream_metadata": _upstream_metadata(routes.default),
+                **_completion_policy_metadata(completion_metadata),
                 "response_policy": response_metadata,
                 "route_revision": routes.revision,
                 "route_fingerprint": routes.fingerprint,
@@ -2493,6 +2558,7 @@ def create_proxy_application(
     response_redact_secrets: bool = True,
     response_block_instructions: bool = False,
     server_to_client_request_action: str = "block",
+    completion_policy_action: str = "warn",
     streamable_http_hardening: bool = True,
     streamable_http_endpoint_path: str = "/mcp",
     streamable_http_require_accept: bool = True,
@@ -2557,6 +2623,7 @@ def create_proxy_application(
         tool_pinning=tool_pinning,
         tool_pinning_action=tool_pinning_action,
     )
+    completion_policy = CompletionPolicyConfig(action=completion_policy_action)
     schema_policy = SchemaPolicyConfig(
         enabled=schema_validation,
         action=schema_validation_action,
@@ -2599,6 +2666,7 @@ def create_proxy_application(
         upstreams=upstreams,
         timeout=timeout,
         response_policy=response_policy,
+        completion_policy=completion_policy,
         tool_pin_store=effective_state_store if tool_pinning else None,
         schema_policy=schema_policy,
         tool_schema_store=effective_state_store if schema_validation else None,
@@ -2711,6 +2779,7 @@ def run_proxy(
     response_redact_secrets: bool = True,
     response_block_instructions: bool = False,
     server_to_client_request_action: str = "block",
+    completion_policy_action: str = "warn",
     streamable_http_hardening: bool = True,
     streamable_http_endpoint_path: str = "/mcp",
     streamable_http_require_accept: bool = True,
@@ -2782,6 +2851,7 @@ def run_proxy(
         response_redact_secrets=response_redact_secrets,
         response_block_instructions=response_block_instructions,
         server_to_client_request_action=server_to_client_request_action,
+        completion_policy_action=completion_policy_action,
         streamable_http_hardening=streamable_http_hardening,
         streamable_http_endpoint_path=streamable_http_endpoint_path,
         streamable_http_require_accept=streamable_http_require_accept,
@@ -2868,6 +2938,7 @@ def proxy_config_run_kwargs(
         "response_redact_secrets": proxy_config["response_redact_secrets"],
         "response_block_instructions": proxy_config["response_block_instructions"],
         "server_to_client_request_action": proxy_config["server_to_client_request_action"],
+        "completion_policy_action": proxy_config["completion_policy_action"],
         "streamable_http_hardening": proxy_config["streamable_http_hardening"],
         "streamable_http_endpoint_path": proxy_config["streamable_http_endpoint_path"],
         "streamable_http_require_accept": proxy_config["streamable_http_require_accept"],
@@ -2954,6 +3025,7 @@ def _proxy_app(
     upstreams: Sequence[FacadeUpstream | Mapping[str, Any]] | None,
     timeout: float,
     response_policy: ResponsePolicyConfig,
+    completion_policy: CompletionPolicyConfig,
     tool_pin_store: PolicyStateStore | None,
     schema_policy: SchemaPolicyConfig,
     tool_schema_store: PolicyStateStore | None,
@@ -2968,6 +3040,7 @@ def _proxy_app(
             upstreams,
             timeout=timeout,
             response_policy=response_policy,
+            completion_policy=completion_policy,
             tool_pin_store=tool_pin_store,
             schema_policy=schema_policy,
             tool_schema_store=tool_schema_store,
@@ -2984,6 +3057,7 @@ def _proxy_app(
         timeout=timeout,
         upstream_credential=upstream_credential,
         response_policy=response_policy,
+        completion_policy=completion_policy,
         tool_pin_store=tool_pin_store,
         schema_policy=schema_policy,
         tool_schema_store=tool_schema_store,
@@ -3277,6 +3351,10 @@ def _schema_metadata(
     ):
         merged["tool_result"] = dict(response_metadata)
     return merged
+
+
+def _completion_policy_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    return {"completion_policy": dict(metadata)} if metadata.get("checked") else {}
 
 
 def _lease_context_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
@@ -4132,6 +4210,11 @@ def _mcp_request_metadata(request: Mapping[str, Any] | None) -> dict[str, Any]:
         arguments = params.get("arguments")
         if isinstance(arguments, Mapping):
             metadata["argument_keys"] = sorted(str(key) for key in arguments)
+    completion_metadata = mcp_completion_request_metadata(request)
+    if completion_metadata:
+        metadata["mcp_completion"] = completion_metadata
+        if isinstance(completion_metadata.get("target"), str) and "target" not in metadata:
+            metadata["target"] = completion_metadata["target"]
     task_metadata = mcp_task_request_metadata(request)
     if task_metadata:
         metadata["mcp_task"] = task_metadata

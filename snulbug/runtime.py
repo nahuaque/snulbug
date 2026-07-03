@@ -1517,11 +1517,13 @@ return function(source, source_name, instruction_limit)
       is_task_method = false,
       is_task_notification = false,
       is_task_request = false,
+      is_completion_request = false,
       is_server_to_client_request = false,
       is_sampling_request = false,
       is_elicitation_request = false,
       is_roots_request = false,
       task = {},
+      completion = {},
       sampling = {},
       elicitation = {},
     }
@@ -1637,6 +1639,39 @@ return function(source, source_name, instruction_limit)
       call.is_roots_request = true
       call.direction = "server_to_client"
       call.is_read = true
+      return call
+    end
+
+    if call.method == "completion/complete" then
+      call.is_completion_request = true
+      call.is_read = true
+      call.completion = {
+        context_argument_keys = {},
+      }
+      if type(call.params.ref) == "table" then
+        if type(call.params.ref.type) == "string" then
+          call.completion.ref_type = call.params.ref.type
+        end
+        if type(call.params.ref.name) == "string" then
+          call.completion.ref_name = call.params.ref.name
+        end
+        if type(call.params.ref.uri) == "string" then
+          call.completion.ref_uri = call.params.ref.uri
+        end
+      end
+      if type(call.params.argument) == "table" then
+        if type(call.params.argument.name) == "string" then
+          call.completion.argument_name = call.params.argument.name
+        end
+        call.completion.argument_value = call.params.argument.value
+      end
+      if type(call.params.context) == "table"
+        and type(call.params.context.arguments) == "table" then
+        for key, _ in pairs(call.params.context.arguments) do
+          table.insert(call.completion.context_argument_keys, tostring(key))
+        end
+        table.sort(call.completion.context_argument_keys)
+      end
       return call
     end
 
@@ -1763,6 +1798,10 @@ return function(source, source_name, instruction_limit)
     return mcp.call(request).is_task_request
   end
 
+  function mcp.is_completion_request(request)
+    return mcp.call(request).is_completion_request
+  end
+
   function mcp.is_server_to_client_request(request)
     return mcp.call(request).is_server_to_client_request
   end
@@ -1805,6 +1844,34 @@ return function(source, source_name, instruction_limit)
       return info.execution.taskSupport
     end
     return nil
+  end
+
+  function mcp.completion_ref_type(request)
+    return mcp.call(request).completion.ref_type
+  end
+
+  function mcp.completion_ref_name(request)
+    return mcp.call(request).completion.ref_name
+  end
+
+  function mcp.completion_ref_uri(request)
+    return mcp.call(request).completion.ref_uri
+  end
+
+  function mcp.completion_argument_name(request)
+    return mcp.call(request).completion.argument_name
+  end
+
+  function mcp.completion_argument_value(request)
+    return mcp.call(request).completion.argument_value
+  end
+
+  function mcp.completion_context_keys(request)
+    local keys = mcp.call(request).completion.context_argument_keys
+    if type(keys) == "table" then
+      return keys
+    end
+    return {}
   end
 
   function mcp.sampling_tools_requested(request)
@@ -2406,6 +2473,27 @@ return function(source, source_name, instruction_limit)
       return nil
     end
     return rejection(options, "MCP task method not allowed: " .. tostring(method), "mcp.task_method_not_allowed")
+  end
+
+  function cap.completion_ref_type(request_or_type, allowed, options)
+    local ref_type = request_or_type
+    local is_completion = true
+    if type(request_or_type) == "table" then
+      local call = mcp.call(request_or_type)
+      is_completion = call.is_completion_request == true
+      ref_type = call.completion.ref_type
+    end
+    if not is_completion then
+      return nil
+    end
+    if value_allowed(ref_type, allowed) then
+      return nil
+    end
+    return rejection(
+      options,
+      "MCP completion reference type not allowed: " .. tostring(ref_type),
+      "mcp.completion_ref_type_not_allowed"
+    )
   end
 
   function cap.server_to_client_method(request_or_method, allowed, options)

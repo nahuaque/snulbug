@@ -137,6 +137,50 @@ def test_build_audit_event_promotes_tunnel_metadata(tmp_path):
     assert audit["metadata"]["tunnel"] == audit["tunnel"]
 
 
+def test_build_audit_event_extracts_completion_request_and_response_metadata(tmp_path):
+    policy = write_policy(tmp_path)
+    request = {
+        "method": "POST",
+        "path": "/mcp",
+        "body": json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "complete-1",
+                "method": "completion/complete",
+                "params": {
+                    "ref": {"type": "ref/resource", "uri": "file:///{path}"},
+                    "argument": {"name": "path", "value": "src/app.py"},
+                },
+            }
+        ),
+    }
+    response = {
+        "status": 200,
+        "body": json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "complete-1",
+                "result": {"completion": {"values": ["src/app.py"], "total": 1, "hasMore": False}},
+            }
+        ).encode(),
+    }
+
+    audit = build_audit_event(record_policy_request(policy, request, response=response))
+
+    assert audit["mcp"]["method"] == "completion/complete"
+    assert audit["mcp"]["target"] == "file:///{path}"
+    assert audit["mcp"]["completion"]["ref"]["type"] == "ref/resource"
+    assert audit["mcp"]["completion"]["argument"]["name"] == "path"
+    assert audit["mcp_response"]["completion"] == {
+        "values_count": 1,
+        "total": 1,
+        "has_more": False,
+        "max_value_length": 10,
+        "value_risk_flags": ["value_path_like"],
+        "truncated": False,
+    }
+
+
 def test_build_audit_event_promotes_cloudflare_access_metadata(tmp_path):
     policy = write_policy(tmp_path)
     request = {

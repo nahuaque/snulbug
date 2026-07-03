@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Sequence
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -3913,6 +3914,98 @@ def test_mcp_task_support_allows_task_wrapped_optional_tool_when_server_supports
     assert task["server_tasks_capability"] is True
 
 
+def test_mcp_completion_policy_blocks_completion_before_upstream(tmp_path):
+    server, seen = start_mcp_upstream({"read_file": "Read a file"})
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+        completion_policy_action="block",
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            body=(
+                b'{"jsonrpc":"2.0","id":"complete-1","method":"completion/complete",'
+                b'"params":{"ref":{"type":"ref/resource","uri":"file:///{path}"},'
+                b'"argument":{"name":"path","value":"src/private/settings.py"}}}'
+            ),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    records = load_record_log(record_log)
+    assert sent[0]["status"] == 200
+    assert payload["error"]["code"] == -32000
+    assert "completion request blocked" in payload["error"]["message"]
+    assert seen["calls"] == []
+    completion_policy = records[0]["metadata"]["completion_policy"]
+    assert completion_policy["blocked"] is True
+    assert completion_policy["completion"]["ref"]["type"] == "ref/resource"
+    assert completion_policy["completion"]["risk_flags"] == [
+        "argument_path_like",
+        "argument_sensitive_like",
+        "file_uri",
+        "resource_ref",
+        "resource_uri",
+        "uri_template",
+    ]
+    assert records[0]["metadata"]["target"] == "file:///{path}"
+
+
+def test_mcp_completion_policy_warns_and_audits_completion_response(tmp_path):
+    server, seen = start_mcp_upstream(
+        {"read_file": "Read a file"},
+        completion_values=["README.md", "docs/mcp-proxy.md"],
+    )
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            body=(
+                b'{"jsonrpc":"2.0","id":"complete-1","method":"completion/complete",'
+                b'"params":{"ref":{"type":"ref/prompt","name":"code_review"},'
+                b'"argument":{"name":"language","value":"py"},'
+                b'"context":{"arguments":{"project":"snulbug"}}}}'
+            ),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    records = load_record_log(record_log)
+    assert payload["result"]["completion"]["values"] == ["README.md", "docs/mcp-proxy.md"]
+    assert seen["calls"] == [{"method": "completion/complete", "tool": None}]
+    completion_policy = records[0]["metadata"]["completion_policy"]
+    assert completion_policy["warning"] is True
+    assert completion_policy["completion"]["ref"] == {"type": "ref/prompt", "name": "code_review"}
+    assert completion_policy["completion"]["context"] == {
+        "argument_count": 1,
+        "argument_keys": ["project"],
+    }
+    assert records[0]["metadata"]["response_policy"]["completion"] == {
+        "values_count": 2,
+        "total": 2,
+        "has_more": False,
+        "max_value_length": 17,
+        "value_risk_flags": ["value_path_like"],
+        "truncated": False,
+    }
+
+
 def test_mcp_output_schema_validation_blocks_invalid_structured_content(tmp_path):
     server, seen = start_mcp_upstream(
         {"read_file": "Read a file"},
@@ -4811,6 +4904,7 @@ def start_mcp_upstream(
     structured_results: dict[str, Any] | None = None,
     task_supports: dict[str, str] | None = None,
     server_tasks_capability: bool = False,
+    completion_values: Sequence[str] | None = None,
 ):
     seen: dict[str, Any] = {"calls": [], "headers": []}
 
@@ -4848,6 +4942,14 @@ def start_mcp_upstream(
                 result = {"content": [{"type": "text", "text": call_text or f"called {params.get('name')}"}]}
                 if structured_results and params.get("name") in structured_results:
                     result["structuredContent"] = structured_results[params.get("name")]
+            elif request.get("method") == "completion/complete":
+                result = {
+                    "completion": {
+                        "values": list(completion_values or ["README.md", "docs/mcp-proxy.md"]),
+                        "total": len(completion_values or ["README.md", "docs/mcp-proxy.md"]),
+                        "hasMore": False,
+                    }
+                }
             else:
                 result = {"ok": True}
             response = json.dumps({"jsonrpc": "2.0", "id": request.get("id"), "result": result}).encode("utf-8")

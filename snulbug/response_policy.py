@@ -12,11 +12,12 @@ from .mcp_client_requests import (
     mcp_server_to_client_request_metadata,
     mcp_server_to_client_requests_from_payload,
 )
+from .mcp_completion import MCP_COMPLETION_METHOD, mcp_completion_response_metadata
 from .redaction import DEFAULT_SECRET_KEYS, DEFAULT_SECRET_PATTERNS, RedactionConfig, redact_secrets
 from .schema_policy import normalize_mcp_tool_metadata
 from .state import PolicyStateStore
 
-MCP_RESPONSE_METHODS = ("tools/call", "resources/read", "prompts/get", "tasks/result")
+MCP_RESPONSE_METHODS = ("tools/call", "resources/read", "prompts/get", "tasks/result", MCP_COMPLETION_METHOD)
 SERVER_TO_CLIENT_REQUEST_ACTIONS = ("allow", "warn", "block")
 
 RESPONSE_SECRET_PATTERNS = tuple(DEFAULT_SECRET_PATTERNS[:-1])
@@ -129,6 +130,10 @@ def enforce_mcp_response_policy(
     if parse_error is not None:
         metadata["json_error"] = parse_error
         return dict(response), metadata
+    if method == MCP_COMPLETION_METHOD:
+        completion_metadata = mcp_completion_response_metadata(payload)
+        if completion_metadata:
+            metadata["completion"] = completion_metadata
 
     warnings = _instruction_warnings(payload, config)
     if warnings:

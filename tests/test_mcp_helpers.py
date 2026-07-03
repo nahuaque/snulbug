@@ -511,6 +511,63 @@ def test_mcp_server_to_client_helpers_identify_sampling_elicitation_and_roots_re
     }
 
 
+def test_mcp_completion_helpers_identify_reference_and_arguments():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          local blocked = cap.completion_ref_type(request, { "ref/prompt" })
+          if blocked ~= nil then
+            return blocked
+          end
+          local keys = mcp.completion_context_keys(request)
+          return decision.allow("test.completion", {
+            is_completion = mcp.is_completion_request(request),
+            ref_type = mcp.completion_ref_type(request),
+            ref_name = mcp.completion_ref_name(request),
+            ref_uri = mcp.completion_ref_uri(request) or "",
+            argument_name = mcp.completion_argument_name(request),
+            argument_value = mcp.completion_argument_value(request),
+            first_context_key = keys[1]
+          })
+        end
+        """
+    )
+
+    allowed = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","id":"complete","method":"completion/complete",'
+                '"params":{"ref":{"type":"ref/prompt","name":"code_review"},'
+                '"argument":{"name":"language","value":"py"},'
+                '"context":{"arguments":{"project":"snulbug"}}}}'
+            )
+        }
+    )
+    blocked = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","id":"complete","method":"completion/complete",'
+                '"params":{"ref":{"type":"ref/resource","uri":"file:///{path}"},'
+                '"argument":{"name":"path","value":"src/app.py"}}}'
+            )
+        }
+    )
+
+    assert allowed["context"] == {
+        "is_completion": True,
+        "ref_type": "ref/prompt",
+        "ref_name": "code_review",
+        "ref_uri": "",
+        "argument_name": "language",
+        "argument_value": "py",
+        "first_context_key": "project",
+    }
+    assert blocked["action"] == "reject"
+    assert blocked["status"] == 403
+    assert blocked["reason_code"] == "mcp.completion_ref_type_not_allowed"
+    assert blocked["body"] == "MCP completion reference type not allowed: ref/resource"
+
+
 def test_decision_helpers_build_supported_actions():
     script = compile_lua_script(
         """

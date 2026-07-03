@@ -38,6 +38,7 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         response_redact_secrets = false
         response_block_instructions = true
         server_to_client_request_action = "warn"
+        completion_policy_action = "block"
         streamable_http_hardening = true
         streamable_http_endpoint_path = "mcp"
         streamable_http_require_accept = true
@@ -157,6 +158,7 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
     assert result["response_redact_secrets"] is False
     assert result["response_block_instructions"] is True
     assert result["server_to_client_request_action"] == "warn"
+    assert result["completion_policy_action"] == "block"
     assert result["streamable_http_hardening"] is True
     assert result["streamable_http_endpoint_path"] == "/mcp"
     assert result["streamable_http_require_accept"] is True
@@ -1150,6 +1152,7 @@ def test_mcp_share_run_cli_loads_config_before_running(monkeypatch, tmp_path):
     assert calls[0]["response_redact_secrets"] is True
     assert calls[0]["response_block_instructions"] is False
     assert calls[0]["server_to_client_request_action"] == "block"
+    assert calls[0]["completion_policy_action"] == "warn"
     assert calls[0]["streamable_http_hardening"] is True
     assert calls[0]["streamable_http_endpoint_path"] == "/mcp"
     assert calls[0]["streamable_http_require_accept"] is True

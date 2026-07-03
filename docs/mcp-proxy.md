@@ -912,13 +912,36 @@ before Lua runs and before any upstream is reached. See
 [Policy deny backoff](policy-deny-backoff.md) for key fields, headers, and audit
 metadata.
 
+## Completion Controls
+
+MCP `completion/complete` can reveal prompt names, resource template structure,
+path-like values, tenant/project identifiers, or private completion suggestions.
+Snulbug treats it as a control-plane surface: request audit metadata captures the
+completion reference type, prompt/resource target, argument name/value shape,
+context argument keys, and risk flags without copying raw completion values into
+metadata. Response audit metadata records completion value counts, totals,
+`hasMore`, maximum value length, and value risk flags.
+
+Use `completion_policy_action` to decide whether completions pass, warn, or stop
+before the upstream:
+
+```toml
+[mcp.proxy]
+completion_policy_action = "warn" # allow | warn | block
+```
+
+Lua policies can make narrower decisions with helpers such as
+`mcp.is_completion_request(request)`, `mcp.completion_ref_type(request)`, and
+`cap.completion_ref_type(request, { "ref/prompt" })`.
+
 ## Response Controls
 
 Request policy runs before upstream calls. The proxy also applies MCP-aware
 return-path controls to successful JSON-RPC responses:
 
 - `response_max_bytes` blocks oversized `tools/call`, `resources/read`, and
-  `prompts/get` responses with a JSON-RPC error.
+  `prompts/get`, `tasks/result`, and `completion/complete` responses with a
+  JSON-RPC error.
 - `response_redact_secrets` redacts high-confidence bearer tokens, API keys,
   GitHub tokens, AWS access keys, and secret-shaped JSON fields from MCP
   results before they reach the client.
