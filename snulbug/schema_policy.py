@@ -11,6 +11,7 @@ from .state import PolicyStateStore
 
 TOOL_SCHEMA_KEY_PREFIX = "snulbug:tool-schema:"
 TOOL_METADATA_KEY_PREFIX = "snulbug:tool-metadata:"
+SERVER_METADATA_KEY = "snulbug:server-metadata"
 
 
 @dataclass(frozen=True)
@@ -42,12 +43,25 @@ def observe_mcp_tool_schemas(
         "observed": False,
         "method": method,
     }
-    if not config.enabled or tool_schema_store is None or method != "tools/list" or not _is_success_response(response):
+    if not config.enabled or tool_schema_store is None or not _is_success_response(response):
         return metadata
 
     payload, parse_error = _decode_json(_response_body(response))
     if parse_error is not None:
         metadata["json_error"] = parse_error
+        return metadata
+
+    if method == "initialize":
+        server_metadata = normalize_mcp_server_metadata(payload)
+        if server_metadata is not None:
+            encoded_server_metadata = json.dumps(server_metadata, sort_keys=True, separators=(",", ":"), default=str)
+            tool_schema_store.put(SERVER_METADATA_KEY, encoded_server_metadata)
+            metadata["observed"] = True
+            metadata["stored_server_metadata"] = True
+            metadata["server_tasks_capability"] = server_metadata["tasks"]["tools_call"] is True
+        return metadata
+
+    if method != "tools/list":
         return metadata
 
     tools = _tools_from_response(payload)
@@ -60,9 +74,9 @@ def observe_mcp_tool_schemas(
     for tool in tools:
         if not isinstance(tool, Mapping) or not isinstance(tool.get("name"), str):
             continue
-        metadata = normalize_mcp_tool_metadata(tool)
-        if metadata is not None:
-            encoded_metadata = json.dumps(metadata, sort_keys=True, separators=(",", ":"), default=str)
+        tool_metadata = normalize_mcp_tool_metadata(tool)
+        if tool_metadata is not None:
+            encoded_metadata = json.dumps(tool_metadata, sort_keys=True, separators=(",", ":"), default=str)
             tool_schema_store.put(f"{TOOL_METADATA_KEY_PREFIX}{tool['name']}", encoded_metadata)
             stored_metadata.append({"tool": tool["name"]})
         schema = tool.get("inputSchema")
@@ -107,13 +121,32 @@ def enforce_mcp_request_schema_policy(
 
     tool_name = params["name"]
     metadata["tool"] = tool_name
+    metadata["checked"] = True
+
+    task_allowed, task_metadata = _enforce_task_support(
+        params,
+        tool_name=tool_name,
+        config=config,
+        tool_schema_store=tool_schema_store,
+    )
+    if task_metadata:
+        metadata["task"] = task_metadata
+        if task_metadata.get("reason_code"):
+            metadata["reason_code"] = task_metadata["reason_code"]
+        if task_metadata.get("valid") is False:
+            metadata["valid"] = False
+        if task_metadata.get("blocked") is True:
+            metadata["blocked"] = True
+            metadata["issues"] = task_metadata.get("issues", [])
+    if not task_allowed:
+        return False, metadata
+
     encoded = tool_schema_store.get(f"{TOOL_SCHEMA_KEY_PREFIX}{tool_name}")
     if encoded is None:
         metadata["known_schema"] = False
         metadata["skipped"] = "schema_not_seen"
         return True, metadata
 
-    metadata["checked"] = True
     metadata["known_schema"] = True
     try:
         schema = json.loads(encoded)
@@ -141,13 +174,14 @@ def enforce_mcp_request_schema_policy(
 def mcp_schema_error_response(request: Mapping[str, Any], metadata: Mapping[str, Any]) -> dict[str, Any]:
     issue = _first_issue(metadata)
     detail = f": {issue}" if issue else ""
+    message = _schema_error_message(metadata)
     body = json.dumps(
         {
             "jsonrpc": "2.0",
             "id": _jsonrpc_id(request),
             "error": {
                 "code": -32602,
-                "message": f"MCP tool arguments rejected by inputSchema{detail}",
+                "message": f"{message}{detail}",
             },
         },
         separators=(",", ":"),
@@ -339,6 +373,154 @@ def normalize_mcp_tool_metadata(tool: Mapping[str, Any]) -> dict[str, Any] | Non
             "execution": execution,
         }
     )
+
+
+def normalize_mcp_server_metadata(payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    result = payload.get("result")
+    if not isinstance(result, Mapping):
+        return None
+    capabilities = result.get("capabilities")
+    capabilities = capabilities if isinstance(capabilities, Mapping) else {}
+    return {
+        "protocolVersion": result.get("protocolVersion") if isinstance(result.get("protocolVersion"), str) else None,
+        "tasks": {"tools_call": _server_tasks_tools_call_supported(capabilities)},
+    }
+
+
+def _server_tasks_tools_call_supported(capabilities: Mapping[str, Any]) -> bool:
+    tasks = capabilities.get("tasks")
+    tasks = tasks if isinstance(tasks, Mapping) else {}
+    requests = tasks.get("requests")
+    requests = requests if isinstance(requests, Mapping) else {}
+    tools = requests.get("tools")
+    tools = tools if isinstance(tools, Mapping) else {}
+    return isinstance(tools.get("call"), Mapping)
+
+
+def _enforce_task_support(
+    params: Mapping[str, Any],
+    *,
+    tool_name: str,
+    config: SchemaPolicyConfig,
+    tool_schema_store: PolicyStateStore,
+) -> tuple[bool, dict[str, Any]]:
+    metadata: dict[str, Any] = {
+        "checked": True,
+        "tool": tool_name,
+        "task_augmented": isinstance(params.get("task"), Mapping),
+    }
+
+    tool_metadata, tool_error = _cached_json(tool_schema_store, f"{TOOL_METADATA_KEY_PREFIX}{tool_name}")
+    if tool_error:
+        metadata.update(
+            {
+                "known_metadata": True,
+                "valid": False,
+                "reason_code": "request.task_metadata_cache_invalid",
+                "issues": [_issue("$", "cache.invalid", tool_error)],
+            }
+        )
+        return config.action != "block", _blocked_metadata(metadata, config)
+    if not isinstance(tool_metadata, Mapping):
+        metadata["known_metadata"] = False
+        metadata["skipped"] = "tool_metadata_not_seen"
+        return True, metadata
+
+    task_support = _task_support_from_metadata(tool_metadata) or "forbidden"
+    metadata["known_metadata"] = True
+    metadata["taskSupport"] = task_support
+
+    server_metadata, server_error = _cached_json(tool_schema_store, SERVER_METADATA_KEY)
+    if server_error:
+        metadata.update(
+            {
+                "server_metadata_seen": True,
+                "valid": False,
+                "reason_code": "request.server_task_capability_cache_invalid",
+                "issues": [_issue("$", "cache.invalid", server_error)],
+            }
+        )
+        return config.action != "block", _blocked_metadata(metadata, config)
+    server_tasks_capability = _server_tasks_tools_call_capability_from_metadata(server_metadata)
+    metadata["server_tasks_capability"] = server_tasks_capability
+    metadata["server_metadata_seen"] = isinstance(server_metadata, Mapping)
+
+    if metadata["task_augmented"] and task_support == "forbidden":
+        metadata.update(
+            {
+                "valid": False,
+                "reason_code": "request.task_forbidden",
+                "issues": [
+                    _issue(
+                        "$.params.task",
+                        "task.forbidden",
+                        "tool execution.taskSupport is forbidden",
+                    )
+                ],
+            }
+        )
+        return config.action != "block", _blocked_metadata(metadata, config)
+
+    if task_support == "required" and not metadata["task_augmented"]:
+        metadata.update(
+            {
+                "valid": False,
+                "reason_code": "request.task_required",
+                "issues": [
+                    _issue(
+                        "$.params.task",
+                        "task.required",
+                        "tool execution.taskSupport requires a task wrapper",
+                    )
+                ],
+            }
+        )
+        return config.action != "block", _blocked_metadata(metadata, config)
+
+    if metadata["task_augmented"] and server_tasks_capability is not True:
+        metadata.update(
+            {
+                "valid": False,
+                "reason_code": "request.server_tasks_capability_missing",
+                "issues": [
+                    _issue(
+                        "$.params.task",
+                        "task.server_capability_missing",
+                        "server capabilities do not declare tasks.requests.tools.call",
+                    )
+                ],
+            }
+        )
+        return config.action != "block", _blocked_metadata(metadata, config)
+
+    metadata["valid"] = True
+    return True, metadata
+
+
+def _blocked_metadata(metadata: Mapping[str, Any], config: SchemaPolicyConfig) -> dict[str, Any]:
+    result = dict(metadata)
+    if config.action == "block":
+        result["blocked"] = True
+    return result
+
+
+def _cached_json(store: PolicyStateStore, key: str) -> tuple[Any, str | None]:
+    encoded = store.get(key)
+    if encoded is None:
+        return None, None
+    try:
+        return json.loads(encoded), None
+    except json.JSONDecodeError as exc:
+        return None, f"cached JSON is invalid: {exc}"
+
+
+def _server_tasks_tools_call_capability_from_metadata(metadata: Any) -> bool | None:
+    if not isinstance(metadata, Mapping):
+        return None
+    tasks = metadata.get("tasks")
+    tasks = tasks if isinstance(tasks, Mapping) else {}
+    value = tasks.get("tools_call")
+    return value if isinstance(value, bool) else None
 
 
 def _normalize_tool_execution(value: Any) -> dict[str, Any] | None:
@@ -681,6 +863,13 @@ def _first_issue(metadata: Mapping[str, Any]) -> str | None:
     if isinstance(path, str) and isinstance(message, str):
         return f"{path} {message}"
     return str(first)
+
+
+def _schema_error_message(metadata: Mapping[str, Any]) -> str:
+    reason_code = str(metadata.get("reason_code") or "")
+    if reason_code.startswith("request.task") or reason_code == "request.server_tasks_capability_missing":
+        return "MCP task invocation rejected"
+    return "MCP tool arguments rejected by inputSchema"
 
 
 def _jsonrpc_id(request: Mapping[str, Any]) -> str | int | float | bool | None:

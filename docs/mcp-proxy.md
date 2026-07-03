@@ -863,6 +863,13 @@ to the client. Missing or invalid `structuredContent` is blocked in `block` mode
 and audited in `warn` mode. Tool execution errors with `isError = true` are not
 validated against the success output schema.
 
+The cache also enforces MCP task capability metadata before forwarding tool
+calls. A task-wrapped `tools/call` is blocked when the target tool advertises
+`execution.taskSupport = "forbidden"`. A tool that advertises
+`execution.taskSupport = "required"` is blocked unless the request includes a
+task wrapper. Any task-wrapped tool call also requires a cached `initialize`
+response whose server capabilities declare `tasks.requests.tools.call`.
+
 Calls pass through until a schema has been observed, so clients that call a tool
 before listing tools are not broken. In facade mode, schemas are stored under the
 client-facing prefixed tool names such as `files.read_file`.

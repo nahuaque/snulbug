@@ -5689,7 +5689,10 @@ def _share_schema_catalog_context(
 def _schema_catalog_has_server_tasks_capability(catalog: Mapping[str, Any]) -> bool:
     server = _mapping(catalog.get("server"))
     capabilities = _mapping(server.get("capabilities"))
-    return bool(_mapping(capabilities.get("tasks")))
+    tasks = _mapping(capabilities.get("tasks"))
+    requests = _mapping(tasks.get("requests"))
+    tools = _mapping(requests.get("tools"))
+    return isinstance(tools.get("call"), Mapping)
 
 
 def _share_schema_catalog_candidates(

@@ -3751,6 +3751,168 @@ def test_mcp_schema_validation_blocks_invalid_tool_arguments_before_upstream(tmp
     assert records[1]["metadata"]["schema_validation"]["issues"][0]["reason_code"] == "schema.required"
 
 
+def test_mcp_task_support_blocks_task_wrapped_forbidden_tool_before_upstream(tmp_path):
+    server, seen = start_mcp_upstream({"read_file": "Read a file"})
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+    )
+
+    try:
+        run_asgi(app, body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}')
+        sent = run_asgi(
+            app,
+            body=(
+                b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call",'
+                b'"params":{"name":"read_file","arguments":{},"task":{"ttl":1000}}}'
+            ),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    records = load_record_log(record_log)
+    assert sent[0]["status"] == 200
+    assert payload["error"]["code"] == -32602
+    assert "MCP task invocation rejected" in payload["error"]["message"]
+    assert seen["calls"] == [{"method": "tools/list", "tool": None}]
+    task = records[1]["metadata"]["schema_validation"]["task"]
+    assert task["blocked"] is True
+    assert task["taskSupport"] == "forbidden"
+    assert task["reason_code"] == "request.task_forbidden"
+
+
+def test_mcp_task_support_requires_task_wrapper_for_required_tool(tmp_path):
+    server, seen = start_mcp_upstream(
+        {"read_file": "Read a file"},
+        task_supports={"read_file": "required"},
+        server_tasks_capability=True,
+    )
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+    )
+
+    try:
+        run_asgi(app, body=b'{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{}}')
+        run_asgi(app, body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}')
+        sent = run_asgi(
+            app,
+            body=b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"read_file"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    records = load_record_log(record_log)
+    assert sent[0]["status"] == 200
+    assert payload["error"]["code"] == -32602
+    assert "MCP task invocation rejected" in payload["error"]["message"]
+    assert seen["calls"] == [
+        {"method": "initialize", "tool": None},
+        {"method": "tools/list", "tool": None},
+    ]
+    task = records[2]["metadata"]["schema_validation"]["task"]
+    assert task["blocked"] is True
+    assert task["taskSupport"] == "required"
+    assert task["server_tasks_capability"] is True
+    assert task["reason_code"] == "request.task_required"
+
+
+def test_mcp_task_support_blocks_task_wrapper_without_server_capability(tmp_path):
+    server, seen = start_mcp_upstream(
+        {"read_file": "Read a file"},
+        task_supports={"read_file": "optional"},
+    )
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+    )
+
+    try:
+        run_asgi(app, body=b'{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{}}')
+        run_asgi(app, body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}')
+        sent = run_asgi(
+            app,
+            body=(
+                b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call",'
+                b'"params":{"name":"read_file","task":{"ttl":1000}}}'
+            ),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    records = load_record_log(record_log)
+    assert sent[0]["status"] == 200
+    assert payload["error"]["code"] == -32602
+    assert "MCP task invocation rejected" in payload["error"]["message"]
+    assert seen["calls"] == [
+        {"method": "initialize", "tool": None},
+        {"method": "tools/list", "tool": None},
+    ]
+    task = records[2]["metadata"]["schema_validation"]["task"]
+    assert task["blocked"] is True
+    assert task["taskSupport"] == "optional"
+    assert task["server_tasks_capability"] is False
+    assert task["reason_code"] == "request.server_tasks_capability_missing"
+
+
+def test_mcp_task_support_allows_task_wrapped_optional_tool_when_server_supports_tasks(tmp_path):
+    server, seen = start_mcp_upstream(
+        {"read_file": "Read a file"},
+        task_supports={"read_file": "optional"},
+        server_tasks_capability=True,
+    )
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+    )
+
+    try:
+        run_asgi(app, body=b'{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{}}')
+        run_asgi(app, body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}')
+        sent = run_asgi(
+            app,
+            body=(
+                b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call",'
+                b'"params":{"name":"read_file","task":{"ttl":1000}}}'
+            ),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    records = load_record_log(record_log)
+    assert sent[0]["status"] == 200
+    assert payload["result"]["content"][0]["text"] == "called read_file"
+    assert seen["calls"] == [
+        {"method": "initialize", "tool": None},
+        {"method": "tools/list", "tool": None},
+        {"method": "tools/call", "tool": "read_file"},
+    ]
+    task = records[2]["metadata"]["schema_validation"]["task"]
+    assert task["valid"] is True
+    assert task["taskSupport"] == "optional"
+    assert task["server_tasks_capability"] is True
+
+
 def test_mcp_output_schema_validation_blocks_invalid_structured_content(tmp_path):
     server, seen = start_mcp_upstream(
         {"read_file": "Read a file"},
@@ -4647,6 +4809,8 @@ def start_mcp_upstream(
     schemas: dict[str, Any] | None = None,
     output_schemas: dict[str, Any] | None = None,
     structured_results: dict[str, Any] | None = None,
+    task_supports: dict[str, str] | None = None,
+    server_tasks_capability: bool = False,
 ):
     seen: dict[str, Any] = {"calls": [], "headers": []}
 
@@ -4657,7 +4821,16 @@ def start_mcp_upstream(
             params = request.get("params") if isinstance(request.get("params"), dict) else {}
             seen["headers"].append({name.lower(): value for name, value in self.headers.items()})
             seen["calls"].append({"method": request.get("method"), "tool": params.get("name")})
-            if request.get("method") == "tools/list":
+            if request.get("method") == "initialize":
+                capabilities: dict[str, Any] = {"tools": {"listChanged": True}}
+                if server_tasks_capability:
+                    capabilities["tasks"] = {"requests": {"tools": {"call": {}}}}
+                result = {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": capabilities,
+                    "serverInfo": {"name": "test-upstream", "version": "1.0.0"},
+                }
+            elif request.get("method") == "tools/list":
                 listed_tools = []
                 for name, description in tools.items():
                     tool = {
@@ -4667,6 +4840,8 @@ def start_mcp_upstream(
                     }
                     if output_schemas and name in output_schemas:
                         tool["outputSchema"] = output_schemas[name]
+                    if task_supports and name in task_supports:
+                        tool["execution"] = {"taskSupport": task_supports[name]}
                     listed_tools.append(tool)
                 result = {"tools": listed_tools}
             elif request.get("method") == "tools/call":
