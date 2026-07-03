@@ -10,6 +10,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
+from .mcp_tasks import normalize_task_support
+
 MCP_SCHEMA_CATALOG_SCHEMA = "snulbug.mcp-schema-catalog.v1"
 MCP_SCHEMA_CATALOG_VERSION = 1
 MCP_SCHEMA_DIFF_SCHEMA = "snulbug.mcp-schema-diff.v1"
@@ -523,16 +525,31 @@ def _normalize_initialize_result(result: Any) -> dict[str, Any]:
 
 
 def _normalize_tool_schema(item: Mapping[str, Any]) -> dict[str, Any]:
+    execution = _normalize_tool_execution(item.get("execution"))
     normalized = {
         "name": _required_string(item, "name", "tool"),
         "title": item.get("title") if isinstance(item.get("title"), str) else None,
         "description": item.get("description") if isinstance(item.get("description"), str) else None,
+        "icons": list(item.get("icons")) if _is_sequence(item.get("icons")) else None,
         "inputSchema": dict(item.get("inputSchema")) if isinstance(item.get("inputSchema"), Mapping) else None,
         "outputSchema": dict(item.get("outputSchema")) if isinstance(item.get("outputSchema"), Mapping) else None,
         "annotations": dict(item.get("annotations")) if isinstance(item.get("annotations"), Mapping) else None,
+        "execution": execution,
     }
     normalized["hash"] = stable_schema_digest(_without_hash(normalized))
     return normalized
+
+
+def _normalize_tool_execution(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    normalized = dict(value)
+    task_support = normalize_task_support(normalized.get("taskSupport"))
+    if task_support is not None:
+        normalized["taskSupport"] = task_support
+    elif "taskSupport" in normalized:
+        normalized.pop("taskSupport", None)
+    return normalized or None
 
 
 def _normalize_resource_schema(item: Mapping[str, Any]) -> dict[str, Any]:
@@ -590,7 +607,7 @@ def _normalize_prompt_arguments(value: Any) -> list[dict[str, Any]]:
 
 
 def _normalize_items(items: Any, *, normalizer: Any, id_field: str) -> list[dict[str, Any]]:
-    if not isinstance(items, Sequence) or isinstance(items, str | bytes | bytearray):
+    if not _is_sequence(items):
         return []
     normalized = []
     for item in items:
@@ -601,6 +618,10 @@ def _normalize_items(items: Any, *, normalizer: Any, id_field: str) -> list[dict
     if duplicates:
         raise ValueError(f"MCP schema discovery found duplicate {id_field} values: {', '.join(duplicates)}")
     return sorted(normalized, key=lambda item: str(item[id_field]))
+
+
+def _is_sequence(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray)
 
 
 def _result_array(response: Any, field: str) -> Any:

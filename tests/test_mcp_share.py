@@ -1624,6 +1624,7 @@ def test_mcp_share_tool_risks_use_schema_catalog_metadata(tmp_path):
                                 "properties": {"command": {"type": "string", "description": "Shell command"}},
                             },
                             "annotations": {"destructiveHint": True},
+                            "execution": {"taskSupport": "optional"},
                         }
                     ]
                 }
@@ -1643,6 +1644,9 @@ def test_mcp_share_tool_risks_use_schema_catalog_metadata(tmp_path):
 
     assert status["schemas"]["catalog_count"] == 1
     assert status["schemas"]["tool_count"] == 1
+    assert status["schemas"]["task_support"]["counts"]["optional"] == 1
+    assert status["schemas"]["task_support"]["task_capable_tools"] == 1
+    assert status["schemas"]["server_tasks_capability"] is False
     assert status["tool_risks"]["schema_catalogs"]["sources"][0]["path"] == str(schema_path)
     assert tool["name"] == "run_command"
     assert tool["level"] == "high"

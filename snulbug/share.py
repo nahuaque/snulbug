@@ -22,6 +22,7 @@ from .fabric_members import DEFAULT_FABRIC_MEMBER_REGISTRY_KEY, register_fabric_
 from .gateway_templates import GatewayTemplate, render_gateway_toml
 from .inspection import format_mcp_inspection_report, inspect_mcp_log
 from .leases import create_lease
+from .mcp_tasks import task_support_summary
 from .presets import DEFAULT_ALLOWED_PATHS, DEFAULT_ALLOWED_TOOLS, McpPolicyOptions, generate_mcp_preset
 from .quickstart import create_mcp_quickstart
 from .redaction import SECRET_REPLACEMENT, build_audit_event
@@ -5655,6 +5656,8 @@ def _share_schema_catalog_context(
                     "hash": catalog.get("hash"),
                     "label": catalog.get("label"),
                     "tool_count": len(tools),
+                    "task_support": task_support_summary(tools),
+                    "server_tasks_capability": _schema_catalog_has_server_tasks_capability(catalog),
                     "summary": _jsonish_copy(catalog.get("summary") or {}),
                 }
             )
@@ -5668,6 +5671,7 @@ def _share_schema_catalog_context(
     loaded_sources = [source for source in sources if source.get("loaded") is True]
     errors = [source for source in sources if source.get("error")]
     tools = sorted(tools_by_name.values(), key=lambda item: str(item.get("name") or ""))
+    tasks = task_support_summary(tools)
     return {
         "sources": sources,
         "tools": tools,
@@ -5676,8 +5680,16 @@ def _share_schema_catalog_context(
             "source_count": len(sources),
             "tool_count": len(tools),
             "errors": len(errors),
+            "task_support": tasks,
+            "server_tasks_capability": any(source.get("server_tasks_capability") is True for source in loaded_sources),
         },
     }
+
+
+def _schema_catalog_has_server_tasks_capability(catalog: Mapping[str, Any]) -> bool:
+    server = _mapping(catalog.get("server"))
+    capabilities = _mapping(server.get("capabilities"))
+    return bool(_mapping(capabilities.get("tasks")))
 
 
 def _share_schema_catalog_candidates(
@@ -5748,7 +5760,7 @@ def _merge_share_schema_tool(
 
     if not existing.get("description") and tool.get("description"):
         existing["description"] = tool.get("description")
-    for key in ("inputSchema", "outputSchema", "annotations"):
+    for key in ("inputSchema", "outputSchema", "annotations", "execution"):
         if not existing.get(key) and tool.get(key):
             existing[key] = tool.get(key)
     if tool_hash:
@@ -5804,7 +5816,20 @@ def _share_schema_catalog_status(schema_catalogs: Mapping[str, Any]) -> dict[str
     sources = [
         {
             key: source.get(key)
-            for key in ("path", "source", "explicit", "exists", "loaded", "ok", "hash", "label", "tool_count", "error")
+            for key in (
+                "path",
+                "source",
+                "explicit",
+                "exists",
+                "loaded",
+                "ok",
+                "hash",
+                "label",
+                "tool_count",
+                "task_support",
+                "server_tasks_capability",
+                "error",
+            )
             if source.get(key) is not None
         }
         for source in _sequence(schema_catalogs.get("sources"))
@@ -5815,6 +5840,8 @@ def _share_schema_catalog_status(schema_catalogs: Mapping[str, Any]) -> dict[str
         "source_count": int(summary.get("source_count", 0) or 0),
         "tool_count": int(summary.get("tool_count", 0) or 0),
         "errors": int(summary.get("errors", 0) or 0),
+        "task_support": _jsonish_copy(summary.get("task_support") or {}),
+        "server_tasks_capability": summary.get("server_tasks_capability") is True,
         "sources": sources,
     }
 

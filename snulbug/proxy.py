@@ -47,6 +47,7 @@ from .mcp_auth import (
     oauth_resource_metadata_url,
     protected_resource_metadata,
 )
+from .mcp_tasks import mcp_task_request_metadata
 from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
 from .policy_backoff import PolicyBackoffConfig
 from .recorder import append_record, build_request_record, record_audit_event
@@ -3703,6 +3704,9 @@ def _mcp_request_metadata(request: Mapping[str, Any] | None) -> dict[str, Any]:
         arguments = params.get("arguments")
         if isinstance(arguments, Mapping):
             metadata["argument_keys"] = sorted(str(key) for key in arguments)
+    task_metadata = mcp_task_request_metadata(request)
+    if task_metadata:
+        metadata["mcp_task"] = task_metadata
     return metadata
 
 

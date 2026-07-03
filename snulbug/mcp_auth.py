@@ -17,6 +17,7 @@ from urllib.parse import SplitResult, urlencode, urlsplit, urlunsplit
 import jwt
 
 from .auth_providers import auth_provider_claim_context
+from .mcp_tasks import is_mcp_task_method
 
 PROTECTED_RESOURCE_AUTH_MODES = {"oauth-resource", "enterprise-managed"}
 ENTERPRISE_MANAGED_AUTH_EXTENSION = "io.modelcontextprotocol/enterprise-managed-authorization"
@@ -1320,6 +1321,12 @@ def mcp_scope_target(body: bytes | None) -> dict[str, Any]:
         uri = params["uri"]
         target["uri"] = uri
         selectors.insert(0, f"resources/read:{uri}")
+    elif is_mcp_task_method(method):
+        target["task_method"] = method
+        task_id = params.get("taskId")
+        if isinstance(task_id, str) and task_id:
+            target["task_id"] = task_id
+            selectors.insert(0, f"{method}:{task_id}")
     return target
 
 

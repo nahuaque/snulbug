@@ -465,6 +465,15 @@ def format_decision_console_line(event: Mapping[str, Any]) -> str:
         parts.append(f"mcp.tool={mcp['tool']}")
     elif mcp.get("target"):
         parts.append(f"mcp.target={mcp['target']}")
+    task = mcp.get("task") if isinstance(mcp.get("task"), Mapping) else {}
+    if task.get("task_id"):
+        parts.append(f"mcp.task_id={task['task_id']}")
+    if task.get("task_status"):
+        parts.append(f"mcp.task_status={task['task_status']}")
+    if task.get("task_operation"):
+        parts.append(f"mcp.task_operation={task['task_operation']}")
+    if task.get("task_augmented") is True:
+        parts.append("mcp.task_augmented=true")
     if mcp.get("request_id") is not None:
         parts.append(f"mcp.id={mcp['request_id']}")
     if trace.get("duration_ms") is not None:

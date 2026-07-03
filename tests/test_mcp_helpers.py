@@ -374,6 +374,66 @@ def test_mcp_call_identifies_batch_requests():
     }
 
 
+def test_mcp_task_helpers_identify_official_task_requests():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          local call = mcp.call(request)
+          local blocked = cap.mcp_task_method(request, { "tasks/get", "tasks/result" })
+          if blocked ~= nil then
+            return blocked
+          end
+          return decision.allow("test.tasks", {
+            method = call.method,
+            is_task_request = mcp.is_task_request(request),
+            is_task_method = mcp.is_task_method(request),
+            is_task_augmented = mcp.is_task_augmented(request),
+            task_id = mcp.task_id(request),
+            task_status = mcp.task_status(request),
+            task_operation = mcp.task_operation(request),
+            task_ttl_ms = mcp.task_ttl_ms(request)
+          })
+        end
+        """
+    )
+
+    augmented = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","id":"1","method":"tools/call",'
+                '"params":{"name":"slow_tool","arguments":{},"task":{"ttl":60000}}}'
+            )
+        }
+    )
+    poll = script.decide({"body": '{"jsonrpc":"2.0","id":"2","method":"tasks/get","params":{"taskId":"task_123"}}'})
+    cancel = script.decide(
+        {"body": '{"jsonrpc":"2.0","id":"3","method":"tasks/cancel","params":{"taskId":"task_123"}}'}
+    )
+
+    assert augmented["context"] == {
+        "method": "tools/call",
+        "is_task_request": True,
+        "is_task_method": False,
+        "is_task_augmented": True,
+        "task_ttl_ms": 60000,
+    }
+    assert poll["context"] == {
+        "method": "tasks/get",
+        "is_task_request": True,
+        "is_task_method": True,
+        "is_task_augmented": False,
+        "task_id": "task_123",
+        "task_operation": "get",
+    }
+    assert cancel == {
+        "action": "reject",
+        "status": 403,
+        "body": "MCP task method not allowed: tasks/cancel",
+        "reason": "MCP task method not allowed: tasks/cancel",
+        "reason_code": "mcp.task_method_not_allowed",
+    }
+
+
 def test_decision_helpers_build_supported_actions():
     script = compile_lua_script(
         """

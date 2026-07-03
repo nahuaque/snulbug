@@ -13,7 +13,12 @@ from snulbug import (
 from snulbug.simulator import main as simulator_main
 
 
-def _schema_responses(*, tool_description: str = "Read a demo file", include_resource: bool = True) -> dict:
+def _schema_responses(
+    *,
+    tool_description: str = "Read a demo file",
+    include_resource: bool = True,
+    task_support: str | None = None,
+) -> dict:
     resources = (
         [
             {
@@ -50,6 +55,7 @@ def _schema_responses(*, tool_description: str = "Read a demo file", include_res
                         },
                         "outputSchema": {"type": "object", "properties": {"text": {"type": "string"}}},
                         "annotations": {"readOnlyHint": True},
+                        **({"execution": {"taskSupport": task_support}} if task_support else {}),
                     }
                 ]
             }
@@ -102,6 +108,17 @@ def test_discover_mcp_schemas_from_response_collection_writes_catalog_and_report
     assert saved["surfaces"] == catalog["surfaces"]
     assert "# snulbug mcp policy schemas discover" in report_text
     assert "- `read_file`" in report_text
+
+
+def test_discover_mcp_schemas_preserves_tool_execution_task_support():
+    responses = _schema_responses(task_support="required")
+    responses["initialize"]["result"]["protocolVersion"] = "2025-11-25"
+    responses["initialize"]["result"]["capabilities"]["tasks"] = {"requests": {"tools": {"call": {}}}}
+
+    catalog = build_mcp_schema_catalog(responses, protocol_version="2025-11-25")
+
+    assert catalog["surfaces"]["tools"][0]["execution"] == {"taskSupport": "required"}
+    assert catalog["server"]["capabilities"]["tasks"] == {"requests": {"tools": {"call": {}}}}
 
 
 def test_diff_mcp_schema_catalogs_reports_added_changed_and_removed():

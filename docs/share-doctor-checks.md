@@ -22,8 +22,9 @@ share-facing obligations that matter before handing out a public or tunneled MCP
 URL: Streamable HTTP `Accept` and `MCP-Protocol-Version` headers, GET/SSE
 behavior when live checks are enabled, public Origin guard configuration, OAuth
 protected-resource metadata, incremental scope challenge readiness, Client ID
-Metadata Document setup, schema catalog visibility, and explicit policy coverage
-for server-to-client requests such as sampling, elicitation, and roots.
+Metadata Document setup, schema catalog visibility, official MCP Tasks
+capability consistency, and explicit policy coverage for server-to-client
+requests such as sampling, elicitation, and roots.
 
 External checks can register the same surface from Python:
 

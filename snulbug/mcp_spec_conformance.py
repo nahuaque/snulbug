@@ -54,6 +54,7 @@ def run_mcp_2025_11_25_conformance(
     _check_oauth_metadata(checks, recommendations, auth=auth)
     _check_client_id_metadata(checks, recommendations, auth=auth)
     _check_schema_catalog_visibility(checks, recommendations, status=_mapping(status))
+    _check_mcp_tasks(checks, recommendations, status=_mapping(status))
     _check_server_to_client_mediation(checks, recommendations, proxy_config=config)
 
     summary = _summary(checks)
@@ -311,6 +312,51 @@ def _check_schema_catalog_visibility(
         "MCP schema catalog is loaded for metadata and drift review",
         details={"catalog_count": catalog_count, "tool_count": tool_count},
     )
+
+
+def _check_mcp_tasks(
+    checks: list[dict[str, Any]],
+    recommendations: list[str],
+    *,
+    status: Mapping[str, Any],
+) -> None:
+    schemas = _mapping(status.get("schemas"))
+    task_support = _mapping(schemas.get("task_support"))
+    counts = _mapping(task_support.get("counts"))
+    optional = int(counts.get("optional") or 0)
+    required = int(counts.get("required") or 0)
+    task_capable = optional + required
+    server_capability = schemas.get("server_tasks_capability") is True
+    details = {
+        "task_capable_tools": task_capable,
+        "task_required_tools": required,
+        "server_tasks_capability": server_capability,
+        "counts": dict(counts),
+    }
+    if task_capable == 0 and not server_capability:
+        _add_check(
+            checks,
+            "mcp2025.tasks.support",
+            "skip",
+            "no MCP Tasks capability or task-capable tools were observed in schema catalogs",
+            details=details,
+        )
+        return
+    ok = task_capable == 0 or server_capability
+    _add_check(
+        checks,
+        "mcp2025.tasks.support",
+        "pass" if ok else "warn",
+        "MCP Tasks capability and tool-level execution.taskSupport are consistent"
+        if ok
+        else "tools advertise execution.taskSupport but server capabilities do not declare Tasks support",
+        details=details,
+    )
+    if not ok:
+        recommendations.append(
+            "Confirm the upstream declares `capabilities.tasks.requests.tools.call` before relying on "
+            "`execution.taskSupport` from tools/list."
+        )
 
 
 def _check_server_to_client_mediation(

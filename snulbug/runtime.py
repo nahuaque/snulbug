@@ -1511,6 +1511,11 @@ return function(source, source_name, instruction_limit)
       is_tool_call = false,
       is_read = false,
       is_write = false,
+      is_task_augmented = false,
+      is_task_method = false,
+      is_task_notification = false,
+      is_task_request = false,
+      task = {},
     }
     request.__mcp_call_cached = true
     request.__mcp_call = call
@@ -1537,6 +1542,46 @@ return function(source, source_name, instruction_limit)
     call.method = body.method
     if type(body.params) == "table" then
       call.params = body.params
+    end
+
+    if type(call.params.task) == "table" then
+      call.is_task_augmented = true
+      call.is_task_request = true
+      call.task = call.params.task
+      if type(call.params.task.ttl) == "number" then
+        call.task_ttl_ms = call.params.task.ttl
+      end
+    end
+    if type(call.params.taskId) == "string" then
+      call.task_id = call.params.taskId
+    end
+    if type(call.params.status) == "string" then
+      call.task_status = call.params.status
+    end
+    if type(call.params._meta) == "table" then
+      local related_task = call.params._meta["io.modelcontextprotocol/related-task"]
+      if type(related_task) == "table" and type(related_task.taskId) == "string" then
+        call.related_task_id = related_task.taskId
+      end
+    end
+
+    if starts_with(call.method, "tasks/") then
+      call.is_task_method = true
+      call.is_task_request = true
+      call.task_operation = string.sub(call.method, 7)
+      if call.method == "tasks/cancel" then
+        call.is_write = true
+      else
+        call.is_read = true
+      end
+      return call
+    end
+
+    if call.method == "notifications/tasks/status" then
+      call.is_task_notification = true
+      call.is_task_request = true
+      call.task_operation = "status"
+      return call
     end
 
     if call.method == "tools/call" then
@@ -1625,6 +1670,50 @@ return function(source, source_name, instruction_limit)
 
   function mcp.is_tool_call(request)
     return mcp.call(request).is_tool_call
+  end
+
+  function mcp.is_task_augmented(request)
+    return mcp.call(request).is_task_augmented
+  end
+
+  function mcp.is_task_method(request)
+    return mcp.call(request).is_task_method
+  end
+
+  function mcp.is_task_notification(request)
+    return mcp.call(request).is_task_notification
+  end
+
+  function mcp.is_task_request(request)
+    return mcp.call(request).is_task_request
+  end
+
+  function mcp.task_id(request)
+    return mcp.call(request).task_id
+  end
+
+  function mcp.related_task_id(request)
+    return mcp.call(request).related_task_id
+  end
+
+  function mcp.task_status(request)
+    return mcp.call(request).task_status
+  end
+
+  function mcp.task_operation(request)
+    return mcp.call(request).task_operation
+  end
+
+  function mcp.task_ttl_ms(request)
+    return mcp.call(request).task_ttl_ms
+  end
+
+  function mcp.task_support()
+    local info = current_intent
+    if type(info) == "table" and type(info.execution) == "table" then
+      return info.execution.taskSupport
+    end
+    return nil
   end
 
   function mcp.tool_name(request)
@@ -2188,6 +2277,20 @@ return function(source, source_name, instruction_limit)
       return nil
     end
     return rejection(options, "MCP method not allowed: " .. tostring(method), "mcp.method_not_allowed")
+  end
+
+  function cap.mcp_task_method(request_or_method, allowed, options)
+    local method = request_or_method
+    if type(request_or_method) == "table" then
+      method = mcp.method(request_or_method)
+    end
+    if type(method) ~= "string" or not starts_with(method, "tasks/") then
+      return nil
+    end
+    if value_allowed(method, allowed) then
+      return nil
+    end
+    return rejection(options, "MCP task method not allowed: " .. tostring(method), "mcp.task_method_not_allowed")
   end
 
   function cap.tool(request_or_name, allowed, options)

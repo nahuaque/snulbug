@@ -10,7 +10,7 @@ from typing import Any
 from .redaction import DEFAULT_SECRET_KEYS, DEFAULT_SECRET_PATTERNS, RedactionConfig, redact_secrets
 from .state import PolicyStateStore
 
-MCP_RESPONSE_METHODS = ("tools/call", "resources/read", "prompts/get")
+MCP_RESPONSE_METHODS = ("tools/call", "resources/read", "prompts/get", "tasks/result")
 
 RESPONSE_SECRET_PATTERNS = tuple(DEFAULT_SECRET_PATTERNS[:-1])
 RESPONSE_REDACTION_CONFIG = RedactionConfig(

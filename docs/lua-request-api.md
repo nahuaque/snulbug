@@ -51,13 +51,23 @@ end
 Available helpers:
 
 - `mcp.body(request)`: parsed JSON-RPC body table, or `nil` for missing/malformed JSON.
-- `mcp.call(request)`: normalized JSON-RPC call table with `method`, `params`, `args`, `tool`, `id`, `batch`, `invalid`, `error`, `is_tool_call`, `is_read`, and `is_write` fields.
+- `mcp.call(request)`: normalized JSON-RPC call table with `method`, `params`, `args`, `tool`, `id`, `batch`, `invalid`, `error`, `is_tool_call`, `is_read`, `is_write`, `is_task_augmented`, `is_task_method`, `is_task_notification`, `is_task_request`, `task_id`, `task_status`, `task_operation`, `task_ttl_ms`, and `related_task_id` fields.
 - `mcp.arg(request_or_call, key)`: read one tool/prompt argument from a request or normalized call.
 - `mcp.arg_keys(request_or_call)`: sorted list of observed tool/prompt argument keys.
 - `mcp.method(request)`: JSON-RPC method string, or `nil`.
 - `mcp.params(request)`: JSON-RPC params table, or an empty table.
 - `mcp.is_method(request, method)`: true when the request method matches.
 - `mcp.is_tool_call(request)`: true for `tools/call`.
+- `mcp.is_task_augmented(request)`: true when a request includes official MCP `params.task` augmentation.
+- `mcp.is_task_method(request)`: true for official MCP `tasks/get`, `tasks/result`, `tasks/list`, and `tasks/cancel`.
+- `mcp.is_task_notification(request)`: true for `notifications/tasks/status`.
+- `mcp.is_task_request(request)`: true for task-augmented requests, task methods, or task status notifications.
+- `mcp.task_id(request)`: official MCP task ID from `params.taskId`, or `nil`.
+- `mcp.related_task_id(request)`: related task ID from `_meta["io.modelcontextprotocol/related-task"]`, or `nil`.
+- `mcp.task_status(request)`: task status from task notifications or task status payloads, or `nil`.
+- `mcp.task_operation(request)`: `get`, `result`, `list`, `cancel`, or `status` for MCP task methods/notifications.
+- `mcp.task_ttl_ms(request)`: requested task TTL from `params.task.ttl`, or `nil`.
+- `mcp.task_support()`: schema-aware `execution.taskSupport` for the current tool when supplied in policy context.
 - `mcp.tool_name(request)`: `params.name` for `tools/call`, or `nil`.
 - `mcp.tool_allowed(request, allowed)`: true when the request is not a tool call or the tool is allowed.
 - `mcp.allow_tools(request, allowed, options)`: returns `nil` when allowed, otherwise a `reject` decision.
@@ -66,6 +76,24 @@ Available helpers:
 `allowed` can be an array, such as `{ "read_file" }`, or a map, such as `{ read_file = true }`.
 `options.reason` and `options.reason_code` can override the default
 `mcp.tool_not_allowed` reason metadata.
+
+Official MCP Tasks are distinct from snulbug task leases. MCP Tasks are durable
+protocol request wrappers and task polling/result methods; snulbug leases are
+temporary capability grants enforced by the gateway. A policy can gate MCP Tasks
+without changing lease behavior:
+
+```lua
+return function(request)
+  return cap.mcp_task_method(request, { "tasks/get", "tasks/result" })
+    or (mcp.is_task_augmented(request) and intent.confirm_if("write", {
+      prompt = "Allow task-augmented write-like MCP tool call?"
+    }))
+    or decision.allow("mcp.task_policy_allowed", {
+      task_id = mcp.task_id(request),
+      task_operation = mcp.task_operation(request)
+    })
+end
+```
 
 ## Intent Helpers
 
@@ -324,6 +352,7 @@ Available guards:
 
 - `cap.allowed(value, allowed)`: boolean membership check for array or map allowlists.
 - `cap.method(request_or_method, allowed, options)`: allow listed JSON-RPC methods.
+- `cap.mcp_task_method(request_or_method, allowed, options)`: allow listed official MCP `tasks/*` methods; non-task methods pass through.
 - `cap.tool(request_or_name, allowed, options)`: allow listed MCP tools; non-tool calls pass through.
 - `cap.arg_string(request_or_call, key, options)`: require a non-empty string argument.
 - `cap.arg_path(request_or_call, key, allowed_paths, options)`: require a relative path argument under listed roots.

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from snulbug.mcp_auth import OAuthResourceConfig, oauth_bearer_challenge
+from snulbug.mcp_auth import OAuthResourceConfig, mcp_scope_target, oauth_bearer_challenge
 from snulbug.mcp_spec_conformance import LATEST_MCP_SPEC_VERSION, run_mcp_2025_11_25_conformance
 
 
@@ -51,6 +51,33 @@ def test_mcp_2025_conformance_surfaces_public_oauth_share_gaps():
     assert checks["mcp2025.schemas.catalog_loaded"]["status"] == "warn"
 
 
+def test_mcp_2025_conformance_warns_when_task_tools_lack_server_capability():
+    result = run_mcp_2025_11_25_conformance(
+        url="http://127.0.0.1:8080/mcp",
+        headers={
+            "Accept": "application/json, text/event-stream",
+            "MCP-Protocol-Version": LATEST_MCP_SPEC_VERSION,
+        },
+        status={
+            "schemas": {
+                "catalog_count": 1,
+                "tool_count": 1,
+                "server_tasks_capability": False,
+                "task_support": {
+                    "counts": {"forbidden": 0, "optional": 0, "required": 1},
+                    "task_capable_tools": 1,
+                    "task_required_tools": 1,
+                },
+            }
+        },
+        live_checks=False,
+    )
+    checks = {check["id"]: check for check in result["checks"]}
+
+    assert checks["mcp2025.tasks.support"]["status"] == "warn"
+    assert checks["mcp2025.tasks.support"]["details"]["task_required_tools"] == 1
+
+
 def test_oauth_bearer_challenge_can_advertise_incremental_scopes():
     challenge = oauth_bearer_challenge(
         OAuthResourceConfig(
@@ -64,3 +91,13 @@ def test_oauth_bearer_challenge_can_advertise_incremental_scopes():
 
     assert 'error="insufficient_scope"' in challenge
     assert 'scope="mcp:connect mcp:tools.read"' in challenge
+
+
+def test_oauth_scope_target_supports_mcp_tasks_methods():
+    target = mcp_scope_target(
+        b'{"jsonrpc":"2.0","id":"task-result","method":"tasks/result","params":{"taskId":"task_123"}}'
+    )
+
+    assert target["task_method"] == "tasks/result"
+    assert target["task_id"] == "task_123"
+    assert target["selectors"] == ["tasks/result:task_123", "tasks/result"]

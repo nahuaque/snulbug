@@ -191,8 +191,9 @@ fabric conformance pack, checks the current share status, runs the tunnel/public
 URL doctor, and executes behavioral handoff acceptance checks. The MCP spec
 checks cover Streamable HTTP headers and GET/SSE behavior, public Origin guard
 configuration, OAuth protected-resource metadata, incremental scope challenge
-readiness, schema catalog visibility, and explicit policy coverage for
-server-to-client requests such as sampling, elicitation, and roots. Those
+readiness, schema catalog visibility, official MCP Tasks capability consistency,
+and explicit policy coverage for server-to-client requests such as sampling,
+elicitation, and roots. Those
 acceptance checks prove the active policy allows
 `tools/list`, can generate MCP Inspector setup, blocks an unknown high-risk
 tool, and blocks the same representative call when the selected lease is

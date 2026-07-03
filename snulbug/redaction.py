@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .mcp_tasks import mcp_task_request_metadata, mcp_task_response_metadata
+
 SECRET_REPLACEMENT = "[REDACTED]"
 
 DEFAULT_SECRET_KEYS = {
@@ -86,6 +88,9 @@ def build_audit_event(record: Mapping[str, Any], *, redact: bool = True) -> dict
     }
     if "response" in record:
         event["response"] = record["response"]
+        response_mcp = _mcp_response_summary(_mapping(record["response"]))
+        if response_mcp:
+            event["mcp_response"] = response_mcp
     if "metadata" in record:
         metadata = _mapping(record["metadata"])
         tunnel = _mapping(metadata.get("tunnel"))
@@ -244,8 +249,40 @@ def _merge_jsonrpc_summary(summary: dict[str, Any], body: Mapping[str, Any]) -> 
         if isinstance(arguments, Mapping):
             summary["argument_keys"] = sorted(str(key) for key in arguments)
 
+    task_metadata = mcp_task_request_metadata(body)
+    if task_metadata:
+        summary["task"] = task_metadata
+
     if method == "initialize":
         _merge_initialize_summary(summary, params)
+
+
+def _mcp_response_summary(response: Mapping[str, Any]) -> dict[str, Any]:
+    body = response.get("body")
+    if isinstance(body, bytes):
+        text = body.decode("utf-8", errors="replace")
+    elif isinstance(body, str):
+        text = body
+    else:
+        return {}
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return {"body_kind": "invalid", "valid_json": False}
+    if isinstance(payload, Sequence) and not isinstance(payload, str | bytes | bytearray):
+        return {"body_kind": "batch", "batch": True, "batch_count": len(payload)}
+    if not isinstance(payload, Mapping):
+        return {"body_kind": "unknown", "valid_json": True}
+    summary: dict[str, Any] = {
+        "body_kind": "object",
+        "valid_json": True,
+        "jsonrpc": payload.get("jsonrpc"),
+        "request_id": _jsonrpc_id(payload),
+    }
+    task_metadata = mcp_task_response_metadata(payload)
+    if task_metadata:
+        summary["task"] = task_metadata
+    return _drop_empty(summary)
 
 
 def _merge_initialize_summary(summary: dict[str, Any], params: Mapping[str, Any]) -> None:

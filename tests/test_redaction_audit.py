@@ -248,6 +248,53 @@ def test_build_audit_event_marks_batch_and_invalid_mcp_bodies(tmp_path):
     assert invalid_audit["mcp"]["valid_json"] is False
 
 
+def test_build_audit_event_extracts_mcp_task_metadata(tmp_path):
+    policy = write_policy(tmp_path)
+    task_request = {
+        "method": "POST",
+        "path": "/mcp",
+        "body": json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "task-call",
+                "method": "tools/call",
+                "params": {"name": "long_running", "arguments": {}, "task": {"ttl": 60000}},
+            }
+        ),
+    }
+    task_poll = {
+        "method": "POST",
+        "path": "/mcp",
+        "body": json.dumps(
+            {"jsonrpc": "2.0", "id": "task-get", "method": "tasks/get", "params": {"taskId": "task_123"}}
+        ),
+    }
+    task_response = {
+        "status": 200,
+        "body": json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "task-result",
+                "result": {
+                    "content": [{"type": "text", "text": "done"}],
+                    "_meta": {"io.modelcontextprotocol/related-task": {"taskId": "task_123"}},
+                },
+            }
+        ),
+    }
+
+    call_audit = build_audit_event(record_policy_request(policy, task_request))
+    poll_audit = build_audit_event(record_policy_request(policy, task_poll, response=task_response))
+
+    assert call_audit["mcp"]["task"] == {"task_augmented": True, "task_ttl_ms": 60000}
+    assert poll_audit["mcp"]["task"] == {
+        "task_method": "tasks/get",
+        "task_operation": "get",
+        "task_id": "task_123",
+    }
+    assert poll_audit["mcp_response"]["task"] == {"related_task_id": "task_123"}
+
+
 def test_mcp_record_cli_redacts_record_and_audit_log_by_default(tmp_path, capsys):
     policy = write_policy(tmp_path)
     request = tmp_path / "request.json"
