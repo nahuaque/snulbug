@@ -1955,7 +1955,7 @@ def _config_safety_checks(
         checks,
         "config.tool_pinning",
         bool(proxy_config.get("tool_pinning")),
-        "tools/list descriptions and schemas are pinned on first sight",
+        "tools/list metadata and schemas are pinned on first sight",
         severity=severity,
     )
     _add_check(

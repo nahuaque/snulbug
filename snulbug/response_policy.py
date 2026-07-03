@@ -13,6 +13,7 @@ from .mcp_client_requests import (
     mcp_server_to_client_requests_from_payload,
 )
 from .redaction import DEFAULT_SECRET_KEYS, DEFAULT_SECRET_PATTERNS, RedactionConfig, redact_secrets
+from .schema_policy import normalize_mcp_tool_metadata
 from .state import PolicyStateStore
 
 MCP_RESPONSE_METHODS = ("tools/call", "resources/read", "prompts/get", "tasks/result")
@@ -252,17 +253,17 @@ def _enforce_tool_pinning(
     changed = result.get("changed", [])
     if changed and config.tool_pinning_action == "block":
         metadata["blocked"] = True
-        metadata["reason_code"] = "response.tool_description_changed"
+        metadata["reason_code"] = "response.tool_metadata_changed"
         changed_names = ", ".join(item["tool"] for item in changed[:5])
         return _jsonrpc_error_response(
             request,
-            f"MCP tools/list blocked because pinned tool descriptions changed: {changed_names}",
+            f"MCP tools/list blocked because pinned tool metadata changed: {changed_names}",
         ), metadata
     return dict(response), metadata
 
 
 def pin_tool_descriptions(tools: Sequence[Any], store: PolicyStateStore) -> dict[str, Any]:
-    """Pin tool descriptions and input schemas by stable hash."""
+    """Pin tool metadata and schemas by stable hash."""
 
     pinned = []
     unchanged = []
@@ -292,11 +293,7 @@ def pin_tool_descriptions(tools: Sequence[Any], store: PolicyStateStore) -> dict
 
 
 def _tool_digest(tool: Mapping[str, Any]) -> str:
-    pinned_shape = {
-        "name": tool.get("name"),
-        "description": tool.get("description"),
-        "inputSchema": tool.get("inputSchema"),
-    }
+    pinned_shape = normalize_mcp_tool_metadata(tool) or {"name": tool.get("name")}
     data = json.dumps(pinned_shape, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     return hashlib.sha256(data).hexdigest()
 

@@ -980,7 +980,7 @@ def _add_quickstart_args(parser: argparse.ArgumentParser) -> None:
         "--tool-pinning",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="pin tools/list descriptions and schemas on first sight",
+        help="pin tools/list metadata and schemas on first sight",
     )
     parser.add_argument(
         "--tool-pinning-action",

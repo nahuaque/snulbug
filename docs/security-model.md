@@ -107,9 +107,10 @@ OAuth scopes, task leases, Lua policy, and redacted audit evidence.
 
 It can also reduce risk from a compromised or surprising upstream MCP server by
 redacting likely secrets from results, detecting suspicious instruction-like
-content, and pinning `tools/list` descriptions and schemas. These controls are
-pattern and hash based; they are useful tripwires, not a complete semantic
-understanding of every tool result.
+content, pinning `tools/list` metadata and schemas, and validating structured
+tool results against declared `outputSchema` contracts. These controls are
+pattern, hash, and schema based; they are useful tripwires, not a complete
+semantic understanding of every tool result.
 
 It is not designed to safely execute hostile Lua bundles in-process. Treat
 policy bundles as code unless you add an external sandbox.

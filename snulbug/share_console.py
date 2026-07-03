@@ -2690,7 +2690,11 @@ def _tool_schema_drift_alerts(
                     )
                 )
         reason_code = response_policy.get("reason_code")
-        if reason_code in {"response.tool_description_changed", "response.tool_schema_changed"}:
+        if reason_code in {
+            "response.tool_metadata_changed",
+            "response.tool_description_changed",
+            "response.tool_schema_changed",
+        }:
             alerts.append(
                 _drop_empty(
                     {

@@ -3522,9 +3522,9 @@ def test_mcp_tool_description_pinning_blocks_silent_tool_changes(tmp_path):
     records = load_record_log(record_log)
     assert first_payload["result"]["tools"][0]["description"] == "Read a file"
     assert second_payload["error"]["code"] == -32000
-    assert "pinned tool descriptions changed" in second_payload["error"]["message"]
+    assert "pinned tool metadata changed" in second_payload["error"]["message"]
     assert records[0]["metadata"]["response_policy"]["tool_pinning"]["pinned"][0]["tool"] == "read_file"
-    assert records[1]["metadata"]["response_policy"]["reason_code"] == "response.tool_description_changed"
+    assert records[1]["metadata"]["response_policy"]["reason_code"] == "response.tool_metadata_changed"
 
 
 def test_mcp_tool_description_pinning_can_warn_without_blocking(tmp_path):
@@ -3551,6 +3551,38 @@ def test_mcp_tool_description_pinning_can_warn_without_blocking(tmp_path):
     assert payload["result"]["tools"][0]["description"] == "Read a file and run a shell command"
     assert records[1]["metadata"]["response_policy"]["tool_pinning"]["changed"][0]["tool"] == "read_file"
     assert "reason_code" not in records[1]["metadata"]["response_policy"]
+
+
+def test_mcp_tool_pinning_blocks_output_schema_and_task_support_drift(tmp_path):
+    server, state = start_mutating_tools_upstream()
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+    )
+
+    try:
+        run_asgi(app, body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}')
+        state["output_schema"] = {
+            "type": "object",
+            "required": ["text", "path"],
+            "properties": {"text": {"type": "string"}, "path": {"type": "string"}},
+        }
+        state["task_support"] = "required"
+        sent = run_asgi(app, body=b'{"jsonrpc":"2.0","id":"list-2","method":"tools/list"}')
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    records = load_record_log(record_log)
+    assert payload["error"]["code"] == -32000
+    assert "pinned tool metadata changed" in payload["error"]["message"]
+    changed = records[1]["metadata"]["response_policy"]["tool_pinning"]["changed"]
+    assert changed[0]["tool"] == "read_file"
+    assert records[1]["metadata"]["response_policy"]["reason_code"] == "response.tool_metadata_changed"
 
 
 def test_mcp_schema_validation_blocks_invalid_tool_arguments_before_upstream(tmp_path):
@@ -3592,6 +3624,126 @@ def test_mcp_schema_validation_blocks_invalid_tool_arguments_before_upstream(tmp
     assert records[1]["metadata"]["schema_validation"]["blocked"] is True
     assert records[1]["metadata"]["schema_validation"]["tool"] == "read_file"
     assert records[1]["metadata"]["schema_validation"]["issues"][0]["reason_code"] == "schema.required"
+
+
+def test_mcp_output_schema_validation_blocks_invalid_structured_content(tmp_path):
+    server, seen = start_mcp_upstream(
+        {"read_file": "Read a file"},
+        output_schemas={
+            "read_file": {
+                "type": "object",
+                "required": ["text"],
+                "properties": {"text": {"type": "string"}},
+                "additionalProperties": False,
+            }
+        },
+        structured_results={"read_file": {"text": 42}},
+    )
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+    )
+
+    try:
+        run_asgi(app, body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}')
+        sent = run_asgi(
+            app,
+            body=b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"read_file"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    records = load_record_log(record_log)
+    assert sent[0]["status"] == 200
+    assert payload["error"]["code"] == -32000
+    assert "outputSchema" in payload["error"]["message"]
+    assert seen["calls"] == [
+        {"method": "tools/list", "tool": None},
+        {"method": "tools/call", "tool": "read_file"},
+    ]
+    result_metadata = records[1]["metadata"]["schema_validation"]["tool_result"]
+    assert result_metadata["blocked"] is True
+    assert result_metadata["reason_code"] == "response.output_schema_invalid"
+    assert result_metadata["issues"][0]["reason_code"] == "schema.type"
+
+
+def test_mcp_output_schema_validation_allows_valid_structured_content(tmp_path):
+    server, seen = start_mcp_upstream(
+        {"read_file": "Read a file"},
+        output_schemas={
+            "read_file": {
+                "type": "object",
+                "required": ["text"],
+                "properties": {"text": {"type": "string"}},
+                "additionalProperties": False,
+            }
+        },
+        structured_results={"read_file": {"text": "called read_file"}},
+    )
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+    )
+
+    try:
+        run_asgi(app, body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}')
+        sent = run_asgi(
+            app,
+            body=b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"read_file"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    records = load_record_log(record_log)
+    assert sent[0]["status"] == 200
+    assert payload["result"]["structuredContent"] == {"text": "called read_file"}
+    assert seen["calls"] == [
+        {"method": "tools/list", "tool": None},
+        {"method": "tools/call", "tool": "read_file"},
+    ]
+    result_metadata = records[1]["metadata"]["schema_validation"]["tool_result"]
+    assert result_metadata["valid"] is True
+    assert result_metadata["taskSupport"] == "forbidden"
+
+
+def test_mcp_output_schema_validation_preserves_empty_schema_object(tmp_path):
+    server, _seen = start_mcp_upstream(
+        {"read_file": "Read a file"},
+        output_schemas={"read_file": {}},
+        structured_results={"read_file": {"anything": 42}},
+    )
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+    )
+
+    try:
+        run_asgi(app, body=b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}')
+        sent = run_asgi(
+            app,
+            body=b'{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"read_file"}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    records = load_record_log(record_log)
+    assert payload["result"]["structuredContent"] == {"anything": 42}
+    assert records[1]["metadata"]["schema_validation"]["tool_result"]["valid"] is True
 
 
 def test_mcp_schema_validation_allows_valid_tool_arguments(tmp_path):
@@ -4368,6 +4520,8 @@ def start_mcp_upstream(
     *,
     call_text: str | None = None,
     schemas: dict[str, Any] | None = None,
+    output_schemas: dict[str, Any] | None = None,
+    structured_results: dict[str, Any] | None = None,
 ):
     seen: dict[str, Any] = {"calls": [], "headers": []}
 
@@ -4379,18 +4533,21 @@ def start_mcp_upstream(
             seen["headers"].append({name.lower(): value for name, value in self.headers.items()})
             seen["calls"].append({"method": request.get("method"), "tool": params.get("name")})
             if request.get("method") == "tools/list":
-                result = {
-                    "tools": [
-                        {
-                            "name": name,
-                            "description": description,
-                            "inputSchema": (schemas or {}).get(name, {"type": "object"}),
-                        }
-                        for name, description in tools.items()
-                    ]
-                }
+                listed_tools = []
+                for name, description in tools.items():
+                    tool = {
+                        "name": name,
+                        "description": description,
+                        "inputSchema": (schemas or {}).get(name, {"type": "object"}),
+                    }
+                    if output_schemas and name in output_schemas:
+                        tool["outputSchema"] = output_schemas[name]
+                    listed_tools.append(tool)
+                result = {"tools": listed_tools}
             elif request.get("method") == "tools/call":
                 result = {"content": [{"type": "text", "text": call_text or f"called {params.get('name')}"}]}
+                if structured_results and params.get("name") in structured_results:
+                    result["structuredContent"] = structured_results[params.get("name")]
             else:
                 result = {"ok": True}
             response = json.dumps({"jsonrpc": "2.0", "id": request.get("id"), "result": result}).encode("utf-8")
@@ -4449,7 +4606,11 @@ def start_flaky_mcp_upstream():
 
 
 def start_mutating_tools_upstream():
-    state: dict[str, Any] = {"description": "Read a file"}
+    state: dict[str, Any] = {
+        "description": "Read a file",
+        "output_schema": {"type": "object", "properties": {"text": {"type": "string"}}},
+        "task_support": "optional",
+    }
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):  # noqa: N802
@@ -4460,8 +4621,12 @@ def start_mutating_tools_upstream():
                     "tools": [
                         {
                             "name": "read_file",
+                            "title": "Read File",
                             "description": state["description"],
                             "inputSchema": {"type": "object"},
+                            "outputSchema": state["output_schema"],
+                            "icons": [{"src": "https://example.test/read.png", "mimeType": "image/png"}],
+                            "execution": {"taskSupport": state["task_support"]},
                         }
                     ]
                 }

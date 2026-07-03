@@ -318,7 +318,7 @@ claim instead of trusting the forwarded email header.
 
 Return-path controls are enabled in the generated config. Tool/resource/prompt
 results are capped by `response_max_bytes`, likely secrets are redacted before
-they reach the client, and `tools/list` descriptions/schemas are pinned on first
+they reach the client, and `tools/list` metadata/schemas are pinned on first
 sight so silent upstream tool changes are surfaced. Set
 `response_block_instructions = true` when you want suspicious instruction-like
 tool output to be blocked rather than only recorded in metadata.
@@ -326,7 +326,8 @@ tool output to be blocked rather than only recorded in metadata.
 Request argument schema checks are enabled too. After the first successful
 `tools/list`, snulbug validates later `tools/call` arguments against each
 tool's MCP `inputSchema` and rejects malformed calls before the upstream server
-sees them.
+sees them. If the tool declares an `outputSchema`, snulbug also validates
+successful `tools/call` `structuredContent` before returning it to the client.
 
 Task-scoped leases are configured but optional by default. Create one when you
 want to hand an agent a temporary, narrow capability:

@@ -6,9 +6,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from .mcp_tasks import normalize_task_support
 from .state import PolicyStateStore
 
 TOOL_SCHEMA_KEY_PREFIX = "snulbug:tool-schema:"
+TOOL_METADATA_KEY_PREFIX = "snulbug:tool-metadata:"
 
 
 @dataclass(frozen=True)
@@ -30,7 +32,7 @@ def observe_mcp_tool_schemas(
     config: SchemaPolicyConfig,
     tool_schema_store: PolicyStateStore | None,
 ) -> dict[str, Any]:
-    """Persist tool input schemas from a successful MCP tools/list response."""
+    """Persist tool schemas and metadata from a successful MCP tools/list response."""
 
     method = request.get("method") if isinstance(request, Mapping) else None
     metadata: dict[str, Any] = {
@@ -53,10 +55,16 @@ def observe_mcp_tool_schemas(
         return metadata
 
     stored = []
+    stored_metadata = []
     skipped = []
     for tool in tools:
         if not isinstance(tool, Mapping) or not isinstance(tool.get("name"), str):
             continue
+        metadata = normalize_mcp_tool_metadata(tool)
+        if metadata is not None:
+            encoded_metadata = json.dumps(metadata, sort_keys=True, separators=(",", ":"), default=str)
+            tool_schema_store.put(f"{TOOL_METADATA_KEY_PREFIX}{tool['name']}", encoded_metadata)
+            stored_metadata.append({"tool": tool["name"]})
         schema = tool.get("inputSchema")
         if not _is_schema(schema):
             skipped.append({"tool": tool["name"], "reason_code": "schema.missing_or_invalid"})
@@ -67,6 +75,8 @@ def observe_mcp_tool_schemas(
 
     metadata["observed"] = True
     metadata["stored"] = stored
+    if stored_metadata:
+        metadata["stored_metadata"] = stored_metadata
     if skipped:
         metadata["skipped"] = skipped
     return metadata
@@ -150,6 +160,203 @@ def mcp_schema_error_response(request: Mapping[str, Any], metadata: Mapping[str,
         ],
         "body": body,
     }
+
+
+def enforce_mcp_response_schema_policy(
+    response: Mapping[str, Any],
+    *,
+    request: Mapping[str, Any] | None,
+    config: SchemaPolicyConfig,
+    tool_schema_store: PolicyStateStore | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Validate MCP tools/call result.structuredContent against cached outputSchema."""
+
+    method = request.get("method") if isinstance(request, Mapping) else None
+    metadata: dict[str, Any] = {
+        "enabled": config.enabled,
+        "action": config.action,
+        "store": tool_schema_store is not None,
+        "checked": False,
+        "method": method,
+    }
+    if not config.enabled or tool_schema_store is None or method != "tools/call":
+        return dict(response), metadata
+
+    params = request.get("params") if isinstance(request, Mapping) else None
+    if not isinstance(params, Mapping) or not isinstance(params.get("name"), str):
+        return dict(response), metadata
+    tool_name = params["name"]
+    metadata["tool"] = tool_name
+
+    encoded = tool_schema_store.get(f"{TOOL_METADATA_KEY_PREFIX}{tool_name}")
+    if encoded is None:
+        metadata["known_schema"] = False
+        metadata["skipped"] = "schema_not_seen"
+        return dict(response), metadata
+    metadata["known_schema"] = True
+    try:
+        tool_metadata = json.loads(encoded)
+    except json.JSONDecodeError as exc:
+        metadata["checked"] = True
+        metadata["valid"] = False
+        metadata["reason_code"] = "response.schema_cache_invalid"
+        metadata["issues"] = [{"path": "$", "message": f"cached tool metadata is invalid JSON: {exc}"}]
+        if config.action == "block":
+            metadata["blocked"] = True
+            return mcp_output_schema_error_response(request, metadata), metadata
+        return dict(response), metadata
+
+    if not isinstance(tool_metadata, Mapping):
+        metadata["checked"] = True
+        metadata["valid"] = False
+        metadata["reason_code"] = "response.schema_cache_invalid"
+        metadata["issues"] = [{"path": "$", "message": "cached tool metadata is not an object"}]
+        if config.action == "block":
+            metadata["blocked"] = True
+            return mcp_output_schema_error_response(request, metadata), metadata
+        return dict(response), metadata
+
+    output_schema = tool_metadata.get("outputSchema")
+    task_support = _task_support_from_metadata(tool_metadata)
+    if task_support is not None:
+        metadata["taskSupport"] = task_support
+    if not _is_schema(output_schema):
+        metadata["skipped"] = "output_schema_not_declared"
+        return dict(response), metadata
+
+    metadata["checked"] = True
+    payload, parse_error = _decode_json(_response_body(response))
+    if parse_error is not None:
+        metadata["valid"] = False
+        metadata["reason_code"] = "response.json_invalid"
+        metadata["issues"] = [{"path": "$", "reason_code": "json.invalid", "message": parse_error}]
+        if config.action == "block":
+            metadata["blocked"] = True
+            return mcp_output_schema_error_response(request, metadata), metadata
+        return dict(response), metadata
+    if not isinstance(payload, Mapping):
+        metadata["valid"] = False
+        metadata["reason_code"] = "response.jsonrpc_invalid"
+        metadata["issues"] = [{"path": "$", "reason_code": "jsonrpc.invalid", "message": "response is not an object"}]
+        if config.action == "block":
+            metadata["blocked"] = True
+            return mcp_output_schema_error_response(request, metadata), metadata
+        return dict(response), metadata
+
+    if isinstance(payload.get("error"), Mapping):
+        metadata["skipped"] = "jsonrpc_error"
+        return dict(response), metadata
+    result = payload.get("result")
+    if not isinstance(result, Mapping):
+        metadata["valid"] = False
+        metadata["reason_code"] = "response.tool_result_missing"
+        metadata["issues"] = [
+            {"path": "$.result", "reason_code": "jsonrpc.result_missing", "message": "tool result is missing"}
+        ]
+        if config.action == "block":
+            metadata["blocked"] = True
+            return mcp_output_schema_error_response(request, metadata), metadata
+        return dict(response), metadata
+    if result.get("isError") is True:
+        metadata["skipped"] = "tool_execution_error"
+        return dict(response), metadata
+    if "structuredContent" not in result:
+        metadata["valid"] = False
+        metadata["reason_code"] = "response.structured_content_missing"
+        metadata["issues"] = [
+            {
+                "path": "$.result.structuredContent",
+                "reason_code": "schema.required",
+                "message": "structuredContent is required when outputSchema is declared",
+            }
+        ]
+        if config.action == "block":
+            metadata["blocked"] = True
+            return mcp_output_schema_error_response(request, metadata), metadata
+        return dict(response), metadata
+
+    structured_content = result.get("structuredContent")
+    issues = _validate_value(
+        structured_content, output_schema, path="$.result.structuredContent", root=output_schema, seen_refs=()
+    )
+    if not issues:
+        metadata["valid"] = True
+        metadata["structuredContent"] = True
+        return dict(response), metadata
+
+    metadata["valid"] = False
+    metadata["structuredContent"] = True
+    metadata["reason_code"] = "response.output_schema_invalid"
+    metadata["issues"] = issues[:20]
+    if config.action == "block":
+        metadata["blocked"] = True
+        return mcp_output_schema_error_response(request, metadata), metadata
+    return dict(response), metadata
+
+
+def mcp_output_schema_error_response(request: Mapping[str, Any], metadata: Mapping[str, Any]) -> dict[str, Any]:
+    issue = _first_issue(metadata)
+    detail = f": {issue}" if issue else ""
+    body = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": _jsonrpc_id(request),
+            "error": {
+                "code": -32000,
+                "message": f"MCP tool result rejected by outputSchema{detail}",
+            },
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "status": 200,
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode("ascii")),
+        ],
+        "body": body,
+    }
+
+
+def normalize_mcp_tool_metadata(tool: Mapping[str, Any]) -> dict[str, Any] | None:
+    name = tool.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    execution = _normalize_tool_execution(tool.get("execution"))
+    if execution is None:
+        execution = {"taskSupport": "forbidden"}
+    elif "taskSupport" not in execution:
+        execution = {**execution, "taskSupport": "forbidden"}
+    return _drop_tool_metadata_empty(
+        {
+            "name": name,
+            "title": tool.get("title") if isinstance(tool.get("title"), str) else None,
+            "description": tool.get("description") if isinstance(tool.get("description"), str) else None,
+            "icons": list(tool.get("icons")) if _is_sequence(tool.get("icons")) else None,
+            "inputSchema": tool.get("inputSchema") if _is_schema(tool.get("inputSchema")) else None,
+            "outputSchema": tool.get("outputSchema") if _is_schema(tool.get("outputSchema")) else None,
+            "annotations": dict(tool.get("annotations")) if isinstance(tool.get("annotations"), Mapping) else None,
+            "execution": execution,
+        }
+    )
+
+
+def _normalize_tool_execution(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    normalized = dict(value)
+    task_support = normalize_task_support(normalized.get("taskSupport"))
+    if task_support is not None:
+        normalized["taskSupport"] = task_support
+    elif "taskSupport" in normalized:
+        normalized.pop("taskSupport", None)
+    return normalized or None
+
+
+def _task_support_from_metadata(metadata: Mapping[str, Any]) -> str | None:
+    execution = metadata.get("execution")
+    execution = execution if isinstance(execution, Mapping) else {}
+    return normalize_task_support(execution.get("taskSupport"))
 
 
 def _validate_value(
@@ -430,6 +637,25 @@ def _tools_from_response(payload: Any) -> list[Any] | None:
 
 def _is_schema(value: Any) -> bool:
     return isinstance(value, Mapping) or isinstance(value, bool)
+
+
+def _is_sequence(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray)
+
+
+def _drop_empty(value: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: item for key, item in value.items() if item not in (None, "", [], {})}
+
+
+def _drop_tool_metadata_empty(value: Mapping[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        if item in (None, "", []):
+            continue
+        if item == {} and key not in {"inputSchema", "outputSchema"}:
+            continue
+        result[key] = item
+    return result
 
 
 def _child_path(path: str, key: str) -> str:

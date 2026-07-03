@@ -57,6 +57,7 @@ from .schema_policy import (
     TOOL_SCHEMA_KEY_PREFIX,
     SchemaPolicyConfig,
     enforce_mcp_request_schema_policy,
+    enforce_mcp_response_schema_policy,
     mcp_schema_error_response,
     observe_mcp_tool_schemas,
 )
@@ -281,6 +282,12 @@ class ReverseProxyApp:
             config=self.response_policy,
             tool_pin_store=self.tool_pin_store,
         )
+        response, schema_response_metadata = enforce_mcp_response_schema_policy(
+            response,
+            request=request,
+            config=self.schema_policy,
+            tool_schema_store=self.tool_schema_store,
+        )
         lease_catalog_metadata = preview_mcp_lease_catalog(scope, config=self.lease_policy)
         response, catalog_metadata = project_mcp_tool_catalog_response(
             response,
@@ -302,7 +309,11 @@ class ReverseProxyApp:
                 **_mcp_request_metadata(request),
                 "lease": lease_metadata,
                 "access": _composed_access_metadata(scope, lease=lease_metadata),
-                "schema_validation": _schema_metadata(schema_request_metadata, schema_observe_metadata),
+                "schema_validation": _schema_metadata(
+                    schema_request_metadata,
+                    schema_observe_metadata,
+                    schema_response_metadata,
+                ),
                 "response_policy": response_metadata,
                 "catalog_projection": catalog_metadata,
                 "lease_catalog": lease_catalog_metadata,
@@ -1372,6 +1383,12 @@ class McpFacadeProxyApp:
             config=self.response_policy,
             tool_pin_store=self.tool_pin_store,
         )
+        response, schema_response_metadata = enforce_mcp_response_schema_policy(
+            response,
+            request=request,
+            config=self.schema_policy,
+            tool_schema_store=self.tool_schema_store,
+        )
         _set_proxy_metadata(
             scope,
             {
@@ -1384,7 +1401,11 @@ class McpFacadeProxyApp:
                 "upstream_tool": rewritten_params["name"],
                 "lease": lease_metadata,
                 "access": _composed_access_metadata(scope, lease=lease_metadata),
-                "schema_validation": schema_request_metadata,
+                "schema_validation": _schema_metadata(
+                    schema_request_metadata,
+                    {},
+                    schema_response_metadata,
+                ),
                 "response_policy": response_metadata,
                 "route_revision": routes.revision,
                 "route_fingerprint": routes.fingerprint,
@@ -2850,10 +2871,21 @@ def _state_store(value: str) -> PolicyStateStore | None:
     raise ValueError("state must be 'memory', 'none', 'sqlite:/path/to/state.sqlite3', or 'redis://host/db'")
 
 
-def _schema_metadata(request_metadata: Mapping[str, Any], observe_metadata: Mapping[str, Any]) -> dict[str, Any]:
+def _schema_metadata(
+    request_metadata: Mapping[str, Any],
+    observe_metadata: Mapping[str, Any],
+    response_metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     merged = dict(request_metadata)
     if observe_metadata.get("observed") or observe_metadata.get("json_error"):
         merged["tools_list"] = dict(observe_metadata)
+    if response_metadata and (
+        response_metadata.get("checked")
+        or response_metadata.get("blocked")
+        or response_metadata.get("json_error")
+        or response_metadata.get("reason_code")
+    ):
+        merged["tool_result"] = dict(response_metadata)
     return merged
 
 

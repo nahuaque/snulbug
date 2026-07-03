@@ -162,7 +162,8 @@ Catalogs are sorted and hashed with stable JSON SHA-256. The normalized catalog
 contains:
 
 - server protocol version, capabilities, server info, and instructions
-- tool `name`, `title`, `description`, `inputSchema`, `outputSchema`, and annotations
+- tool `name`, `title`, `description`, `icons`, `inputSchema`, `outputSchema`,
+  annotations, and `execution.taskSupport`
 - resource `uri`, `name`, `title`, `description`, `mimeType`, and annotations
 - resource template `uriTemplate`, metadata, and annotations
 - prompt `name`, `title`, `description`, and typed arguments

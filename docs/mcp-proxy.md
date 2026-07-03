@@ -815,7 +815,7 @@ snulbug mcp evidence impact traces/session.jsonl --lease leases.json --report-ou
 In facade mode, leases use the client-facing tool name, such as
 `files.read_file` or `git.status`.
 
-## Argument Schema Firewall
+## Tool Schema Firewall
 
 When `schema_validation = true`, snulbug learns each MCP tool's `inputSchema`
 from successful `tools/list` responses and validates later `tools/call`
@@ -824,6 +824,13 @@ unexpected arguments at the proxy boundary, including missing required fields,
 wrong primitive types, disallowed enum values, invalid string lengths/patterns,
 oversized arrays, and extra properties when the schema sets
 `additionalProperties = false`.
+
+The same cache records tool `title`, `icons`, `outputSchema`, annotations, and
+`execution.taskSupport`. When a tool declares an `outputSchema`, snulbug
+validates successful `tools/call` `result.structuredContent` before returning it
+to the client. Missing or invalid `structuredContent` is blocked in `block` mode
+and audited in `warn` mode. Tool execution errors with `isError = true` are not
+validated against the success output schema.
 
 Calls pass through until a schema has been observed, so clients that call a tool
 before listing tools are not broken. In facade mode, schemas are stored under the
@@ -886,9 +893,10 @@ return-path controls to successful JSON-RPC responses:
   including sampling-with-tools, `elicitation/create` including URL-mode
   elicitation, and `roots/list` before they reach the client. Use `warn` to
   audit without blocking or `allow` only for a trusted upstream/client pair.
-- `tool_pinning` hashes `tools/list` names, descriptions, and input schemas on
-  first sight. With `tool_pinning_action = "block"`, a later silent description
-  or schema change is rejected until the proxy state is reset or reviewed.
+- `tool_pinning` hashes `tools/list` names, titles, descriptions, icons,
+  input schemas, output schemas, annotations, and `execution.taskSupport` on
+  first sight. With `tool_pinning_action = "block"`, a later silent metadata or
+  schema change is rejected until the proxy state is reset or reviewed.
 
 Tool pins live in the configured state adapter. The default in-memory state pins
 for the current proxy process. SQLite-backed state keeps pins across restarts;
