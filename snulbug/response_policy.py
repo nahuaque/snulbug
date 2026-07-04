@@ -19,6 +19,32 @@ from .state import PolicyStateStore
 
 MCP_RESPONSE_METHODS = ("tools/call", "resources/read", "prompts/get", "tasks/result", MCP_COMPLETION_METHOD)
 SERVER_TO_CLIENT_REQUEST_ACTIONS = ("allow", "warn", "block")
+PINNED_CATALOG_METHODS = {
+    "tools/list": {
+        "surface": "tools",
+        "kind": "tool",
+        "result_key": "tools",
+        "id_field": "name",
+    },
+    "resources/list": {
+        "surface": "resources",
+        "kind": "resource",
+        "result_key": "resources",
+        "id_field": "uri",
+    },
+    "resources/templates/list": {
+        "surface": "resource_templates",
+        "kind": "resource_template",
+        "result_key": "resourceTemplates",
+        "id_field": "uriTemplate",
+    },
+    "prompts/list": {
+        "surface": "prompts",
+        "kind": "prompt",
+        "result_key": "prompts",
+        "id_field": "name",
+    },
+}
 
 RESPONSE_SECRET_PATTERNS = tuple(DEFAULT_SECRET_PATTERNS[:-1])
 RESPONSE_REDACTION_CONFIG = RedactionConfig(
@@ -103,8 +129,8 @@ def enforce_mcp_response_policy(
     if not isinstance(method, str):
         return dict(response), metadata
 
-    if method == "tools/list":
-        updated, pin_metadata = _enforce_tool_pinning(
+    if method in PINNED_CATALOG_METHODS:
+        updated, pin_metadata = _enforce_catalog_pinning(
             response,
             request=request,
             config=config,
@@ -226,43 +252,49 @@ def _blocked_server_to_client_message(message: Any) -> dict[str, Any] | None:
     }
 
 
-def _enforce_tool_pinning(
+def _enforce_catalog_pinning(
     response: Mapping[str, Any],
     *,
     request: Mapping[str, Any],
     config: ResponsePolicyConfig,
     tool_pin_store: PolicyStateStore | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    method = request.get("method")
+    surface_config = PINNED_CATALOG_METHODS.get(str(method))
     metadata: dict[str, Any] = {
         "checked": bool(config.tool_pinning and tool_pin_store is not None),
         "tool_pinning": {
             "enabled": config.tool_pinning,
             "action": config.tool_pinning_action,
             "store": tool_pin_store is not None,
+            "method": method,
+            "surface": surface_config.get("surface") if surface_config else None,
         },
     }
-    if not config.tool_pinning or tool_pin_store is None:
+    if not config.tool_pinning or tool_pin_store is None or surface_config is None:
         return dict(response), metadata
 
     payload, parse_error, _response_format = _decode_response_payload(response)
     if parse_error is not None:
         metadata["json_error"] = parse_error
         return dict(response), metadata
-    tools = _tools_from_response(payload)
-    if tools is None:
+    items = _catalog_items_from_response(payload, surface_config)
+    if items is None:
         metadata["tool_pinning"]["checked"] = False
         return dict(response), metadata
 
-    result = pin_tool_descriptions(tools, tool_pin_store)
+    result = pin_catalog_metadata(str(method), items, tool_pin_store)
     metadata["tool_pinning"].update(result)
     changed = result.get("changed", [])
     if changed and config.tool_pinning_action == "block":
         metadata["blocked"] = True
-        metadata["reason_code"] = "response.tool_metadata_changed"
-        changed_names = ", ".join(item["tool"] for item in changed[:5])
+        metadata["reason_code"] = (
+            "response.tool_metadata_changed" if method == "tools/list" else "response.catalog_metadata_changed"
+        )
+        changed_names = ", ".join(_pin_item_label(item) for item in changed[:5])
         return _jsonrpc_error_response(
             request,
-            f"MCP tools/list blocked because pinned tool metadata changed: {changed_names}",
+            f"MCP {method} blocked because pinned {surface_config['kind']} metadata changed: {changed_names}",
         ), metadata
     return dict(response), metadata
 
@@ -270,26 +302,38 @@ def _enforce_tool_pinning(
 def pin_tool_descriptions(tools: Sequence[Any], store: PolicyStateStore) -> dict[str, Any]:
     """Pin tool metadata and schemas by stable hash."""
 
+    return pin_catalog_metadata("tools/list", tools, store)
+
+
+def pin_catalog_metadata(method: str, items: Sequence[Any], store: PolicyStateStore) -> dict[str, Any]:
+    """Pin MCP list metadata by stable hash."""
+
+    surface_config = PINNED_CATALOG_METHODS.get(method)
+    if surface_config is None:
+        return {"pinned": [], "unchanged": [], "changed": []}
     pinned = []
     unchanged = []
     changed = []
-    for tool in tools:
-        if not isinstance(tool, Mapping) or not isinstance(tool.get("name"), str):
+    for item in items:
+        if not isinstance(item, Mapping):
             continue
-        name = tool["name"]
-        digest = _tool_digest(tool)
-        key = f"snulbug:tool-pin:{name}"
+        normalized = _normalize_catalog_item(item, surface_config)
+        if normalized is None:
+            continue
+        item_id = str(normalized[surface_config["id_field"]])
+        digest = _catalog_item_digest(normalized)
+        key = _pin_key(surface_config["surface"], item_id)
         existing = store.get(key)
         if existing is None:
             if store.cas(key, None, digest):
-                pinned.append({"tool": name, "hash": digest[:12]})
+                pinned.append(_pin_item(surface_config, item_id, digest))
             else:
                 existing = store.get(key)
         if existing is not None:
             if existing == digest:
-                unchanged.append({"tool": name, "hash": digest[:12]})
+                unchanged.append(_pin_item(surface_config, item_id, digest))
             else:
-                changed.append({"tool": name, "expected": existing[:12], "actual": digest[:12]})
+                changed.append(_pin_item(surface_config, item_id, digest, expected=existing))
     return {
         "pinned": pinned,
         "unchanged": unchanged,
@@ -297,20 +341,125 @@ def pin_tool_descriptions(tools: Sequence[Any], store: PolicyStateStore) -> dict
     }
 
 
-def _tool_digest(tool: Mapping[str, Any]) -> str:
-    pinned_shape = normalize_mcp_tool_metadata(tool) or {"name": tool.get("name")}
-    data = json.dumps(pinned_shape, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+def _catalog_item_digest(item: Mapping[str, Any]) -> str:
+    data = json.dumps(item, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     return hashlib.sha256(data).hexdigest()
 
 
-def _tools_from_response(payload: Any) -> list[Any] | None:
+def _catalog_items_from_response(payload: Any, surface_config: Mapping[str, str]) -> list[Any] | None:
     if not isinstance(payload, Mapping):
         return None
     result = payload.get("result")
     if not isinstance(result, Mapping):
         return None
-    tools = result.get("tools")
-    return tools if isinstance(tools, list) else None
+    items = result.get(surface_config["result_key"])
+    return items if isinstance(items, list) else None
+
+
+def _normalize_catalog_item(item: Mapping[str, Any], surface_config: Mapping[str, str]) -> dict[str, Any] | None:
+    kind = surface_config["kind"]
+    if kind == "tool":
+        return normalize_mcp_tool_metadata(item)
+    item_id = item.get(surface_config["id_field"])
+    if not isinstance(item_id, str) or not item_id:
+        return None
+    if kind == "resource":
+        return _drop_catalog_metadata_empty(
+            {
+                "uri": item_id,
+                "name": item.get("name") if isinstance(item.get("name"), str) else None,
+                "title": item.get("title") if isinstance(item.get("title"), str) else None,
+                "description": item.get("description") if isinstance(item.get("description"), str) else None,
+                "icons": list(item.get("icons")) if _is_sequence(item.get("icons")) else None,
+                "mimeType": item.get("mimeType") if isinstance(item.get("mimeType"), str) else None,
+                "size": item.get("size") if isinstance(item.get("size"), int | float) else None,
+                "annotations": dict(item.get("annotations")) if isinstance(item.get("annotations"), Mapping) else None,
+            }
+        )
+    if kind == "resource_template":
+        return _drop_catalog_metadata_empty(
+            {
+                "uriTemplate": item_id,
+                "name": item.get("name") if isinstance(item.get("name"), str) else None,
+                "title": item.get("title") if isinstance(item.get("title"), str) else None,
+                "description": item.get("description") if isinstance(item.get("description"), str) else None,
+                "icons": list(item.get("icons")) if _is_sequence(item.get("icons")) else None,
+                "mimeType": item.get("mimeType") if isinstance(item.get("mimeType"), str) else None,
+                "annotations": dict(item.get("annotations")) if isinstance(item.get("annotations"), Mapping) else None,
+            }
+        )
+    if kind == "prompt":
+        return _drop_catalog_metadata_empty(
+            {
+                "name": item_id,
+                "title": item.get("title") if isinstance(item.get("title"), str) else None,
+                "description": item.get("description") if isinstance(item.get("description"), str) else None,
+                "icons": list(item.get("icons")) if _is_sequence(item.get("icons")) else None,
+                "arguments": _normalize_prompt_arguments(item.get("arguments")),
+            }
+        )
+    return None
+
+
+def _normalize_prompt_arguments(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes | bytearray):
+        return []
+    arguments = []
+    for item in value:
+        if isinstance(item, Mapping) and isinstance(item.get("name"), str):
+            arguments.append(
+                _drop_catalog_metadata_empty(
+                    {
+                        "name": item["name"],
+                        "title": item.get("title") if isinstance(item.get("title"), str) else None,
+                        "description": item.get("description") if isinstance(item.get("description"), str) else None,
+                        "required": bool(item.get("required", False)),
+                    }
+                )
+            )
+    return sorted(arguments, key=lambda argument: str(argument["name"]))
+
+
+def _pin_key(surface: str, item_id: str) -> str:
+    if surface == "tools":
+        return f"snulbug:tool-pin:{item_id}"
+    digest = hashlib.sha256(item_id.encode("utf-8")).hexdigest()
+    return f"snulbug:catalog-pin:{surface}:{digest}"
+
+
+def _pin_item(
+    surface_config: Mapping[str, str],
+    item_id: str,
+    digest: str,
+    *,
+    expected: str | None = None,
+) -> dict[str, Any]:
+    item = {
+        "surface": surface_config["surface"],
+        "kind": surface_config["kind"],
+        "id": item_id,
+        "hash": digest[:12],
+    }
+    if surface_config["kind"] == "tool":
+        item["tool"] = item_id
+    if expected is not None:
+        item["expected"] = expected[:12]
+        item["actual"] = digest[:12]
+        item["previous_hash"] = expected[:12]
+        item["current_hash"] = digest[:12]
+    return item
+
+
+def _pin_item_label(item: Mapping[str, Any]) -> str:
+    return str(item.get("tool") or item.get("id") or item.get("kind") or "unknown")
+
+
+def _drop_catalog_metadata_empty(value: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: item for key, item in value.items() if item not in (None, "", [], {})}
+
+
+def _is_sequence(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray)
 
 
 def _instruction_warnings(payload: Any, config: ResponsePolicyConfig) -> list[dict[str, str]]:

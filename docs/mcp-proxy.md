@@ -982,15 +982,19 @@ return-path controls to successful JSON-RPC responses:
   including sampling-with-tools, `elicitation/create` including URL-mode
   elicitation, and `roots/list` before they reach the client. Use `warn` to
   audit without blocking or `allow` only for a trusted upstream/client pair.
-- `tool_pinning` hashes `tools/list` names, titles, descriptions, icons,
-  input schemas, output schemas, annotations, and `execution.taskSupport` on
-  first sight. With `tool_pinning_action = "block"`, a later silent metadata or
-  schema change is rejected until the proxy state is reset or reviewed.
+- `tool_pinning` hashes MCP catalog metadata on first sight. Despite the
+  historical name, it now covers `tools/list`, `resources/list`,
+  `resources/templates/list`, and `prompts/list`. Tool pins include names,
+  titles, descriptions, icons, input schemas, output schemas, annotations, and
+  `execution.taskSupport`. Resource, resource template, and prompt pins include
+  titles, descriptions, icons, MIME metadata, annotations, and prompt
+  arguments. With `tool_pinning_action = "block"`, later silent metadata or
+  schema changes are rejected until the proxy state is reset or reviewed.
 
-Tool pins live in the configured state adapter. The default in-memory state pins
-for the current proxy process. SQLite-backed state keeps pins across restarts;
-Redis-backed state shares pins, schema observations, policy state, and DPoP
-replay markers across workers:
+Catalog pins live in the configured state adapter. The default in-memory state
+pins for the current proxy process. SQLite-backed state keeps pins across
+restarts; Redis-backed state shares pins, schema observations, policy state, and
+DPoP replay markers across workers:
 
 ```toml
 [mcp.proxy]

@@ -9,6 +9,7 @@ from snulbug.mcp_completion import (
     mcp_completion_request_metadata,
 )
 from snulbug.response_policy import ResponsePolicyConfig, enforce_mcp_response_policy
+from snulbug.state import MemoryStateStore
 
 
 def test_mcp_completion_request_metadata_flags_sensitive_shapes():
@@ -108,6 +109,171 @@ def test_mcp_completion_response_policy_audits_and_redacts_suggestions():
         "truncated": True,
     }
     assert payload["result"]["completion"]["values"] == ["src/app.py", "[REDACTED]"]
+
+
+def test_mcp_response_policy_pins_resource_icons_and_metadata():
+    store = MemoryStateStore()
+    request = {"jsonrpc": "2.0", "id": "resources-1", "method": "resources/list", "params": {}}
+    response = {
+        "status": 200,
+        "headers": [(b"content-type", b"application/json")],
+        "body": json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "resources-1",
+                "result": {
+                    "resources": [
+                        {
+                            "uri": "file:///workspace/README.md",
+                            "name": "README",
+                            "title": "Readme",
+                            "description": "Project readme",
+                            "mimeType": "text/markdown",
+                            "icons": [{"src": "https://example.test/readme.svg", "mimeType": "image/svg+xml"}],
+                        }
+                    ]
+                },
+            }
+        ).encode(),
+    }
+    changed = {
+        **response,
+        "body": json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "resources-2",
+                "result": {
+                    "resources": [
+                        {
+                            "uri": "file:///workspace/README.md",
+                            "name": "README",
+                            "title": "Readme",
+                            "description": "Project readme",
+                            "mimeType": "text/markdown",
+                            "icons": [{"src": "https://example.test/changed.svg", "mimeType": "image/svg+xml"}],
+                        }
+                    ]
+                },
+            }
+        ).encode(),
+    }
+
+    _updated, first_metadata = enforce_mcp_response_policy(
+        response,
+        request=request,
+        config=ResponsePolicyConfig(),
+        tool_pin_store=store,
+    )
+    blocked, second_metadata = enforce_mcp_response_policy(
+        changed,
+        request={**request, "id": "resources-2"},
+        config=ResponsePolicyConfig(),
+        tool_pin_store=store,
+    )
+    payload = json.loads(blocked["body"].decode())
+
+    assert first_metadata["tool_pinning"]["pinned"][0]["kind"] == "resource"
+    assert first_metadata["tool_pinning"]["pinned"][0]["surface"] == "resources"
+    assert second_metadata["blocked"] is True
+    assert second_metadata["reason_code"] == "response.catalog_metadata_changed"
+    assert second_metadata["tool_pinning"]["changed"][0]["id"] == "file:///workspace/README.md"
+    assert payload["error"]["code"] == -32000
+    assert "resources/list blocked" in payload["error"]["message"]
+
+
+def test_mcp_response_policy_warns_on_prompt_icon_drift():
+    store = MemoryStateStore()
+    request = {"jsonrpc": "2.0", "id": "prompts-1", "method": "prompts/list", "params": {}}
+    response = {
+        "status": 200,
+        "headers": [(b"content-type", b"application/json")],
+        "body": json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "prompts-1",
+                "result": {
+                    "prompts": [
+                        {
+                            "name": "review",
+                            "title": "Review",
+                            "description": "Review code",
+                            "arguments": [{"name": "path", "required": True}],
+                            "icons": [{"src": "https://example.test/review.svg", "mimeType": "image/svg+xml"}],
+                        }
+                    ]
+                },
+            }
+        ).encode(),
+    }
+    changed = {
+        **response,
+        "body": json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "prompts-2",
+                "result": {
+                    "prompts": [
+                        {
+                            "name": "review",
+                            "title": "Review",
+                            "description": "Review code",
+                            "arguments": [{"name": "path", "required": True}],
+                            "icons": [{"src": "https://example.test/review-v2.svg", "mimeType": "image/svg+xml"}],
+                        }
+                    ]
+                },
+            }
+        ).encode(),
+    }
+
+    enforce_mcp_response_policy(response, request=request, config=ResponsePolicyConfig(), tool_pin_store=store)
+    updated, metadata = enforce_mcp_response_policy(
+        changed,
+        request={**request, "id": "prompts-2"},
+        config=ResponsePolicyConfig(tool_pinning_action="warn"),
+        tool_pin_store=store,
+    )
+
+    assert updated["body"] == changed["body"]
+    assert metadata["tool_pinning"]["changed"][0]["kind"] == "prompt"
+    assert metadata["tool_pinning"]["changed"][0]["id"] == "review"
+    assert "reason_code" not in metadata
+
+
+def test_mcp_response_policy_pins_resource_template_metadata():
+    store = MemoryStateStore()
+    request = {"jsonrpc": "2.0", "id": "templates-1", "method": "resources/templates/list", "params": {}}
+    response = {
+        "status": 200,
+        "headers": [(b"content-type", b"application/json")],
+        "body": json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "templates-1",
+                "result": {
+                    "resourceTemplates": [
+                        {
+                            "uriTemplate": "file:///{path}",
+                            "name": "project_file",
+                            "description": "Project file",
+                            "mimeType": "text/plain",
+                            "icons": [{"src": "https://example.test/file.svg", "mimeType": "image/svg+xml"}],
+                        }
+                    ]
+                },
+            }
+        ).encode(),
+    }
+
+    _updated, metadata = enforce_mcp_response_policy(
+        response,
+        request=request,
+        config=ResponsePolicyConfig(),
+        tool_pin_store=store,
+    )
+
+    assert metadata["tool_pinning"]["pinned"][0]["kind"] == "resource_template"
+    assert metadata["tool_pinning"]["pinned"][0]["id"] == "file:///{path}"
 
 
 def test_mcp_response_policy_redacts_tasks_result_payloads():

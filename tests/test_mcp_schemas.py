@@ -27,6 +27,7 @@ def _schema_responses(
                 "title": "Readme",
                 "description": "Project readme",
                 "mimeType": "text/markdown",
+                "icons": [{"src": "https://example.test/readme.svg", "mimeType": "image/svg+xml"}],
             }
         ]
         if include_resource
@@ -69,6 +70,7 @@ def _schema_responses(
                         "name": "project_file",
                         "description": "Project file",
                         "mimeType": "text/plain",
+                        "icons": [{"src": "https://example.test/file.svg", "mimeType": "image/svg+xml"}],
                     }
                 ]
             }
@@ -81,6 +83,7 @@ def _schema_responses(
                         "title": "Review",
                         "description": "Review a project file",
                         "arguments": [{"name": "path", "description": "File path", "required": True}],
+                        "icons": [{"src": "https://example.test/review.svg", "mimeType": "image/svg+xml"}],
                     }
                 ]
             }
@@ -105,6 +108,9 @@ def test_discover_mcp_schemas_from_response_collection_writes_catalog_and_report
     assert len(catalog["hash"]) == 64
     assert catalog["server"]["serverInfo"]["name"] == "demo-server"
     assert catalog["surfaces"]["tools"][0]["outputSchema"]["properties"]["text"]["type"] == "string"
+    assert catalog["surfaces"]["resources"][0]["icons"][0]["src"] == "https://example.test/readme.svg"
+    assert catalog["surfaces"]["resource_templates"][0]["icons"][0]["src"] == "https://example.test/file.svg"
+    assert catalog["surfaces"]["prompts"][0]["icons"][0]["src"] == "https://example.test/review.svg"
     assert saved["surfaces"] == catalog["surfaces"]
     assert "# snulbug mcp policy schemas discover" in report_text
     assert "- `read_file`" in report_text
@@ -151,6 +157,28 @@ def test_diff_mcp_schema_catalogs_reports_added_changed_and_removed():
     assert informational["removed"][0]["surface"] == "resources"
     assert blocking["ok"] is False
     assert blocking["failing_changes"] == {"added": 0, "changed": 1, "removed": 1}
+
+
+def test_diff_mcp_schema_catalogs_reports_resource_and_prompt_icon_drift():
+    baseline = build_mcp_schema_catalog(_schema_responses(), label="baseline")
+    current_responses = _schema_responses()
+    current_responses["resources/list"]["result"]["resources"][0]["icons"] = [
+        {"src": "https://example.test/readme-v2.svg", "mimeType": "image/svg+xml"}
+    ]
+    current_responses["resources/templates/list"]["result"]["resourceTemplates"][0]["icons"] = [
+        {"src": "https://example.test/file-v2.svg", "mimeType": "image/svg+xml"}
+    ]
+    current_responses["prompts/list"]["result"]["prompts"][0]["icons"] = [
+        {"src": "https://example.test/review-v2.svg", "mimeType": "image/svg+xml"}
+    ]
+    current = build_mcp_schema_catalog(current_responses, label="current")
+
+    diff = diff_mcp_schema_catalogs(baseline, current)
+
+    changed = {(item["surface"], item["id"]): item["changed_fields"] for item in diff["changed"]}
+    assert changed[("resources", "file:///workspace/README.md")] == ["icons"]
+    assert changed[("resource_templates", "file:///{path}")] == ["icons"]
+    assert changed[("prompts", "review")] == ["icons"]
 
 
 def test_discover_mcp_schemas_accepts_tools_only_inputs(tmp_path):

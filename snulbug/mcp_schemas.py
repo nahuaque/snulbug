@@ -558,7 +558,9 @@ def _normalize_resource_schema(item: Mapping[str, Any]) -> dict[str, Any]:
         "name": item.get("name") if isinstance(item.get("name"), str) else None,
         "title": item.get("title") if isinstance(item.get("title"), str) else None,
         "description": item.get("description") if isinstance(item.get("description"), str) else None,
+        "icons": list(item.get("icons")) if _is_sequence(item.get("icons")) else None,
         "mimeType": item.get("mimeType") if isinstance(item.get("mimeType"), str) else None,
+        "size": item.get("size") if isinstance(item.get("size"), int | float) else None,
         "annotations": dict(item.get("annotations")) if isinstance(item.get("annotations"), Mapping) else None,
     }
     normalized["hash"] = stable_schema_digest(_without_hash(normalized))
@@ -571,6 +573,7 @@ def _normalize_resource_template_schema(item: Mapping[str, Any]) -> dict[str, An
         "name": item.get("name") if isinstance(item.get("name"), str) else None,
         "title": item.get("title") if isinstance(item.get("title"), str) else None,
         "description": item.get("description") if isinstance(item.get("description"), str) else None,
+        "icons": list(item.get("icons")) if _is_sequence(item.get("icons")) else None,
         "mimeType": item.get("mimeType") if isinstance(item.get("mimeType"), str) else None,
         "annotations": dict(item.get("annotations")) if isinstance(item.get("annotations"), Mapping) else None,
     }
@@ -583,6 +586,7 @@ def _normalize_prompt_schema(item: Mapping[str, Any]) -> dict[str, Any]:
         "name": _required_string(item, "name", "prompt"),
         "title": item.get("title") if isinstance(item.get("title"), str) else None,
         "description": item.get("description") if isinstance(item.get("description"), str) else None,
+        "icons": list(item.get("icons")) if _is_sequence(item.get("icons")) else None,
         "arguments": _normalize_prompt_arguments(item.get("arguments")),
     }
     normalized["hash"] = stable_schema_digest(_without_hash(normalized))

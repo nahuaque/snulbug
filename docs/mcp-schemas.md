@@ -164,9 +164,10 @@ contains:
 - server protocol version, capabilities, server info, and instructions
 - tool `name`, `title`, `description`, `icons`, `inputSchema`, `outputSchema`,
   annotations, and `execution.taskSupport`
-- resource `uri`, `name`, `title`, `description`, `mimeType`, and annotations
-- resource template `uriTemplate`, metadata, and annotations
-- prompt `name`, `title`, `description`, and typed arguments
+- resource `uri`, `name`, `title`, `description`, `icons`, `mimeType`, `size`,
+  and annotations
+- resource template `uriTemplate`, metadata, `icons`, and annotations
+- prompt `name`, `title`, `description`, `icons`, and typed arguments
 
 For focused tool pinning, limit discovery to `tools/list`:
 
