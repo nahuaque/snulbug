@@ -43,6 +43,8 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
         progress_rate_limit = 12
         progress_rate_window_seconds = 3.5
         progress_state_ttl_seconds = 240
+        resource_subscription_policy_action = "block"
+        resource_subscription_ttl_seconds = 120
         streamable_http_hardening = true
         streamable_http_endpoint_path = "mcp"
         streamable_http_require_accept = true
@@ -167,6 +169,8 @@ def test_load_mcp_proxy_config_resolves_relative_paths(tmp_path):
     assert result["progress_rate_limit"] == 12
     assert result["progress_rate_window_seconds"] == 3.5
     assert result["progress_state_ttl_seconds"] == 240.0
+    assert result["resource_subscription_policy_action"] == "block"
+    assert result["resource_subscription_ttl_seconds"] == 120.0
     assert result["streamable_http_hardening"] is True
     assert result["streamable_http_endpoint_path"] == "/mcp"
     assert result["streamable_http_require_accept"] is True
@@ -1165,6 +1169,8 @@ def test_mcp_share_run_cli_loads_config_before_running(monkeypatch, tmp_path):
     assert calls[0]["progress_rate_limit"] == 60
     assert calls[0]["progress_rate_window_seconds"] == 60.0
     assert calls[0]["progress_state_ttl_seconds"] == 3600.0
+    assert calls[0]["resource_subscription_policy_action"] == "warn"
+    assert calls[0]["resource_subscription_ttl_seconds"] == 3600.0
     assert calls[0]["streamable_http_hardening"] is True
     assert calls[0]["streamable_http_endpoint_path"] == "/mcp"
     assert calls[0]["streamable_http_require_accept"] is True

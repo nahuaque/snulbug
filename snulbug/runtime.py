@@ -1524,12 +1524,15 @@ return function(source, source_name, instruction_limit)
       is_sampling_request = false,
       is_elicitation_request = false,
       is_roots_request = false,
+      is_resource_subscription = false,
+      is_resource_notification = false,
       task = {},
       completion = {},
       progress = {},
       cancellation = {},
       sampling = {},
       elicitation = {},
+      resource = {},
     }
     request.__mcp_call_cached = true
     request.__mcp_call = call
@@ -1603,6 +1606,30 @@ return function(source, source_name, instruction_limit)
       if type(call.params.reason) == "string" then
         call.cancellation.reason = call.params.reason
       end
+      return call
+    end
+
+    if call.method == "notifications/resources/updated" then
+      call.is_resource_notification = true
+      call.direction = "server_to_client"
+      call.resource_operation = "updated"
+      call.resource = {
+        operation = "updated",
+      }
+      if type(call.params.uri) == "string" then
+        call.resource_uri = call.params.uri
+        call.resource.uri = call.params.uri
+      end
+      return call
+    end
+
+    if call.method == "notifications/resources/list_changed" then
+      call.is_resource_notification = true
+      call.direction = "server_to_client"
+      call.resource_operation = "list_changed"
+      call.resource = {
+        operation = "list_changed",
+      }
       return call
     end
 
@@ -1737,10 +1764,33 @@ return function(source, source_name, instruction_limit)
       return call
     end
 
-    if call.method == "resources/read" then
-      call.is_read = true
+    if call.method == "resources/subscribe" or call.method == "resources/unsubscribe" then
+      call.is_resource_subscription = true
+      call.is_write = true
+      if call.method == "resources/subscribe" then
+        call.resource_operation = "subscribe"
+      else
+        call.resource_operation = "unsubscribe"
+      end
+      call.resource = {
+        operation = call.resource_operation,
+      }
       if type(call.params.uri) == "string" then
         call.resource_uri = call.params.uri
+        call.resource.uri = call.params.uri
+      end
+      return call
+    end
+
+    if call.method == "resources/read" then
+      call.is_read = true
+      call.resource_operation = "read"
+      call.resource = {
+        operation = "read",
+      }
+      if type(call.params.uri) == "string" then
+        call.resource_uri = call.params.uri
+        call.resource.uri = call.params.uri
       end
       return call
     end
@@ -1855,6 +1905,22 @@ return function(source, source_name, instruction_limit)
 
   function mcp.is_roots_request(request)
     return mcp.call(request).is_roots_request
+  end
+
+  function mcp.is_resource_subscription(request)
+    return mcp.call(request).is_resource_subscription
+  end
+
+  function mcp.is_resource_notification(request)
+    return mcp.call(request).is_resource_notification
+  end
+
+  function mcp.resource_uri(request)
+    return mcp.call(request).resource_uri
+  end
+
+  function mcp.resource_operation(request)
+    return mcp.call(request).resource_operation
   end
 
   function mcp.task_id(request)

@@ -11,6 +11,7 @@ from typing import Any
 from .mcp_client_requests import mcp_server_to_client_request_metadata, mcp_server_to_client_requests_from_payload
 from .mcp_completion import mcp_completion_request_metadata, mcp_completion_response_metadata
 from .mcp_progress import mcp_progress_request_metadata, mcp_progress_response_metadata
+from .mcp_resources import mcp_resource_request_metadata, mcp_resource_response_metadata
 from .mcp_tasks import mcp_task_request_metadata, mcp_task_response_metadata
 
 SECRET_REPLACEMENT = "[REDACTED]"
@@ -261,6 +262,9 @@ def _merge_jsonrpc_summary(summary: dict[str, Any], body: Mapping[str, Any]) -> 
     progress_metadata = mcp_progress_request_metadata(body)
     if progress_metadata:
         summary["progress"] = progress_metadata
+    resource_metadata = mcp_resource_request_metadata(body)
+    if resource_metadata:
+        summary["resource"] = resource_metadata
     server_to_client_metadata = mcp_server_to_client_request_metadata(body)
     if server_to_client_metadata:
         summary["server_to_client"] = server_to_client_metadata
@@ -300,6 +304,9 @@ def _mcp_response_summary(response: Mapping[str, Any]) -> dict[str, Any]:
     progress_metadata = mcp_progress_response_metadata(payload)
     if progress_metadata:
         summary["progress"] = progress_metadata
+    resource_metadata = mcp_resource_response_metadata(payload)
+    if resource_metadata:
+        summary["resource"] = resource_metadata
     server_to_client_requests = mcp_server_to_client_requests_from_payload(payload)
     if server_to_client_requests:
         summary["server_to_client"] = {

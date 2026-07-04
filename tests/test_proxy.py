@@ -4055,6 +4055,34 @@ def test_mcp_progress_policy_blocks_non_monotonic_progress_before_upstream(tmp_p
     assert records[-1]["metadata"]["protocol_policy"]["reason_code"] == "request.progress_non_monotonic"
 
 
+def test_mcp_resource_policy_blocks_invalid_subscribe_before_upstream(tmp_path):
+    server, seen = start_mcp_upstream({"read_file": "Read a file"})
+    policy = write_policy(tmp_path, "continue")
+    record_log = tmp_path / "records.jsonl"
+    app = create_proxy_application(
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        policy,
+        record_out=record_log,
+        resource_subscription_policy_action="block",
+    )
+
+    try:
+        sent = run_asgi(
+            app,
+            body=b'{"jsonrpc":"2.0","id":"sub","method":"resources/subscribe","params":{}}',
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(sent[1]["body"])
+    records = load_record_log(record_log)
+    assert payload["error"]["data"]["reason_code"] == "request.resource_uri_missing"
+    assert seen["calls"] == []
+    assert records[-1]["metadata"]["resource_policy"]["request"]["blocked"] is True
+    assert records[-1]["metadata"]["resource_policy"]["request"]["reason_code"] == "request.resource_uri_missing"
+
+
 def test_mcp_output_schema_validation_blocks_invalid_structured_content(tmp_path):
     server, seen = start_mcp_upstream(
         {"read_file": "Read a file"},

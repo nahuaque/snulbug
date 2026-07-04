@@ -51,7 +51,7 @@ end
 Available helpers:
 
 - `mcp.body(request)`: parsed JSON-RPC body table, or `nil` for missing/malformed JSON.
-- `mcp.call(request)`: normalized JSON-RPC call table with `method`, `params`, `args`, `tool`, `id`, `batch`, `invalid`, `error`, `is_tool_call`, `is_read`, `is_write`, `is_task_augmented`, `is_task_method`, `is_task_notification`, `is_task_request`, `is_completion_request`, `is_progress_notification`, `is_cancelled_notification`, `is_server_to_client_request`, `is_sampling_request`, `is_elicitation_request`, `is_roots_request`, `task_id`, `task_status`, `task_operation`, `task_ttl_ms`, `related_task_id`, and `progress_token` fields.
+- `mcp.call(request)`: normalized JSON-RPC call table with `method`, `params`, `args`, `tool`, `id`, `batch`, `invalid`, `error`, `is_tool_call`, `is_read`, `is_write`, `is_task_augmented`, `is_task_method`, `is_task_notification`, `is_task_request`, `is_completion_request`, `is_progress_notification`, `is_cancelled_notification`, `is_resource_subscription`, `is_resource_notification`, `is_server_to_client_request`, `is_sampling_request`, `is_elicitation_request`, `is_roots_request`, `task_id`, `task_status`, `task_operation`, `task_ttl_ms`, `related_task_id`, `progress_token`, `resource_uri`, and `resource_operation` fields.
 - `mcp.arg(request_or_call, key)`: read one tool/prompt argument from a request or normalized call.
 - `mcp.arg_keys(request_or_call)`: sorted list of observed tool/prompt argument keys.
 - `mcp.method(request)`: JSON-RPC method string, or `nil`.
@@ -65,6 +65,8 @@ Available helpers:
 - `mcp.is_completion_request(request)`: true for `completion/complete`.
 - `mcp.is_progress_notification(request)`: true for `notifications/progress`.
 - `mcp.is_cancelled_notification(request)`: true for `notifications/cancelled`.
+- `mcp.is_resource_subscription(request)`: true for `resources/subscribe` or `resources/unsubscribe`.
+- `mcp.is_resource_notification(request)`: true for `notifications/resources/updated` or `notifications/resources/list_changed`.
 - `mcp.is_server_to_client_request(request)`: true for upstream requests aimed back at the MCP client, currently `sampling/createMessage`, `elicitation/create`, or `roots/list`.
 - `mcp.is_sampling_request(request)`: true for `sampling/createMessage`.
 - `mcp.is_elicitation_request(request)`: true for `elicitation/create`.
@@ -87,6 +89,8 @@ Available helpers:
 - `mcp.progress_message(request)`: optional progress message string, or `nil`.
 - `mcp.cancelled_request_id(request)`: `params.requestId` from `notifications/cancelled`, or `nil`.
 - `mcp.cancelled_reason(request)`: optional cancellation reason string, or `nil`.
+- `mcp.resource_uri(request)`: resource URI for `resources/read`, subscribe/unsubscribe, or update notifications.
+- `mcp.resource_operation(request)`: `read`, `subscribe`, `unsubscribe`, `updated`, `list_changed`, or `nil`.
 - `mcp.sampling_tools_requested(request)`: true when a `sampling/createMessage` request includes a non-empty `params.tools` array.
 - `mcp.sampling_tool_names(request)`: sorted tool names from sampling-with-tools requests.
 - `mcp.sampling_tool_choice_mode(request)`: `auto`, `required`, `none`, or `nil`.
@@ -147,6 +151,28 @@ return function(request)
   if mcp.is_cancelled_notification(request) then
     return decision.allow("mcp.cancel_observed", {
       request_id = mcp.cancelled_request_id(request)
+    })
+  end
+  return decision.allow("mcp.allowed")
+end
+```
+
+Resource subscription and change messages are likewise visible to Lua. The
+proxy runtime can track subscriptions, while policies can record or narrow the
+same protocol surface:
+
+```lua
+return function(request)
+  if mcp.is_resource_subscription(request) then
+    return decision.allow("mcp.resource_subscription", {
+      operation = mcp.resource_operation(request),
+      uri = mcp.resource_uri(request)
+    })
+  end
+  if mcp.is_resource_notification(request) then
+    return decision.allow("mcp.resource_change", {
+      operation = mcp.resource_operation(request),
+      uri = mcp.resource_uri(request)
     })
   end
   return decision.allow("mcp.allowed")

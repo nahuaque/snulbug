@@ -181,6 +181,39 @@ def test_build_audit_event_extracts_completion_request_and_response_metadata(tmp
     }
 
 
+def test_build_audit_event_extracts_resource_subscription_and_change_metadata(tmp_path):
+    policy = write_policy(tmp_path)
+    request = {
+        "method": "POST",
+        "path": "/mcp",
+        "body": json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "sub-1",
+                "method": "resources/subscribe",
+                "params": {"uri": "file:///project/README.md"},
+            }
+        ),
+    }
+    response = {
+        "status": 200,
+        "body": json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "method": "notifications/resources/updated",
+                "params": {"uri": "file:///project/README.md"},
+            }
+        ).encode(),
+    }
+
+    audit = build_audit_event(record_policy_request(policy, request, response=response))
+
+    assert audit["mcp"]["resource"]["operation"] == "subscribe"
+    assert audit["mcp"]["resource"]["resource"]["uri"] == "file:///project/README.md"
+    assert audit["mcp_response"]["resource"]["updated_count"] == 1
+    assert audit["mcp_response"]["resource"]["events"][0]["operation"] == "updated"
+
+
 def test_build_audit_event_promotes_cloudflare_access_metadata(tmp_path):
     policy = write_policy(tmp_path)
     request = {

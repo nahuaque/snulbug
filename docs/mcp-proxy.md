@@ -238,6 +238,13 @@ response_max_bytes = 262144
 response_redact_secrets = true
 response_block_instructions = false
 server_to_client_request_action = "block"
+completion_policy_action = "warn"
+progress_policy_action = "warn"
+progress_rate_limit = 60
+progress_rate_window_seconds = 60.0
+progress_state_ttl_seconds = 3600.0
+resource_subscription_policy_action = "warn"
+resource_subscription_ttl_seconds = 3600.0
 tool_pinning = true
 tool_pinning_action = "block"
 schema_validation = true
@@ -961,6 +968,34 @@ the peer.
 Progress state uses the same configured state adapter as policy state. In-memory
 state is process-local, SQLite keeps local progress state across restarts, and
 Redis shares progress/cancellation mediation across workers.
+
+## Resource Subscription And Change Controls
+
+MCP resource subscriptions are also protocol state. Snulbug audits
+`resources/subscribe`, `resources/unsubscribe`,
+`notifications/resources/updated`, and
+`notifications/resources/list_changed` as first-class resource events. When a
+successful `resources/subscribe` response is observed, snulbug records the
+subscribed URI in the configured state adapter. A successful
+`resources/unsubscribe` response removes it. Resource update notifications can
+then be checked against the tracked subscription set.
+
+```toml
+[mcp.proxy]
+resource_subscription_policy_action = "warn" # allow | warn | block
+resource_subscription_ttl_seconds = 3600.0
+```
+
+The default `warn` mode preserves compatibility with resource-capable MCP
+servers while adding audit metadata. Use `block` when you want malformed
+subscribe/unsubscribe requests or update notifications for unknown subscribed
+URIs to stop at the gateway. With Redis state, subscription tracking is shared
+across workers; with memory state it is per process.
+
+Lua policies can inspect the same surface with
+`mcp.is_resource_subscription(request)`,
+`mcp.is_resource_notification(request)`, `mcp.resource_operation(request)`, and
+`mcp.resource_uri(request)`.
 
 ## Response Controls
 

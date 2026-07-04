@@ -511,6 +511,64 @@ def test_mcp_server_to_client_helpers_identify_sampling_elicitation_and_roots_re
     }
 
 
+def test_mcp_resource_helpers_identify_subscription_and_change_events():
+    script = compile_lua_script(
+        """
+        return function(request, context)
+          return decision.allow("test.resources", {
+            method = mcp.method(request),
+            is_subscription = mcp.is_resource_subscription(request),
+            is_notification = mcp.is_resource_notification(request),
+            operation = mcp.resource_operation(request),
+            uri = mcp.resource_uri(request) or ""
+          })
+        end
+        """
+    )
+
+    subscribe = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","id":"sub","method":"resources/subscribe",'
+                '"params":{"uri":"file:///project/README.md"}}'
+            )
+        }
+    )
+    updated = script.decide(
+        {
+            "body": (
+                '{"jsonrpc":"2.0","method":"notifications/resources/updated",'
+                '"params":{"uri":"file:///project/README.md"}}'
+            )
+        }
+    )
+    list_changed = script.decide(
+        {"body": '{"jsonrpc":"2.0","method":"notifications/resources/list_changed","params":{}}'}
+    )
+
+    assert subscribe["context"] == {
+        "method": "resources/subscribe",
+        "is_subscription": True,
+        "is_notification": False,
+        "operation": "subscribe",
+        "uri": "file:///project/README.md",
+    }
+    assert updated["context"] == {
+        "method": "notifications/resources/updated",
+        "is_subscription": False,
+        "is_notification": True,
+        "operation": "updated",
+        "uri": "file:///project/README.md",
+    }
+    assert list_changed["context"] == {
+        "method": "notifications/resources/list_changed",
+        "is_subscription": False,
+        "is_notification": True,
+        "operation": "list_changed",
+        "uri": "",
+    }
+
+
 def test_mcp_completion_helpers_identify_reference_and_arguments():
     script = compile_lua_script(
         """
