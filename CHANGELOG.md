@@ -6,6 +6,17 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-05
+
+This is primarily an MCP conformance release for the 2025-11-25 protocol line.
+
+- Added first-class MCP protocol mediation for official tasks, task capability enforcement, completion requests, progress/cancellation notifications, resource subscriptions/change notifications, and server-to-client `sampling`, `elicitation`, and `roots` requests.
+- Hardened Streamable HTTP handling with configurable MCP protocol-version, accept/content-type, session, origin, GET, and DELETE checks, plus conformance diagnostics surfaced through `share doctor`.
+- Expanded schema discovery, pinning, diffing, and validation to cover tool output schemas, `structuredContent`, `execution.taskSupport`, and resource/prompt metadata including icons.
+- Improved OAuth conformance with scope-bearing challenges for incremental consent and MCP protected-resource checks that are easier to validate before public sharing.
+- Folded share acceptance checks into doctor/report workflows so a share can prove config, policy, discovered schemas, replay evidence, and handoff connectivity before exposing a tunnel.
+- Updated the devcontainer feature release line to `0.1.3`.
+
 ## [0.1.2] - 2026-06-30
 
 - Added the local share console as the default companion UI for `snulbug mcp share run`, including setup flows, readiness review, health checks, live decisions, pending requests, policy visibility, auth visibility, lease management, tool/schema drift, tunnel status, and one-click session reports.
