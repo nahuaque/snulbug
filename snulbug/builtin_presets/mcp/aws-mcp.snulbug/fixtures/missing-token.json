@@ -1,0 +1,8 @@
+{
+  "method": "POST",
+  "path": "/mcp",
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"jsonrpc\":\"2.0\",\"id\":\"tools-list\",\"method\":\"tools/list\",\"params\":{}}"
+}

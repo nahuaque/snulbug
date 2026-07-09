@@ -1,0 +1,9 @@
+{
+  "method": "POST",
+  "path": "/mcp",
+  "headers": {
+    "authorization": "Bearer local-dev-secret",
+    "content-type": "application/json"
+  },
+  "body": "{\"jsonrpc\":\"2.0\",\"id\":\"ec2-inventory\",\"method\":\"tools/call\",\"params\":{\"name\":\"ec2_describe_instances\",\"arguments\":{\"account_id\":\"111122223333\",\"region\":\"us-east-1\"}}}"
+}

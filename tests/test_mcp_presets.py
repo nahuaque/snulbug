@@ -34,6 +34,7 @@ def test_builtin_mcp_presets_are_listed():
     presets = {preset["preset"]: preset for preset in list_builtin_presets()}
 
     assert set(presets) == {
+        "aws-mcp",
         "auth-required",
         "local-dev-safe",
         "no-shell-tools",
@@ -44,6 +45,7 @@ def test_builtin_mcp_presets_are_listed():
         "workspace-firewall",
     }
     assert presets["local-dev-safe"]["required_capabilities"] == ["body", "mcp", "state", "rate_limit"]
+    assert presets["aws-mcp"]["risk_profile"] == "aws-mcp"
     assert presets["tunnel-safe"]["risk_profile"] == "tunnel-safe"
     assert presets["workspace-firewall"]["risk_profile"] == "workspace-firewall"
 
@@ -70,6 +72,7 @@ def test_mcp_policy_preset_cli_lists_presets(capsys):
     assert status == 0
     assert [preset["preset"] for preset in output["presets"]] == [
         "auth-required",
+        "aws-mcp",
         "local-dev-safe",
         "no-shell-tools",
         "project-path-allowlist",

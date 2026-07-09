@@ -1,0 +1,97 @@
+{
+  "name": "mcp-aws",
+  "version": "0.1.0",
+  "entrypoint": "policy.lua",
+  "description": "AWS MCP policy pack with knowledge/docs access, lease-scoped AWS API capabilities, account/region guardrails, and confirm-gated sandbox mutations",
+  "risk_profile": "aws-mcp",
+  "required_capabilities": ["body", "mcp", "rate_limit"],
+  "limits": {
+    "max_body_bytes": 32768,
+    "max_state_operations": 4,
+    "max_key_bytes": 192
+  },
+  "aws": {
+    "surfaces": ["aws-knowledge", "aws-api"],
+    "default_capability": "aws_knowledge",
+    "sandbox_accounts": ["111122223333"],
+    "sandbox_regions": ["us-east-1", "us-west-2"]
+  },
+  "fixtures": [
+    {
+      "name": "AWS Knowledge search is allowed without a lease store",
+      "request": "fixtures/knowledge-search.json",
+      "state": "snapshots/empty.json",
+      "expect": {
+        "action": "rate_limit",
+        "decision.context.policy": "mcp-aws",
+        "decision.context.method": "tools/call",
+        "decision.context.tool": "search_documentation",
+        "decision.context.aws.capability": "aws_knowledge",
+        "decision.context.aws.access": "knowledge",
+        "decision.reason_code": "mcp.aws_allowed"
+      }
+    },
+    {
+      "name": "AWS inventory read requires matching lease capability",
+      "request": "fixtures/inventory-read.json",
+      "context": "contexts/inventory-lease.json",
+      "state": "snapshots/empty.json",
+      "expect": {
+        "action": "rate_limit",
+        "decision.context.aws.service": "ec2",
+        "decision.context.aws.capability": "aws_inventory_read",
+        "decision.context.aws.access": "inventory_read",
+        "decision.reason_code": "mcp.aws_allowed"
+      }
+    },
+    {
+      "name": "AWS data read is not covered by inventory-read lease",
+      "request": "fixtures/data-read.json",
+      "context": "contexts/inventory-lease.json",
+      "state": "snapshots/empty.json",
+      "expect": {
+        "action": "reject",
+        "status": 403,
+        "decision.context.aws.service": "s3",
+        "decision.context.aws.capability": "aws_data_read",
+        "decision.reason_code": "lease.capability_missing"
+      }
+    },
+    {
+      "name": "AWS IAM mutation is blocked even with sandbox-change lease",
+      "request": "fixtures/iam-delete-user.json",
+      "context": "contexts/sandbox-change-lease.json",
+      "state": "snapshots/empty.json",
+      "expect": {
+        "action": "reject",
+        "status": 403,
+        "decision.context.aws.service": "iam",
+        "decision.reason_code": "aws.sensitive_mutation_blocked"
+      }
+    },
+    {
+      "name": "AWS sandbox mutation asks for live confirmation",
+      "request": "fixtures/sandbox-mutation.json",
+      "context": "contexts/sandbox-change-lease.json",
+      "state": "snapshots/empty.json",
+      "expect": {
+        "action": "confirm",
+        "decision.context.aws.service": "lambda",
+        "decision.context.aws.capability": "aws_sandbox_change",
+        "decision.context.aws.access": "mutation",
+        "decision.reason_code": "aws.sandbox_change_confirm"
+      }
+    },
+    {
+      "name": "missing token is challenged",
+      "request": "fixtures/missing-token.json",
+      "state": "snapshots/empty.json",
+      "expect": {
+        "action": "challenge",
+        "body": "AWS MCP bearer token required",
+        "decision.realm": "aws-mcp",
+        "decision.reason_code": "mcp.auth_required"
+      }
+    }
+  ]
+}

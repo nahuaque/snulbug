@@ -154,5 +154,16 @@ snulbug mcp share quickstart \
   --token local-dev-secret
 ```
 
+`aws-mcp` is a policy pack for sharing AWS MCP servers. It allows AWS
+Knowledge/docs tools by default, then uses task lease capability labels for AWS
+inventory reads, observability reads, cost reads, identity review, data-plane
+reads, and confirm-gated sandbox mutations.
+
+```bash
+snulbug mcp policy preset aws-mcp --output policy.snulbug
+```
+
+See [AWS MCP policy pack](aws-mcp.md) for the topology and guardrails.
+
 All copied presets are ordinary policy bundles with `manifest.json`,
 `policy.lua`, fixtures, and local README files.

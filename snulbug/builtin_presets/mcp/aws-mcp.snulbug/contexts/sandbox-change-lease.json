@@ -1,0 +1,11 @@
+{
+  "lease": {
+    "enabled": true,
+    "method": "tools/call",
+    "allowed": true,
+    "checked": true,
+    "id": "lease_sandbox_change",
+    "task": "AWS sandbox change",
+    "capabilities": ["aws_sandbox_change"]
+  }
+}

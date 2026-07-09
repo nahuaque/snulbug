@@ -1,0 +1,9 @@
+{
+  "method": "POST",
+  "path": "/mcp",
+  "headers": {
+    "authorization": "Bearer local-dev-secret",
+    "content-type": "application/json"
+  },
+  "body": "{\"jsonrpc\":\"2.0\",\"id\":\"iam-delete\",\"method\":\"tools/call\",\"params\":{\"name\":\"iam_delete_user\",\"arguments\":{\"account_id\":\"111122223333\",\"region\":\"us-east-1\",\"userName\":\"alice\"}}}"
+}

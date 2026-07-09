@@ -1,0 +1,9 @@
+{
+  "method": "POST",
+  "path": "/mcp",
+  "headers": {
+    "authorization": "Bearer local-dev-secret",
+    "content-type": "application/json"
+  },
+  "body": "{\"jsonrpc\":\"2.0\",\"id\":\"s3-data\",\"method\":\"tools/call\",\"params\":{\"name\":\"s3_get_object\",\"arguments\":{\"account_id\":\"111122223333\",\"region\":\"us-east-1\",\"bucket\":\"private-bucket\",\"key\":\"secrets.txt\"}}}"
+}
