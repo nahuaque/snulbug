@@ -157,25 +157,49 @@ def subscription_gateway(request, tmp_path):
         thread.join(timeout=5)
 
 
-def test_subscription_ack_is_live_and_changes_are_filtered(subscription_gateway):
+@pytest.mark.parametrize("pause_record", [False, True], ids=["normal-record", "empty-file-window"])
+def test_subscription_ack_is_live_and_changes_are_filtered(subscription_gateway, monkeypatch, pause_record):
+    import snulbug.proxy as proxy
+
     gateway = subscription_gateway
-    with open_request(gateway["url"], listen()) as response:
-        ack = next_event(response)
-        assert ack["method"] == ACKNOWLEDGED
-        assert ack["params"]["_meta"][SUBSCRIPTION_ID] == "listen-1"
-        assert "private-ack" not in json.dumps(ack)
-        time.sleep(0.2)  # No changes is normal, even beyond the ordinary upstream read timeout.
-        gateway["release"].set()
-        assert next_event(response)["method"] == "notifications/tools/list_changed"
-        assert next_event(response)["params"]["uri"] == "file:///project/a"
-        final = next_event(response)
-        assert final["result"]["resultType"] == "complete"
-        assert "private-final" not in json.dumps(final)
-        assert response.read() == b""
-    deadline = time.monotonic() + 2
-    while not gateway["records"].exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    record = json.loads(gateway["records"].read_text().splitlines()[0])
+    recorded = threading.Event()
+    record_started = threading.Event()
+    allow_record = threading.Event()
+    original = proxy.append_record
+
+    def append(path, record):
+        if pause_record:
+            # Reproduce file creation before the buffered JSONL write is visible.
+            gateway["records"].touch()
+            record_started.set()
+            assert allow_record.wait(5), "test did not release the paused record writer"
+        original(path, record)
+        recorded.set()
+
+    monkeypatch.setattr(proxy, "append_record", append)
+    try:
+        with open_request(gateway["url"], listen()) as response:
+            ack = next_event(response)
+            assert ack["method"] == ACKNOWLEDGED
+            assert ack["params"]["_meta"][SUBSCRIPTION_ID] == "listen-1"
+            assert "private-ack" not in json.dumps(ack)
+            time.sleep(0.2)  # No changes is normal, even beyond the ordinary upstream read timeout.
+            gateway["release"].set()
+            assert next_event(response)["method"] == "notifications/tools/list_changed"
+            assert next_event(response)["params"]["uri"] == "file:///project/a"
+            final = next_event(response)
+            assert final["result"]["resultType"] == "complete"
+            assert "private-final" not in json.dumps(final)
+            assert response.read() == b""
+        if pause_record:
+            assert record_started.wait(3), "record writer did not start"
+            assert gateway["records"].read_text() == ""
+    finally:
+        allow_record.set()
+    assert recorded.wait(3), "subscription audit record was not flushed"
+    records = [json.loads(line) for line in gateway["records"].read_text().splitlines()]
+    assert len(records) == 1
+    record = records[0]
     summary = record["metadata"]["stream"]["subscription"]
     assert summary["acknowledged"] is True
     assert summary["events"]["notifications/resources/updated"] == 1
