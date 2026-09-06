@@ -12,6 +12,8 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
 
     steps:
       - uses: actions/checkout@v7
@@ -27,28 +29,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --python ${{ matrix.python-version }}
 
-      - name: Check formatting
-        run: uv run ruff format --check .
-
-      - name: Lint
-        run: uv run ruff check .
-
       - name: Security scan
         if: matrix.python-version == '3.13'
         run: uv run bandit -r snulbug -lll
 
-      - name: Test
-        run: PYTHONDONTWRITEBYTECODE=1 uv run pytest
-
-      - name: Build distributions
-        run: uv build
-
-      - name: Smoke test CLI
-        run: |
-          uv run snulbug --help
-          uv run python -m snulbug --help
-
-      - name: Smoke test built wheel
-        run: |
-          uv run --isolated --with dist/snulbug-*.whl snulbug --help
-          uv run --isolated --with dist/snulbug-*.whl python -m snulbug --help
+      - name: Release QA
+        run: uv run snulbug release-qa --skip-bandit

@@ -10,6 +10,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
+from .mcp_protocol import DEFAULT_MCP_PROTOCOL_VERSION, SERVER_INFO_META, mcp_request, protocol_profile
 from .mcp_tasks import normalize_task_support
 
 MCP_SCHEMA_CATALOG_SCHEMA = "snulbug.mcp-schema-catalog.v1"
@@ -17,8 +18,6 @@ MCP_SCHEMA_CATALOG_VERSION = 1
 MCP_SCHEMA_DIFF_SCHEMA = "snulbug.mcp-schema-diff.v1"
 MCP_SCHEMA_DIFF_VERSION = 1
 MCP_TOOL_SNAPSHOT_SCHEMA = "snulbug.mcp-tools-snapshot.v1"
-DEFAULT_MCP_PROTOCOL_VERSION = "2025-06-18"
-
 MCP_SCHEMA_METHODS = (
     "initialize",
     "tools/list",
@@ -26,6 +25,7 @@ MCP_SCHEMA_METHODS = (
     "resources/templates/list",
     "prompts/list",
 )
+MCP_ALL_SCHEMA_METHODS = ("server/discover", *MCP_SCHEMA_METHODS)
 MCP_SCHEMA_METHOD_ALIASES = {
     "tools": "tools/list",
     "resources": "resources/list",
@@ -69,7 +69,7 @@ def discover_mcp_schemas(
     if source is None and url is None:
         raise ValueError("one of source or url is required")
 
-    selected_methods = normalize_mcp_schema_methods(methods)
+    selected_methods = normalize_mcp_schema_methods(methods, protocol_version=protocol_version)
     if source is not None:
         source_path = Path(source)
         payload = _read_json(source_path)
@@ -128,7 +128,7 @@ def fetch_mcp_schema_responses(
     protocol_version: str = DEFAULT_MCP_PROTOCOL_VERSION,
 ) -> dict[str, Any]:
     responses: dict[str, Any] = {}
-    for method in normalize_mcp_schema_methods(methods):
+    for method in normalize_mcp_schema_methods(methods, protocol_version=protocol_version):
         try:
             responses[method] = fetch_mcp_jsonrpc(
                 url,
@@ -161,6 +161,9 @@ def fetch_mcp_jsonrpc(
         "mcp-protocol-version": protocol_version,
         **{str(name).lower(): str(value) for name, value in (headers or {}).items()},
     }
+    if protocol_profile(protocol_version).modern:
+        request_headers["mcp-method"] = method
+    request_headers["mcp-protocol-version"] = protocol_version
     if token is not None and "authorization" not in request_headers:
         request_headers["authorization"] = f"Bearer {token}"
     body = json.dumps(_jsonrpc_request(method, protocol_version=protocol_version), separators=(",", ":")).encode(
@@ -192,10 +195,20 @@ def build_mcp_schema_catalog(
     protocol_version: str = DEFAULT_MCP_PROTOCOL_VERSION,
     created_at: str | None = None,
 ) -> dict[str, Any]:
-    selected_methods = normalize_mcp_schema_methods(methods)
+    selected_methods = normalize_mcp_schema_methods(methods, protocol_version=protocol_version)
     normalized_responses = {normalize_mcp_schema_method(name): value for name, value in responses.items()}
-    initialize_result = _result_from_response(normalized_responses.get("initialize"))
+    discovery_method = protocol_profile(protocol_version).discovery_method
+    initialize_result = _result_from_response(normalized_responses.get(discovery_method))
     errors = _method_errors(normalized_responses, selected_methods)
+    if protocol_profile(protocol_version).modern:
+        from .mcp_parameter_headers import filter_header_tools
+
+        filtered, header_metadata = filter_header_tools(normalized_responses.get("tools/list"), None)
+        normalized_responses["tools/list"] = filtered
+        errors.extend(
+            {"method": "tools/list", "message": "Tool excluded: invalid header annotations", **item}
+            for item in header_metadata.get("rejected", [])
+        )
     surfaces = {
         "tools": _normalize_items(
             _result_array(normalized_responses.get("tools/list"), "tools"),
@@ -253,7 +266,9 @@ def normalize_mcp_schema_catalog(catalog: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("MCP schema catalog has unsupported schema")
     return build_mcp_schema_catalog(
         {
-            "initialize": {"result": catalog.get("server") or {}},
+            protocol_profile(str(catalog.get("protocol_version") or DEFAULT_MCP_PROTOCOL_VERSION)).discovery_method: {
+                "result": catalog.get("server") or {}
+            },
             "tools/list": {"result": {"tools": _surface(catalog, "tools")}},
             "resources/list": {"result": {"resources": _surface(catalog, "resources")}},
             "resources/templates/list": {"result": {"resourceTemplates": _surface(catalog, "resource_templates")}},
@@ -353,14 +368,16 @@ def parse_mcp_schema_headers(values: Sequence[str] | None, *, token: str | None 
 
 def normalize_mcp_schema_method(value: str) -> str:
     method = MCP_SCHEMA_METHOD_ALIASES.get(str(value), str(value))
-    if method not in MCP_SCHEMA_METHODS:
+    if method not in MCP_ALL_SCHEMA_METHODS:
         raise ValueError(f"unsupported MCP schema discovery method: {value}")
     return method
 
 
-def normalize_mcp_schema_methods(values: Sequence[str] | None) -> tuple[str, ...]:
+def normalize_mcp_schema_methods(
+    values: Sequence[str] | None, *, protocol_version: str = DEFAULT_MCP_PROTOCOL_VERSION
+) -> tuple[str, ...]:
     if not values:
-        return MCP_SCHEMA_METHODS
+        return (protocol_profile(protocol_version).discovery_method, *MCP_SCHEMA_METHODS[1:])
     seen = []
     for value in values:
         method = normalize_mcp_schema_method(str(value))
@@ -453,18 +470,9 @@ def format_mcp_schema_diff_report(diff: Mapping[str, Any]) -> str:
 
 
 def _jsonrpc_request(method: str, *, protocol_version: str) -> dict[str, Any]:
-    if method == "initialize":
-        return {
-            "jsonrpc": "2.0",
-            "id": "snulbug-schemas-initialize",
-            "method": "initialize",
-            "params": {
-                "protocolVersion": protocol_version,
-                "capabilities": {},
-                "clientInfo": {"name": "snulbug-schema-discovery", "version": "0.1.0"},
-            },
-        }
-    return {"jsonrpc": "2.0", "id": f"snulbug-schemas-{method}", "method": method, "params": {}}
+    return mcp_request(
+        method, version=protocol_version, request_id=f"snulbug-schemas-{method}", client_name="snulbug-schema-discovery"
+    )
 
 
 def _responses_from_payload(payload: Any) -> dict[str, Any]:
@@ -478,7 +486,7 @@ def _responses_from_payload(payload: Any) -> dict[str, Any]:
     if payload.get("schema") == MCP_TOOL_SNAPSHOT_SCHEMA:
         return {"tools/list": {"result": {"tools": payload.get("tools") or []}}}
     parsed: dict[str, Any] = {}
-    for method in MCP_SCHEMA_METHODS:
+    for method in MCP_ALL_SCHEMA_METHODS:
         if method in payload:
             parsed[method] = payload[method]
     if parsed:
@@ -487,6 +495,8 @@ def _responses_from_payload(payload: Any) -> dict[str, Any]:
         return {"tools/list": {"result": {"tools": payload["tools"]}}}
     if isinstance(payload.get("result"), Mapping):
         result = payload["result"]
+        if "supportedVersions" in result:
+            return {"server/discover": payload}
         if "tools" in result:
             return {"tools/list": payload}
         if "resources" in result:
@@ -514,12 +524,16 @@ def _method_errors(responses: Mapping[str, Any], methods: Sequence[str]) -> list
 def _normalize_initialize_result(result: Any) -> dict[str, Any]:
     if not isinstance(result, Mapping):
         return {}
+    meta = result.get("_meta") if isinstance(result.get("_meta"), Mapping) else {}
+    server_info = meta.get(SERVER_INFO_META, result.get("serverInfo"))
     normalized = {
         "protocolVersion": result.get("protocolVersion"),
         "capabilities": dict(result.get("capabilities")) if isinstance(result.get("capabilities"), Mapping) else {},
-        "serverInfo": dict(result.get("serverInfo")) if isinstance(result.get("serverInfo"), Mapping) else {},
+        "serverInfo": dict(server_info) if isinstance(server_info, Mapping) else {},
         "instructions": result.get("instructions") if isinstance(result.get("instructions"), str) else None,
     }
+    if isinstance(result.get("supportedVersions"), list):
+        normalized["supportedVersions"] = sorted(str(value) for value in result["supportedVersions"])
     normalized["hash"] = stable_schema_digest(normalized)
     return normalized
 

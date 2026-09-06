@@ -27,9 +27,15 @@ The live probe sends JSON-RPC requests for:
 - `resources/templates/list`
 - `prompts/list`
 
-By default, requests use MCP protocol version `2025-06-18` and include
+By default, requests use MCP protocol version `2025-11-25` and include
 `Accept: application/json, text/event-stream`, so plain JSON and Streamable
 HTTP/SSE responses are both accepted.
+
+Selecting `--protocol-version 2026-07-28` replaces `initialize` with
+`server/discover` and adds modern per-request metadata. Snulbug's own modern
+gateway currently supports bounded JSON/SSE requests against modern HTTP or managed stdio upstreams;
+use `--method server/discover` to probe only the gateway itself. See
+[protocol versions and coverage](mcp-protocol.md).
 
 For custom auth or tunnel provider headers:
 

@@ -8,6 +8,7 @@ from .credentials import attach_upstream_credentials, normalize_fabric_credentia
 from .discovery import apply_fabric_discovery
 from .events import normalize_event_sink_configs
 from .gateway_templates import render_toml_array_table
+from .mcp_protocol import DEFAULT_MCP_PROTOCOL_VERSION
 from .policy_backoff import (
     DEFAULT_POLICY_BACKOFF_EXCLUDE_REASON_CODES,
     DEFAULT_POLICY_BACKOFF_KEY_FIELDS,
@@ -105,7 +106,7 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "streamable_http_require_accept": True,
     "streamable_http_require_content_type": True,
     "streamable_http_require_protocol_version": False,
-    "streamable_http_protocol_version": "2025-11-25",
+    "streamable_http_protocol_version": DEFAULT_MCP_PROTOCOL_VERSION,
     "streamable_http_require_session_id": False,
     "streamable_http_allow_get": False,
     "streamable_http_allow_delete": False,

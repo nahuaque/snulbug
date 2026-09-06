@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
+from .mcp_subscriptions import LISTEN, Subscription, request_issue
 from .state import PolicyStateStore
 
 MCP_RESOURCES_SUBSCRIBE_METHOD = "resources/subscribe"
@@ -32,7 +34,7 @@ class ResourcePolicyConfig:
     def __post_init__(self) -> None:
         if self.action not in MCP_RESOURCE_POLICY_ACTIONS:
             raise ValueError("resource_subscription_policy_action must be 'allow', 'warn', or 'block'")
-        if self.subscription_ttl_seconds <= 0:
+        if not math.isfinite(self.subscription_ttl_seconds) or self.subscription_ttl_seconds <= 0:
             raise ValueError("resource_subscription_ttl_seconds must be positive")
 
 
@@ -93,6 +95,16 @@ def enforce_mcp_resource_request_policy(
         "state_store": state_store is not None,
     }
     if not isinstance(request, Mapping):
+        return True, metadata
+
+    if method == LISTEN:
+        metadata.update(checked=True, operation="listen")
+        params = request.get("params")
+        issue = request_issue(params) if isinstance(params, Mapping) else "Missing subscription parameters"
+        if issue or type(request.get("id")) not in (str, int):
+            metadata.update(blocked=True, reason_code="request.subscription_invalid")
+            return False, metadata
+        metadata["subscription"] = Subscription(request).summary()
         return True, metadata
 
     request_metadata = mcp_resource_request_metadata(request)

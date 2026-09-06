@@ -6,12 +6,20 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-LATEST_MCP_SPEC_VERSION = "2025-11-25"
+from .mcp_protocol import (
+    DEFAULT_MCP_PROTOCOL_VERSION,
+    LATEST_MCP_SPEC_VERSION,
+    discovery_issues,
+    protocol_coverage,
+    protocol_profile,
+)
+from .mcp_schemas import fetch_mcp_jsonrpc
+
 MCP_SPEC_CONFORMANCE_SCHEMA = "snulbug.mcp-spec-conformance.v1"
 PROTECTED_RESOURCE_AUTH_MODES = {"oauth-resource", "enterprise-managed"}
 
 
-def run_mcp_2025_11_25_conformance(
+def run_mcp_spec_conformance(
     *,
     url: str,
     headers: Mapping[str, str] | None = None,
@@ -19,8 +27,9 @@ def run_mcp_2025_11_25_conformance(
     status: Mapping[str, Any] | None = None,
     live_checks: bool = False,
     timeout: float = 5.0,
+    protocol_version: str | None = None,
 ) -> dict[str, Any]:
-    """Run MCP 2025-11-25 share-facing conformance checks.
+    """Run version-specific share-facing checks and report implementation gaps.
 
     These checks intentionally focus on the public share boundary. They do not
     claim a full MCP server certification; they make the spec-sensitive gaps a
@@ -32,31 +41,79 @@ def run_mcp_2025_11_25_conformance(
     auth = _mapping(config.get("auth"))
     checks: list[dict[str, Any]] = []
     recommendations: list[str] = []
+    target = protocol_version or str(config.get("streamable_http_protocol_version") or DEFAULT_MCP_PROTOCOL_VERSION)
+    try:
+        profile = protocol_profile(target)
+    except ValueError:
+        return {
+            "result": {
+                "schema": MCP_SPEC_CONFORMANCE_SCHEMA,
+                "version": 1,
+                "ok": False,
+                "status": "failed",
+                "spec_version": target,
+                "latest_spec_version": LATEST_MCP_SPEC_VERSION,
+                "conformance_complete": False,
+                "summary": {"passed": 0, "failed": 1, "warnings": 0, "skipped": 0},
+            },
+            "checks": [{"id": "mcp.protocol.target", "status": "fail", "message": f"Unknown MCP revision: {target}"}],
+            "recommendations": ["Select a recognized MCP protocol profile before running conformance checks."],
+        }
+    coverage = protocol_coverage(target)
 
     _add_check(
         checks,
         "mcp2025.spec.target",
         "pass",
-        "share doctor is checking MCP 2025-11-25 readiness",
-        details={"spec_version": LATEST_MCP_SPEC_VERSION},
+        f"share doctor is checking MCP {target} readiness ({profile.implementation})",
+        details={"spec_version": target, "latest_spec_version": LATEST_MCP_SPEC_VERSION},
     )
     _check_accept_header(checks, recommendations, normalized_headers)
-    _check_protocol_version_header(checks, recommendations, normalized_headers)
-    _check_edge_hardening(checks, recommendations, proxy_config=config)
+    _check_protocol_version_header(checks, recommendations, normalized_headers, target=target)
     _check_origin_guard(checks, recommendations, url=url, proxy_config=config)
-    _check_streamable_get(
-        checks,
-        recommendations,
-        url=url,
-        headers=normalized_headers,
-        live_checks=live_checks,
-        timeout=timeout,
-    )
+    if not profile.modern:
+        _check_edge_hardening(checks, recommendations, proxy_config=config)
+        _check_streamable_get(
+            checks,
+            recommendations,
+            url=url,
+            headers=normalized_headers,
+            live_checks=live_checks,
+            timeout=timeout,
+        )
     _check_oauth_metadata(checks, recommendations, auth=auth)
     _check_client_id_metadata(checks, recommendations, auth=auth)
     _check_schema_catalog_visibility(checks, recommendations, status=_mapping(status))
-    _check_mcp_tasks(checks, recommendations, status=_mapping(status))
-    _check_server_to_client_mediation(checks, recommendations, proxy_config=config)
+    if profile.modern:
+        for requirement in coverage["requirements"]:
+            support = requirement["support"]
+            _add_check(
+                checks,
+                f"mcp2026.coverage.{requirement['id']}",
+                "fail" if support == "unsupported" else "warn" if support == "untested" else "pass",
+                f"{requirement['id']}: {support}",
+                details=requirement,
+            )
+        recommendations.append(
+            "MCP 2026-07-28 is a request-stream preview. Keep production shares on 2025-11-25 until "
+            "the remaining interoperability requirements are verified."
+        )
+        _check_modern_discovery(
+            checks,
+            url=url,
+            headers=normalized_headers,
+            target=target,
+            live_checks=live_checks,
+            timeout=timeout,
+        )
+        for check in checks:
+            if check["id"].startswith("mcp2025."):
+                check["id"] = check["id"].replace("mcp2025.", "mcp2026.", 1)
+    else:
+        _check_mcp_tasks(checks, recommendations, status=_mapping(status))
+        _check_server_to_client_mediation(checks, recommendations, proxy_config=config)
+        if profile.implementation == "untested":
+            _add_check(checks, "mcp.protocol.coverage", "warn", "This legacy revision has not been tested end to end")
 
     summary = _summary(checks)
     result = {
@@ -64,7 +121,11 @@ def run_mcp_2025_11_25_conformance(
         "version": 1,
         "ok": summary["failed"] == 0,
         "status": "failed" if summary["failed"] else "review" if summary["warnings"] else "pass",
-        "spec_version": LATEST_MCP_SPEC_VERSION,
+        "spec_version": target,
+        "latest_spec_version": LATEST_MCP_SPEC_VERSION,
+        "conformance_complete": False,
+        "coverage": coverage,
+        "latest_coverage": protocol_coverage(LATEST_MCP_SPEC_VERSION),
         "url": _safe_url(url),
         "live_checks": live_checks,
         "summary": summary,
@@ -74,6 +135,39 @@ def run_mcp_2025_11_25_conformance(
         "checks": checks,
         "recommendations": _unique_strings(recommendations),
     }
+
+
+def _check_modern_discovery(
+    checks: list[dict[str, Any]],
+    *,
+    url: str,
+    headers: Mapping[str, str],
+    target: str,
+    live_checks: bool,
+    timeout: float,
+) -> None:
+    if not live_checks:
+        _add_check(
+            checks,
+            "mcp2026.server.discovery",
+            "skip",
+            "server/discover was not probed; live checks are disabled",
+            details={"verification": "untested"},
+        )
+        return
+    try:
+        payload = fetch_mcp_jsonrpc(url, "server/discover", headers=headers, protocol_version=target, timeout=timeout)
+        issues = discovery_issues(payload, version=target, request_id="snulbug-schemas-server/discover")
+    except Exception as exc:
+        # Upstreams can echo credentials in error bodies. Do not put those bodies in doctor artifacts.
+        issues = [f"server/discover probe failed ({type(exc).__name__})"]
+    _add_check(
+        checks,
+        "mcp2026.server.discovery",
+        "fail" if issues else "pass",
+        "; ".join(issues) if issues else "server/discover returned a valid versioned discovery response",
+        details={"verification": "failed" if issues else "verified", "issues": issues},
+    )
 
 
 def _check_accept_header(
@@ -105,14 +199,16 @@ def _check_protocol_version_header(
     checks: list[dict[str, Any]],
     recommendations: list[str],
     headers: Mapping[str, str],
+    *,
+    target: str,
 ) -> None:
     version = headers.get("mcp-protocol-version")
-    if version == LATEST_MCP_SPEC_VERSION:
+    if version == target:
         status = "pass"
-        message = f"MCP-Protocol-Version targets {LATEST_MCP_SPEC_VERSION}"
+        message = f"MCP-Protocol-Version matches the selected profile {target}"
     elif version:
         status = "warn"
-        message = f"MCP-Protocol-Version is {version}, while latest MCP is {LATEST_MCP_SPEC_VERSION}"
+        message = f"MCP-Protocol-Version is {version}, but the selected profile is {target}"
     else:
         status = "warn"
         message = "MCP-Protocol-Version is not present in generated client headers"
@@ -121,12 +217,10 @@ def _check_protocol_version_header(
         "mcp2025.transport.protocol_version_header",
         status,
         message,
-        details={"configured": version, "latest": LATEST_MCP_SPEC_VERSION},
+        details={"configured": version, "target": target, "latest": LATEST_MCP_SPEC_VERSION},
     )
     if status != "pass":
-        recommendations.append(
-            f"Prefer `MCP-Protocol-Version: {LATEST_MCP_SPEC_VERSION}` for clients that support the latest MCP spec."
-        )
+        recommendations.append(f"Use `MCP-Protocol-Version: {target}` to match the selected share profile.")
 
 
 def _check_origin_guard(

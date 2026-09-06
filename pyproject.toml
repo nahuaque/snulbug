@@ -1,6 +1,6 @@
 [project]
 name = "snulbug"
-version = "0.1.3"
+version = "0.2.0"
 description = "A local-dev MCP policy proxy with Lua policies, replay logs, and learned least-privilege bundles"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,8 +35,11 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
+    "httpx>=0.28,<1",
+    "jsonschema>=4.23,<5",
     "lupa>=2.5",
     "pyjwt[crypto]>=2.8",
+    "referencing>=0.35,<1",
     "rich>=15.0.0",
     "tomli>=2.0; python_version < '3.11'",
     "uvicorn>=0.30",

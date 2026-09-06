@@ -4,6 +4,8 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 from urllib.parse import urlsplit
 
+from .mcp_mrtr import input_required
+
 MCP_SERVER_TO_CLIENT_REQUEST_METHODS = (
     "sampling/createMessage",
     "elicitation/create",
@@ -53,6 +55,13 @@ def mcp_server_to_client_request_metadata(message: Mapping[str, Any]) -> dict[st
 
 def mcp_server_to_client_requests_from_payload(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, Mapping):
+        interim = input_required(payload)
+        if interim is not None and isinstance(interim.get("inputRequests"), Mapping):
+            return [
+                {**mcp_server_to_client_request_metadata(item), "transport": "mrtr", "notification": False}
+                for item in interim["inputRequests"].values()
+                if isinstance(item, Mapping) and is_mcp_server_to_client_request_method(item.get("method"))
+            ]
         metadata = mcp_server_to_client_request_metadata(payload)
         return [metadata] if metadata else []
     if isinstance(payload, Sequence) and not isinstance(payload, str | bytes | bytearray):

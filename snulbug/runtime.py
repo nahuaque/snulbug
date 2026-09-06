@@ -1764,6 +1764,14 @@ return function(source, source_name, instruction_limit)
       return call
     end
 
+    if call.method == "subscriptions/listen" then
+      call.is_resource_subscription = true
+      call.is_write = true
+      call.resource_operation = "listen"
+      call.resource = { operation = "listen", notifications = call.params.notifications }
+      return call
+    end
+
     if call.method == "resources/subscribe" or call.method == "resources/unsubscribe" then
       call.is_resource_subscription = true
       call.is_write = true
@@ -2879,6 +2887,7 @@ return function(source, source_name, instruction_limit)
   }
 
   local workspace_read_methods = {
+    ["server/discover"] = true,
     ["initialize"] = true,
     ["notifications/initialized"] = true,
     ["tools/list"] = true,

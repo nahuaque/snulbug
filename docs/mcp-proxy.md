@@ -129,6 +129,11 @@ streamable_http_allow_delete = false
 streamable_http_allowed_origins = []
 ```
 
+The default remains 2025-11-25. An opt-in 2026-07-28 profile supports discovery
+and bounded JSON/SSE dispatch with policy-gated MRTR to modern HTTP or managed stdio upstreams.
+It also supports bounded HTTP `subscriptions/listen` streams, routed to the default upstream in a facade. See
+[MCP protocol versions and coverage](mcp-protocol.md) before changing it.
+
 The guard rejects malformed MCP POSTs, explicit unsupported
 `MCP-Protocol-Version` values, disallowed browser `Origin` headers, malformed
 `MCP-Session-Id` headers, and accidental GET/DELETE forwarding unless those
@@ -862,6 +867,13 @@ unexpected arguments at the proxy boundary, including missing required fields,
 wrong primitive types, disallowed enum values, invalid string lengths/patterns,
 oversized arrays, and extra properties when the schema sets
 `additionalProperties = false`.
+
+Input and output checks use JSON Schema 2020-12, including conditionals,
+dependent schemas, tuple/contains constraints, unevaluated properties/items,
+and local/dynamic references. Invalid declarations are reported rather than
+discarded. References never fetch network or filesystem resources; `format`
+remains annotation-only. See [schema validation boundaries](mcp-protocol.md#json-schema-validation)
+for dialect handling, size limits, and conformance coverage.
 
 The same cache records tool `title`, `icons`, `outputSchema`, annotations, and
 `execution.taskSupport`. When a tool declares an `outputSchema`, snulbug

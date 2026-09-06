@@ -47,12 +47,19 @@ from .mcp_auth import (
     oauth_resource_metadata_url,
     protected_resource_metadata,
 )
+from .mcp_cache import McpCacheMiddleware
 from .mcp_client_requests import mcp_server_to_client_request_metadata
 from .mcp_completion import (
     CompletionPolicyConfig,
     enforce_mcp_completion_request_policy,
     mcp_completion_error_response,
     mcp_completion_request_metadata,
+)
+from .mcp_parameter_headers import (
+    VALIDATED_SCOPE_KEY,
+    cached_header_bindings,
+    rebuild_parameter_headers,
+    validate_parameter_headers,
 )
 from .mcp_progress import (
     ProgressPolicyConfig,
@@ -61,6 +68,18 @@ from .mcp_progress import (
     mcp_progress_error_response,
     mcp_progress_request_metadata,
 )
+from .mcp_protocol import (
+    DEFAULT_MCP_PROTOCOL_VERSION,
+    PROTOCOL_VERSION_META,
+    UNSUPPORTED_PROTOCOL_VERSION,
+    discovery_result,
+    is_modern_request,
+    modern_request_headers,
+    modern_response_issue,
+    protocol_error,
+    protocol_profile,
+    validate_modern_request,
+)
 from .mcp_resources import (
     ResourcePolicyConfig,
     enforce_mcp_resource_request_policy,
@@ -68,6 +87,8 @@ from .mcp_resources import (
     mcp_resource_error_response,
     mcp_resource_request_metadata,
 )
+from .mcp_stdio import ManagedStdioMcpClient
+from .mcp_stream import AUTH_EXPIRY_SCOPE_KEY, STREAM_SCOPE_KEY, McpStreamError, McpStreamSession, bound_auth_expiry
 from .mcp_tasks import mcp_task_request_metadata
 from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
 from .policy_backoff import PolicyBackoffConfig
@@ -122,7 +143,7 @@ class StreamableHttpEdgeConfig:
     require_accept: bool = True
     require_content_type: bool = True
     require_protocol_version: bool = False
-    protocol_version: str = "2025-11-25"
+    protocol_version: str = DEFAULT_MCP_PROTOCOL_VERSION
     require_session_id: bool = False
     allow_get: bool = False
     allow_delete: bool = False
@@ -388,8 +409,20 @@ class ReverseProxyApp:
             credential_broker = credential_metadata(self.upstream_credential)
             if credential_broker:
                 _set_proxy_metadata(scope, {"upstream_auth": credential_broker})
-            response = await asyncio.to_thread(self._forward, scope, body)
+            if scope.get(STREAM_SCOPE_KEY) is not None:
+                response = await _forward_stream_http(
+                    scope,
+                    body,
+                    self._upstream,
+                    self._target(scope),
+                    credential=self.upstream_credential,
+                    timeout=self.config.timeout,
+                )
+            else:
+                response = await asyncio.to_thread(self._forward, scope, body)
         except Exception as exc:
+            if scope.get(STREAM_SCOPE_KEY) is not None:
+                raise
             await _send_response(
                 send,
                 status=502,
@@ -403,6 +436,7 @@ class ReverseProxyApp:
             request=request,
             config=self.response_policy,
             tool_pin_store=self.tool_pin_store,
+            tool_schema_store=self.tool_schema_store,
         )
         response, schema_response_metadata = enforce_mcp_response_schema_policy(
             response,
@@ -468,9 +502,14 @@ class ReverseProxyApp:
         try:
             target = self._target(scope)
             headers = _request_headers(scope.get("headers", []), self._upstream)
+            request = _jsonrpc_request(body)
+            if is_modern_request(request):
+                headers = modern_request_headers(headers, request)
             headers = apply_credential_header(headers, self.upstream_credential)
             connection.request(str(scope.get("method", "GET")), target, body=body, headers=headers)
             response = connection.getresponse()
+            if is_modern_request(request):
+                return _read_modern_response(response, request, max_bytes=self.response_policy.max_body_bytes)
             response_body = response.read()
             return {
                 "status": int(response.status),
@@ -503,110 +542,6 @@ class ReverseProxyApp:
             elif message_type == "lifespan.shutdown":
                 await send({"type": "lifespan.shutdown.complete"})
                 return
-
-
-class ManagedStdioMcpClient:
-    """Managed line-delimited JSON-RPC client for local stdio MCP servers."""
-
-    def __init__(
-        self,
-        command: str,
-        args: Sequence[str] = (),
-        *,
-        cwd: str | None = None,
-        env: Mapping[str, str] | None = None,
-        timeout: float = 30.0,
-    ) -> None:
-        self.command = command
-        self.args = tuple(args)
-        self.cwd = cwd
-        self.env = dict(env) if env is not None else None
-        self.timeout = timeout
-        self._process: asyncio.subprocess.Process | None = None
-        self._process_loop: asyncio.AbstractEventLoop | None = None
-        self._lock: asyncio.Lock | None = None
-        self._lock_loop: asyncio.AbstractEventLoop | None = None
-
-    async def request(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        lock = self._lock_for_loop()
-        async with lock:
-            process = await self._ensure_process()
-            assert process.stdin is not None
-            message = json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
-            process.stdin.write(message)
-            await process.stdin.drain()
-
-            if "id" not in request:
-                return {"status": 202, "headers": [(b"content-length", b"0")], "body": b""}
-
-            response = await self._read_response(request.get("id"))
-            body = json.dumps(response, separators=(",", ":")).encode("utf-8")
-            return {
-                "status": 200,
-                "headers": [
-                    (b"content-type", b"application/json"),
-                    (b"content-length", str(len(body)).encode("ascii")),
-                ],
-                "body": body,
-            }
-
-    async def aclose(self) -> None:
-        process = self._process
-        self._process = None
-        self._process_loop = None
-        if process is None or process.returncode is not None:
-            return
-        process.terminate()
-        try:
-            await asyncio.wait_for(process.wait(), timeout=2.0)
-        except TimeoutError:
-            process.kill()
-            await process.wait()
-
-    def _lock_for_loop(self) -> asyncio.Lock:
-        loop = asyncio.get_running_loop()
-        if self._lock is None or self._lock_loop is not loop:
-            self._lock = asyncio.Lock()
-            self._lock_loop = loop
-        return self._lock
-
-    async def _ensure_process(self) -> asyncio.subprocess.Process:
-        loop = asyncio.get_running_loop()
-        if self._process is not None and self._process_loop is not loop:
-            await self.aclose()
-        if self._process is not None and self._process.returncode is None:
-            return self._process
-
-        env = None if self.env is None else {**os.environ, **self.env}
-        self._process = await asyncio.create_subprocess_exec(
-            self.command,
-            *self.args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            cwd=self.cwd,
-            env=env,
-        )
-        self._process_loop = loop
-        return self._process
-
-    async def _read_response(self, request_id: Any) -> Mapping[str, Any]:
-        process = await self._ensure_process()
-        assert process.stdout is not None
-        while True:
-            line = await asyncio.wait_for(process.stdout.readline(), timeout=self.timeout)
-            if not line:
-                self._process = None
-                self._process_loop = None
-                raise RuntimeError("stdio MCP server closed stdout")
-            try:
-                response = json.loads(line.decode("utf-8"))
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(response, Mapping):
-                continue
-            if response.get("id") == request_id:
-                return response
 
 
 class ManagedHolepunchBridge:
@@ -1217,7 +1152,11 @@ class McpFacadeProxyApp:
             try:
                 response = await self._forward(routes, upstream, scope, body, request)
             except Exception as exc:
+                if scope.get(STREAM_SCOPE_KEY) is not None:
+                    exc = exc if isinstance(exc, McpStreamError) else McpStreamError("MCP upstream stream failed")
                 if not self.health_policy.enabled:
+                    if scope.get(STREAM_SCOPE_KEY) is not None:
+                        raise exc
                     await self._send_upstream_failure(send, upstream, exc)
                     return
                 failures.append({"upstream": upstream.name, "reason": "exception", "error": str(exc)})
@@ -1229,6 +1168,12 @@ class McpFacadeProxyApp:
                         error=str(exc),
                     )
                 )
+                if scope.get(STREAM_SCOPE_KEY) is not None:
+                    _set_proxy_metadata(
+                        scope,
+                        self._health_metadata_field(routes, failures=failures, control_events=health_events),
+                    )
+                    raise exc
                 continue
             if response["status"] < 200 or response["status"] >= 300:
                 if self.health_policy.enabled:
@@ -1388,12 +1333,20 @@ class McpFacadeProxyApp:
                 {
                     "jsonrpc": "2.0",
                     "id": request.get("id"),
-                    "result": {"tools": tools},
+                    "result": {
+                        "tools": tools,
+                        **(
+                            {"resultType": "complete", "ttlMs": 0, "cacheScope": "private"}
+                            if is_modern_request(request)
+                            else {}
+                        ),
+                    },
                 }
             ),
             request=request,
             config=self.response_policy,
             tool_pin_store=self.tool_pin_store,
+            tool_schema_store=self.tool_schema_store,
         )
         response, progress_response_metadata = enforce_mcp_progress_response_policy(
             response,
@@ -1573,6 +1526,8 @@ class McpFacadeProxyApp:
         try:
             response = await self._forward(routes, upstream, scope, body, rewritten)
         except Exception as exc:
+            if scope.get(STREAM_SCOPE_KEY) is not None:
+                exc = exc if isinstance(exc, McpStreamError) else McpStreamError("MCP upstream stream failed")
             if self.health_policy.enabled:
                 health_failures.append({"upstream": upstream.name, "reason": "exception", "error": str(exc)})
                 health_events.extend(
@@ -1602,6 +1557,8 @@ class McpFacadeProxyApp:
                         ),
                     },
                 )
+            if scope.get(STREAM_SCOPE_KEY) is not None:
+                raise exc
             await self._send_upstream_failure(send, upstream, exc)
             return
         if response["status"] >= 500:
@@ -1622,6 +1579,7 @@ class McpFacadeProxyApp:
             request=request,
             config=self.response_policy,
             tool_pin_store=self.tool_pin_store,
+            tool_schema_store=self.tool_schema_store,
         )
         response, schema_response_metadata = enforce_mcp_response_schema_policy(
             response,
@@ -1753,6 +1711,8 @@ class McpFacadeProxyApp:
                 request if isinstance(request, Mapping) else {},
             )
         except Exception as exc:
+            if scope.get(STREAM_SCOPE_KEY) is not None:
+                exc = exc if isinstance(exc, McpStreamError) else McpStreamError("MCP upstream stream failed")
             if self.health_policy.enabled:
                 health_failures.append({"upstream": routes.default.name, "reason": "exception", "error": str(exc)})
                 health_events.extend(
@@ -1780,6 +1740,8 @@ class McpFacadeProxyApp:
                         ),
                     },
                 )
+            if scope.get(STREAM_SCOPE_KEY) is not None:
+                raise exc
             await self._send_upstream_failure(send, routes.default, exc)
             return
         if response["status"] >= 500:
@@ -1802,6 +1764,7 @@ class McpFacadeProxyApp:
             request=request if isinstance(request, Mapping) else None,
             config=self.response_policy,
             tool_pin_store=self.tool_pin_store,
+            tool_schema_store=self.tool_schema_store,
         )
         response, progress_response_metadata = enforce_mcp_progress_response_policy(
             response,
@@ -1852,7 +1815,12 @@ class McpFacadeProxyApp:
         request: Mapping[str, Any],
     ) -> dict[str, Any]:
         transport = get_upstream_transport(upstream.transport)
-        return await transport.forward(
+        if is_modern_request(request) and transport.http_target(upstream) is None and upstream.transport != "stdio":
+            return _json_response(
+                protocol_error(request.get("id"), -32000, "Modern preview requires an HTTP or managed stdio transport"),
+                status=502,
+            )
+        response = await transport.forward(
             UpstreamForwardContext(
                 upstream=upstream,
                 scope=scope,
@@ -1861,9 +1829,28 @@ class McpFacadeProxyApp:
                 parsed=routes.parsed,
                 stdio_clients=routes.stdio_clients,
                 bridges=routes.bridges,
-                forward_http=lambda: asyncio.to_thread(self._forward_http, routes, upstream, scope, body),
+                forward_http=lambda: (
+                    _forward_stream_http(
+                        scope,
+                        body,
+                        routes.parsed[upstream.name],
+                        _exact_target(routes.parsed[upstream.name]),
+                        credential=upstream.credential,
+                        timeout=self.timeout,
+                    )
+                    if scope.get(STREAM_SCOPE_KEY) is not None
+                    else asyncio.to_thread(self._forward_http, routes, upstream, scope, body)
+                ),
             )
         )
+        if is_modern_request(request):
+            issue = modern_response_issue(response["body"], request)
+            if issue:
+                raise McpStreamError(issue)
+            stream = scope.get(STREAM_SCOPE_KEY)
+            if stream is not None:
+                stream.terminal(response["body"], response["status"], response["headers"])
+        return response
 
     def _forward_http(
         self,
@@ -1876,9 +1863,14 @@ class McpFacadeProxyApp:
         connection = _connection(parsed, self.timeout)
         try:
             headers = _request_headers(scope.get("headers", []), parsed, content_length=len(body))
+            request = _jsonrpc_request(body)
+            if is_modern_request(request):
+                headers = modern_request_headers(headers, request)
             headers = apply_credential_header(headers, upstream.credential)
             connection.request(str(scope.get("method", "POST")), _exact_target(parsed), body=body, headers=headers)
             response = connection.getresponse()
+            if is_modern_request(request):
+                return _read_modern_response(response, request, max_bytes=self.response_policy.max_body_bytes)
             response_body = response.read()
             return {
                 "status": int(response.status),
@@ -2042,7 +2034,8 @@ class StreamableHttpEdgeMiddleware:
             return
 
         session_id = _single_header(headers.get("mcp-session-id"))
-        if session_id and not _valid_mcp_session_id(session_id):
+        modern = protocol_profile(self.config.protocol_version).modern
+        if session_id and not modern and not _valid_mcp_session_id(session_id):
             await self._reject(
                 scope,
                 send,
@@ -2066,7 +2059,7 @@ class StreamableHttpEdgeMiddleware:
                         (
                             b"access-control-allow-headers",
                             b"Accept, Authorization, Content-Type, DPoP, Last-Event-ID, MCP-Protocol-Version, "
-                            b"MCP-Session-Id, x-snulbug-lease",
+                            b"MCP-Session-Id, Mcp-Method, Mcp-Name, x-snulbug-lease",
                         ),
                     ],
                 ),
@@ -2075,7 +2068,7 @@ class StreamableHttpEdgeMiddleware:
             return
 
         if method == "GET":
-            if not self.config.allow_get:
+            if modern or not self.config.allow_get:
                 await self._reject(
                     scope,
                     send,
@@ -2112,7 +2105,7 @@ class StreamableHttpEdgeMiddleware:
             return
 
         if method == "DELETE":
-            if not self.config.allow_delete:
+            if modern or not self.config.allow_delete:
                 await self._reject(
                     scope,
                     send,
@@ -2153,7 +2146,7 @@ class StreamableHttpEdgeMiddleware:
             return
 
         protocol = _single_header(headers.get("mcp-protocol-version"))
-        if protocol:
+        if protocol and not modern:
             if protocol != self.config.protocol_version:
                 await self._reject(
                     scope,
@@ -2169,7 +2162,7 @@ class StreamableHttpEdgeMiddleware:
                     },
                 )
                 return
-        elif self.config.require_protocol_version:
+        elif not protocol and self.config.require_protocol_version and not modern:
             await self._reject(
                 scope,
                 send,
@@ -2210,7 +2203,7 @@ class StreamableHttpEdgeMiddleware:
         body: bytes | None = None
         replay_receive = receive
         request: Any = None
-        if self.config.require_session_id:
+        if self.config.require_session_id and not modern:
             body, replay_receive = await _capture_body(receive)
             request = _jsonrpc_request(body)
             initialized = isinstance(request, Mapping) and request.get("method") == "initialize"
@@ -2256,9 +2249,10 @@ class StreamableHttpEdgeMiddleware:
 
     def _allow_header(self) -> str:
         methods = ["POST", "OPTIONS"]
-        if self.config.allow_get:
+        modern = protocol_profile(self.config.protocol_version).modern
+        if self.config.allow_get and not modern:
             methods.append("GET")
-        if self.config.allow_delete:
+        if self.config.allow_delete and not modern:
             methods.append("DELETE")
         return ", ".join(methods)
 
@@ -2321,6 +2315,180 @@ class StreamableHttpEdgeMiddleware:
             extras.append((b"allow", self._allow_header().encode("ascii")))
         headers = _merge_headers(headers, self._edge_headers(origin=origin, extra=extras))
         await _send_response(send, status=response["status"], headers=headers, body=response["body"])
+
+
+class McpParameterHeadersMiddleware:
+    """Check recognized mirrors before Lua; retain binding paths for post-policy rebuilding."""
+
+    def __init__(self, app: ASGIApp, *, store: PolicyStateStore, endpoint: str, max_body_bytes: int):
+        self.app, self.store, self.endpoint, self.max_body_bytes = app, store, endpoint, max_body_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if (
+            scope.get("type") != "http"
+            or scope.get("method") != "POST"
+            or (str(scope.get("path", "/")).rstrip("/") or "/") != self.endpoint
+        ):
+            await self.app(scope, receive, send)
+            return
+        request = None
+        try:
+            body, replay = await _capture_body(receive, max_bytes=self.max_body_bytes)
+        except ValueError:
+            response = _json_response(
+                protocol_error(None, -32600, "MCP request body exceeds the configured limit"), status=413
+            )
+        else:
+            request = _jsonrpc_request(body)
+            try:
+                bindings = cached_header_bindings(request, self.store)
+                params = request.get("params", {}) if isinstance(request, Mapping) else {}
+                arguments = params.get("arguments", {}) if isinstance(params, Mapping) else {}
+                validate_parameter_headers(_headers_to_mapping(scope.get("headers", [])), arguments, bindings)
+            except ValueError as exc:
+                response = _json_response(
+                    protocol_error(request.get("id") if request else None, -32020, str(exc)), status=400
+                )
+            else:
+                child = dict(scope)
+                child[VALIDATED_SCOPE_KEY] = {
+                    "tool": params.get("name") if isinstance(params, Mapping) else None,
+                    "method": request.get("method") if isinstance(request, Mapping) else None,
+                    "bindings": bindings,
+                }
+                _set_proxy_metadata(child, {"parameter_headers": {"checked": True, "recognized": len(bindings)}})
+                await self.app(child, replay, send)
+                return
+        _set_proxy_metadata(
+            scope, {"parameter_headers": {"checked": True, "blocked": True, "reason_code": "mcp.header_mismatch"}}
+        )
+        _attach_proxy_reject_trace(
+            scope,
+            action="reject",
+            status=response["status"],
+            body="MCP header validation failed",
+            reason="MCP header validation failed",
+            reason_code="mcp.header_mismatch",
+        )
+        await _send_response(send, status=response["status"], headers=response["headers"], body=response["body"])
+
+
+class McpProtocolMiddleware:
+    """Validate modern dispatch behind the existing auth/Lua layers."""
+
+    def __init__(self, app: ASGIApp, *, config: StreamableHttpEdgeConfig) -> None:
+        self.app = app
+        self.config = config
+        self.profile = protocol_profile(config.protocol_version)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope.get("type") != "http"
+            or scope.get("method") != "POST"
+            or (str(scope.get("path", "/")).rstrip("/") or "/") != self.config.endpoint_path
+        ):
+            await self.app(scope, receive, send)
+            return
+        body, replay_receive = await _capture_body(receive)
+        request = _jsonrpc_request(body)
+        params = request.get("params") if isinstance(request, Mapping) else None
+        meta = params.get("_meta") if isinstance(params, Mapping) else None
+        requested = meta.get(PROTOCOL_VERSION_META) if isinstance(meta, Mapping) else None
+        if not self.profile.modern:
+            if requested and requested != self.profile.version:
+                payload = protocol_error(
+                    request.get("id"),
+                    UNSUPPORTED_PROTOCOL_VERSION,
+                    "Unsupported protocol version",
+                    requested=requested,
+                    supported=[self.profile.version],
+                )
+            else:
+                await self.app(scope, replay_receive, send)
+                return
+        else:
+            if VALIDATED_SCOPE_KEY in scope:
+                try:
+                    params = request.get("params", {}) if isinstance(request, Mapping) else {}
+                    arguments = params.get("arguments", {}) if isinstance(params, Mapping) else {}
+                    previous = scope[VALIDATED_SCOPE_KEY]
+                    # Pin the schema snapshot validated at ingress across awaits and policy evaluation.
+                    bindings = (
+                        previous["bindings"]
+                        if isinstance(request, Mapping)
+                        and request.get("method") == previous["method"] == "tools/call"
+                        and isinstance(params, Mapping)
+                        and params.get("name") == previous["tool"]
+                        else cached_header_bindings(request, self.app.tool_schema_store)
+                    )
+                    scope["headers"] = rebuild_parameter_headers(
+                        scope.get("headers", []),
+                        arguments,
+                        bindings,
+                        previous["bindings"],
+                    )
+                except ValueError:
+                    response = _json_response(
+                        protocol_error(
+                            request.get("id") if request else None,
+                            -32020,
+                            "Policy rewrite has invalid mirrored parameters",
+                        ),
+                        status=400,
+                    )
+                    _set_proxy_metadata(
+                        scope, {"parameter_headers": {"blocked": True, "reason_code": "mcp.header_mismatch"}}
+                    )
+                    await _send_response(send, status=400, headers=response["headers"], body=response["body"])
+                    return
+            headers = _headers_to_mapping(scope.get("headers", []))
+            payload = validate_modern_request(request, headers, version=self.profile.version)
+            if payload is None:
+                if request["method"] == "server/discover":
+                    payload = {"jsonrpc": "2.0", "id": request["id"], "result": discovery_result(self.profile.version)}
+                else:
+                    _set_proxy_metadata(
+                        scope,
+                        {
+                            "mcp_protocol": {
+                                "version": self.profile.version,
+                                "implementation": self.profile.implementation,
+                                "method": request["method"],
+                                "allowed": True,
+                            }
+                        },
+                    )
+                    stream = McpStreamSession(
+                        request,
+                        send,
+                        response_policy=self.app.response_policy,
+                        progress_policy=self.app.progress_policy,
+                        resource_policy=self.app.resource_policy,
+                        auth_expires_at=scope.get(AUTH_EXPIRY_SCOPE_KEY),
+                    )
+                    scope[STREAM_SCOPE_KEY] = stream
+                    try:
+                        await stream.run(lambda: self.app(scope, replay_receive, stream.send), receive)
+                    finally:
+                        _set_proxy_metadata(scope, {"stream": stream.metadata})
+                        if stream.mrtr_metadata:
+                            _set_proxy_metadata(scope, {"mrtr": stream.mrtr_metadata})
+                    return
+        error = payload.get("error")
+        status = 404 if error and error["code"] == -32601 else 400 if error else 200
+        _set_proxy_metadata(
+            scope,
+            {
+                "mcp_protocol": {
+                    "version": self.profile.version,
+                    "implementation": self.profile.implementation,
+                    "method": request.get("method") if isinstance(request, Mapping) else None,
+                    "allowed": error is None,
+                }
+            },
+        )
+        response = _json_response(payload, status=status)
+        await _send_response(send, status=status, headers=response["headers"], body=response["body"])
 
 
 class ShareContractMiddleware:
@@ -2417,6 +2585,9 @@ class CloudflareAccessMiddleware:
             )
             child_scope[self.context_scope_key] = lua_context
             child_scope["headers"] = _strip_cloudflare_access_credentials(scope.get("headers", []))
+            validation = decision.metadata.get("jwt_validation", {})
+            if validation.get("valid") is True:
+                bound_auth_expiry(child_scope, validation.get("expires_at"))
             await self.app(child_scope, receive, send)
             return
 
@@ -2589,6 +2760,7 @@ class OAuthResourceMiddleware:
                 },
             )
             child_scope["lua"] = lua_context
+            bound_auth_expiry(child_scope, decision.context.get("expires_at"))
             if self.config.strip_authorization_upstream:
                 child_scope["headers"] = _strip_authorization_header(scope.get("headers", []))
             await self.app(child_scope, replay_receive, send)
@@ -2795,7 +2967,7 @@ def create_proxy_application(
     streamable_http_require_accept: bool = True,
     streamable_http_require_content_type: bool = True,
     streamable_http_require_protocol_version: bool = False,
-    streamable_http_protocol_version: str = "2025-11-25",
+    streamable_http_protocol_version: str = DEFAULT_MCP_PROTOCOL_VERSION,
     streamable_http_require_session_id: bool = False,
     streamable_http_allow_get: bool = False,
     streamable_http_allow_delete: bool = False,
@@ -2913,7 +3085,9 @@ def create_proxy_application(
         protocol_state_store=effective_state_store,
         tool_pin_store=effective_state_store if tool_pinning else None,
         schema_policy=schema_policy,
-        tool_schema_store=effective_state_store if schema_validation else None,
+        tool_schema_store=effective_state_store
+        if schema_validation or protocol_profile(streamable_http_protocol_version).modern
+        else None,
         lease_policy=lease_policy,
         health_policy=facade_health_policy,
         control_state_provider=fabric_control_state_provider,
@@ -2927,7 +3101,7 @@ def create_proxy_application(
         trace=(trace or record_out is not None or event_dispatcher is not None),
     )
     app = LuaMiddleware(
-        proxy,
+        McpProtocolMiddleware(proxy, config=streamable_http_config),
         Path(policy),
         config=lua_config,
         state_store=effective_state_store,
@@ -2940,6 +3114,13 @@ def create_proxy_application(
         tool_schema_store=effective_state_store if schema_validation else None,
         context_scope_key=lua_config.context_scope_key,
     )
+    if protocol_profile(streamable_http_protocol_version).modern:
+        app = McpParameterHeadersMiddleware(
+            app,
+            store=effective_state_store,
+            endpoint=streamable_http_config.endpoint_path,
+            max_body_bytes=max_body_bytes,
+        )
     if facade_proxy is not None:
         app = FacadeRouteContextMiddleware(
             app,
@@ -2978,6 +3159,10 @@ def create_proxy_application(
         )
     if streamable_http_config.enabled:
         app = StreamableHttpEdgeMiddleware(app, config=streamable_http_config)
+    if protocol_profile(streamable_http_protocol_version).modern:
+        app = McpCacheMiddleware(
+            app, endpoint=streamable_http_config.endpoint_path, metadata_callback=_set_proxy_metadata
+        )
     if share_contract is not None:
         app = ShareContractMiddleware(app, contract=share_contract)
     if record_out is not None or event_dispatcher is not None:
@@ -3035,7 +3220,7 @@ def run_proxy(
     streamable_http_require_accept: bool = True,
     streamable_http_require_content_type: bool = True,
     streamable_http_require_protocol_version: bool = False,
-    streamable_http_protocol_version: str = "2025-11-25",
+    streamable_http_protocol_version: str = DEFAULT_MCP_PROTOCOL_VERSION,
     streamable_http_require_session_id: bool = False,
     streamable_http_allow_get: bool = False,
     streamable_http_allow_delete: bool = False,
@@ -4419,6 +4604,51 @@ def _headers_to_mapping(headers: list[tuple[bytes, bytes]]) -> dict[str, str | l
     return result
 
 
+async def _forward_stream_http(scope: Scope, body: bytes, parsed: Any, target: str, *, credential: Any, timeout: float):
+    request = _jsonrpc_request(body)
+    headers = _request_headers(scope.get("headers", []), parsed, content_length=len(body))
+    headers = modern_request_headers(headers, request)
+    headers = apply_credential_header(headers, credential)
+    return await scope[STREAM_SCOPE_KEY].forward_http(
+        f"{parsed.scheme}://{parsed.netloc}{target}",
+        headers=headers,
+        body=body,
+        timeout=timeout,
+    )
+
+
+def _read_modern_response(
+    response: http.client.HTTPResponse, request: Mapping[str, Any], *, max_bytes: int | None
+) -> dict[str, Any]:
+    # Direct synchronous callers lack a managed stream session: never buffer SSE here.
+    limit = min(max_bytes, 2 * 1024 * 1024) if max_bytes is not None else 2 * 1024 * 1024
+    content_type = response.getheader("Content-Type", "").split(";", 1)[0].strip().lower()
+    issue = None
+    body = b""
+    if content_type != "application/json":
+        issue = "Streaming responses require the managed protocol middleware"
+    else:
+        body = response.read(limit + 1)
+        issue = (
+            "Upstream response exceeds the modern preview limit"
+            if len(body) > limit
+            else modern_response_issue(body, request)
+        )
+    if issue:
+        return _json_response(protocol_error(request.get("id"), -32000, issue), status=502)
+    return {
+        "status": int(response.status),
+        "headers": _response_headers(
+            [
+                (key, value)
+                for key, value in response.getheaders()
+                if key.lower() not in {"mcp-session-id", "last-event-id"}
+            ]
+        ),
+        "body": body,
+    }
+
+
 def _response_headers(raw_headers: list[tuple[str, str]]) -> list[tuple[bytes, bytes]]:
     headers = []
     for name, value in raw_headers:
@@ -4571,14 +4801,18 @@ async def _read_body(receive: Receive) -> bytes:
     return b"".join(chunks)
 
 
-async def _capture_body(receive: Receive) -> tuple[bytes, Receive]:
+async def _capture_body(receive: Receive, *, max_bytes: int | None = None) -> tuple[bytes, Receive]:
     messages = []
     chunks = []
+    total = 0
     while True:
         message = await receive()
         messages.append(message)
         if message["type"] != "http.request":
             break
+        total += len(message.get("body", b""))
+        if max_bytes is not None and total > max_bytes:
+            raise ValueError("Request body exceeds configured limit")
         chunks.append(message.get("body", b""))
         if not message.get("more_body", False):
             break
@@ -4591,7 +4825,7 @@ async def _capture_body(receive: Receive) -> tuple[bytes, Receive]:
             message = messages[index]
             index += 1
             return message
-        return {"type": "http.request", "body": b"", "more_body": False}
+        return await receive()
 
     return b"".join(chunks), replay
 

@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 from snulbug.mcp_auth import OAuthResourceConfig, mcp_scope_target, oauth_bearer_challenge
-from snulbug.mcp_spec_conformance import LATEST_MCP_SPEC_VERSION, run_mcp_2025_11_25_conformance
+from snulbug.mcp_protocol import DEFAULT_MCP_PROTOCOL_VERSION
+from snulbug.mcp_spec_conformance import run_mcp_spec_conformance
 
 
-def test_mcp_2025_conformance_recognizes_latest_client_headers():
-    result = run_mcp_2025_11_25_conformance(
+def test_mcp_2025_conformance_recognizes_default_client_headers():
+    result = run_mcp_spec_conformance(
         url="http://127.0.0.1:8080/mcp",
         headers={
             "Accept": "application/json, text/event-stream",
-            "MCP-Protocol-Version": LATEST_MCP_SPEC_VERSION,
+            "MCP-Protocol-Version": DEFAULT_MCP_PROTOCOL_VERSION,
         },
         status={"schemas": {"catalog_count": 1, "tool_count": 2}},
         live_checks=False,
@@ -26,7 +27,7 @@ def test_mcp_2025_conformance_recognizes_latest_client_headers():
 
 
 def test_mcp_2025_conformance_surfaces_public_oauth_share_gaps():
-    result = run_mcp_2025_11_25_conformance(
+    result = run_mcp_spec_conformance(
         url="https://share.example.test/mcp",
         headers={},
         proxy_config={
@@ -54,11 +55,11 @@ def test_mcp_2025_conformance_surfaces_public_oauth_share_gaps():
 
 
 def test_mcp_2025_conformance_recognizes_streamable_edge_hardening():
-    result = run_mcp_2025_11_25_conformance(
+    result = run_mcp_spec_conformance(
         url="https://share.example.test/mcp",
         headers={
             "Accept": "application/json, text/event-stream",
-            "MCP-Protocol-Version": LATEST_MCP_SPEC_VERSION,
+            "MCP-Protocol-Version": DEFAULT_MCP_PROTOCOL_VERSION,
         },
         proxy_config={
             "streamable_http_hardening": True,
@@ -67,7 +68,7 @@ def test_mcp_2025_conformance_recognizes_streamable_edge_hardening():
             "streamable_http_allow_get": False,
             "streamable_http_allow_delete": False,
             "streamable_http_allowed_origins": ["https://client.example.test"],
-            "streamable_http_protocol_version": LATEST_MCP_SPEC_VERSION,
+            "streamable_http_protocol_version": DEFAULT_MCP_PROTOCOL_VERSION,
         },
         status={"schemas": {"catalog_count": 1, "tool_count": 2}},
         live_checks=False,
@@ -79,11 +80,11 @@ def test_mcp_2025_conformance_recognizes_streamable_edge_hardening():
 
 
 def test_mcp_2025_conformance_warns_when_task_tools_lack_server_capability():
-    result = run_mcp_2025_11_25_conformance(
+    result = run_mcp_spec_conformance(
         url="http://127.0.0.1:8080/mcp",
         headers={
             "Accept": "application/json, text/event-stream",
-            "MCP-Protocol-Version": LATEST_MCP_SPEC_VERSION,
+            "MCP-Protocol-Version": DEFAULT_MCP_PROTOCOL_VERSION,
         },
         status={
             "schemas": {

@@ -15,6 +15,7 @@ from ..cli_helpers import (
     write_report_output,
     write_sarif_output,
 )
+from ..mcp_protocol import DEFAULT_MCP_PROTOCOL_VERSION
 
 
 def add_mcp_policy_schemas_command(policy_subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -39,6 +40,7 @@ def add_mcp_policy_schemas_command(policy_subparsers: argparse._SubParsersAction
         "--method",
         action="append",
         choices=(
+            "server/discover",
             "initialize",
             "tools",
             "tools/list",
@@ -57,7 +59,7 @@ def add_mcp_policy_schemas_command(policy_subparsers: argparse._SubParsersAction
     mcp_schemas_discover.add_argument("--timeout", type=float, default=10.0, help="live discovery timeout in seconds")
     mcp_schemas_discover.add_argument(
         "--protocol-version",
-        default="2025-06-18",
+        default=DEFAULT_MCP_PROTOCOL_VERSION,
         help="MCP protocol version sent in live discovery requests",
     )
     mcp_schemas_discover.add_argument("--label", help="human label stored in the catalog")

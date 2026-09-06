@@ -26,6 +26,10 @@ It gives you a tight loop for agent-tool safety:
 The standalone ASGI Lua middleware is still available, but it is an
 implementation surface. The main use case is protecting local MCP traffic.
 
+MCP **2025-11-25 remains the default**. Version 0.2.0 adds an opt-in
+**2026-07-28 request-stream preview**, including HTTP/stdio subscriptions; it does
+not claim complete conformance. See [protocol support and upgrade notes](docs/mcp-protocol.md).
+
 ## Auth Model
 
 snulbug can act as an MCP OAuth protected resource, including

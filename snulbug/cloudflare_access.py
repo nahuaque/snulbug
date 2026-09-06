@@ -215,6 +215,7 @@ def _validate_access_jwt(token: str | None, config: CloudflareAccessConfig) -> d
             "valid": True,
             "reason_code": "cloudflare_access.jwt_valid",
             "subject": _first_claim_value(claims.get("sub")),
+            "expires_at": claims.get("exp"),
             "email": _first_claim_value(claims.get("email")),
             "type": _first_claim_value(claims.get("type")),
             "identity_nonce": _first_claim_value(claims.get("identity_nonce")),

@@ -6,6 +6,22 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-06
+
+This release expands MCP protocol support while keeping **2025-11-25 as the default**.
+The **2026-07-28 profile is opt-in and remains a request-stream preview**, not a
+claim of complete MCP conformance. See the [upgrade notes](docs/mcp-protocol.md#upgrading-to-020).
+
+- Added version-aware discovery, request metadata/header validation, schema-derived parameter headers, and explicit implementation coverage in share doctor.
+- Added bounded HTTP SSE and managed stdio streaming/subscriptions, with multiplexed stdio requests, cancellation, disconnect cleanup, credential-expiry limits, and existing policy/audit controls. Facade subscriptions use the default upstream only.
+- Added multi-round-trip request (MRTR) relay through existing auth, lease, and server-to-client policies, plus private, immediately stale result hints and HTTP no-store handling without introducing a response cache.
+- Replaced the hand-written schema subset with offline JSON Schema 2020-12 input/output validation across both protocol profiles, including bounded diagnostics and pinned conformance fixtures. Invalid declarations and unresolved external references are reported rather than silently accepted.
+- Strengthened release checks for packaged protocol modules, fixture licensing, and isolated installed-wheel protocol/schema behavior; updated package and devcontainer release metadata to 0.2.0.
+
+Real-client/provider E2E verification remains deferred. Modern Tasks, facade-wide
+subscription aggregation, reconnect/resume, and continuous reauthorization of open
+streams are outside this preview; doctor continues to report incomplete conformance.
+
 ## [0.1.3] - 2026-07-05
 
 This is primarily an MCP conformance release for the 2025-11-25 protocol line.

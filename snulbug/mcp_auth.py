@@ -1103,6 +1103,7 @@ def oauth_context(
             "enabled": True,
             "mode": config.mode,
             "subject": claims.get("sub"),
+            "expires_at": claims.get("exp"),
             "issuer": claims.get("iss"),
             "audience": audiences,
             "client_id": claims.get("azp") or claims.get("client_id"),
@@ -1305,7 +1306,7 @@ def mcp_scope_target(body: bytes | None) -> dict[str, Any]:
         "method": method,
         "selectors": selectors,
     }
-    if method in {"initialize", "initialized", "notifications/initialized", "ping"}:
+    if method in {"server/discover", "initialize", "initialized", "notifications/initialized", "ping"}:
         target["allow_without_scope_map"] = True
         return target
     if method.startswith("notifications/"):

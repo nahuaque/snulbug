@@ -171,7 +171,7 @@ class LuaMiddleware:
             replacement_body = _rewrite_body_bytes(decision, body_was_read=self.config.read_body)
             _apply_rewrite(child_scope, decision)
             if replacement_body is not None:
-                replay_receive = _single_body_receive(replacement_body)
+                replay_receive = _single_body_receive(replacement_body, receive)
                 child_scope["headers"] = _merge_headers(
                     child_scope.get("headers", []),
                     [(b"content-length", str(len(replacement_body)).encode("ascii"))],
@@ -407,7 +407,7 @@ class LuaMiddleware:
                 message = messages[index]
                 index += 1
                 return message
-            return {"type": "http.request", "body": b"", "more_body": False}
+            return await receive()
 
         return b"".join(chunks), replay
 
@@ -788,13 +788,13 @@ def _rewrite_body_bytes(decision: Mapping[str, Any], *, body_was_read: bool) -> 
     return _body_bytes(decision.get("body"))
 
 
-def _single_body_receive(body: bytes) -> Receive:
+def _single_body_receive(body: bytes, downstream_receive: Receive) -> Receive:
     sent = False
 
     async def receive() -> Message:
         nonlocal sent
         if sent:
-            return {"type": "http.request", "body": b"", "more_body": False}
+            return await downstream_receive()
         sent = True
         return {"type": "http.request", "body": body, "more_body": False}
 

@@ -1877,9 +1877,9 @@ class ShareMcpSpecDoctorCheck(ShareDoctorCheck):
     component = "mcp-spec"
 
     def run(self, context: ShareDoctorContext) -> ShareDoctorCheckResult:
-        from .mcp_spec_conformance import run_mcp_2025_11_25_conformance
+        from .mcp_spec_conformance import run_mcp_spec_conformance
 
-        conformance = run_mcp_2025_11_25_conformance(
+        conformance = run_mcp_spec_conformance(
             url=context.url,
             headers=context.headers,
             proxy_config=context.proxy_config,

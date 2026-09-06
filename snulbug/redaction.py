@@ -10,7 +10,9 @@ from typing import Any
 
 from .mcp_client_requests import mcp_server_to_client_request_metadata, mcp_server_to_client_requests_from_payload
 from .mcp_completion import mcp_completion_request_metadata, mcp_completion_response_metadata
+from .mcp_mrtr import mrtr_request_metadata, mrtr_result_metadata
 from .mcp_progress import mcp_progress_request_metadata, mcp_progress_response_metadata
+from .mcp_protocol import CLIENT_CAPABILITIES_META, CLIENT_INFO_META, PROTOCOL_VERSION_META
 from .mcp_resources import mcp_resource_request_metadata, mcp_resource_response_metadata
 from .mcp_tasks import mcp_task_request_metadata, mcp_task_response_metadata
 
@@ -28,6 +30,8 @@ DEFAULT_SECRET_KEYS = {
     "dpop",
     "password",
     "refresh_token",
+    "requeststate",
+    "inputresponses",
     "secret",
     "set-cookie",
     "snulbug-lease",
@@ -231,6 +235,16 @@ def _merge_jsonrpc_summary(summary: dict[str, Any], body: Mapping[str, Any]) -> 
     method = _jsonrpc_method(body)
     params = body.get("params")
     params = params if isinstance(params, Mapping) else {}
+    meta = params.get("_meta")
+    if isinstance(meta, Mapping) and PROTOCOL_VERSION_META in meta:
+        _merge_initialize_summary(
+            summary,
+            {
+                "protocolVersion": meta.get(PROTOCOL_VERSION_META),
+                "clientInfo": meta.get(CLIENT_INFO_META),
+                "capabilities": meta.get(CLIENT_CAPABILITIES_META),
+            },
+        )
 
     summary["jsonrpc"] = body.get("jsonrpc")
     summary["request_id"] = _jsonrpc_id(body)
@@ -254,6 +268,9 @@ def _merge_jsonrpc_summary(summary: dict[str, Any], body: Mapping[str, Any]) -> 
             summary["argument_keys"] = sorted(str(key) for key in arguments)
 
     task_metadata = mcp_task_request_metadata(body)
+    mrtr = mrtr_request_metadata(body)
+    if mrtr:
+        summary["mrtr"] = mrtr
     if task_metadata:
         summary["task"] = task_metadata
     completion_metadata = mcp_completion_request_metadata(body)
@@ -296,6 +313,9 @@ def _mcp_response_summary(response: Mapping[str, Any]) -> dict[str, Any]:
         "request_id": _jsonrpc_id(payload),
     }
     task_metadata = mcp_task_response_metadata(payload)
+    mrtr = mrtr_result_metadata(payload)
+    if mrtr:
+        summary["mrtr"] = mrtr
     if task_metadata:
         summary["task"] = task_metadata
     completion_metadata = mcp_completion_response_metadata(payload)

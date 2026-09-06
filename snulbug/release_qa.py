@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -18,6 +19,26 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10.
     import tomli as tomllib  # type: ignore[no-redef]
 
 README_IMAGE_PATTERN = re.compile(r"(?:<img\s+[^>]*src=[\"']([^\"']+)[\"']|!\[[^\]]*]\(([^)]+)\))", re.IGNORECASE)
+PROTOCOL_MODULES = (
+    "json_schema",
+    "mcp_cache",
+    "mcp_mrtr",
+    "mcp_parameter_headers",
+    "mcp_protocol",
+    "mcp_stdio",
+    "mcp_stream",
+    "mcp_subscriptions",
+)
+SCHEMA_FIXTURES = (
+    "dependentSchemas.json",
+    "dynamicRef.json",
+    "if-then-else.json",
+    "prefixItems.json",
+    "unevaluatedProperties.json",
+    "LICENSE",
+    "README.md",
+)
+PROTOCOL_SMOKE_SUCCESS = "snulbug installed protocol/schema smoke passed"
 
 
 @dataclass(frozen=True)
@@ -71,6 +92,9 @@ def build_release_qa_steps(
                 ),
                 ReleaseQAStep("wheel-cli", "Smoke test built wheel CLI", check=smoke_built_wheel_cli),
                 ReleaseQAStep("wheel-module", "Smoke test built wheel module", check=smoke_built_wheel_module),
+                ReleaseQAStep(
+                    "wheel-protocol", "Smoke test installed protocol and schemas", check=smoke_built_wheel_protocol
+                ),
             ]
         )
     return steps
@@ -132,6 +156,19 @@ def check_version_consistency(root: Path) -> tuple[bool, str | None, dict[str, A
     }
     if pyproject_version != package_version:
         return False, "pyproject.toml version and snulbug.__version__ do not match", details
+    lock = root / "uv.lock"
+    if lock.is_file():
+        packages = tomllib.loads(lock.read_text(encoding="utf-8")).get("package", [])
+        details["lock_version"] = next(
+            (item.get("version") for item in packages if item.get("name") == "snulbug"), None
+        )
+        if details["lock_version"] != pyproject_version:
+            return False, "uv.lock version and package version do not match", details
+    feature = root / "features/snulbug/devcontainer-feature.json"
+    if feature.is_file():
+        details["feature_version"] = json.loads(feature.read_text(encoding="utf-8"))["version"]
+        if details["feature_version"] != pyproject_version:
+            return False, "devcontainer feature version and package version do not match", details
     return True, None, details
 
 
@@ -183,6 +220,62 @@ def smoke_built_wheel_cli(root: Path) -> tuple[bool, str | None, dict[str, Any]]
 
 def smoke_built_wheel_module(root: Path) -> tuple[bool, str | None, dict[str, Any]]:
     return _smoke_built_wheel(root, ("python", "-m", "snulbug", "--help"))
+
+
+def smoke_built_wheel_protocol(root: Path) -> tuple[bool, str | None, dict[str, Any]]:
+    return _smoke_built_wheel(
+        root,
+        ("python", "-c", "from snulbug.release_qa import _installed_protocol_smoke; _installed_protocol_smoke()"),
+        expected_output=PROTOCOL_SMOKE_SUCCESS,
+    )
+
+
+def _installed_protocol_smoke() -> None:
+    """Run from the installed wheel in a temporary directory, without an MCP server."""
+    from importlib import import_module
+    from importlib.metadata import version
+
+    from snulbug import __version__
+    from snulbug.json_schema import validate_schema
+    from snulbug.mcp_protocol import (
+        DEFAULT_MCP_PROTOCOL_VERSION,
+        LATEST_MCP_SPEC_VERSION,
+        discovery_issues,
+        discovery_request,
+        discovery_result,
+        protocol_coverage,
+    )
+
+    for module in PROTOCOL_MODULES:
+        import_module(f"snulbug.{module}")
+    if version("snulbug") != __version__:
+        raise RuntimeError("installed metadata and package versions differ")
+    if DEFAULT_MCP_PROTOCOL_VERSION != "2025-11-25":
+        raise RuntimeError("legacy default changed unexpectedly")
+    if discovery_request(DEFAULT_MCP_PROTOCOL_VERSION)["method"] != "initialize":
+        raise RuntimeError("legacy discovery changed unexpectedly")
+    request = discovery_request(LATEST_MCP_SPEC_VERSION)
+    coverage = protocol_coverage(LATEST_MCP_SPEC_VERSION)
+    if request["method"] != "server/discover" or coverage["implementation"] != "request-stream-preview":
+        raise RuntimeError("modern preview profile is not available")
+    if coverage["complete"]:
+        raise RuntimeError("preview must not claim complete conformance")
+    response = {"jsonrpc": "2.0", "id": request["id"], "result": discovery_result(LATEST_MCP_SPEC_VERSION)}
+    if discovery_issues(response, version=LATEST_MCP_SPEC_VERSION, request_id=request["id"]):
+        raise RuntimeError("modern discovery envelope failed validation")
+    schema = {
+        "type": "object",
+        "allOf": [{"properties": {"path": {"type": "string"}}, "required": ["path"]}],
+        "unevaluatedProperties": False,
+    }
+    if validate_schema({"path": "README.md"}, schema):
+        raise RuntimeError("valid JSON Schema 2020-12 instance rejected")
+    if not validate_schema({"path": "README.md", "extra": True}, schema):
+        raise RuntimeError("JSON Schema 2020-12 constraints not enforced")
+    issues = validate_schema({}, {"$ref": "urn:snulbug:missing-schema"})
+    if not issues or issues[0]["reason_code"] != "schema.ref_unresolved":
+        raise RuntimeError("unresolved schema references must fail closed")
+    print(PROTOCOL_SMOKE_SUCCESS)
 
 
 def _run_command_step(step: ReleaseQAStep, root: Path) -> dict[str, Any]:
@@ -260,6 +353,7 @@ def _inspect_wheel(path: Path) -> tuple[bool, str | None, dict[str, Any]]:
         "snulbug/__init__.py",
         "snulbug/release_qa.py",
         "snulbug/py.typed",
+        *(f"snulbug/{module}.py" for module in PROTOCOL_MODULES),
     }
     missing = sorted(required - names)
     pycache = sorted(name for name in names if "__pycache__" in name or name.endswith((".pyc", ".pyo")))
@@ -287,6 +381,11 @@ def _inspect_sdist(path: Path, *, version: str) -> tuple[bool, str | None, dict[
         f"{prefix}snulbug/release_qa.py",
         f"{prefix}docs/release.md",
         f"{prefix}tests/test_share_console.py",
+        f"{prefix}docs/mcp-protocol.md",
+        f"{prefix}tests/fixtures/stdio_subscriptions.py",
+        *(f"{prefix}snulbug/{module}.py" for module in PROTOCOL_MODULES),
+        *(f"{prefix}tests/test_{module}.py" for module in PROTOCOL_MODULES),
+        *(f"{prefix}tests/fixtures/json_schema_2020_12/{name}" for name in SCHEMA_FIXTURES),
     }
     missing = sorted(required - names)
     pycache = sorted(name for name in names if "__pycache__" in name or name.endswith((".pyc", ".pyo")))
@@ -302,13 +401,18 @@ def _inspect_sdist(path: Path, *, version: str) -> tuple[bool, str | None, dict[
     return True, None, details
 
 
-def _smoke_built_wheel(root: Path, args: Sequence[str]) -> tuple[bool, str | None, dict[str, Any]]:
+def _smoke_built_wheel(
+    root: Path, args: Sequence[str], *, expected_output: str = "release-qa"
+) -> tuple[bool, str | None, dict[str, Any]]:
     version = _pyproject_version(root)
     wheel = _built_wheel(root, version=version)
     if wheel is None:
         return False, f"built wheel for version {version} not found in dist/", {"version": version}
     wheel_path = wheel.resolve()
-    command = ("uv", "run", "--isolated", "--with", str(wheel_path), *args)
+    command = ("uv", "run", "--isolated", "--no-project", "--python", sys.executable, "--with", str(wheel_path), *args)
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONHOME", None)
     with tempfile.TemporaryDirectory(prefix="snulbug-release-qa-") as temp_dir:
         completed = subprocess.run(  # noqa: S603 - release QA executes fixed tool commands.
             command,
@@ -316,6 +420,8 @@ def _smoke_built_wheel(root: Path, args: Sequence[str]) -> tuple[bool, str | Non
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            env=env,
+            timeout=180,
         )
     output = completed.stdout or ""
     details = {
@@ -326,6 +432,6 @@ def _smoke_built_wheel(root: Path, args: Sequence[str]) -> tuple[bool, str | Non
     }
     if completed.returncode != 0:
         return False, "built wheel smoke test failed", details
-    if "release-qa" not in output:
-        return False, "built wheel help output does not include the release-qa command", details
+    if expected_output not in output:
+        return False, f"built wheel output does not include {expected_output!r}", details
     return True, None, details

@@ -22,6 +22,7 @@ share create -> share run -> share status -> share requests approve -> share pol
 - [Evidence workflow: record, replay, inspect, impact, diff](mcp-evidence.md)
 - [CI policy gates and SARIF output](ci-policy-gates.md)
 - [Reverse proxy and live recording](mcp-proxy.md)
+- [MCP protocol versions and conformance coverage](mcp-protocol.md)
 - [Fabric control plane and facade routing](mcp-fabric.md)
 - [Lua policy DSL guide](lua-policy-dsl.md)
 

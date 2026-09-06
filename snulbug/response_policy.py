@@ -13,11 +13,19 @@ from .mcp_client_requests import (
     mcp_server_to_client_requests_from_payload,
 )
 from .mcp_completion import MCP_COMPLETION_METHOD, mcp_completion_response_metadata
+from .mcp_mrtr import input_required, mrtr_result_metadata
 from .redaction import DEFAULT_SECRET_KEYS, DEFAULT_SECRET_PATTERNS, RedactionConfig, redact_secrets
 from .schema_policy import normalize_mcp_tool_metadata
 from .state import PolicyStateStore
 
-MCP_RESPONSE_METHODS = ("tools/call", "resources/read", "prompts/get", "tasks/result", MCP_COMPLETION_METHOD)
+MCP_RESPONSE_METHODS = (
+    "tools/call",
+    "resources/read",
+    "prompts/get",
+    "tasks/result",
+    MCP_COMPLETION_METHOD,
+    "subscriptions/listen",
+)
 SERVER_TO_CLIENT_REQUEST_ACTIONS = ("allow", "warn", "block")
 PINNED_CATALOG_METHODS = {
     "tools/list": {
@@ -101,6 +109,7 @@ def enforce_mcp_response_policy(
     request: Mapping[str, Any] | None,
     config: ResponsePolicyConfig,
     tool_pin_store: PolicyStateStore | None = None,
+    tool_schema_store: PolicyStateStore | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Apply MCP response-side controls and return the possibly rewritten response plus metadata."""
 
@@ -113,6 +122,18 @@ def enforce_mcp_response_policy(
     }
     if not _is_success_response(response):
         return dict(response), metadata
+
+    if method == "tools/list":
+        from .mcp_parameter_headers import filter_header_tools
+        from .mcp_protocol import is_modern_request
+
+        if is_modern_request(request):
+            payload, parse_error, response_format = _decode_response_payload(response)
+            if parse_error is None:
+                filtered, header_metadata = filter_header_tools(payload, tool_schema_store)
+                metadata["parameter_headers"] = header_metadata
+                if filtered is not payload:
+                    response = _replace_response_payload(response, filtered, response_format=response_format)
 
     updated, server_request_metadata = _enforce_server_to_client_request_policy(response, config=config)
     if server_request_metadata:
@@ -161,7 +182,34 @@ def enforce_mcp_response_policy(
         if completion_metadata:
             metadata["completion"] = completion_metadata
 
-    warnings = _instruction_warnings(payload, config)
+    interim = input_required(payload)
+    subscription_result = method == "subscriptions/listen"
+    if subscription_result:
+        from .mcp_protocol import is_modern_request, modern_response_issue
+
+        if not is_modern_request(request) or modern_response_issue(response_body, request):
+            metadata.update(blocked=True, reason_code="response.subscription_invalid")
+            return _jsonrpc_error_response(request, "Invalid subscription result"), metadata
+    if interim is not None:
+        from .mcp_protocol import is_modern_request, modern_response_issue
+
+        if not is_modern_request(request) or modern_response_issue(_response_body(response), request):
+            metadata.update(blocked=True, reason_code="response.mrtr_invalid")
+            return _jsonrpc_error_response(request, "Invalid MRTR result"), metadata
+        metadata["mrtr"] = mrtr_result_metadata(payload)
+        # Inspect/redact content, not opaque continuation state or input correlation keys.
+        inputs = interim.get("inputRequests", {})
+        inspection = {
+            **payload,
+            "result": {
+                **{key: value for key, value in interim.items() if key not in {"requestState", "inputRequests"}},
+                "inputRequests": list(inputs.values()),
+            },
+        }
+    else:
+        inspection = payload
+
+    warnings = _instruction_warnings(inspection, config)
     if warnings:
         metadata["warnings"] = warnings
         if config.block_instruction_like_content:
@@ -174,7 +222,21 @@ def enforce_mcp_response_policy(
 
     updated_payload = payload
     if config.redact_secrets:
-        redacted = redact_secrets(payload, RESPONSE_REDACTION_CONFIG)
+        redacted = redact_secrets(inspection, RESPONSE_REDACTION_CONFIG)
+        if subscription_result:
+            redacted["id"] = payload["id"]
+            if "result" in payload:
+                redacted["result"]["_meta"]["io.modelcontextprotocol/subscriptionId"] = payload["id"]
+        if interim is not None:
+            redacted["id"] = payload["id"]
+            redacted["result"]["inputRequests"] = dict(zip(inputs, redacted["result"]["inputRequests"]))
+            for key, original in inputs.items():
+                if original.get("method") == "sampling/createMessage":
+                    redacted["result"]["inputRequests"][key]["params"]["maxTokens"] = original["params"]["maxTokens"]
+            if "inputRequests" not in interim:
+                del redacted["result"]["inputRequests"]
+            if "requestState" in interim:
+                redacted["result"]["requestState"] = interim["requestState"]
         if redacted != payload:
             metadata["redacted"] = True
             updated_payload = redacted
@@ -233,7 +295,11 @@ def _block_server_to_client_requests(payload: Any) -> Any:
 def _blocked_server_to_client_message(message: Any) -> dict[str, Any] | None:
     if not isinstance(message, Mapping):
         return None
-    metadata = mcp_server_to_client_request_metadata(message)
+    if input_required(message) is not None:
+        requests = mcp_server_to_client_requests_from_payload(message)
+        metadata = requests[0] if requests else {}
+    else:
+        metadata = mcp_server_to_client_request_metadata(message)
     method = metadata.get("method")
     if not method:
         return None

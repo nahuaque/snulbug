@@ -163,7 +163,11 @@ class StdioUpstreamTransport(UpstreamTransport):
         )
 
     async def forward(self, context: UpstreamForwardContext) -> dict[str, Any]:
-        return await context.stdio_clients[_required_attr(context.upstream, "name")].request(context.request)
+        from .mcp_stream import STREAM_SCOPE_KEY
+
+        stream = context.scope.get(STREAM_SCOPE_KEY)
+        kwargs = {"on_notification": stream.notification} if stream is not None else {}
+        return await context.stdio_clients[_required_attr(context.upstream, "name")].request(context.request, **kwargs)
 
     def fingerprint(self, upstream: Any) -> Mapping[str, Any]:
         return {

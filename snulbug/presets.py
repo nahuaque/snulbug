@@ -295,6 +295,7 @@ def _read_only_local_dev_policy(options: McpPolicyOptions) -> str:
 }}
 
 local read_methods = {{
+  ["server/discover"] = true,
   ["initialize"] = true,
   ["notifications/initialized"] = true,
   ["tools/list"] = true,
