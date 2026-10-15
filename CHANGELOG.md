@@ -13,6 +13,7 @@ Expose web applications and APIs alongside MCP through one gateway and ngrok tun
 - Added `[[mcp.proxy.http_routes]]` mounts with longest-prefix routing, segment-boundary matching, configurable prefix stripping, and reserved MCP/gateway paths.
 - Added repeatable `--http-route PREFIX=URL` flags to share creation and quickstart, with matching ngrok Traffic Policy rules that apply MCP edge checks only to the MCP endpoint.
 - Added streaming HTTP uploads, responses, and SSE with disconnect cleanup, ordinary HTTP headers/cookies/content encodings, and plain HTTP upstream errors; included local proxy/facade regression coverage and setup documentation.
+- Raised the PyJWT minimum to 2.15 and updated the lockfile to exclude the versions flagged by the current JWT security advisories.
 
 HTTP mounts bypass MCP authentication, leases, Lua, redaction, and MCP evidence
 logging; each backend owns its authentication. Applications must configure their
