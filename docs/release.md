@@ -24,7 +24,7 @@ The release QA suite runs:
 - isolated built-wheel CLI/module smoke tests outside the source checkout
 - installed-wheel protocol discovery and offline JSON Schema 2020-12 checks
 
-These checks do not certify client/provider E2E interoperability. For 0.2.0,
+These checks do not certify client/provider E2E interoperability. For 0.2.x,
 2025-11-25 remains the default and 2026-07-28 remains an opt-in preview.
 
 Before publishing, include all new modules, docs, tests, and fixtures in the
@@ -48,7 +48,7 @@ python -m zipfile -l dist/snulbug-*.whl
 8. Install from TestPyPI in a clean environment and smoke test:
 
 ```bash
-uvx --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ snulbug==0.2.0 --help
+uvx --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ snulbug==0.2.1 --help
 ```
 
 9. Run the manual `Publish` workflow with `repository = pypi` when the TestPyPI
@@ -56,4 +56,4 @@ uvx --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org
 10. Create the GitHub release and tag after the PyPI package is available.
 
 The `Publish` workflow uses `workflow_dispatch`, not a tag trigger. Creating or
-pushing `v0.2.0` does not publish a package or automatically create a GitHub release.
+pushing `v0.2.1` does not publish a package or automatically create a GitHub release.

@@ -6,7 +6,19 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 
 ## [Unreleased]
 
-- Added HTTP path-prefix routes alongside MCP on a shared gateway/tunnel, with streaming forwarding, configurable prefix stripping, share creation flags, and ngrok edge guards scoped to MCP traffic.
+## [0.2.1] - 2026-10-15
+
+Expose web applications and APIs alongside MCP through one gateway and ngrok tunnel.
+
+- Added `[[mcp.proxy.http_routes]]` mounts with longest-prefix routing, segment-boundary matching, configurable prefix stripping, and reserved MCP/gateway paths.
+- Added repeatable `--http-route PREFIX=URL` flags to share creation and quickstart, with matching ngrok Traffic Policy rules that apply MCP edge checks only to the MCP endpoint.
+- Added streaming HTTP uploads, responses, and SSE with disconnect cleanup, ordinary HTTP headers/cookies/content encodings, and plain HTTP upstream errors; included local proxy/facade regression coverage and setup documentation.
+
+HTTP mounts bypass MCP authentication, leases, Lua, redaction, and MCP evidence
+logging; each backend owns its authentication. Applications must configure their
+public base path. WebSockets and rewriting HTML, redirects, or cookie paths are
+outside this slice. See [shared HTTP routes](docs/mcp-proxy.md#shared-http-routes)
+and the [ngrok walkthrough](docs/ngrok-end-to-end.md).
 
 ## [0.2.0] - 2026-09-06
 
