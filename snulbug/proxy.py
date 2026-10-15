@@ -31,6 +31,7 @@ from .credentials import apply_credential_header, credential_metadata, normalize
 from .events import build_event_dispatcher, decision_console_event
 from .fabric import annotate_topology_audit, build_fabric_audit_metadata
 from .fabric_control import summarize_fabric_control_state
+from .http_routes import HttpRoutesMiddleware
 from .leases import (
     LeasePolicyConfig,
     enforce_mcp_lease_policy,
@@ -2944,6 +2945,7 @@ def create_proxy_application(
     *,
     upstream_credential: Mapping[str, Any] | None = None,
     upstreams: Sequence[FacadeUpstream | Mapping[str, Any]] | None = None,
+    http_routes: Sequence[Mapping[str, Any]] = (),
     state_store: PolicyStateStore | None = None,
     state_limits: StateLimits | None = None,
     trace: bool = True,
@@ -3187,6 +3189,10 @@ def create_proxy_application(
             topology_audit=topology_audit,
             control_state_provider=fabric_control_state_provider,
         )
+    if http_routes:
+        app = HttpRoutesMiddleware(
+            app, http_routes, mcp_path=streamable_http_config.endpoint_path, timeout=timeout, lease_header=lease_header
+        )
     return app
 
 
@@ -3196,6 +3202,7 @@ def run_proxy(
     policy: str | Path,
     upstream_credential: Mapping[str, Any] | None = None,
     upstreams: Sequence[FacadeUpstream | Mapping[str, Any]] | None = None,
+    http_routes: Sequence[Mapping[str, Any]] = (),
     host: str = "127.0.0.1",
     port: int = 8080,
     state: str = "memory",
@@ -3276,6 +3283,7 @@ def run_proxy(
         policy,
         upstream_credential=upstream_credential,
         upstreams=upstreams,
+        http_routes=http_routes,
         state_store=_state_store(state),
         trace=trace,
         max_body_bytes=max_body_bytes,
@@ -3365,6 +3373,7 @@ def proxy_config_run_kwargs(
         "upstream": proxy_config["upstream"],
         "upstream_credential": proxy_config.get("upstream_credential"),
         "upstreams": proxy_config["upstreams"],
+        "http_routes": proxy_config.get("http_routes", []),
         "policy": proxy_config["policy"],
         "host": proxy_config["host"],
         "port": proxy_config["port"],

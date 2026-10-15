@@ -8,6 +8,7 @@ from .credentials import attach_upstream_credentials, normalize_fabric_credentia
 from .discovery import apply_fabric_discovery
 from .events import normalize_event_sink_configs
 from .gateway_templates import render_toml_array_table
+from .http_routes import normalize_http_routes
 from .mcp_protocol import DEFAULT_MCP_PROTOCOL_VERSION
 from .policy_backoff import (
     DEFAULT_POLICY_BACKOFF_EXCLUDE_REASON_CODES,
@@ -81,6 +82,7 @@ DEFAULT_MCP_PROXY_CONFIG = {
     "upstream": "http://127.0.0.1:9000",
     "upstream_credential": None,
     "upstreams": [],
+    "http_routes": [],
     "policy": "policy.snulbug/policy.lua",
     "host": "127.0.0.1",
     "port": 8080,
@@ -671,6 +673,9 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         raise ValueError("mcp.proxy.resource_subscription_policy_action must be 'allow', 'warn', or 'block'")
     if not normalized["streamable_http_endpoint_path"].startswith("/"):
         normalized["streamable_http_endpoint_path"] = f"/{normalized['streamable_http_endpoint_path']}"
+    normalized["http_routes"] = normalize_http_routes(
+        normalized.get("http_routes", []), mcp_path=normalized["streamable_http_endpoint_path"]
+    )
     normalized["streamable_http_allowed_origins"] = _normalize_string_list(
         normalized.get("streamable_http_allowed_origins", []),
         field="streamable_http_allowed_origins",

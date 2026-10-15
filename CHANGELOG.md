@@ -6,6 +6,8 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 
 ## [Unreleased]
 
+- Added HTTP path-prefix routes alongside MCP on a shared gateway/tunnel, with streaming forwarding, configurable prefix stripping, share creation flags, and ngrok edge guards scoped to MCP traffic.
+
 ## [0.2.0] - 2026-09-06
 
 This release expands MCP protocol support while keeping **2025-11-25 as the default**.

@@ -8,6 +8,7 @@ from typing import Any
 from .bundle import test_bundle, validate_bundle
 from .config import default_event_sink_configs
 from .gateway_templates import GatewayTemplate, render_gateway_toml
+from .http_routes import normalize_http_routes
 from .presets import (
     DEFAULT_ALLOWED_PATHS,
     DEFAULT_ALLOWED_TOOLS,
@@ -45,6 +46,7 @@ def create_mcp_quickstart(
     config_output: str | Path = "snulbug.toml",
     traces_dir: str | Path = "traces",
     upstream: str = "http://127.0.0.1:9000",
+    http_routes: Sequence[Mapping[str, Any]] = (),
     token: str | None = None,
     token_env: str | None = None,
     allowed_tools: Sequence[str] | None = None,
@@ -100,6 +102,7 @@ def create_mcp_quickstart(
 ) -> dict[str, Any]:
     """Create a local MCP policy proxy starter project."""
 
+    http_routes = normalize_http_routes(http_routes)
     resolved_cloudflare_profile, tunnel_provider = _resolve_cloudflare_profile(
         tunnel_provider,
         cloudflare_profile,
@@ -217,6 +220,7 @@ def create_mcp_quickstart(
     _write_mcp_proxy_config(
         config_path,
         config_values,
+        http_routes=http_routes,
         auth=auth_config,
         event_sinks=event_sinks,
         force=force,
@@ -397,12 +401,13 @@ def _write_mcp_proxy_config(
     values: dict[str, Any],
     *,
     auth: Mapping[str, Any] | None = None,
+    http_routes: Sequence[Mapping[str, Any]] = (),
     event_sinks: Sequence[Mapping[str, Any]] = (),
     force: bool = False,
 ) -> None:
     if path.exists() and not force:
         raise FileExistsError(f"config file already exists: {path}")
-    template = GatewayTemplate(proxy=values, auth=auth, event_sinks=event_sinks)
+    template = GatewayTemplate(proxy=values, auth=auth, event_sinks=event_sinks, http_routes=http_routes)
     write_scaffold(
         ScaffoldPlan(
             name="mcp share quickstart config",

@@ -109,6 +109,68 @@ curl -sS "${NGROK_URL}/mcp" \
   -d '{"jsonrpc":"2.0","id":"tools-list","method":"tools/list","params":{}}'
 ```
 
+## Shared HTTP Routes
+
+One gateway listener can expose MCP at `/mcp` and ordinary HTTP backends at
+other prefixes. Add mounts to the share's `snulbug.toml`:
+
+```toml
+[[mcp.proxy.http_routes]]
+prefix = "/app"
+upstream = "http://127.0.0.1:3000"
+strip_prefix = true
+
+[[mcp.proxy.http_routes]]
+prefix = "/api"
+upstream = "http://127.0.0.1:4000"
+strip_prefix = false
+```
+
+With prefix stripping (the default), `/app/notes?q=1` forwards to
+`http://127.0.0.1:3000/notes?q=1`. With `strip_prefix = false`, `/api/items`
+forwards to `http://127.0.0.1:4000/api/items`. A path in the upstream URL is
+prepended to the forwarded path. Prefix matches use segment boundaries:
+`/app` matches `/app` and `/app/...`, but not `/application`. The longest
+matching prefix wins. The MCP prefix, `/.well-known`, and `/snulbug` are reserved.
+
+These requests bypass the MCP middleware, including its authentication, task
+leases, Lua policies, body/response limits, redaction, and replay/audit logs.
+Each HTTP backend owns authentication and request validation. Application
+`Authorization` and cookies pass through; snulbug lease and internal headers
+are removed. Responses preserve status, content encoding, duplicate cookies,
+and end-to-end headers. Uploads and responses stream with backpressure and
+disconnect cleanup; the proxy timeout applies to upstream inactivity.
+
+Configure web applications to generate assets, redirects, and cookies for their
+public prefix (for example `/app/`), using their base URL/root-path setting or
+the forwarded host, protocol, and prefix headers. Snulbug does not rewrite HTML,
+redirect locations, or cookie paths. Use `strip_prefix = false` for an app that
+already serves its prefix. WebSocket upgrades are not supported by these HTTP mounts.
+
+Restart `share run` after editing mounts. The router works with proxy and facade
+MCP modes and any tunnel that forwards the gateway origin. For generated ngrok
+setup, register routes at share creation so the Cloud Endpoint policy permits
+them:
+
+```bash
+snulbug mcp share create \
+  --directory .snulbug/shares/shared-demo \
+  --provider ngrok \
+  --url https://YOUR-NGROK-CLOUD-ENDPOINT/mcp \
+  --upstream http://127.0.0.1:9000 \
+  --http-route /app=http://127.0.0.1:3000 \
+  --http-route /api=http://127.0.0.1:4000
+snulbug mcp share run .snulbug/shares/shared-demo
+```
+
+`--http-route` is repeatable and also available on `share quickstart`. CLI-created
+routes strip their prefix; change that field in TOML when needed. The generated
+ngrok Traffic Policy permits only the MCP endpoint and registered HTTP prefixes,
+and applies its bearer/method/JSON guards only to MCP. Attach the policy to the
+public Cloud Endpoint as described in the [ngrok walkthrough](ngrok-end-to-end.md).
+If prefixes change later, update and reattach the Cloud Endpoint policy as well
+as restarting the gateway; editing TOML alone does not update ngrok's cloud policy.
+
 ## Streamable HTTP edge hardening
 
 `snulbug` enforces MCP Streamable HTTP safety checks at the gateway boundary

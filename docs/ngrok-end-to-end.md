@@ -72,6 +72,32 @@ The share writes the important files here:
 `mcp-client.json` contains the bearer token and lease token for the generated
 session. Treat it as secret-bearing material.
 
+### Optional: Share a Webapp on the Same Tunnel
+
+To expose an app on port 3000, add this flag to the `share create` command in
+step 2 before creating the share:
+
+```bash
+--http-route /app=http://127.0.0.1:3000
+```
+
+The generated gateway config and ngrok Traffic Policy now allow `/app` and
+`/app/...` alongside `/mcp`. After starting the app, gateway, and ngrok and
+attaching the generated policy, test both hops without MCP credentials:
+
+```bash
+curl -i http://127.0.0.1:8080/app/
+curl -i "${NGROK_PUBLIC_ORIGIN}/app/"
+```
+
+The route strips `/app` before forwarding, so the app receives `/`. Configure
+its public base path as `/app/` for asset links and redirects. App traffic
+bypasses all MCP authentication/policy/recording; the app owns its authentication.
+See [shared HTTP routes](mcp-proxy.md#shared-http-routes) for multiple backends
+and preserving prefixes. Existing shares need both a TOML route and an updated
+Cloud Endpoint Traffic Policy; changing TOML alone leaves ngrok's old deny rule
+in effect.
+
 ## 3. Export the generated client headers
 
 The generated share requires both bearer auth and an `x-snulbug-lease` header

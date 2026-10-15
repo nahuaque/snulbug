@@ -168,13 +168,14 @@ class NgrokTunnelProvider(TunnelProvider):
         public_origin = self.display_public_endpoint(_url_origin(context.public_endpoint))
         agent_config_file = _shell_path(Path(context.output_dir) / "ngrok-agent.yml")
         traffic_policy_file = _shell_path(Path(context.output_dir) / "ngrok-traffic-policy.yml")
+        http_routes = context.options.get("http_routes", [])
         traffic_policy = {
             "path": traffic_policy_file,
             "mode": "cloud-endpoint",
             "internal_endpoint": internal_url,
             "agent_config": agent_config_file,
             "checks": [
-                "deny non-MCP paths",
+                "deny unregistered paths" if http_routes else "deny non-MCP paths",
                 "require Authorization header",
                 "require Bearer token shape",
                 "restrict HTTP methods",
@@ -183,6 +184,9 @@ class NgrokTunnelProvider(TunnelProvider):
                 "forward allowed traffic to the ngrok internal Agent Endpoint",
             ],
         }
+        if http_routes:
+            traffic_policy["http_routes"] = list(http_routes)
+            traffic_policy["checks"].append("apply MCP edge checks only to the MCP path; HTTP backends own app auth")
         bridge = {
             "transport": "ngrok-internal",
             "mode": "cloud-endpoint",
@@ -230,7 +234,11 @@ class NgrokTunnelProvider(TunnelProvider):
             {
                 "path": "ngrok-traffic-policy.yml",
                 "kind": "ngrok-traffic-policy",
-                "contents": _ngrok_traffic_policy(context.public_endpoint, internal_url=internal_url),
+                "contents": _ngrok_traffic_policy(
+                    context.public_endpoint,
+                    internal_url=internal_url,
+                    http_routes=plan.get("traffic_policy", {}).get("http_routes", []),
+                ),
             },
             {
                 "path": "ngrok-agent.yml",
@@ -841,6 +849,7 @@ def init_tunnel_provider(
             "hostname": hostname,
             "ngrok_internal_url": ngrok_internal_url,
             "ngrok_endpoint_name": ngrok_endpoint_name,
+            "http_routes": (config_result.get("proxy_config") or {}).get("http_routes", []),
         },
     )
     plan = provider_plugin.build_plan(provider_context)
@@ -1377,6 +1386,15 @@ def _ngrok_readme_notes(plan: Mapping[str, Any]) -> str:
     internal_url = bridge.get("internal_url") or traffic_policy.get("internal_endpoint") or DEFAULT_NGROK_INTERNAL_URL
     endpoint_name = bridge.get("endpoint_name") or DEFAULT_NGROK_INTERNAL_ENDPOINT_NAME
     agent_config = bridge.get("agent_config") or "ngrok-agent.yml"
+    route_notes = ""
+    if traffic_policy.get("http_routes"):
+        routes = "\n".join(f"- `{route['prefix']}` -> `{route['upstream']}`" for route in traffic_policy["http_routes"])
+        route_notes = (
+            "### Shared HTTP routes\n\n"
+            f"{routes}\n\n"
+            "These paths share the tunnel but bypass MCP authentication, leases, Lua, and MCP recording. "
+            "Each backend owns its authentication. The MCP edge guards apply only to the MCP endpoint.\n\n"
+        )
     return (
         "## Ngrok MCP gateway\n\n"
         "The generated ngrok setup follows the Cloud Endpoint plus private internal "
@@ -1393,6 +1411,7 @@ def _ngrok_readme_notes(plan: Mapping[str, Any]) -> str:
         f"{checks}\n\n"
         "Snulbug remains the MCP-aware authorization, lease, recording, audit, and "
         "response-policy boundary behind ngrok.\n\n"
+        f"{route_notes}"
     )
 
 
@@ -1571,11 +1590,26 @@ def _ngrok_agent_config(origin: str, *, internal_url: str, endpoint_name: str) -
     )
 
 
-def _ngrok_traffic_policy(public_endpoint: str, *, internal_url: str) -> str:
+def _ngrok_traffic_policy(
+    public_endpoint: str, *, internal_url: str, http_routes: Sequence[Mapping[str, Any]] = ()
+) -> str:
     mcp_path = urlsplit(public_endpoint).path or DEFAULT_MCP_PATH
     public_url = _normalize_url(public_endpoint, mcp_path)
+    allowed_paths = [f"req.url.path == {json.dumps(mcp_path)}"]
+    for route in http_routes:
+        prefix = str(route["prefix"])
+        allowed_paths.extend(
+            [
+                f"req.url.path == {json.dumps(prefix)}",
+                f"req.url.path.startsWith({json.dumps(prefix + '/')})",
+            ]
+        )
+    mcp_guard = f"      - {_yaml_string(allowed_paths[0])}\n" if http_routes else ""
+    path_rule_name = "Hide unregistered paths" if http_routes else "Hide non-MCP paths"
     expressions = {
-        "non_mcp_path": f"req.url.path != {json.dumps(mcp_path)}",
+        "non_mcp_path": f"!({' || '.join(allowed_paths)})"
+        if http_routes
+        else f"req.url.path != {json.dumps(mcp_path)}",
         "missing_authorization": "!hasReqHeader('Authorization')",
         "invalid_bearer": "!getReqHeader('Authorization').exists(v, v.matches('^Bearer .+'))",
         "disallowed_method": "!(req.method in ['GET', 'POST', 'OPTIONS', 'DELETE'])",
@@ -1598,7 +1632,7 @@ def _ngrok_traffic_policy(public_endpoint: str, *, internal_url: str) -> str:
         '            x-snulbug-traffic-policy: "ngrok-mcp-v1"\n'
         f"            x-snulbug-public-url: {_yaml_string(public_url)}\n"
         '            x-snulbug-edge-client-ip: "${conn.client_ip}"\n'
-        "  - name: Hide non-MCP paths\n"
+        f"  - name: {path_rule_name}\n"
         "    expressions:\n"
         f"      - {_yaml_string(expressions['non_mcp_path'])}\n"
         "    actions:\n"
@@ -1607,6 +1641,7 @@ def _ngrok_traffic_policy(public_endpoint: str, *, internal_url: str) -> str:
         "          status_code: 404\n"
         "  - name: Require Authorization header\n"
         "    expressions:\n"
+        f"{mcp_guard}"
         f"      - {_yaml_string(expressions['missing_authorization'])}\n"
         "    actions:\n"
         "      - type: deny\n"
@@ -1614,6 +1649,7 @@ def _ngrok_traffic_policy(public_endpoint: str, *, internal_url: str) -> str:
         "          status_code: 401\n"
         "  - name: Require Bearer Authorization value\n"
         "    expressions:\n"
+        f"{mcp_guard}"
         f"      - {_yaml_string(expressions['invalid_bearer'])}\n"
         "    actions:\n"
         "      - type: deny\n"
@@ -1621,6 +1657,7 @@ def _ngrok_traffic_policy(public_endpoint: str, *, internal_url: str) -> str:
         "          status_code: 401\n"
         "  - name: Restrict MCP HTTP methods\n"
         "    expressions:\n"
+        f"{mcp_guard}"
         f"      - {_yaml_string(expressions['disallowed_method'])}\n"
         "    actions:\n"
         "      - type: deny\n"
@@ -1628,6 +1665,7 @@ def _ngrok_traffic_policy(public_endpoint: str, *, internal_url: str) -> str:
         "          status_code: 405\n"
         "  - name: Require JSON POST bodies\n"
         "    expressions:\n"
+        f"{mcp_guard}"
         f"      - {_yaml_string(expressions['invalid_post_content_type'])}\n"
         "    actions:\n"
         "      - type: deny\n"

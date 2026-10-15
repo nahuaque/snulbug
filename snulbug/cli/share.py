@@ -20,6 +20,7 @@ from ..cli_helpers import (
     write_result_output,
     write_sarif_output,
 )
+from ..http_routes import parse_http_route
 from .common import read_required_env
 
 PROVIDERS = ("generic", "ngrok", "cloudflare", "tailscale", "pinggy", "ssh", "holepunch")
@@ -445,6 +446,7 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                 config_output=args.config_output,
                 traces_dir=args.traces_dir,
                 upstream=args.upstream,
+                http_routes=args.http_route,
                 token=args.token,
                 token_env=args.token_env,
                 allowed_tools=args.allow_tool or None,
@@ -506,6 +508,7 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                 provider=args.provider,
                 preset=args.preset,
                 upstream=args.upstream,
+                http_routes=args.http_route,
                 hostname=args.hostname,
                 public_url=args.url,
                 ngrok_internal_url=args.ngrok_internal_url,
@@ -940,6 +943,7 @@ def _add_quickstart_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config-output", type=Path, default=Path("snulbug.toml"), help="config file path")
     parser.add_argument("--traces-dir", type=Path, default=Path("traces"), help="trace directory path")
     parser.add_argument("--upstream", default="http://127.0.0.1:9000", help="upstream MCP HTTP server URL")
+    _add_http_route_arg(parser)
     add_token_arg(parser, help="bearer token to render into generated policy")
     add_token_env_arg(parser, help="context key used by generated policy for env-derived token lookup")
     parser.add_argument("--allow-tool", action="append", default=[], help="allowed MCP tool name")
@@ -1169,6 +1173,17 @@ def _add_cloudflare_access_setup_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_http_route_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--http-route",
+        action="append",
+        type=parse_http_route,
+        default=[],
+        metavar="PREFIX=URL",
+        help="HTTP backend outside MCP auth/policy, e.g. /app=http://127.0.0.1:3000; strips prefix; repeatable",
+    )
+
+
 def _add_share_create_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--directory", type=Path, help="share session directory")
     parser.add_argument(
@@ -1179,6 +1194,7 @@ def _add_share_create_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--preset", default="tunnel-safe", help="MCP policy preset")
     parser.add_argument("--upstream", default="http://127.0.0.1:9000", help="upstream MCP HTTP server")
+    _add_http_route_arg(parser)
     parser.add_argument(
         "--hostname",
         help="provider hostname to use when --url is omitted; for --provider ssh this is the SSH target user@host",
