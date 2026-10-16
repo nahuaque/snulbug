@@ -20,6 +20,8 @@ It gives you a tight loop for agent-tool safety:
 - review MCP-native capability requests and approve them into normal task leases
 - use task-scoped leases for temporary tool/path grants, optionally bound to
   OAuth subject, tenant, client, group, issuer, or auth profile
+- give always-on bots [renewable automation invites](docs/mcp-share.md#renewable-automation-invites)
+  with short-lived leases, consumer renewal, and restart recovery
 - turn OAuth identity into MCP-specific tool permissions
 - pin facade upstream identity with signed manifests
 

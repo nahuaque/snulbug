@@ -1,6 +1,6 @@
 """Local-dev MCP policy proxy and programmable Lua ASGI policy layer."""
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 from .auth_providers import (
     AuthProvider,
@@ -206,6 +206,7 @@ from .leases import (
     create_lease,
     list_leases,
     reactivate_lease,
+    renew_lease,
     revoke_lease,
 )
 from .manifests import load_manifest, manifest_digest, sign_upstream_manifest, verify_upstream_manifest, write_manifest
@@ -746,6 +747,7 @@ __all__ = [
     "record_audit_event",
     "record_policy_request",
     "reactivate_lease",
+    "renew_lease",
     "reconcile_fabric_controller",
     "reconcile_policy_activation",
     "register_fabric_member",

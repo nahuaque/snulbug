@@ -37,10 +37,13 @@ DEFAULT_SECRET_KEYS = {
     "snulbug-lease",
     "token",
     "x-snulbug-lease",
+    "x-snulbug-renewal",
+    "renewal_token",
     "x-api-key",
 }
 
 DEFAULT_SECRET_PATTERNS = [
+    re.compile(r"\bsbr_[A-Za-z0-9_-]{16,}\b"),
     re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
     re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{16,}\b"),

@@ -627,6 +627,12 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                     ttl=args.ttl,
                     max_calls=args.max_calls,
                     client_name=args.client_name,
+                    renewable=args.renewable,
+                    renewal_ttl=args.renewal_ttl,
+                    allow_subjects=args.allow_subject,
+                    allow_issuers=args.allow_issuer,
+                    allow_tenants=args.allow_tenant,
+                    allow_client_ids=args.allow_client_id,
                 )
             elif args.share_invite_command == "list":
                 result = list_mcp_share_invites(args.directory, include_revoked=not args.active_only)
@@ -1488,6 +1494,22 @@ def _add_share_invite_args(parser: argparse.ArgumentParser) -> None:
     invite_create.add_argument("--ttl", default="30m", help="invite lease TTL, such as 30m, 2h, or 1d")
     invite_create.add_argument("--max-calls", type=int, help="maximum number of allowed tools/call uses")
     invite_create.add_argument("--client-name", help="MCP client config server name")
+    invite_create.add_argument(
+        "--renewable", action="store_true", help="allow this automation to renew/recover its short-lived lease"
+    )
+    invite_create.add_argument(
+        "--renewal-ttl", default="7d", help="hard renewal authorization lifetime; defaults to 7d"
+    )
+    invite_create.add_argument(
+        "--allow-subject", action="append", default=[], help="bind the invite to this authenticated subject"
+    )
+    invite_create.add_argument(
+        "--allow-issuer", action="append", default=[], help="bind the invite to this OAuth issuer"
+    )
+    invite_create.add_argument("--allow-tenant", action="append", default=[], help="bind the invite to this tenant")
+    invite_create.add_argument(
+        "--allow-client-id", action="append", default=[], help="bind the invite to this OAuth workload client"
+    )
     add_compact_arg(invite_create)
 
     invite_list = invite_subparsers.add_parser("list", help="list MCP share invites without revealing tokens")

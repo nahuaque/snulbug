@@ -33,11 +33,14 @@ from .fabric import annotate_topology_audit, build_fabric_audit_metadata
 from .fabric_control import summarize_fabric_control_state
 from .http_routes import HttpRoutesMiddleware
 from .leases import (
+    LEASE_RENEWAL_HEADER,
+    LEASE_RENEWAL_METHOD,
     LeasePolicyConfig,
     enforce_mcp_lease_policy,
     mcp_lease_error_response,
     preview_mcp_lease_catalog,
     preview_mcp_lease_policy,
+    renew_lease,
 )
 from .manifests import load_manifest, verify_upstream_manifest
 from .mcp_auth import (
@@ -95,6 +98,7 @@ from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
 from .policy_backoff import PolicyBackoffConfig
 from .recorder import append_record, build_request_record, record_audit_event
 from .response_policy import ResponsePolicyConfig, enforce_mcp_response_policy
+from .runtime import compile_lua_file
 from .schema_policy import (
     TOOL_SCHEMA_KEY_PREFIX,
     SchemaPolicyConfig,
@@ -1988,9 +1992,11 @@ class ProxyRecorderMiddleware:
             _trace_result(scope),
             response=response,
             metadata=metadata,
-            redact=self.redact_records,
+            redact=self.redact_records
+            or any(name.lower() == LEASE_RENEWAL_HEADER.encode() for name, _value in scope.get("headers", [])),
         )
-        if self.record_out is not None:
+        # Renewal is an audited control operation, not a replayable Lua decision.
+        if self.record_out is not None and "lease_renewal" not in metadata:
             append_record(self.record_out, record)
         if self.event_dispatcher is not None:
             audit_event = record_audit_event(record)
@@ -2060,7 +2066,7 @@ class StreamableHttpEdgeMiddleware:
                         (
                             b"access-control-allow-headers",
                             b"Accept, Authorization, Content-Type, DPoP, Last-Event-ID, MCP-Protocol-Version, "
-                            b"MCP-Session-Id, Mcp-Method, Mcp-Name, x-snulbug-lease",
+                            b"MCP-Session-Id, Mcp-Method, Mcp-Name, x-snulbug-lease, x-snulbug-renewal",
                         ),
                     ],
                 ),
@@ -2207,7 +2213,7 @@ class StreamableHttpEdgeMiddleware:
         if self.config.require_session_id and not modern:
             body, replay_receive = await _capture_body(receive)
             request = _jsonrpc_request(body)
-            initialized = isinstance(request, Mapping) and request.get("method") == "initialize"
+            initialized = isinstance(request, Mapping) and request.get("method") in {"initialize", LEASE_RENEWAL_METHOD}
             if not initialized and not session_id:
                 await self._reject(
                     scope,
@@ -2610,6 +2616,121 @@ class CloudflareAccessMiddleware:
             ],
             body=decision.body,
         )
+
+
+class LeaseRenewalMiddleware:
+    """Terminate consumer lease renewal at the gateway's existing MCP endpoint."""
+
+    def __init__(
+        self, app: ASGIApp, *, config: LeasePolicyConfig, policy: str | Path, endpoint: str, max_body_bytes: int
+    ) -> None:
+        self.app = app
+        self.config = config
+        self.policy = Path(policy)
+        self.endpoint = endpoint
+        self.max_body_bytes = max_body_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope.get("type") != "http"
+            or str(scope.get("path", "")).rstrip("/") != self.endpoint
+            or scope.get("method") != "POST"
+        ):
+            await self.app(scope, receive, send)
+            return
+        try:
+            body, replay_receive = await _capture_body(receive, max_bytes=self.max_body_bytes)
+        except ValueError:
+            response = _json_response({"error": "request body exceeds configured limit"}, status=413)
+            await _send_response(send, **response)
+            return
+        request = _jsonrpc_request(body)
+        if not request or request.get("method") != LEASE_RENEWAL_METHOD:
+            # Renewal credentials are gateway-only, including when accidentally
+            # attached to an ordinary MCP request.
+            child_scope = dict(scope)
+            child_scope["headers"] = [
+                (name, value)
+                for name, value in scope.get("headers", [])
+                if name.lower() != LEASE_RENEWAL_HEADER.encode()
+            ]
+            await self.app(child_scope, replay_receive, send)
+            return
+        params = request.get("params")
+        headers = _headers_to_mapping(scope.get("headers", []))
+        credential = _single_header(headers.get(LEASE_RENEWAL_HEADER))
+        authorization = str(_single_header(headers.get("authorization")) or "")
+        bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else None
+        valid = (
+            request.get("jsonrpc") == "2.0"
+            and isinstance(request.get("id"), str | int)
+            and not isinstance(request.get("id"), bool)
+            and isinstance(params, Mapping)
+            and set(params) == {"invite_id"}
+            and isinstance(params.get("invite_id"), str)
+            and 0 < len(params["invite_id"]) <= 128
+            and not isinstance(headers.get(LEASE_RENEWAL_HEADER), list)
+            and not isinstance(headers.get("authorization"), list)
+        )
+        result: dict[str, Any] = {"ok": False, "reason_code": "lease.renewal_invalid_request"}
+        if valid and self.config.lease_file is None:
+            result["reason_code"] = "lease.renewal_unavailable"
+        elif valid:
+            try:
+                result = await asyncio.to_thread(
+                    renew_lease,
+                    self.config.lease_file,
+                    invite_id=params["invite_id"],
+                    renewal_token=str(credential or ""),
+                    bearer=bearer,
+                    auth_context=_mapping(_mapping(scope.get("lua")).get("auth")),
+                    policy_capabilities=lambda: [item["id"] for item in compile_lua_file(self.policy).capabilities],
+                )
+            except (OSError, ValueError, RuntimeError):
+                result = {"ok": False, "reason_code": "lease.renewal_unavailable"}
+        allowed = result.get("ok") is True
+        lease = _mapping(result.get("lease"))
+        reason = str(result["reason_code"])
+        metadata = {
+            "allowed": allowed,
+            "reason_code": reason,
+            "id": lease.get("id"),
+            "invite": lease.get("invite"),
+            "renewal": lease.get("renewal"),
+        }
+        _set_proxy_metadata(scope, {"lease_renewal": metadata})
+        _attach_proxy_reject_trace(
+            scope,
+            action="continue" if allowed else "reject",
+            status=200,
+            body="",
+            reason="consumer lease renewal",
+            reason_code=reason,
+            context={"lease_renewal": metadata},
+        )
+        if allowed:
+            payload = {
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {
+                    "lease": lease,
+                    "headers": {self.config.header: result["token"]},
+                    "reason_code": reason,
+                },
+            }
+        else:
+            payload = {
+                "jsonrpc": "2.0",
+                "id": request.get("id"),
+                "error": {
+                    "code": -32602 if not valid else -32000,
+                    "message": "Lease renewal denied",
+                    "data": {"reason_code": reason},
+                },
+            }
+        response = _json_response(payload)
+        response["headers"].extend([(b"cache-control", b"no-store"), (b"pragma", b"no-cache")])
+        await _send_response(send, **response)
 
 
 class LeaseContextMiddleware:
@@ -3135,6 +3256,13 @@ def create_proxy_application(
             config=lease_policy,
             context_scope_key=lua_config.context_scope_key,
         )
+    app = LeaseRenewalMiddleware(
+        app,
+        config=lease_policy,
+        policy=policy,
+        endpoint=streamable_http_config.endpoint_path,
+        max_body_bytes=max_body_bytes,
+    )
     if oauth_config.enabled:
         app = OAuthResourceMiddleware(app, config=oauth_config)
     cloudflare_access_config = CloudflareAccessConfig(
@@ -4227,7 +4355,7 @@ def _request_headers(
     headers: dict[str, str] = {}
     for name, value in raw_headers:
         lower_name = name.lower()
-        if lower_name in HOP_BY_HOP_HEADERS or lower_name in {b"host", b"content-length"}:
+        if lower_name in HOP_BY_HOP_HEADERS or lower_name in {b"host", b"content-length", b"x-snulbug-renewal"}:
             continue
         headers[name.decode("latin-1")] = value.decode("latin-1")
     headers["Host"] = upstream.netloc

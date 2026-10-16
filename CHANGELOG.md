@@ -6,6 +6,20 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-16
+
+Support always-on MCP bots with renewable automation invites, without introducing
+a separate permission or approval system.
+
+- Added renewable automation invites using the existing backing lease, with bounded consumer renewal/restart recovery, rotating access tokens, identity bindings, persistent usage budgets, and console/CLI setup snippets.
+- Serialized lease mutations across local workers so renewal, revocation, cleanup, and concurrent call consumption cannot overwrite each other's state.
+- Added renewal visibility and refresh-stable invite forms in the web console, secret-safe renewal audit events, and share closeout that revokes invites as well as the session lease.
+
+Automation renewal is opt-in. Access leases remain short-lived; the owner's
+renewal authorization has a separate hard expiry. Clients must adopt refreshed
+lease headers, and revocation or exhausted budgets prevent recovery. No change
+to the default MCP protocol version or the experimental profile's limitations.
+
 ## [0.2.1] - 2026-10-15
 
 Expose web applications and APIs alongside MCP through one gateway and ngrok tunnel.

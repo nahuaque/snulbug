@@ -1,21 +1,70 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import math
+import os
 import posixpath
 import secrets
 import shlex
-from collections.abc import Mapping, Sequence
+import threading
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import urlparse
 
 from .middleware import Scope
 
 LEASE_HEADER = "x-snulbug-lease"
 LEASE_TOKEN_PREFIX = "sbl_"
+LEASE_RENEWAL_METHOD = "snulbug/lease/renew"
+LEASE_RENEWAL_HEADER = "x-snulbug-renewal"
+_STORE_LOCK = threading.RLock()
+
+
+@contextmanager
+def _store_transaction(path: str | Path) -> Iterator[None]:
+    """Serialize read/modify/write across gateway workers and console threads."""
+
+    store_path = Path(path)
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    with _STORE_LOCK, store_path.with_name(store_path.name + ".lock").open("a+b") as lock:
+        if os.name == "nt":  # pragma: no cover - Windows CI
+            import msvcrt
+
+            if not lock.seek(0, 2):
+                lock.write(b"\0")
+                lock.flush()
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _lease_transaction(function):
+    @wraps(function)
+    def locked(path, *args, **kwargs):
+        with _store_transaction(path):
+            return function(path, *args, **kwargs)
+
+    return locked
+
 
 PATH_KEYS = {
     "path",
@@ -42,6 +91,7 @@ class LeasePolicyConfig:
     header: str = LEASE_HEADER
 
 
+@_lease_transaction
 def create_lease(
     path: str | Path,
     *,
@@ -61,6 +111,9 @@ def create_lease(
     max_calls: int | None = None,
     token: str | None = None,
     invite: Mapping[str, Any] | None = None,
+    renewal_ttl: str | int | float | None = None,
+    renewal_token: str | None = None,
+    renewal_bearer: str | None = None,
 ) -> dict[str, Any]:
     """Create a task-scoped lease and return the one-time plaintext token."""
 
@@ -99,6 +152,29 @@ def create_lease(
     invite_metadata = _lease_invite_metadata(invite)
     if invite_metadata:
         lease["invite"] = invite_metadata
+    if renewal_ttl is not None:
+        if not invite_metadata.get("id"):
+            raise ValueError("renewable leases must belong to a share invite")
+        lease_seconds = _parse_ttl(ttl)
+        authorization_seconds = _parse_ttl(renewal_ttl)
+        if not math.isfinite(lease_seconds) or not math.isfinite(authorization_seconds):
+            raise ValueError("renewal and lease TTL must be finite")
+        if authorization_seconds < lease_seconds:
+            raise ValueError("renewal authorization TTL must be at least the lease TTL")
+        if not renewal_bearer and not (allow_issuers and (allow_subjects or allow_client_ids)):
+            raise ValueError("renewal requires bearer authentication or an issuer-bound subject/client identity")
+        renewal_token = renewal_token or "sbr_" + secrets.token_urlsafe(32)
+        lease_token = lease_token_for_renewal(renewal_token, lease["id"], 0)
+        lease["token_hash"] = _token_hash(lease_token)
+        lease["renewal"] = {
+            "authorization_expires_at": _format_time(now + timedelta(seconds=authorization_seconds)),
+            "lease_ttl_seconds": lease_seconds,
+            "token_hash": _token_hash(renewal_token),
+            "bearer_hash": _token_hash(renewal_bearer) if renewal_bearer else None,
+            "generation": 0,
+            "renewal_count": 0,
+            "last_renewed_at": None,
+        }
     store_path = Path(path)
     store = _load_store(store_path, create_missing=True)
     store.setdefault("leases", []).append(lease)
@@ -109,6 +185,7 @@ def create_lease(
         "token": lease_token,
         "headers": {LEASE_HEADER: lease_token},
         "file": str(store_path),
+        **({"renewal_token": renewal_token} if renewal_ttl is not None else {}),
     }
 
 
@@ -123,25 +200,28 @@ def list_leases(path: str | Path, *, include_inactive: bool = True) -> dict[str,
     return {"ok": True, "file": str(store_path), "leases": leases}
 
 
+@_lease_transaction
 def cleanup_inactive_leases(path: str | Path) -> dict[str, Any]:
     """Remove revoked or expired leases from a lease store."""
 
     store_path = Path(path)
     store = _load_store(store_path, create_missing=True)
     leases = list(_leases(store))
-    kept = [lease for lease in leases if _lease_view(lease)["active"]]
-    removed = [lease for lease in leases if _lease_view(lease)["active"] is not True]
+    kept = [lease for lease in leases if _lease_view(lease)["active"] or _renewal_view(lease).get("active")]
+    removed = [lease for lease in leases if lease not in kept]
     store["leases"] = kept
     _write_store(store_path, store)
     return {
         "ok": True,
         "file": str(store_path),
         "removed_count": len(removed),
-        "active_count": len(kept),
+        "active_count": sum(bool(_lease_view(lease)["active"]) for lease in kept),
+        "retained_renewable_count": sum(not _lease_view(lease)["active"] for lease in kept),
         "leases": [_lease_view(lease) for lease in kept],
     }
 
 
+@_lease_transaction
 def revoke_lease(path: str | Path, lease_id: str) -> dict[str, Any]:
     """Revoke a lease by id."""
 
@@ -156,6 +236,17 @@ def revoke_lease(path: str | Path, lease_id: str) -> dict[str, Any]:
     return {"ok": False, "file": str(store_path), "error": f"lease not found: {lease_id}"}
 
 
+@_lease_transaction
+def revoke_invite_renewal(path: str | Path, invite_id: str) -> None:
+    store_path = Path(path)
+    store = _load_store(store_path, create_missing=True)
+    for lease in _leases(store):
+        if lease.get("invite", {}).get("id") == invite_id and isinstance(lease.get("renewal"), dict):
+            lease["renewal"]["revoked_at"] = lease["renewal"].get("revoked_at") or _format_time(_now())
+            _write_store(store_path, store)
+
+
+@_lease_transaction
 def reactivate_lease(
     path: str | Path,
     lease_id: str,
@@ -174,6 +265,8 @@ def reactivate_lease(
     now = _now()
     for lease in _leases(store):
         if lease.get("id") == lease_id:
+            if lease.get("renewal"):
+                raise ValueError("create a new automation invite instead of reactivating a renewable lease")
             lease["revoked_at"] = None
             lease["expires_at"] = _format_time(now + timedelta(seconds=_parse_ttl(ttl)))
             lease["reactivated_at"] = _format_time(now)
@@ -192,6 +285,88 @@ def reactivate_lease(
                 "headers": {LEASE_HEADER: lease_token},
             }
     return {"ok": False, "file": str(store_path), "error": f"lease not found: {lease_id}"}
+
+
+def lease_token_for_renewal(renewal_token: str, lease_id: str, generation: int) -> str:
+    """Recover the current access token without persisting plaintext in the lease store."""
+
+    payload = f"snulbug.lease.v1:{lease_id}:{generation}".encode()
+    return LEASE_TOKEN_PREFIX + hmac.new(renewal_token.encode(), payload, hashlib.sha256).hexdigest()
+
+
+@_lease_transaction
+def renew_lease(
+    path: str | Path,
+    *,
+    invite_id: str,
+    renewal_token: str,
+    bearer: str | None = None,
+    auth_context: Mapping[str, Any] | None = None,
+    policy_capabilities: Sequence[str] | Callable[[], Sequence[str]] | None = None,
+) -> dict[str, Any]:
+    """Renew or recover an invite's existing lease, never its permissions or budget."""
+
+    def denied(reason: str) -> dict[str, Any]:
+        return {"ok": False, "reason_code": reason}
+
+    store = _load_store(Path(path), create_missing=False)
+    lease = next((item for item in _leases(store) if item.get("invite", {}).get("id") == invite_id), None)
+    renewal = lease.get("renewal") if lease else None
+    if (
+        not isinstance(renewal, dict)
+        or not renewal_token
+        or not hmac.compare_digest(str(renewal.get("token_hash") or ""), _token_hash(renewal_token))
+    ):
+        return denied("lease.renewal_invalid")
+    if lease.get("revoked_at") or renewal.get("revoked_at"):
+        return denied("lease.revoked")
+    now = _now()
+    until = _parse_time(renewal.get("authorization_expires_at"))
+    if until is None or until <= now:
+        return denied("lease.renewal_expired")
+    auth = auth_context or {}
+    if renewal.get("bearer_hash") and auth.get("enabled") is not True:
+        if not bearer or not hmac.compare_digest(str(renewal["bearer_hash"]), _token_hash(bearer)):
+            return denied("lease.renewal_auth_required")
+    elif auth.get("enabled") is not True:
+        return denied("lease.auth_missing")
+    auth_denial = _lease_auth_denial_reason(lease, auth)
+    if auth_denial:
+        return denied(str(auth_denial["reason_code"]))
+    if callable(policy_capabilities):
+        policy_capabilities = policy_capabilities()
+    if policy_capabilities is not None and not set(lease.get("capabilities", [])).issubset(policy_capabilities):
+        return denied("lease.renewal_capability_removed")
+    if isinstance(lease.get("max_calls"), int) and int(lease.get("use_count") or 0) >= lease["max_calls"]:
+        return denied("lease.max_calls_exceeded")
+
+    expires = _parse_time(lease.get("expires_at"))
+    seconds = float(renewal["lease_ttl_seconds"])
+    # Retrying/restarting inside a healthy lease window returns the same token.
+    # A short overlap lets in-flight requests finish when the next window opens.
+    next_expiry = min(until, now + timedelta(seconds=seconds))
+    changed = expires is None or ((expires - now).total_seconds() <= seconds / 2 and next_expiry > expires)
+    if changed:
+        if expires is not None and expires > now:
+            renewal["previous_token_hash"] = lease["token_hash"]
+            renewal["previous_token_expires_at"] = _format_time(min(expires, now + timedelta(seconds=30)))
+        else:
+            renewal.pop("previous_token_hash", None)
+            renewal.pop("previous_token_expires_at", None)
+        renewal["generation"] = int(renewal.get("generation") or 0) + 1
+        renewal["renewal_count"] = int(renewal.get("renewal_count") or 0) + 1
+        renewal["last_renewed_at"] = _format_time(now)
+        lease["expires_at"] = _format_time(next_expiry)
+        token = lease_token_for_renewal(renewal_token, str(lease["id"]), renewal["generation"])
+        lease["token_hash"] = _token_hash(token)
+        _write_store(Path(path), store)
+    token = lease_token_for_renewal(renewal_token, str(lease["id"]), int(renewal.get("generation") or 0))
+    return {
+        "ok": True,
+        "reason_code": "lease.renewed" if changed else "lease.recovered",
+        "lease": _lease_view(lease),
+        "token": token,
+    }
 
 
 def enforce_mcp_lease_policy(
@@ -295,6 +470,19 @@ def preview_mcp_lease_catalog(
 
 
 def _evaluate_mcp_lease_policy(
+    request: Mapping[str, Any] | None,
+    scope: Scope,
+    *,
+    config: LeasePolicyConfig,
+    consume: bool,
+) -> tuple[bool, dict[str, Any]]:
+    if consume and config.lease_file is not None:
+        with _store_transaction(config.lease_file):
+            return _evaluate_locked_lease_policy(request, scope, config=config, consume=consume)
+    return _evaluate_locked_lease_policy(request, scope, config=config, consume=consume)
+
+
+def _evaluate_locked_lease_policy(
     request: Mapping[str, Any] | None,
     scope: Scope,
     *,
@@ -581,6 +769,7 @@ def _write_store(path: Path, store: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.tmp")
     tmp.write_text(json.dumps(store, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.chmod(0o600)
     tmp.replace(path)
 
 
@@ -592,7 +781,15 @@ def _leases(store: Mapping[str, Any]) -> list[dict[str, Any]]:
 def _find_lease(store: Mapping[str, Any], token: str) -> dict[str, Any] | None:
     digest = _token_hash(token)
     for lease in _leases(store):
-        if lease.get("token_hash") == digest:
+        if hmac.compare_digest(str(lease.get("token_hash") or ""), digest):
+            return lease
+        renewal = lease.get("renewal", {})
+        previous_until = _parse_time(renewal.get("previous_token_expires_at"))
+        if (
+            previous_until is not None
+            and previous_until > _now()
+            and hmac.compare_digest(str(renewal.get("previous_token_hash") or ""), digest)
+        ):
             return lease
     return None
 
@@ -625,6 +822,30 @@ def _lease_view(lease: Mapping[str, Any]) -> dict[str, Any]:
         "use_count": int(lease.get("use_count") or 0),
         "last_used_at": lease.get("last_used_at"),
         "last_tool": lease.get("last_tool"),
+        **({"renewal": _renewal_view(lease)} if lease.get("renewal") else {}),
+    }
+
+
+def _renewal_view(lease: Mapping[str, Any]) -> dict[str, Any]:
+    renewal = lease.get("renewal")
+    if not isinstance(renewal, Mapping):
+        return {}
+    until = _parse_time(renewal.get("authorization_expires_at"))
+    expires = _parse_time(lease.get("expires_at"))
+    ttl = float(renewal.get("lease_ttl_seconds") or 0)
+    return {
+        "active": bool(
+            not lease.get("revoked_at") and not renewal.get("revoked_at") and until is not None and until > _now()
+        ),
+        "revoked_at": renewal.get("revoked_at"),
+        "authorization_expires_at": renewal.get("authorization_expires_at"),
+        "lease_ttl_seconds": ttl,
+        "generation": int(renewal.get("generation") or 0),
+        "renewal_count": int(renewal.get("renewal_count") or 0),
+        "last_renewed_at": renewal.get("last_renewed_at"),
+        "renew_after": _format_time(expires if expires == until else expires - timedelta(seconds=ttl / 2))
+        if expires
+        else None,
     }
 
 

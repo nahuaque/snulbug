@@ -1306,7 +1306,14 @@ def mcp_scope_target(body: bytes | None) -> dict[str, Any]:
         "method": method,
         "selectors": selectors,
     }
-    if method in {"server/discover", "initialize", "initialized", "notifications/initialized", "ping"}:
+    if method in {
+        "server/discover",
+        "initialize",
+        "initialized",
+        "notifications/initialized",
+        "ping",
+        "snulbug/lease/renew",
+    }:
         target["allow_without_scope_map"] = True
         return target
     if method.startswith("notifications/"):

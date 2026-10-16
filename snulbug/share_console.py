@@ -589,6 +589,12 @@ class ShareConsoleServer:
                     ttl=_string_or_none(body.get("ttl")) or "30m",
                     max_calls=_positive_int(body.get("max_calls")),
                     client_name=_string_or_none(body.get("client_name")),
+                    renewable=_bool_or_default(body.get("renewable"), False),
+                    renewal_ttl=_string_or_none(body.get("renewal_ttl")) or "7d",
+                    allow_subjects=_string_list(body.get("allow_subjects")),
+                    allow_issuers=_string_list(body.get("allow_issuers")),
+                    allow_tenants=_string_list(body.get("allow_tenants")),
+                    allow_client_ids=_string_list(body.get("allow_client_ids")),
                 )
                 _send_json(handler, 200, result)
                 return
@@ -7220,6 +7226,9 @@ def _console_html() -> str:
           ${leaseMeta(capabilities ? "Capabilities" : "Allowed tools", accessValue, accessDetail)}
           ${leaseMeta("Expiry", shortDateTime(lease.expires_at), lastUsed)}
           ${leaseMeta("Remaining", remainingCalls(lease), lease.last_tool || "")}
+          ${lease.renewal ? leaseMeta("Renewal authorization",
+            lease.renewal.active ? "enabled" : "inactive",
+            shortDateTime(lease.renewal.authorization_expires_at)) : ""}
         </div>
         <div>${leaseActionHtml(lease, id)}</div>
       </div>`;
@@ -7236,6 +7245,11 @@ def _console_html() -> str:
     function leaseActionHtml(lease, id) {
       if (lease.active) {
         return `<button class="danger" type="button" onclick="revokeLease('${id}')">Revoke</button>`;
+      }
+      if (lease.renewal) {
+        return lease.renewal.active
+          ? `<button class="danger" type="button" onclick="revokeLease('${id}')">Revoke renewal</button>`
+          : '<span class="muted">Create a new automation invite to authorize access again.</span>';
       }
       return `<div class="lease-actions">
         <input id="lease-reactivate-ttl-${id}" value="30m" aria-label="TTL">
@@ -7274,6 +7288,24 @@ def _console_html() -> str:
     }
 
     function renderInvites(payload) {
+      const container = $("invitations");
+      const focused = document.activeElement;
+      const values = Array.from(container.querySelectorAll("input")).map((element) => ({
+        id: element.id, value: element.value, checked: element.checked,
+        capability: element.classList.contains("invite-capability-option")
+      }));
+      renderInviteContents(payload);
+      values.forEach((item) => {
+        const element = item.id ? $(item.id) : Array.from(container.querySelectorAll(".invite-capability-option"))
+          .find((candidate) => candidate.value === item.value);
+        if (!element) return;
+        if (!item.capability) element.value = item.value;
+        element.checked = item.checked;
+      });
+      if (focused && focused.id && container.contains($(focused.id))) $(focused.id).focus({ preventScroll: true });
+    }
+
+    function renderInviteContents(payload) {
       const invitations = payload.items || [];
       const summary = payload.summary || {};
       const connectionSummary = payload.connection_summary || {};
@@ -7304,6 +7336,19 @@ def _console_html() -> str:
           ${inviteCapabilityOptionsHtml(capabilities)}
           ${setupField("invite-create-ttl", "TTL", "30m")}
           ${setupField("invite-create-calls", "Max calls", "")}
+          <label class="auto"><input id="invite-create-renewable" type="checkbox">
+            Renewable automation invite
+          </label>
+          ${setupField("invite-create-renewal-ttl", "Renewal authorization TTL", "7d")}
+          <details class="compact-details wide" data-state-key="invite-create-auth-binding">
+            <summary>OAuth identity binding</summary>
+            <div class="field-grid">
+              ${setupField("invite-create-issuer", "Issuer", "")}
+              ${setupField("invite-create-subject", "Subject", "")}
+              ${setupField("invite-create-client-id", "Client ID", "")}
+              ${setupField("invite-create-tenant", "Tenant", "")}
+            </div>
+          </details>
         </div>
         <div class="review-actions">
           <button type="button" class="primary" onclick="createInvite()" ${inviteDisabled ? "disabled" : ""}>
@@ -7466,6 +7511,15 @@ def _console_html() -> str:
       const revokeAction = revoked
         ? ""
         : `<button class="danger" type="button" onclick="revokeInvite('${id}')">Revoke invite</button>`;
+      const renewal = invite.renewal || {};
+      const renewalHtml = renewal.authorization_expires_at ? [
+        leaseMeta("Automation renewal", renewal.active ? "enabled" : "inactive",
+          `authorized until ${shortDateTime(renewal.authorization_expires_at)}`),
+        leaseMeta("Access lease", shortDateTime(invite.lease_expires_at),
+          `renew after ${shortDateTime(renewal.renew_after)}`),
+        leaseMeta("Renewals", String(renewal.renewal_count || 0),
+          `last renewal ${shortDateTime(renewal.last_renewed_at)}`)
+      ].join("") : "";
       const setupHtml = hasSetup
         ? `<details class="compact-details" data-state-key="invite-setup-${id}">
             <summary>Setup snippets</summary>
@@ -7493,6 +7547,7 @@ def _console_html() -> str:
           ${leaseMeta("Connection", connectionLabel, inviteConnectionDetail(connection))}
           ${leaseMeta("Expiry", shortDateTime(invite.expires_at), expiryDetail)}
           ${leaseMeta("Backing lease", invite.lease_id || "-", invite.lease_header || "")}
+          ${renewalHtml}
         </div>
         <div class="timeline-detail">${esc(guidance)}</div>
         ${setupHtml}
@@ -8618,6 +8673,12 @@ def _console_html() -> str:
             capabilities,
             ttl: setupInputValue("invite-create-ttl") || "30m",
             max_calls: setupInputValue("invite-create-calls"),
+            renewable: Boolean($("invite-create-renewable").checked),
+            renewal_ttl: setupInputValue("invite-create-renewal-ttl") || "7d",
+            allow_issuers: setupInputValue("invite-create-issuer"),
+            allow_subjects: setupInputValue("invite-create-subject"),
+            allow_client_ids: setupInputValue("invite-create-client-id"),
+            allow_tenants: setupInputValue("invite-create-tenant"),
             live_checks: Boolean(state.liveHealthReadiness)
           })
         });
@@ -8707,6 +8768,12 @@ def _console_html() -> str:
         "Headers:",
         JSON.stringify(snippets.headers || payload.headers || {}, null, 2)
       ];
+      if (snippets.automation) {
+        lines.push("", "Automation renewal / restart recovery:",
+          envSnippet(snippets.automation.env || {}), "", "Acquire or renew lease:",
+          (snippets.automation.renew || {}).command || "", "", "Python bot integration:",
+          snippets.automation.python || "");
+      }
       return lines.join("\\n");
     }
 

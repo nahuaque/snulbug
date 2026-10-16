@@ -9,6 +9,7 @@ import os
 import secrets
 import shlex
 import shutil
+import tempfile
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
@@ -21,7 +22,7 @@ from .config import default_event_sink_configs
 from .fabric_members import DEFAULT_FABRIC_MEMBER_REGISTRY_KEY, register_fabric_member
 from .gateway_templates import GatewayTemplate, render_gateway_toml
 from .inspection import format_mcp_inspection_report, inspect_mcp_log
-from .leases import create_lease
+from .leases import LEASE_RENEWAL_HEADER, LEASE_RENEWAL_METHOD, create_lease, lease_token_for_renewal
 from .mcp_tasks import task_support_summary
 from .presets import DEFAULT_ALLOWED_PATHS, DEFAULT_ALLOWED_TOOLS, McpPolicyOptions, generate_mcp_preset
 from .quickstart import create_mcp_quickstart
@@ -1047,6 +1048,12 @@ def create_mcp_share_lease(
     ttl: str = "30m",
     max_calls: int | None = None,
     invite: Mapping[str, Any] | None = None,
+    renewal_ttl: str | None = None,
+    renewal_bearer: str | None = None,
+    allow_subjects: Sequence[str] = (),
+    allow_issuers: Sequence[str] = (),
+    allow_tenants: Sequence[str] = (),
+    allow_client_ids: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Create a task-scoped lease in the share's configured lease store."""
 
@@ -1070,6 +1077,12 @@ def create_mcp_share_lease(
         ttl=ttl,
         max_calls=max_calls,
         invite=invite,
+        renewal_ttl=renewal_ttl,
+        renewal_bearer=renewal_bearer,
+        allow_subjects=allow_subjects,
+        allow_issuers=allow_issuers,
+        allow_tenants=allow_tenants,
+        allow_client_ids=allow_client_ids,
     )
     token = str(lease.get("token"))
     return {
@@ -1081,6 +1094,7 @@ def create_mcp_share_lease(
         "headers": {lease_header: token},
         "retry_header": f'-H "{lease_header}: {token}"',
         "session_model": str(share_session_model_path(share_dir)),
+        **({"renewal_token": lease["renewal_token"]} if "renewal_token" in lease else {}),
     }
 
 
@@ -1116,6 +1130,12 @@ def create_mcp_share_invite(
     ttl: str = "30m",
     max_calls: int | None = None,
     client_name: str | None = None,
+    renewable: bool = False,
+    renewal_ttl: str = "7d",
+    allow_subjects: Sequence[str] = (),
+    allow_issuers: Sequence[str] = (),
+    allow_tenants: Sequence[str] = (),
+    allow_client_ids: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Create a task-scoped share invitation with console-gated client setup snippets."""
 
@@ -1126,13 +1146,30 @@ def create_mcp_share_invite(
     client_url = str(client.get("url") or "")
     if not client_url:
         raise ValueError("share manifest does not contain a client URL")
-    auth_header, auth_value, bearer_token = _share_client_bearer_token(manifest)
+    from .config import load_mcp_proxy_config
+
+    proxy_config = load_mcp_proxy_config(_share_config_path(share_dir, manifest, session_model))
+    oauth = _protected_resource_auth_enabled(_mapping(proxy_config.get("auth")))
+    if oauth:
+        auth_header, auth_value, bearer_token = (
+            "Authorization",
+            "Bearer ${SNULBUG_ACCESS_TOKEN}",
+            "${SNULBUG_ACCESS_TOKEN}",
+        )
+        if renewable and not (allow_issuers and (allow_subjects or allow_client_ids)):
+            raise ValueError("OAuth automation invites require --allow-issuer and --allow-subject or --allow-client-id")
+    else:
+        auth_header, auth_value, bearer_token = _share_client_bearer_token(manifest)
     invite_id = _new_share_invite_id()
     effective_client_name = client_name or str(client.get("name") or DEFAULT_SHARE_CLIENT_NAME)
     capability_labels = _string_list(capabilities)
     requested_allow_tools = _string_list(allow_tools)
     if not capability_labels and not requested_allow_tools:
         capability_labels = list(DEFAULT_SHARE_INVITE_CAPABILITIES)
+    if renewable:
+        declared = {item["id"] for item in compile_lua_file(proxy_config["policy"]).capabilities}
+        if not set(capability_labels).issubset(declared):
+            raise ValueError("automation invite capabilities must be declared by the active Lua policy")
     lease_allow_tools = requested_allow_tools or (["*"] if capability_labels else [])
     lease_result = create_mcp_share_lease(
         share_dir,
@@ -1144,6 +1181,12 @@ def create_mcp_share_invite(
         allow_commands=allow_commands,
         ttl=ttl,
         max_calls=max_calls,
+        renewal_ttl=renewal_ttl if renewable else None,
+        renewal_bearer=None if oauth else bearer_token,
+        allow_subjects=allow_subjects,
+        allow_issuers=allow_issuers,
+        allow_tenants=allow_tenants,
+        allow_client_ids=allow_client_ids,
         invite={
             "id": invite_id,
             "recipient": recipient,
@@ -1171,6 +1214,22 @@ def create_mcp_share_invite(
         lease_header=lease_header,
         lease_token=SECRET_REPLACEMENT,
     )
+    renewal_token = str(lease_result.get("renewal_token") or "")
+    if renewable:
+        snippets["automation"] = _share_automation_setup(
+            client_url,
+            invite_id,
+            renewal_token,
+            oauth=oauth,
+            protocol_version=proxy_config["streamable_http_protocol_version"],
+        )
+        redacted_snippets["automation"] = _share_automation_setup(
+            client_url,
+            invite_id,
+            SECRET_REPLACEMENT,
+            oauth=oauth,
+            protocol_version=proxy_config["streamable_http_protocol_version"],
+        )
     now = _now_iso()
     invite = _drop_empty_json(
         {
@@ -1179,11 +1238,12 @@ def create_mcp_share_invite(
             "recipient": recipient,
             "task": task,
             "created_at": now,
-            "expires_at": lease.get("expires_at"),
+            "expires_at": _mapping(lease.get("renewal")).get("authorization_expires_at") or lease.get("expires_at"),
             "revoked_at": None,
             "client_name": effective_client_name,
             "client_url": client_url,
-            "auth_mode": "bearer",
+            "auth_mode": "oauth-resource" if oauth else "bearer",
+            "protocol_version": proxy_config["streamable_http_protocol_version"],
             "lease_id": lease.get("id"),
             "lease_header": lease_header,
             "capabilities": capability_labels,
@@ -1193,6 +1253,7 @@ def create_mcp_share_invite(
             "allow_commands": list(allow_commands),
             "max_calls": max_calls,
             "setup_snippets": redacted_snippets,
+            "renewal": lease.get("renewal"),
         }
     )
     session_model = _record_share_invite(share_dir, session_model, invite)
@@ -1208,6 +1269,7 @@ def create_mcp_share_invite(
             "bearer_token": bearer_token,
             "lease_token": lease_token,
             "setup_snippets": snippets,
+            "renewal_token": renewal_token,
         },
     )
     return {
@@ -1221,6 +1283,7 @@ def create_mcp_share_invite(
         "lease": lease_result.get("lease"),
         "session_model": str(share_session_model_path(share_dir)),
         "invitations": _mapping(session_model.get("invitations")),
+        **({"renewal_token": renewal_token} if renewable else {}),
     }
 
 
@@ -1411,6 +1474,9 @@ def revoke_mcp_share_invite(
             "error": f"invite not found: {invite_id}",
             "session_model": str(share_session_model_path(share_dir)),
         }
+    from .leases import revoke_invite_renewal
+
+    revoke_invite_renewal(_share_capability_lease_file(share_dir, session_model, _manifest), invite_id)
     invitations["items"] = items
     invitations["summary"] = _share_invite_summary(items)
     model = json.loads(json.dumps(dict(session_model), default=str))
@@ -7080,6 +7146,10 @@ def _share_invitation_connection_statuses(
         invite_id = str(item.get("id") or "")
         lease_id = str(item.get("lease_id") or "")
         lease = _mapping(leases_by_id.get(lease_id))
+        if lease.get("renewal"):
+            item["renewal"] = dict(_mapping(lease.get("renewal")))
+            item["lease_expires_at"] = lease.get("expires_at")
+            item["expires_at"] = _mapping(lease.get("renewal")).get("authorization_expires_at")
         event_summary = _mapping(event_summaries.get(invite_id))
         item["connection_status"] = _share_invitation_connection_status(item, lease, event_summary, error=error)
         enriched.append(item)
@@ -7216,6 +7286,14 @@ def _share_invitation_connection_status(
             "message": "invite has been revoked",
         }
     if lease and lease.get("active") is False:
+        if _mapping(lease.get("renewal")).get("active") is True:
+            return {
+                **base,
+                "state": "renewal_due",
+                "label": "renewal due",
+                "severity": "warn",
+                "message": "access lease expired; the bot can recover using its renewal credential",
+            }
         reason = "backing lease is inactive"
         if lease.get("revoked_at"):
             reason = "backing lease has been revoked"
@@ -7908,6 +7986,12 @@ def close_mcp_share(
         else:
             result["revoked"] = {"ok": False, "error": "share manifest does not contain lease file/id"}
             result["ok"] = False
+        invite_results = [
+            revoke_mcp_share_invite(share_dir, invite_id=str(item["id"]))
+            for item in list_mcp_share_invites(share_dir, include_revoked=False)["invitations"]
+        ]
+        result["invites_revoked"] = len(invite_results)
+        result["ok"] = bool(result["ok"] and all(item.get("ok") for item in invite_results))
 
     audit_path = _resolve_share_path(share_dir, files.get("audit_log", "traces/audit.jsonl"))
     inspection: dict[str, Any] | None = None
@@ -9285,6 +9369,72 @@ def _redacted_invite_headers(headers: Mapping[str, Any]) -> dict[str, str]:
     return redacted
 
 
+def _share_automation_setup(
+    client_url: str,
+    invite_id: str,
+    renewal_token: str,
+    *,
+    oauth: bool = False,
+    protocol_version: str = "2025-11-25",
+) -> dict[str, Any]:
+    auth_env = "SNULBUG_ACCESS_TOKEN" if oauth else "SNULBUG_BEARER_TOKEN"
+    body = json.dumps(
+        {"jsonrpc": "2.0", "id": "lease-renew", "method": LEASE_RENEWAL_METHOD, "params": {"invite_id": invite_id}}
+    )
+    command = (
+        'curl --fail-with-body -sS "$SNULBUG_MCP_URL" '
+        f'-H "Authorization: Bearer ${{{auth_env}}}" '
+        f'-H "{LEASE_RENEWAL_HEADER}: ${{SNULBUG_RENEWAL_TOKEN}}" '
+        '-H "MCP-Protocol-Version: ${SNULBUG_MCP_PROTOCOL_VERSION}" '
+        "-H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' "
+        f"-d {shlex.quote(body)}"
+    )
+    python = """import json
+import os
+from datetime import datetime, timezone
+from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+_lease = None
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+def lease_headers():
+    global _lease
+    now = datetime.now(timezone.utc)
+    if _lease is None or now >= datetime.fromisoformat(_lease["lease"]["renewal"]["renew_after"]):
+        payload = {"jsonrpc": "2.0", "id": "lease-renew", "method": "snulbug/lease/renew",
+                   "params": {"invite_id": os.environ["SNULBUG_INVITE_ID"]}}
+        headers = {"Authorization": "Bearer " + os.environ["AUTH_ENV"],
+                   "x-snulbug-renewal": os.environ["SNULBUG_RENEWAL_TOKEN"],
+                   "MCP-Protocol-Version": os.environ.get("SNULBUG_MCP_PROTOCOL_VERSION", "2025-11-25"),
+                   "Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+        request = Request(os.environ["SNULBUG_MCP_URL"], data=json.dumps(payload).encode(), headers=headers)
+        # Call again after a network failure with backoff. Denials require owner intervention.
+        with build_opener(NoRedirect).open(request, timeout=15) as response:
+            result = json.load(response)
+        if "error" in result:
+            raise RuntimeError(result["error"])
+        _lease = result["result"]
+    return {"Authorization": "Bearer " + os.environ["AUTH_ENV"], **_lease["headers"]}
+
+# Pass lease_headers() to the MCP client before each request; refresh its headers
+# when they change. Restarting this process automatically recovers the lease.
+headers = lease_headers()
+""".replace('"AUTH_ENV"', json.dumps(auth_env))
+    return {
+        "env": {
+            "SNULBUG_MCP_URL": client_url,
+            "SNULBUG_INVITE_ID": invite_id,
+            "SNULBUG_RENEWAL_TOKEN": renewal_token,
+            "SNULBUG_MCP_PROTOCOL_VERSION": protocol_version,
+        },
+        "renew": {"command": command, "method": LEASE_RENEWAL_METHOD},
+        "python": python,
+    }
+
+
 def _share_invite_setup_snippets(
     *,
     client_name: str,
@@ -9517,7 +9667,17 @@ def _load_share_invite_secret_store(share_dir: Path) -> dict[str, Any]:
 
 def _write_share_invite_secret_store(share_dir: Path, store: Mapping[str, Any]) -> None:
     path = _share_invite_secret_store_path(share_dir)
-    _write_json(path, store, force=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as file:
+        temporary = Path(file.name)
+        try:
+            json.dump(store, file, indent=2, sort_keys=True)
+            file.write("\n")
+            file.flush()
+            file.close()
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def _record_share_invite_secret(share_dir: Path, invite_id: str, payload: Mapping[str, Any]) -> None:
@@ -9545,7 +9705,9 @@ def _share_active_lease_ids(
     return {
         str(lease.get("id"))
         for lease in _sequence(listed.get("leases"))
-        if isinstance(lease, Mapping) and lease.get("id") and lease.get("active")
+        if isinstance(lease, Mapping)
+        and lease.get("id")
+        and (lease.get("active") or _mapping(lease.get("renewal")).get("active"))
     }
 
 
@@ -9588,7 +9750,12 @@ def _attach_share_invite_secrets(
     share_dir: Path,
     items: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
+    from .leases import list_leases
+
     store = _load_share_invite_secret_store(share_dir)
+    _directory, manifest, model = _load_share_model_context(share_dir)
+    leases = list_leases(_share_capability_lease_file(share_dir, model, manifest))["leases"]
+    leases_by_id = {item["id"]: item for item in leases}
     secrets_by_invite = _mapping(store.get("invitations"))
     hydrated: list[dict[str, Any]] = []
     for item in items:
@@ -9605,6 +9772,28 @@ def _attach_share_invite_secrets(
                 value = secret_payload.get(key)
                 if isinstance(value, str) and value:
                     invite[key] = value
+            lease = leases_by_id.get(invite.get("lease_id"), {})
+            renewal = _mapping(lease.get("renewal"))
+            renewal_token = secret_payload.get("renewal_token")
+            if renewal and isinstance(renewal_token, str) and renewal_token and not lease.get("revoked_at"):
+                token = lease_token_for_renewal(renewal_token, str(lease["id"]), int(renewal.get("generation") or 0))
+                headers = {**_mapping(invite.get("headers")), str(invite.get("lease_header")): token}
+                snippets = _share_invite_setup_snippets(
+                    client_name=str(invite["client_name"]),
+                    client_url=str(invite["client_url"]),
+                    headers=headers,
+                    bearer_token=str(secret_payload.get("bearer_token") or ""),
+                    lease_header=str(invite["lease_header"]),
+                    lease_token=token,
+                )
+                snippets["automation"] = _share_automation_setup(
+                    str(invite["client_url"]),
+                    invite_id,
+                    renewal_token,
+                    oauth=invite.get("auth_mode") == "oauth-resource",
+                    protocol_version=str(invite.get("protocol_version") or "2025-11-25"),
+                )
+                invite.update(headers=headers, lease_token=token, setup_snippets=snippets, renewal_token=renewal_token)
         else:
             invite["setup_available"] = False
             invite.pop("headers", None)

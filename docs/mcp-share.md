@@ -123,6 +123,94 @@ traffic is observed. The table records evidence source, confidence, risk level,
 categories, and signals such as command-capable arguments, network/path
 arguments, destructive annotations, and open argument schemas.
 
+## Renewable Automation Invites
+
+For an always-on bot, enable **Renewable automation invite** in the console's
+Invites tab, or extend the normal invite command:
+
+```bash
+snulbug mcp share invite create .snulbug/shares/my-share \
+  --recipient nightly-bot --task "Inspect project" \
+  --capability project_readonly \
+  --renewable --ttl 30m --renewal-ttl 7d
+```
+
+`--ttl` controls the short-lived access lease. `--renewal-ttl` is the owner's
+hard authorization deadline, measured from invite creation, not each renewal.
+The backing lease keeps its ID, capabilities, identity bindings, usage count,
+and total `--max-calls` budget. Renewal does not approve policy changes or
+replenish an exhausted budget. Use the existing Lua rate limits for recurring
+request limits; this is not a new daily quota system.
+
+The setup packet includes a renewal credential, a curl command, and a Python
+integration example. Store the renewal credential as a bot secret, separately
+from the short-lived `x-snulbug-lease` token. It is reusable until its deadline
+or revocation, is not an OAuth refresh token, and cannot administer the console
+or create other invites. It is shown only through the existing owner CLI or
+secret-gated console. Protect the share directory and its `invite-secrets.json`.
+
+Consumers use ordinary HTTPS against the **same MCP URL**, so ngrok and other
+generated tunnel routes need no additional public endpoint:
+
+```bash
+export SNULBUG_MCP_URL="https://your-tunnel.example/mcp"
+export SNULBUG_INVITE_ID="invite_..."
+export SNULBUG_RENEWAL_TOKEN="sbr_..."
+# Set SNULBUG_BEARER_TOKEN to the bearer token from the invite packet.
+curl --fail-with-body -sS "$SNULBUG_MCP_URL" \
+  -H "Authorization: Bearer ${SNULBUG_BEARER_TOKEN}" \
+  -H "x-snulbug-renewal: ${SNULBUG_RENEWAL_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d "{\"jsonrpc\":\"2.0\",\"id\":\"renew\",\"method\":\"snulbug/lease/renew\",\"params\":{\"invite_id\":\"${SNULBUG_INVITE_ID}\"}}"
+```
+
+`snulbug/lease/renew` is a snulbug JSON-RPC extension, not a standard MCP method
+or an upstream tool. Its only parameter is `invite_id`; the consumer cannot
+choose a longer TTL, larger budget, or different capabilities. The gateway
+terminates the request without forwarding the renewal credential upstream.
+Errors use `error.data.reason_code`, even when the HTTP status is 200.
+
+On success, `result.headers` contains the current lease header;
+`result.lease.expires_at` and `result.lease.renewal.renew_after` tell the bot
+when to refresh its MCP client's headers. Call again at `renew_after`, with
+jitter and backoff for network failures. Retries inside the same lease window
+return the same access token. A renewal rotates it with at most 30 seconds of
+overlap for in-flight requests, bounded by the old token's original expiry.
+After a process restart or an expired access lease, the **same operation**
+recovers access while the owner authorization remains valid. No old lease token
+or installed snulbug client is required. Fixed-header clients need a refresh
+integration; a static client configuration does not renew itself.
+
+OAuth shares still require a valid access token obtained from the configured
+identity provider. Bind automation invites using `--allow-issuer` plus
+`--allow-subject` or `--allow-client-id`; optionally add `--allow-tenant`.
+Use that access token as the renewal request's `Authorization` header and the
+separate invite renewal credential as `x-snulbug-renewal`. Required OAuth scopes,
+DPoP requirements, and identity bindings still apply. Tool scope maps, claim
+policies, and Lua continue to govern every ordinary MCP tool call.
+For DPoP-required shares, the consumer must also sign and attach a fresh proof
+for each renewal request using its existing OAuth/DPoP client integration; the
+plain curl/Python examples do not mint proofs or OAuth access tokens.
+
+Revoking the invite or backing lease disables renewal and restart recovery.
+Closing the share with its default revocation option revokes its invites too.
+Even `invite revoke --keep-lease` revokes renewal authority; it leaves only the
+already-issued access lease usable until expiry. Removed capability labels,
+exhausted budgets, and expired renewal authorizations fail closed. Create a new
+invite for a new approval; operator reactivation cannot reset a renewable lease.
+Cleanup retains expired access leases while their renewal authorization is
+active. The console shows authorization expiry, access expiry, next renewal,
+and last renewal/count, and keeps setup snippets synchronized with token rotation.
+Renewal decisions go to the existing audit/event sinks, not the Lua replay log:
+renewing a credential is a control operation, not a simulated policy decision.
+
+Renewal and lease consumption use the existing JSON lease store with file locks
+and atomic replacement, including across local worker processes. Persist that
+file and the share directory across gateway restarts. This does not introduce
+a distributed lease database; separate hosts need a shared authority rather
+than independent copies of `leases.json`.
+
 ## Generated files
 
 By default, the command writes under `.snulbug/shares/share-*` and creates:

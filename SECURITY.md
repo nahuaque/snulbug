@@ -59,6 +59,16 @@ Limits:
   schemas pass through unless your Lua policy blocks them separately.
 - Leases are bearer-style capabilities. Store `leases.json` locally, rotate or
   revoke leases after sharing, and prefer short TTLs for public tunnel use.
+- Renewable automation invites add a separate, reusable renewal credential with
+  an owner-set hard deadline. Treat it as a long-lived bot secret: theft together
+  with the required gateway authentication permits recovery within the approved
+  capability and call-budget bounds until revocation or expiry. It does not
+  grant console access. Renewal retains the existing lease's usage count and
+  identity bindings; revocation disables recovery. Access-token rotation has a
+  bounded overlap of at most 30 seconds. Lease operations are serialized on the
+  local lease file; independent gateway hosts must not treat copied JSON stores
+  as a shared revocation authority. The owner console's invite secret store
+  contains plaintext setup credentials and must remain private.
 
 ### Malicious or compromised MCP server
 

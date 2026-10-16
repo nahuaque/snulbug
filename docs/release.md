@@ -3,7 +3,8 @@
 1. Finalize `CHANGELOG.md`, with a dated release section and upgrade notes. Keep
    protocol preview limitations distinct from package release readiness.
 2. Bump `version` in `pyproject.toml` and `snulbug/__init__.py`, update the
-   devcontainer feature manifest and its docs/example references, and run `uv lock`.
+   devcontainer feature manifest and its docs/example references (including
+   `examples/codespace_local_gateway/.devcontainer/devcontainer.json`), and run `uv lock`.
 3. Run verification:
 
 ```bash
@@ -48,7 +49,7 @@ python -m zipfile -l dist/snulbug-*.whl
 8. Install from TestPyPI in a clean environment and smoke test:
 
 ```bash
-uvx --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ snulbug==0.2.1 --help
+uvx --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ snulbug==0.2.2 --help
 ```
 
 9. Run the manual `Publish` workflow with `repository = pypi` when the TestPyPI
@@ -56,4 +57,4 @@ uvx --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org
 10. Create the GitHub release and tag after the PyPI package is available.
 
 The `Publish` workflow uses `workflow_dispatch`, not a tag trigger. Creating or
-pushing `v0.2.1` does not publish a package or automatically create a GitHub release.
+pushing `v0.2.2` does not publish a package or automatically create a GitHub release.

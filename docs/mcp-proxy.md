@@ -920,6 +920,10 @@ snulbug mcp evidence impact traces/session.jsonl --lease leases.json --report-ou
 In facade mode, leases use the client-facing tool name, such as
 `files.read_file` or `git.status`.
 
+For unattended consumers, [renewable automation invites](mcp-share.md#renewable-automation-invites)
+extend the same task lease with bounded consumer renewal and restart recovery.
+They retain the existing Lua, OAuth identity, revocation, and call-budget checks.
+
 ## Tool Schema Firewall
 
 When `schema_validation = true`, snulbug learns each MCP tool's `inputSchema`
