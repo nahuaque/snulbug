@@ -6,7 +6,7 @@ workspace helpers for Codespaces/devcontainers.
 ```json
 {
   "features": {
-    "ghcr.io/nahuaque/snulbug/features/snulbug:0.2.2": {
+    "ghcr.io/nahuaque/snulbug/features/snulbug:0.2.3": {
       "install_source": "github",
       "github_ref": "main",
       "mode": "member-agent",

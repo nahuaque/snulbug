@@ -4,6 +4,7 @@ import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .auth_providers import (
     AuthProvider,
@@ -19,6 +20,11 @@ DEFAULT_AUTH_SCOPES = (
     "mcp:tool.files.read",
     "mcp:tool.git.status",
 )
+_DEFAULT_AUTH_SCOPE_MAP = {
+    "mcp:tools.read": ("tools/list", "resources/list"),
+    "mcp:tool.files.read": ("tools/call:filesystem.read_file",),
+    "mcp:tool.git.status": ("tools/call:git.status",),
+}
 ENTERPRISE_MANAGED_AUTH_EXTENSION = "io.modelcontextprotocol/enterprise-managed-authorization"
 
 DEFAULT_AUTH_INIT_ROOT = Path(".snulbug/auth")
@@ -146,6 +152,15 @@ def _register_builtin_auth_recipe_providers() -> None:
             name="keycloak",
             title="Keycloak",
             docs=("https://www.keycloak.org/docs/latest/server_admin/#_clients",),
+        ),
+        _OAuthRecipeProvider(
+            name="pocket-id",
+            title="Pocket ID",
+            docs=(
+                "https://pocket-id.org/docs/guides/apis",
+                "https://pocket-id.org/docs/guides/client-id-metadata-documents",
+                "https://pocket-id.org/docs/guides/scopes-and-claims",
+            ),
         ),
         _OAuthRecipeProvider(
             name="auth0",
@@ -405,6 +420,30 @@ def _oauth_provider_recipe(
     auth_server_id: str | None,
     scopes: Sequence[str],
 ) -> dict[str, Any]:
+    if provider == "pocket-id":
+        for name, value in (("issuer", issuer), ("public MCP URL", public_url)):
+            parsed = urlsplit(value)
+            local = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+            if (
+                not parsed.hostname
+                or parsed.scheme not in {"http", "https"}
+                or (parsed.scheme != "https" and not local)
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError(
+                    f"Pocket ID {name} must be an absolute HTTPS URL (HTTP only for localhost), "
+                    "without credentials, query, or fragment"
+                )
+        identity_scopes = {"openid", "profile", "email", "groups", "offline_access"}.intersection(scopes)
+        if identity_scopes:
+            raise ValueError(
+                "Pocket ID --scope values must be API permission keys, not identity scopes; "
+                "openid is added to the client request automatically"
+            )
+        scopes = _unique_strings(["mcp:connect", *scopes])
     provider_steps = _oauth_provider_steps(
         provider,
         public_url=public_url,
@@ -416,7 +455,7 @@ def _oauth_provider_recipe(
         auth_server_id=auth_server_id,
         scopes=scopes,
     )
-    return {
+    recipe = {
         "ok": True,
         "kind": "snulbug.auth.recipe",
         "provider": provider,
@@ -452,6 +491,23 @@ def _oauth_provider_recipe(
         "notes": _oauth_provider_notes(provider, public_url=public_url, audience=audience),
         "docs": list(docs),
     }
+    if provider == "pocket-id":
+        if audience != public_url:
+            raise ValueError("Pocket ID audience must equal the public MCP URL used as the API resource")
+        # Keep an explicit, deny-by-default map even for connect-only or custom permissions.
+        scope_map = {scope: _DEFAULT_AUTH_SCOPE_MAP.get(scope, ()) for scope in scopes}
+        recipe["snulbug_config"] = _oauth_snulbug_config(
+            public_url=public_url, issuer=issuer, audience=audience, scopes=scopes, scope_map=scope_map
+        )
+        recipe["client_request"].update(
+            resource=public_url,
+            scopes=_unique_strings(["openid", *scopes]),
+            grant_type="authorization_code",
+            code_challenge_method="S256",
+            token_endpoint_auth_method="none",
+        )
+        recipe["commands"]["doctor"] += ' --header "x-snulbug-lease: ${SNULBUG_LEASE}"'
+    return recipe
 
 
 def _cloudflare_access_recipe(
@@ -627,8 +683,14 @@ def _oauth_snulbug_config(
     issuer: str,
     audience: str,
     scopes: Sequence[str],
+    scope_map: Mapping[str, Sequence[str]] | None = None,
 ) -> str:
     scope_list = _toml_string_list(scopes)
+    if scope_map is None:
+        scope_map = _DEFAULT_AUTH_SCOPE_MAP
+    mappings = "\n".join(
+        f"{json.dumps(scope)} = {_toml_string_list(selectors)}" for scope, selectors in scope_map.items()
+    )
     return f"""[mcp.proxy]
 tunnel_public_url = {json.dumps(public_url)}
 lease_required = true
@@ -647,9 +709,7 @@ strip_authorization_upstream = true
 dpop_mode = "optional" # set to "required" for DPoP-only clients
 
 [mcp.auth.scope_map]
-"mcp:tools.read" = ["tools/list", "resources/list"]
-"mcp:tool.files.read" = ["tools/call:filesystem.read_file"]
-"mcp:tool.git.status" = ["tools/call:git.status"]
+{mappings}
 """
 
 
@@ -735,6 +795,28 @@ def _oauth_provider_steps(
     scopes: Sequence[str],
 ) -> list[str]:
     scope_text = ", ".join(f"`{scope}`" for scope in scopes)
+    if provider == "pocket-id":
+        return [
+            f"Under Administration -> APIs, add an API named snulbug with resource `{public_url}`. "
+            "Use a stable public MCP URL without a trailing slash; Pocket ID normalizes trailing slashes.",
+            f"Add API permission keys: {scope_text}. These are API permissions, not identity/profile scopes.",
+            f"Create or choose an OIDC client for the MCP client{_client_suffix(client_id)}. "
+            "For a desktop/public client, use authorization code with PKCE S256, no client secret, "
+            "and the client's exact callback URLs.",
+            "On the client's Access tab, add the snulbug API under User-delegated access and select "
+            "the permissions it may request. Restrict allowed user groups as appropriate.",
+            f"Request `resource={public_url}` and `openid` plus the needed API permissions. "
+            "Send the access token to snulbug, never the ID token.",
+            "For Client ID Metadata Document (CIMD) clients, allowlist exact HTTPS metadata document URLs "
+            "under Application Configuration -> OIDC. CIMD is disabled by default. Separately grant API "
+            "permissions to metadata-document clients under Administration -> APIs; this grant covers "
+            "current and future allowed metadata-document clients, so keep the allowlist narrow.",
+            "For an automation bot, use a separate confidential OIDC client with Client access (M2M) "
+            "to the API. Request grant_type=client_credentials with the same resource and needed "
+            "permissions. Keep its secret or federated client assertion in the consumer, not snulbug.",
+            "Review the generated scope_map selectors against discovered tool names. Empty selector "
+            "lists grant no MCP actions; add concrete selectors for custom permissions before using them.",
+        ]
     if provider == "keycloak":
         return [
             f"In realm `{realm or '<realm>'}`, create or choose an OpenID Connect client for the MCP client.",
@@ -787,6 +869,28 @@ def _oauth_provider_notes(provider: str, *, public_url: str, audience: str) -> l
         )
     if provider == "keycloak":
         notes.append("Keycloak often needs an explicit audience mapper for access-token `aud` values.")
+    if provider == "pocket-id":
+        notes.extend(
+            [
+                "Use a stable HTTPS Pocket ID issuer reachable from both the MCP client and snulbug. "
+                "Set --issuer or --domain to its APP_URL, not a discovery-document or token-endpoint URL.",
+                "A normal OIDC login token targets the client ID. Only an API access token requested with "
+                "the MCP resource has the required audience; do not relax audience validation.",
+                "Pocket ID custom claims are in ID tokens/userinfo, not access tokens. Do not assume "
+                "groups or tenant claims are available to Lua; inspect an API access token first. "
+                "This recipe uses verified subject/client identity, API scopes, and leases.",
+                "OAuth does not replace a snulbug lease. Supply x-snulbug-lease for MCP calls; bind "
+                "renewable automation invites to the verified issuer and subject or client ID. OAuth "
+                "token refresh/acquisition and snulbug lease renewal are separate consumer operations.",
+                "Doctor checks metadata, JWKS, public resource/audience alignment, and discovered scope-map "
+                "targets. It cannot inspect Pocket ID's private API grants or CIMD allowlist; prove actual "
+                "permissions with sample tokens in the existing share auth conformance workflow.",
+                "DPoP is optional in the generated config. Require it only after verifying issuer/client "
+                "support. Console login remains protected by the console secret, not Pocket ID.",
+                "This is a generated setup recipe with synthetic token fixture coverage, not a live "
+                "Pocket ID or real-client interoperability certification.",
+            ]
+        )
     return notes
 
 
@@ -804,6 +908,8 @@ def _provider_issuer(
     if provider == "keycloak":
         base = _https_domain(domain or "KEYCLOAK.example")
         return f"{base}/realms/{realm or 'YOUR_REALM'}"
+    if provider == "pocket-id":
+        return _https_domain(domain or "POCKET_ID.example")
     if provider == "auth0":
         return f"{_https_domain(domain or 'YOUR_TENANT.auth0.com')}/"
     if provider == "okta":
@@ -825,13 +931,14 @@ def _auth_recipe_commands(public_url: str) -> dict[str, str]:
 def _auth_init_commands(recipe: Mapping[str, Any], *, directory: Path) -> dict[str, str]:
     public_url = str(recipe.get("public_url") or "")
     config = directory / "snulbug.auth.toml"
+    doctor = _mapping(recipe.get("commands")).get("doctor") or (
+        f"uv run snulbug mcp share auth doctor --config snulbug.toml --url {public_url} --token $ACCESS_TOKEN"
+    )
     return {
         "review": f"less {directory / 'README.md'}",
         "show_config": f"cat {config}",
         "run": "uv run snulbug mcp share run --config snulbug.toml",
-        "doctor": (
-            f"uv run snulbug mcp share auth doctor --config snulbug.toml --url {public_url} --token $ACCESS_TOKEN"
-        ),
+        "doctor": str(doctor),
     }
 
 

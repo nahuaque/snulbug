@@ -5,8 +5,12 @@ snulbug has a small auth provider extension point for two related jobs:
 - generate `snulbug mcp share auth init --provider ...` setup recipes
 - map provider-specific token claims into `context.auth.provider.*` for Lua policy helpers
 
-Built-ins cover Keycloak, Auth0, Okta, Entra, Cloudflare Access, and GitHub
+Built-ins cover Keycloak, Pocket ID, Auth0, Okta, Entra, Cloudflare Access, and GitHub
 Actions OIDC. External providers can register the same surface from Python.
+
+The [Pocket ID recipe](mcp-auth-recipes.md#pocket-id) uses standard verified
+subject/client identity and API scopes. It does not invent provider claims or
+retrieve identity claims from ID tokens/userinfo during MCP requests.
 
 ```python
 from collections.abc import Mapping

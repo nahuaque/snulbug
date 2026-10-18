@@ -49,7 +49,7 @@ python -m zipfile -l dist/snulbug-*.whl
 8. Install from TestPyPI in a clean environment and smoke test:
 
 ```bash
-uvx --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ snulbug==0.2.2 --help
+uvx --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ snulbug==0.2.3 --help
 ```
 
 9. Run the manual `Publish` workflow with `repository = pypi` when the TestPyPI
@@ -57,4 +57,4 @@ uvx --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org
 10. Create the GitHub release and tag after the PyPI package is available.
 
 The `Publish` workflow uses `workflow_dispatch`, not a tag trigger. Creating or
-pushing `v0.2.2` does not publish a package or automatically create a GitHub release.
+pushing `v0.2.3` does not publish a package or automatically create a GitHub release.

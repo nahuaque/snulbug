@@ -2348,6 +2348,9 @@ def doctor_mcp_share_auth(
             details={"attempted_urls": issuer_urls},
         )
 
+    if issuer_metadata:
+        _add_auth_issuer_metadata_checks(checks, auth, issuer_metadata, recommendations)
+
     _add_jwks_or_introspection_check(
         checks,
         issuer_metadata,
@@ -4005,6 +4008,69 @@ def _issuer_metadata_urls(auth: Mapping[str, Any]) -> list[str]:
             urls.append(f"{base}/.well-known/oauth-authorization-server")
             urls.append(f"{base}/.well-known/openid-configuration")
     return _unique_strings(urls)
+
+
+def _add_auth_issuer_metadata_checks(
+    checks: list[dict[str, Any]],
+    auth: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+    recommendations: list[str],
+) -> None:
+    configured_issuer = auth.get("issuer")
+    expected = (
+        [configured_issuer]
+        if isinstance(configured_issuer, str) and configured_issuer
+        else _auth_issuer_candidates(auth)
+    )
+    issuer = metadata.get("issuer")
+    issuer_ok = isinstance(issuer, str) and bool(issuer) and issuer in expected
+    _add_share_doctor_check(
+        checks,
+        "auth.issuer_metadata.issuer",
+        issuer_ok,
+        "issuer metadata identifies the configured authorization server"
+        if issuer_ok
+        else "issuer metadata issuer is missing or does not exactly match the configured authorization server",
+        component="auth",
+        details={"issuer": issuer, "expected": expected},
+    )
+    if not issuer_ok:
+        recommendations.append(
+            "Align mcp.auth.issuer with the issuer's canonical external URL (APP_URL for Pocket ID); "
+            "issuer identifiers must match exactly, including trailing slashes."
+        )
+
+    code_flow = "authorization_code" in _sequence(metadata.get("grant_types_supported")) or "code" in _sequence(
+        metadata.get("response_types_supported")
+    )
+    pkce_methods = _sequence(metadata.get("code_challenge_methods_supported"))
+    pkce_ok = "S256" in pkce_methods
+    _add_share_doctor_check(
+        checks,
+        "auth.issuer_metadata.pkce_s256",
+        pkce_ok if code_flow else None,
+        "authorization server advertises PKCE S256"
+        if pkce_ok
+        else "authorization code flow is advertised without PKCE S256"
+        if code_flow
+        else "authorization code support is not advertised; PKCE check skipped",
+        component="auth",
+        details={"code_challenge_methods_supported": pkce_methods},
+    )
+    if code_flow and not pkce_ok:
+        recommendations.append("Enable PKCE S256 on the authorization server for public MCP clients.")
+
+    cimd = metadata.get("client_id_metadata_document_supported") is True
+    _add_share_doctor_check(
+        checks,
+        "auth.issuer_metadata.cimd",
+        True if cimd else None,
+        "authorization server advertises Client ID Metadata Document support; verify its allowlist and API grants"
+        if cimd
+        else "CIMD is not advertised; register clients manually or enable explicitly allowed metadata documents",
+        component="auth",
+        details={"client_id_metadata_document_supported": cimd},
+    )
 
 
 def _add_jwks_or_introspection_check(

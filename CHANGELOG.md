@@ -6,6 +6,18 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-18
+
+Add Pocket ID setup through the existing OAuth provider and lease machinery.
+
+- Added `share auth init --provider pocket-id` with resource-bound API permissions, deny-by-default scope maps, PKCE/CIMD registration instructions, automation guidance, and lease-aware doctor commands.
+- Extended auth doctor to check exact issuer metadata identity, advertised PKCE S256, and CIMD availability without claiming access to private provider grants or allowlists.
+- Added synthetic RS256 user/bot token fixtures, rejection and JWKS rotation tests, and existing auth conformance-pack coverage; documented setup and identity-claim limitations.
+
+Pocket ID live passkey/client interoperability remains unverified. This release
+does not add browser console login or authentication to HTTP mounts. No change
+to the default MCP protocol version or the experimental profile's limitations.
+
 ## [0.2.2] - 2026-10-16
 
 Support always-on MCP bots with renewable automation invites, without introducing

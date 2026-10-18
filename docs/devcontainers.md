@@ -10,8 +10,8 @@ servers with a shared control plane.
 ```json
 {
   "features": {
-    "ghcr.io/nahuaque/snulbug/features/snulbug:0.2.2": {
-      "version": "0.2.2",
+    "ghcr.io/nahuaque/snulbug/features/snulbug:0.2.3": {
+      "version": "0.2.3",
       "mode": "member-agent",
       "policy_profile": "tunnel-safe",
       "registry": "redis://redis:6379/0",
