@@ -24,6 +24,16 @@ The release QA suite runs:
 - source CLI/module smoke tests
 - isolated built-wheel CLI/module smoke tests outside the source checkout
 - installed-wheel protocol discovery and offline JSON Schema 2020-12 checks
+- installed-wheel share creation outside the checkout, local MCP/HTTP requests,
+  method/header contracts, file-credential rotation and fail-closed behavior,
+  lease persistence/revocation across gateway restart, and managed-child cleanup
+
+The operations smoke uses local backends and a fake Python child through the
+existing managed SSH command surface. It never opens an SSH/public tunnel or
+requires provider credentials. It requires POSIX process/signal support, as do
+the Linux release workflow and its existing runtime subprocess tests; it does
+not certify Windows supervision. Any smoke failure prevents the success marker
+and fails release QA. Failure paths stop the gateway and clean up its child.
 
 These checks do not certify client/provider E2E interoperability. For 0.2.x,
 2025-11-25 remains the default and 2026-07-28 remains an opt-in preview.
@@ -49,7 +59,7 @@ python -m zipfile -l dist/snulbug-*.whl
 8. Install from TestPyPI in a clean environment and smoke test:
 
 ```bash
-uvx --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ snulbug==0.2.3 --help
+uvx --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ snulbug==0.2.4 --help
 ```
 
 9. Run the manual `Publish` workflow with `repository = pypi` when the TestPyPI
@@ -57,4 +67,4 @@ uvx --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org
 10. Create the GitHub release and tag after the PyPI package is available.
 
 The `Publish` workflow uses `workflow_dispatch`, not a tag trigger. Creating or
-pushing `v0.2.3` does not publish a package or automatically create a GitHub release.
+pushing `v0.2.4` does not publish a package or automatically create a GitHub release.

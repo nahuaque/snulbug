@@ -39,6 +39,26 @@ SCHEMA_FIXTURES = (
     "README.md",
 )
 PROTOCOL_SMOKE_SUCCESS = "snulbug installed protocol/schema smoke passed"
+OPERATIONS_SMOKE_SUCCESS = "snulbug installed operations smoke passed"
+OPERATIONS_MODULES = (
+    "_operations_smoke",
+    "share_runtime",
+    "credentials",
+    "credential_health",
+    "request_explanations",
+    "http_routes",
+    "http_mounts",
+)
+OPERATIONS_TESTS = (
+    "test_operations_smoke.py",
+    "test_gateway_snapshot.py",
+    "test_share_runtime.py",
+    "test_credentials.py",
+    "test_credential_health.py",
+    "test_request_explanations.py",
+    "test_http_routes.py",
+    "test_http_mounts.py",
+)
 
 
 @dataclass(frozen=True)
@@ -94,6 +114,9 @@ def build_release_qa_steps(
                 ReleaseQAStep("wheel-module", "Smoke test built wheel module", check=smoke_built_wheel_module),
                 ReleaseQAStep(
                     "wheel-protocol", "Smoke test installed protocol and schemas", check=smoke_built_wheel_protocol
+                ),
+                ReleaseQAStep(
+                    "wheel-operations", "Smoke test installed share operations", check=smoke_built_wheel_operations
                 ),
             ]
         )
@@ -230,6 +253,18 @@ def smoke_built_wheel_protocol(root: Path) -> tuple[bool, str | None, dict[str, 
     )
 
 
+def smoke_built_wheel_operations(root: Path) -> tuple[bool, str | None, dict[str, Any]]:
+    return _smoke_built_wheel(
+        root,
+        (
+            "python",
+            "-c",
+            "from snulbug._operations_smoke import _installed_operations_smoke; _installed_operations_smoke()",
+        ),
+        expected_output=OPERATIONS_SMOKE_SUCCESS,
+    )
+
+
 def _installed_protocol_smoke() -> None:
     """Run from the installed wheel in a temporary directory, without an MCP server."""
     from importlib import import_module
@@ -354,6 +389,7 @@ def _inspect_wheel(path: Path) -> tuple[bool, str | None, dict[str, Any]]:
         "snulbug/release_qa.py",
         "snulbug/py.typed",
         *(f"snulbug/{module}.py" for module in PROTOCOL_MODULES),
+        *(f"snulbug/{module}.py" for module in OPERATIONS_MODULES),
     }
     missing = sorted(required - names)
     pycache = sorted(name for name in names if "__pycache__" in name or name.endswith((".pyc", ".pyo")))
@@ -383,6 +419,12 @@ def _inspect_sdist(path: Path, *, version: str) -> tuple[bool, str | None, dict[
         f"{prefix}tests/test_share_console.py",
         f"{prefix}docs/mcp-protocol.md",
         f"{prefix}tests/fixtures/stdio_subscriptions.py",
+        f"{prefix}docs/always-on-runtime.md",
+        f"{prefix}docs/credential-brokers.md",
+        f"{prefix}docs/mcp-proxy.md",
+        f"{prefix}docs/upgrading-to-0.2.4.md",
+        *(f"{prefix}snulbug/{module}.py" for module in OPERATIONS_MODULES),
+        *(f"{prefix}tests/{name}" for name in OPERATIONS_TESTS),
         *(f"{prefix}snulbug/{module}.py" for module in PROTOCOL_MODULES),
         *(f"{prefix}tests/test_{module}.py" for module in PROTOCOL_MODULES),
         *(f"{prefix}tests/fixtures/json_schema_2020_12/{name}" for name in SCHEMA_FIXTURES),

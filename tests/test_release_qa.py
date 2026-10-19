@@ -11,6 +11,9 @@ from pathlib import Path
 import pytest
 
 from snulbug.release_qa import (
+    OPERATIONS_MODULES,
+    OPERATIONS_SMOKE_SUCCESS,
+    OPERATIONS_TESTS,
     PROTOCOL_MODULES,
     PROTOCOL_SMOKE_SUCCESS,
     SCHEMA_FIXTURES,
@@ -20,6 +23,7 @@ from snulbug.release_qa import (
     check_readme_image_urls,
     check_version_consistency,
     run_release_qa,
+    smoke_built_wheel_operations,
     smoke_built_wheel_protocol,
 )
 from snulbug.simulator import main as simulator_main
@@ -42,6 +46,7 @@ def test_release_qa_plan_includes_release_gates():
         "wheel-cli",
         "wheel-module",
         "wheel-protocol",
+        "wheel-operations",
     ]
 
 
@@ -132,7 +137,7 @@ def test_release_qa_checks_lock_version(tmp_path, lock_version, ok):
 def make_distributions(root, *, missing=None, cache=False):
     (root / "pyproject.toml").write_text('[project]\nversion = "1.2.3"\n')
     (root / "dist").mkdir()
-    modules = {f"snulbug/{name}.py" for name in PROTOCOL_MODULES}
+    modules = {f"snulbug/{name}.py" for name in (*PROTOCOL_MODULES, *OPERATIONS_MODULES)}
     wheel_files = {"snulbug/__init__.py", "snulbug/release_qa.py", "snulbug/py.typed", *modules}
     sdist_files = {
         "README.md",
@@ -142,10 +147,15 @@ def make_distributions(root, *, missing=None, cache=False):
         "snulbug/release_qa.py",
         "docs/release.md",
         "docs/mcp-protocol.md",
+        "docs/always-on-runtime.md",
+        "docs/credential-brokers.md",
+        "docs/mcp-proxy.md",
+        "docs/upgrading-to-0.2.4.md",
         "tests/test_share_console.py",
         "tests/fixtures/stdio_subscriptions.py",
         *modules,
         *(f"tests/test_{name}.py" for name in PROTOCOL_MODULES),
+        *(f"tests/{name}" for name in OPERATIONS_TESTS),
         *(f"tests/fixtures/json_schema_2020_12/{name}" for name in SCHEMA_FIXTURES),
     }
     if cache:
@@ -175,6 +185,11 @@ def test_release_qa_accepts_complete_distributions(tmp_path):
         "tests/fixtures/stdio_subscriptions.py",
         "tests/fixtures/json_schema_2020_12/dynamicRef.json",
         "tests/fixtures/json_schema_2020_12/LICENSE",
+        "snulbug/_operations_smoke.py",
+        "snulbug/credential_health.py",
+        "snulbug/http_mounts.py",
+        "tests/test_operations_smoke.py",
+        "docs/upgrading-to-0.2.4.md",
     ],
 )
 def test_release_qa_rejects_missing_protocol_artifacts(tmp_path, missing):
@@ -216,8 +231,15 @@ def test_protocol_smoke_rejects_mismatched_installed_metadata(monkeypatch):
         _installed_protocol_smoke()
 
 
-@pytest.mark.parametrize("output,expected_ok", [(PROTOCOL_SMOKE_SUCCESS, True), ("release-qa", False)])
-def test_wheel_protocol_smoke_is_isolated_and_requires_success_marker(tmp_path, monkeypatch, output, expected_ok):
+@pytest.mark.parametrize(
+    "smoke,marker",
+    [
+        (smoke_built_wheel_protocol, PROTOCOL_SMOKE_SUCCESS),
+        (smoke_built_wheel_operations, OPERATIONS_SMOKE_SUCCESS),
+    ],
+)
+@pytest.mark.parametrize("success", [True, False])
+def test_wheel_smoke_is_isolated_and_requires_success_marker(tmp_path, monkeypatch, smoke, marker, success):
     make_distributions(tmp_path)
     monkeypatch.setenv("PYTHONPATH", str(tmp_path))
     monkeypatch.setenv("PYTHONHOME", str(tmp_path))
@@ -232,11 +254,11 @@ def test_wheel_protocol_smoke_is_isolated_and_requires_success_marker(tmp_path, 
         assert "PYTHONPATH" not in kwargs["env"]
         assert "PYTHONHOME" not in kwargs["env"]
         assert kwargs["timeout"] == 180
-        return subprocess.CompletedProcess(command, 0, stdout=output)
+        return subprocess.CompletedProcess(command, 0, stdout=marker if success else "release-qa")
 
     monkeypatch.setattr("snulbug.release_qa.subprocess.run", run)
-    ok, _, _ = smoke_built_wheel_protocol(tmp_path)
-    assert ok is expected_ok
+    ok, _, _ = smoke(tmp_path)
+    assert ok is success
 
 
 def test_release_qa_cli_exposes_dry_run(capsys):

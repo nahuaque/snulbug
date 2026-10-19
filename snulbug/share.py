@@ -10682,19 +10682,50 @@ def _copy_gateway_source(destination: Path, *, force: bool) -> None:
     package_source = source_root / "snulbug"
     required_files = ("pyproject.toml", "README.md", "LICENSE")
     missing = [name for name in required_files if not (source_root / name).is_file()]
-    if missing or not package_source.is_dir():
-        raise FileNotFoundError(
-            "cannot create container gateway source snapshot; run `snulbug mcp share` from a source checkout "
-            "until snulbug is published as a container-installable package"
-        )
+    if not package_source.is_dir():
+        raise FileNotFoundError("cannot locate the installed snulbug package for the container gateway snapshot")
     if destination.exists():
         if not force:
             raise FileExistsError(f"share output already exists: {destination}")
         shutil.rmtree(destination)
     destination.mkdir(parents=True, exist_ok=True)
-    for name in required_files:
-        shutil.copy2(source_root / name, destination / name)
+    if missing:
+        _write_installed_gateway_metadata(destination)
+    else:
+        for name in required_files:
+            shutil.copy2(source_root / name, destination / name)
     shutil.copytree(package_source, destination / "snulbug", ignore=_ignore_source_artifacts)
+
+
+def _write_installed_gateway_metadata(destination: Path) -> None:
+    from importlib.metadata import distribution
+
+    from .gateway_templates import render_toml_table
+
+    dist = distribution("snulbug")
+    metadata = dist.metadata
+    project = {
+        "name": "snulbug",
+        "version": dist.version,
+        "description": metadata.get("Summary", "snulbug MCP policy gateway"),
+        "requires-python": metadata.get("Requires-Python", ">=3.10"),
+        "dependencies": list(dist.requires or []),
+    }
+    lines = [
+        *render_toml_table("project", project),
+        "",
+        *render_toml_table("build-system", {"requires": ["hatchling"], "build-backend": "hatchling.build"}),
+        "",
+        *render_toml_table("tool.hatch.build.targets.wheel", {"packages": ["snulbug"]}),
+    ]
+    (destination / "pyproject.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (destination / "README.md").write_text(str(metadata.get_payload()), encoding="utf-8")
+    for entry in dist.files or []:
+        if entry.name == "LICENSE":
+            shutil.copy2(dist.locate_file(entry), destination / "LICENSE")
+            break
+    else:
+        raise FileNotFoundError("installed snulbug distribution is missing its LICENSE")
 
 
 def _ignore_source_artifacts(_directory: str, names: list[str]) -> set[str]:

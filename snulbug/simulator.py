@@ -134,7 +134,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     release_qa.add_argument("--skip-bandit", action="store_true", help="skip the Bandit high-severity security scan")
     release_qa.add_argument("--skip-tests", action="store_true", help="skip the pytest suite")
     release_qa.add_argument("--skip-build", action="store_true", help="skip distribution build and inspection")
-    release_qa.add_argument("--skip-smoke", action="store_true", help="skip source and built-wheel CLI smoke tests")
+    release_qa.add_argument("--skip-smoke", action="store_true", help="skip source and installed-wheel smoke tests")
     release_qa.add_argument("--dry-run", action="store_true", help="print the release QA plan without running it")
     release_qa.add_argument("--keep-going", action="store_true", help="continue running gates after a failure")
     add_compact_arg(release_qa)

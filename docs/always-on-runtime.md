@@ -300,7 +300,8 @@ boot out to keep the service stopped. Arrange rotation for the log files.
 Use a locally built image containing this runtime and the chosen provider
 binary; no new published image is required. The generated
 `containers/Dockerfile.gateway` is a starting point and installs from its
-`snulbug-src/` snapshot, not a published snulbug image. Ensure that snapshot
+`snulbug-src/` snapshot of the checkout or installed package, not a published
+snulbug image. Ensure that snapshot
 contains the runtime. It does not install ngrok or SSH: add a verified,
 architecture-matched Linux ngrok binary or install `openssh-client` in your
 local build before using managed startup. Never copy provider credentials into
