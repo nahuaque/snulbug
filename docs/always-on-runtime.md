@@ -77,6 +77,10 @@ gateway process failure; it is not a public health watchdog and should not be
 used to bypass exhausted tunnel retries. No MCP tool calls are retried or
 replayed by this runtime. A broken connection can leave a tool's outcome
 unknown; reconnecting does not make a repeated side effect safe.
+The existing decision feed and session reports include
+[request failure explanations](mcp-evidence.md#request-failure-explanations),
+separating admission, upstream credentials/transport, and response-policy failures
+without performing retries or adding background probes.
 
 ## Shutdown
 

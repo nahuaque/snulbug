@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Protocol, TextIO
 
 from .redaction import redact_secrets
+from .request_explanations import explain_request
 
 DEFAULT_WEBHOOK_EVENTS = ("snulbug.audit",)
 WEBHOOK_USER_AGENT = "snulbug-webhook/0.1"
@@ -426,6 +427,16 @@ def format_decision_console_line(event: Mapping[str, Any]) -> str:
         parts.append(f"reason_code={decision['reason_code']}")
     if decision.get("reason"):
         parts.append(f"reason={_console_value(decision['reason'])}")
+    explanation = explain_request(event)
+    if explanation:
+        parts.extend(
+            [
+                f"outcome={explanation['outcome']}",
+                f"failure.stage={explanation['stage']}",
+                f"failure.code={explanation['reason_code']}",
+                f"failure.summary={_console_value(explanation['summary'])}",
+            ]
+        )
     if confirmation:
         parts.append(f"confirm.approved={str(bool(confirmation.get('approved', False))).lower()}")
         if confirmation.get("mode"):

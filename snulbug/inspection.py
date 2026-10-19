@@ -8,6 +8,7 @@ from typing import Any
 
 from .recorder import RECORD_TYPE
 from .redaction import build_audit_event
+from .request_explanations import explain_request
 
 AUDIT_TYPE = "snulbug.audit"
 
@@ -69,6 +70,21 @@ def format_mcp_inspection_report(report: Mapping[str, Any], *, output_format: st
         "### Reason Codes",
         "",
         _counts_table(_mapping(report.get("decisions")).get("reason_codes")),
+        "",
+        "## Request Failures",
+        "",
+        "Policy admission is separate from successful execution. "
+        "Failure explanations use recorded evidence, not HTTP status alone.",
+        "",
+        _counts_table(_mapping(report.get("failures")).get("reason_codes")),
+        "",
+        _table(
+            ["Stage", "Reason", "Explanation", "Next Steps"],
+            [
+                [item.get("stage"), item.get("reason_code"), item.get("summary"), " ".join(item.get("next_steps", []))]
+                for item in _mapping(report.get("failures")).get("examples", [])
+            ],
+        ),
         "",
         "## MCP Traffic",
         "",
@@ -150,6 +166,10 @@ class _Inspector:
         self.blocked_examples: list[dict[str, Any]] = []
         self.invalid_json_examples: list[dict[str, Any]] = []
         self.upstream_error_examples: list[dict[str, Any]] = []
+        self.failure_outcomes: Counter[str] = Counter()
+        self.failure_stages: Counter[str] = Counter()
+        self.failure_reasons: Counter[str] = Counter()
+        self.failure_examples: list[dict[str, Any]] = []
 
     def add(self, event: Mapping[str, Any]) -> None:
         self.event_count += 1
@@ -185,7 +205,19 @@ class _Inspector:
         if mcp.get("valid_json") is False:
             self.invalid_mcp_json += 1
             self._append_example(self.invalid_json_examples, event)
-        if _status_is_server_error(response.get("status")):
+        explanation = explain_request(event)
+        if explanation:
+            self.failure_outcomes[explanation["outcome"]] += 1
+            self.failure_stages[explanation["stage"]] += 1
+            self.failure_reasons[explanation["reason_code"]] += 1
+            if len(self.failure_examples) < self.top:
+                self.failure_examples.append(
+                    {**explanation, "line": event.get("line"), "request_id": mcp.get("request_id")}
+                )
+        if explanation.get("stage", "").startswith("upstream_") and explanation.get("reason_code") not in {
+            "upstream.rpc_error",
+            "upstream.tool_error",
+        }:
             self.upstream_errors += 1
             self._append_example(self.upstream_error_examples, event)
 
@@ -218,6 +250,12 @@ class _Inspector:
                 "paths": _top_counts(self.paths, self.top),
             },
             "responses": {"statuses": _top_counts(self.response_statuses, self.top)},
+            "failures": {
+                "outcomes": dict(self.failure_outcomes),
+                "stages": _top_counts(self.failure_stages, self.top),
+                "reason_codes": _top_counts(self.failure_reasons, self.top),
+                "examples": self.failure_examples,
+            },
             "findings": self._findings(),
             "examples": {
                 "blocked": self.blocked_examples,
@@ -249,6 +287,13 @@ class _Inspector:
         self._add_finding(findings, "invalid_mcp_json", self.invalid_mcp_json, "warning")
         self._add_finding(findings, "batch_requests", self.batch_requests, "info")
         self._add_finding(findings, "upstream_errors", self.upstream_errors, "error")
+        self._add_finding(
+            findings,
+            "mcp_execution_errors",
+            self.failure_reasons.get("upstream.rpc_error", 0) + self.failure_reasons.get("upstream.tool_error", 0),
+            "warning",
+        )
+        self._add_finding(findings, "unattributed_failures", self.failure_stages.get("unknown", 0), "warning")
         tool_blocks = self.reason_codes.get("mcp.tool_not_allowed", 0)
         self._add_finding(findings, "blocked_mcp_tools", tool_blocks, "warning")
         auth_failures = self.reason_codes.get("mcp.auth_required", 0)
@@ -286,6 +331,9 @@ def _normalize_event(value: Mapping[str, Any], *, kind: str, line_number: int) -
     else:
         raise ValueError(f"inspect line {line_number} has unsupported event type: {event_type!r}")
     event["line"] = line_number
+    explanation = explain_request(event)
+    if explanation:
+        event["explanation"] = explanation
     return event
 
 
@@ -298,11 +346,13 @@ def _event_summary(event: Mapping[str, Any]) -> dict[str, Any]:
     decision = _mapping(event.get("decision"))
     response = _mapping(event.get("response"))
     mcp = _mapping(event.get("mcp"))
+    explanation = explain_request(event)
     return {
         "line": event.get("line"),
         "time": event.get("time"),
         "action": decision.get("action"),
-        "reason_code": decision.get("reason_code"),
+        "reason_code": explanation.get("reason_code") or decision.get("reason_code"),
+        "policy_reason_code": decision.get("reason_code"),
         "status": response.get("status", decision.get("status")),
         "path": request.get("path"),
         "mcp_method": mcp.get("method"),
@@ -327,13 +377,6 @@ def _source_kind(kinds: set[str]) -> str:
     if not kinds:
         return "empty"
     return next(iter(kinds)) if len(kinds) == 1 else "mixed"
-
-
-def _status_is_server_error(value: Any) -> bool:
-    try:
-        return int(value) >= 500
-    except (TypeError, ValueError):
-        return False
 
 
 def _counts_table(values: Any) -> str:

@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from .config import load_mcp_proxy_config
 from .redaction import SECRET_REPLACEMENT, build_audit_event
+from .request_explanations import explain_request
 from .runtime import LuaRuntimeError, compile_lua_file, compile_lua_script
 from .share import (
     activate_mcp_share_policy,
@@ -1621,6 +1622,8 @@ def _decision_timeline(
             "capability_requested": 0,
             "redacted": 0,
             "upstream_failed": 0,
+            "failed": 0,
+            "partial": 0,
         },
     }
     if source is None or not source.exists():
@@ -1704,6 +1707,7 @@ def _decision_timeline_item(event: Mapping[str, Any], *, source: Path, line: int
         "status": response.get("status") or decision.get("status"),
         "reason_code": decision.get("reason_code"),
         "reason": decision.get("reason"),
+        "explanation": explain_request(event),
         "http_method": request.get("method"),
         "path": request.get("path"),
         "mcp_method": mcp.get("method"),
@@ -1747,13 +1751,18 @@ def _timeline_outcome(event: Mapping[str, Any], *, decision: Mapping[str, Any]) 
     )
     if capability:
         return "capability_requested"
-    if confirmation:
-        return "confirmed" if confirmation.get("approved") is True else "blocked"
-    if decision.get("allowed") is False:
+    if confirmation and confirmation.get("approved") is not True:
         return "blocked"
+    explanation = explain_request(event)
+    if explanation:
+        if explanation.get("outcome") == "failed" and explanation.get("stage", "").startswith("upstream_"):
+            return "upstream_failed"
+        return str(explanation["outcome"])
     status = response.get("status") or decision.get("status")
     if isinstance(status, int) and status >= 500:
-        return "upstream_failed"
+        return "failed"
+    if confirmation.get("approved") is True:
+        return "confirmed"
     response_policy = _mapping(metadata.get("response_policy"))
     if response_policy.get("redacted") is True:
         return "redacted"
@@ -1769,10 +1778,12 @@ def _decision_timeline_summary(events: Sequence[Mapping[str, Any]]) -> dict[str,
         "capability_requested": 0,
         "redacted": 0,
         "upstream_failed": 0,
+        "failed": 0,
+        "partial": 0,
     }
     for event in events:
         outcome = str(event.get("outcome") or "")
-        if outcome in {"allowed", "blocked", "capability_requested", "upstream_failed"}:
+        if outcome in {"allowed", "blocked", "capability_requested", "upstream_failed", "failed", "partial"}:
             summary[outcome] += 1
         if event.get("confirmed"):
             summary["confirmed"] += 1
@@ -1811,6 +1822,11 @@ def _decision_timeline_compaction_signature(event: Mapping[str, Any]) -> tuple[A
         event.get("allowed"),
         event.get("status"),
         event.get("reason_code"),
+        _mapping(event.get("explanation")).get("reason_code"),
+        _mapping(event.get("explanation")).get("stage"),
+        _mapping(_mapping(event.get("explanation")).get("evidence")).get("upstream"),
+        _mapping(_mapping(event.get("explanation")).get("evidence")).get("upstream_status"),
+        _mapping(event.get("explanation")).get("execution"),
         event.get("http_method"),
         event.get("path"),
         event.get("mcp_method"),
@@ -4562,6 +4578,9 @@ def _console_html() -> str:
     tr:last-child td {
       border-bottom: 0;
     }
+    .decision-explanation-row > td {
+      padding-top: 0;
+    }
     .pill {
       display: inline-flex;
       align-items: center;
@@ -4577,12 +4596,14 @@ def _console_html() -> str:
       border-color: #a7d8bf;
       background: #f0fbf5;
     }
-    .fail, .blocked, .denied, .unreachable, .misconfigured, .inactive, .drifted, .unavailable {
+    .fail, .failed, .upstream_failed, .blocked, .denied, .unreachable, .misconfigured,
+    .inactive, .drifted, .unavailable {
       color: var(--red);
       border-color: #efb3b8;
       background: #fff5f5;
     }
-    .warn, .pending, .unknown, .confirmed, .not-checked, .review, .skip, .not-used, .seen, .unchecked, .stale {
+    .warn, .pending, .unknown, .confirmed, .not-checked, .review, .skip, .not-used, .seen,
+    .unchecked, .stale, .partial {
       color: var(--yellow);
       border-color: #ecd598;
       background: #fffaf0;
@@ -5141,6 +5162,9 @@ def _console_html() -> str:
         display: block;
       }
       th {
+        display: none;
+      }
+      .decision-table colgroup {
         display: none;
       }
       td {
@@ -6647,7 +6671,7 @@ def _console_html() -> str:
       $("decisionSummary").textContent =
         `${visibleEvents.length || 0} grouped from ${summary.shown || 0}, ` +
         `${summary.allowed || 0} allowed, ${summary.blocked || 0} blocked, ` +
-        `${summary.upstream_failed || 0} upstream failed`;
+        `${(summary.upstream_failed || 0) + (summary.failed || 0)} failed, ${summary.partial || 0} partial`;
       if (!payload.exists) {
         $("decisionTimeline").innerHTML = `<div class="empty">No audit log found yet.</div>`;
         return;
@@ -6656,7 +6680,9 @@ def _console_html() -> str:
         $("decisionTimeline").innerHTML = `<div class="empty">No decisions recorded yet.</div>`;
         return;
       }
-      $("decisionTimeline").innerHTML = `<table>
+      $("decisionTimeline").innerHTML = `<table class="decision-table">
+        <colgroup><col style="width:10%"><col style="width:12%"><col style="width:25%">
+          <col style="width:14%"><col style="width:7%"><col style="width:32%"></colgroup>
         <thead><tr><th>Time</th><th>Outcome</th><th>Request</th><th>Subject</th><th>Status</th><th>Reason</th></tr></thead>
         <tbody>${visibleEvents.map((event) => (
           `<tr>
@@ -6677,10 +6703,12 @@ def _console_html() -> str:
             </td>
             <td>${esc(event.status || "-")}</td>
             <td>
-              ${esc(event.reason_code || "-")}
+              ${esc((event.explanation || {}).reason_code || event.reason_code || "-")}
               <div class="timeline-detail">${esc(decisionReasonDetail(event))}</div>
             </td>
-          </tr>`
+          </tr>${(event.explanation || {}).stage
+            ? `<tr class="decision-explanation-row"><td colspan="6">${decisionExplanationHtml(event)}</td></tr>`
+            : ""}`
         )).join("")}</tbody>
       </table>`;
     }
@@ -6690,6 +6718,26 @@ def _console_html() -> str:
       const date = new Date(value);
       if (Number.isNaN(date.getTime())) return value;
       return date.toLocaleTimeString();
+    }
+
+    function decisionExplanationHtml(event) {
+      const explanation = event.explanation || {};
+      if (!explanation.stage) return "";
+      const evidence = explanation.evidence || {};
+      const key = `failure-${event.line || ""}-${event.source || ""}`;
+      return `<details class="compact-details decision-explanation" data-state-key="${esc(key)}">
+        <summary>${esc(explanation.summary)}</summary>
+        <div class="details-body stack">
+          <div><strong>Stage:</strong> ${esc(explanation.stage)}</div>
+          <div><strong>Evidence:</strong> ${esc(evidence.basis || "not recorded")}</div>
+          <div><strong>Execution:</strong> ${esc(explanation.execution)}</div>
+          ${evidence.upstream ? `<div><strong>Upstream:</strong> ${esc(evidence.upstream)}</div>` : ""}
+          ${evidence.upstream_status ? `<div><strong>Upstream HTTP:</strong>
+            ${esc(evidence.upstream_status)}</div>` : ""}
+          ${event.reason_code ? `<div><strong>Policy reason:</strong> ${esc(event.reason_code)}</div>` : ""}
+          <ul>${(explanation.next_steps || []).map((step) => `<li>${esc(step)}</li>`).join("")}</ul>
+        </div>
+      </details>`;
     }
 
     function shortDateTime(value) {

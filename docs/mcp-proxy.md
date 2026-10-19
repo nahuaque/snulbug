@@ -245,6 +245,13 @@ target tool/resource/prompt, params key names, argument key names, initialize
 client metadata, tunnel provider metadata, and policy decision `reason` /
 `reason_code`.
 
+Failed requests also carry a separate evidence-based `explanation`, so an
+allowed Lua decision is not confused with successful upstream execution. Live
+console lines include `failure.stage` and `failure.code`; the web console,
+offline evidence inspection, and share reports show the same cause and next
+steps. See [request failure explanations](mcp-evidence.md#request-failure-explanations)
+for coverage, unknown outcomes, and safe retry limitations.
+
 Replay captured traffic against the same policy or a candidate policy:
 
 ```bash

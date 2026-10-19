@@ -15,6 +15,7 @@ from .mcp_progress import mcp_progress_request_metadata, mcp_progress_response_m
 from .mcp_protocol import CLIENT_CAPABILITIES_META, CLIENT_INFO_META, PROTOCOL_VERSION_META
 from .mcp_resources import mcp_resource_request_metadata, mcp_resource_response_metadata
 from .mcp_tasks import mcp_task_request_metadata, mcp_task_response_metadata
+from .request_explanations import explain_request
 
 SECRET_REPLACEMENT = "[REDACTED]"
 
@@ -126,6 +127,9 @@ def build_audit_event(record: Mapping[str, Any], *, redact: bool = True) -> dict
         if facade:
             event["facade"] = facade
         event["metadata"] = record["metadata"]
+    explanation = explain_request(event)
+    if explanation:
+        event["explanation"] = explanation
     return redact_secrets(event) if redact else event
 
 

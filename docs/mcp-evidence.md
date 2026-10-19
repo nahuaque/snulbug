@@ -106,6 +106,63 @@ Both CLI-created replay records and audit logs are redacted by default. Use
 exact replay records only for local debugging when you are comfortable storing
 auth-sensitive values.
 
+## Request failure explanations
+
+An allowed policy decision does not mean a request succeeded. For example, Lua
+can admit a call and the upstream can then refuse the connection. The existing
+audit event keeps `decision.reason_code` unchanged and adds an `explanation`:
+
+```json
+{
+  "decision": {"allowed": true, "reason_code": "policy.allowed"},
+  "explanation": {
+    "outcome": "failed",
+    "stage": "upstream_transport",
+    "reason_code": "upstream.connection_refused",
+    "execution": "not_forwarded"
+  }
+}
+```
+
+The explanation also includes a fixed summary, next steps, and the recorded
+evidence basis. The same logic powers the console's Live Decisions, terminal
+decision lines (`failure.stage` / `failure.code`), `evidence inspect`, and
+`share report`. Expand a failed decision in the web console for its stage,
+upstream, original policy reason, and suggested next steps. There is no separate
+incident store, diagnosis command, or permission mechanism.
+
+| Recorded evidence | Explanation |
+| --- | --- |
+| Auth, lease, confirmation, or request controls deny the request | The corresponding admission gate, rather than upstream failure |
+| Upstream credential resolution fails | `upstream.credentials_unavailable`; inspect the existing broker reference |
+| DNS, connection refusal, TLS, or timeout exceptions | A stable transport reason without exception text |
+| Upstream returns HTTP 401/403 | `upstream.auth_rejected`; inspect upstream credentials, not the client's gateway authorization |
+| Response policy or output-schema checks block the result | `response_policy`; the upstream may already have performed an action |
+| A bounded JSON-RPC envelope contains `error` or `result.isError` | An upstream MCP error, even when HTTP status is 200 |
+| A facade returns tools from healthy siblings after another fails | A partial catalog with the failing upstream identified |
+| Only an HTTP error status is available | `request.failure_unattributed`, not an invented root cause |
+
+Transport observations use the existing proxy metadata in replay/audit logs.
+They retain no exception messages, upstream error bodies, or tool-output text.
+MCP envelope inspection is best-effort and bounded to 128 KiB; it does not parse
+arbitrary SSE transcripts or inspect larger payloads for diagnostic content.
+Large fanouts retain at most 20 exchange observations, prioritizing failures
+and marking truncation. Third-party transport failures without a recognized
+exception type remain generic.
+
+`execution` describes observed forwarding, not a guarantee about tool side
+effects. A timeout, protocol failure, or disconnected stream can have an unknown
+outcome; receiving an error response also does not prove that nothing changed.
+No diagnostic operation retries a tool call, widens policy, renews a lease, or
+approves a request. Verify side effects before repeating a call.
+
+Policy-admission counts remain separate from failure/outcome counts. Ordinary
+tool/JSON-RPC errors are warnings in evidence findings, not automatically a
+failed share-health check. Historical logs with only a status cannot recover
+missing transport evidence. Requests rejected by ngrok before reaching snulbug
+and ordinary HTTP mounts outside the MCP stack are not covered by these MCP
+request explanations; use share doctor/provider or mounted-app diagnostics.
+
 ## Common review gates
 
 Before enabling a learned or amended policy:

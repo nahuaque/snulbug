@@ -83,6 +83,7 @@ def share_report_renderable(result: Mapping[str, Any]) -> Group:
     )
     return Group(
         overview,
+        _failure_explanations_table(_mapping(traffic.get("inspection")).get("failures")),
         _tool_risk_table(tool_risks),
         _findings_panel(findings),
         _commands_panel(_mapping(status.get("commands"))),
@@ -179,11 +180,27 @@ def evidence_inspect_renderable(result: Mapping[str, Any]) -> Group:
         overview,
         _counts_table("Decision Actions", decisions.get("actions")),
         _counts_table("Reason Codes", decisions.get("reason_codes")),
+        _failure_explanations_table(result.get("failures")),
         _counts_table("MCP Methods", mcp.get("methods")),
         _counts_table("MCP Tools", mcp.get("tools")),
         _findings_panel(result.get("findings")),
         _examples_table("Blocked Examples", _mapping(result.get("examples")).get("blocked")),
     )
+
+
+def _failure_explanations_table(value: Any) -> Table:
+    table = Table(title="Request Failure Explanations", box=box.SIMPLE_HEAVY, expand=True)
+    for label in ("Stage", "Reason", "Explanation", "Next Step"):
+        table.add_column(label, overflow="fold")
+    for example in _sequence(_mapping(value).get("examples")):
+        if isinstance(example, Mapping):
+            table.add_row(
+                *[Text(str(example.get(key) or "-")) for key in ("stage", "reason_code", "summary")],
+                Text(" ".join(str(step) for step in _sequence(example.get("next_steps")))),
+            )
+    if not table.rows:
+        table.add_row("-", "-", "No recorded request failures", "-")
+    return table
 
 
 def evidence_impact_renderable(result: Mapping[str, Any]) -> Group:

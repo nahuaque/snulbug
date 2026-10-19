@@ -2203,7 +2203,12 @@ def upstream_failure_event(second: int) -> dict[str, object]:
             "reason": "MCP request is allowed by the tunnel-safe profile",
             "reason_code": "mcp.tunnel_safe_rate_limit",
         },
-        "metadata": {"tunnel": {"source_ip": "127.0.0.1"}},
+        "metadata": {
+            "tunnel": {"source_ip": "127.0.0.1"},
+            "upstream_exchanges": [
+                {"upstream": "default", "failure_code": "upstream.connection_refused", "execution": "not_forwarded"}
+            ],
+        },
         "response": {"status": 502},
     }
 

@@ -97,6 +97,12 @@ from .mcp_tasks import mcp_task_request_metadata
 from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
 from .policy_backoff import PolicyBackoffConfig
 from .recorder import append_record, build_request_record, record_audit_event
+from .request_explanations import (
+    upstream_failure,
+    upstream_failure_message,
+    upstream_observation_failed,
+    upstream_response_observation,
+)
 from .response_policy import ResponsePolicyConfig, enforce_mcp_response_policy
 from .runtime import compile_lua_file
 from .schema_policy import (
@@ -426,16 +432,18 @@ class ReverseProxyApp:
             else:
                 response = await asyncio.to_thread(self._forward, scope, body)
         except Exception as exc:
+            failure = _record_upstream_exchange(scope, upstream="default", transport="http", error=exc)
             if scope.get(STREAM_SCOPE_KEY) is not None:
                 raise
             await _send_response(
                 send,
                 status=502,
                 headers=[(b"content-type", b"text/plain; charset=utf-8")],
-                body=f"upstream request failed: {exc}".encode("utf-8", errors="replace"),
+                body=("upstream request failed: " + upstream_failure_message(failure)).encode("utf-8"),
             )
             return
 
+        _record_upstream_exchange(scope, upstream="default", transport="http", response=response)
         response, response_metadata = enforce_mcp_response_policy(
             response,
             request=request,
@@ -1162,15 +1170,16 @@ class McpFacadeProxyApp:
                 if not self.health_policy.enabled:
                     if scope.get(STREAM_SCOPE_KEY) is not None:
                         raise exc
-                    await self._send_upstream_failure(send, upstream, exc)
+                    await self._send_upstream_failure(send, upstream, exc, request_id=request.get("id"))
                     return
-                failures.append({"upstream": upstream.name, "reason": "exception", "error": str(exc)})
+                safe_error = upstream_failure_message(upstream_failure(exc, transport=upstream.transport))
+                failures.append({"upstream": upstream.name, "reason": "exception", "error": safe_error})
                 health_events.extend(
                     self._record_upstream_failure(
                         upstream,
                         operation="tools/list",
                         reason="exception",
-                        error=str(exc),
+                        error=safe_error,
                     )
                 )
                 if scope.get(STREAM_SCOPE_KEY) is not None:
@@ -1243,20 +1252,32 @@ class McpFacadeProxyApp:
                 result = payload.get("result") if isinstance(payload, Mapping) else None
                 upstream_tools = result.get("tools") if isinstance(result, Mapping) else None
             except Exception as exc:
+                _record_upstream_exchange(
+                    scope,
+                    upstream=upstream.name,
+                    transport=upstream.transport,
+                    failure={"failure_code": "upstream.invalid_response", "execution": "response_received"},
+                )
                 if not self.health_policy.enabled:
-                    await self._send_upstream_failure(send, upstream, exc)
+                    await self._send_upstream_failure(send, upstream, exc, request_id=request.get("id"))
                     return
-                failures.append({"upstream": upstream.name, "reason": "invalid_tools_list", "error": str(exc)})
+                failures.append({"upstream": upstream.name, "reason": "invalid_tools_list"})
                 health_events.extend(
                     self._record_upstream_failure(
                         upstream,
                         operation="tools/list",
                         reason="invalid_tools_list",
-                        error=str(exc),
+                        error="Upstream did not return a valid tools/list result",
                     )
                 )
                 continue
             if not isinstance(upstream_tools, list):
+                _record_upstream_exchange(
+                    scope,
+                    upstream=upstream.name,
+                    transport=upstream.transport,
+                    failure={"failure_code": "upstream.invalid_response", "execution": "response_received"},
+                )
                 if self.health_policy.enabled:
                     failures.append({"upstream": upstream.name, "reason": "missing_result_tools"})
                     health_events.extend(
@@ -1531,16 +1552,17 @@ class McpFacadeProxyApp:
         try:
             response = await self._forward(routes, upstream, scope, body, rewritten)
         except Exception as exc:
+            safe_error = upstream_failure_message(upstream_failure(exc, transport=upstream.transport))
             if scope.get(STREAM_SCOPE_KEY) is not None:
                 exc = exc if isinstance(exc, McpStreamError) else McpStreamError("MCP upstream stream failed")
             if self.health_policy.enabled:
-                health_failures.append({"upstream": upstream.name, "reason": "exception", "error": str(exc)})
+                health_failures.append({"upstream": upstream.name, "reason": "exception", "error": safe_error})
                 health_events.extend(
                     self._record_upstream_failure(
                         upstream,
                         operation="tools/call",
                         reason="exception",
-                        error=str(exc),
+                        error=safe_error,
                     )
                 )
                 _set_proxy_metadata(
@@ -1564,7 +1586,7 @@ class McpFacadeProxyApp:
                 )
             if scope.get(STREAM_SCOPE_KEY) is not None:
                 raise exc
-            await self._send_upstream_failure(send, upstream, exc)
+            await self._send_upstream_failure(send, upstream, exc, request_id=request.get("id"))
             return
         if response["status"] >= 500:
             health_failures.append({"upstream": upstream.name, "reason": "http_status", "status": response["status"]})
@@ -1716,16 +1738,17 @@ class McpFacadeProxyApp:
                 request if isinstance(request, Mapping) else {},
             )
         except Exception as exc:
+            safe_error = upstream_failure_message(upstream_failure(exc, transport=routes.default.transport))
             if scope.get(STREAM_SCOPE_KEY) is not None:
                 exc = exc if isinstance(exc, McpStreamError) else McpStreamError("MCP upstream stream failed")
             if self.health_policy.enabled:
-                health_failures.append({"upstream": routes.default.name, "reason": "exception", "error": str(exc)})
+                health_failures.append({"upstream": routes.default.name, "reason": "exception", "error": safe_error})
                 health_events.extend(
                     self._record_upstream_failure(
                         routes.default,
                         operation="default",
                         reason="exception",
-                        error=str(exc),
+                        error=safe_error,
                     )
                 )
                 _set_proxy_metadata(
@@ -1747,7 +1770,12 @@ class McpFacadeProxyApp:
                 )
             if scope.get(STREAM_SCOPE_KEY) is not None:
                 raise exc
-            await self._send_upstream_failure(send, routes.default, exc)
+            await self._send_upstream_failure(
+                send,
+                routes.default,
+                exc,
+                request_id=request.get("id") if isinstance(request, Mapping) else None,
+            )
             return
         if response["status"] >= 500:
             health_failures.append(
@@ -1812,6 +1840,22 @@ class McpFacadeProxyApp:
         )
 
     async def _forward(
+        self,
+        routes: FacadeRouteTable,
+        upstream: FacadeUpstream,
+        scope: Scope,
+        body: bytes,
+        request: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            response = await self._forward_upstream(routes, upstream, scope, body, request)
+        except Exception as exc:
+            _record_upstream_exchange(scope, upstream=upstream.name, transport=upstream.transport, error=exc)
+            raise
+        _record_upstream_exchange(scope, upstream=upstream.name, transport=upstream.transport, response=response)
+        return response
+
+    async def _forward_upstream(
         self,
         routes: FacadeRouteTable,
         upstream: FacadeUpstream,
@@ -1915,12 +1959,20 @@ class McpFacadeProxyApp:
                 await send({"type": "lifespan.shutdown.complete"})
                 return
 
-    async def _send_upstream_failure(self, send: Send, upstream: FacadeUpstream, exc: Exception) -> None:
+    async def _send_upstream_failure(
+        self,
+        send: Send,
+        upstream: FacadeUpstream,
+        exc: Exception,
+        *,
+        request_id: Any = None,
+    ) -> None:
         await self._send_jsonrpc_error(
             send,
-            request_id=None,
+            request_id=request_id,
             code=-32000,
-            message=f"upstream {upstream.name!r} request failed: {exc}",
+            message="upstream request failed: "
+            + upstream_failure_message(upstream_failure(exc, transport=upstream.transport)),
             status=502,
         )
 
@@ -5140,6 +5192,36 @@ def _set_proxy_metadata(scope: Scope, metadata: Mapping[str, Any]) -> None:
     merged = dict(existing) if isinstance(existing, Mapping) else {}
     merged.update(metadata)
     state["snulbug_proxy"] = merged
+
+
+def _record_upstream_exchange(
+    scope: Scope,
+    *,
+    upstream: str,
+    transport: str,
+    error: Exception | None = None,
+    response: Mapping[str, Any] | None = None,
+    failure: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    observation = dict(failure or {})
+    if error is not None:
+        observation = upstream_failure(error, transport=transport)
+        if isinstance(error, McpStreamError):
+            observation = {"failure_code": "stream.failed", "execution": "unknown"}
+    elif response is not None:
+        observation = upstream_response_observation(response)
+    state = _ensure_scope_state(scope)
+    metadata = _mapping(state.get("snulbug_proxy"))
+    exchanges = list(metadata.get("upstream_exchanges", []))
+    exchanges.append({"upstream": upstream, "transport": transport, **observation})
+    # Keep failures when bounding large fanouts, so successful siblings cannot erase the cause.
+    if len(exchanges) > 20:
+        exchanges = [item for item in exchanges if upstream_observation_failed(item)] + [
+            item for item in exchanges if not upstream_observation_failed(item)
+        ]
+        _set_proxy_metadata(scope, {"upstream_exchanges_truncated": True})
+    _set_proxy_metadata(scope, {"upstream_exchanges": exchanges[:20]})
+    return observation
 
 
 def _attach_proxy_reject_trace(
