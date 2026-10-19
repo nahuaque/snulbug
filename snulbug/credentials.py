@@ -1,16 +1,39 @@
 from __future__ import annotations
 
 import os
+import stat
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 CREDENTIAL_SCHEMES = {"bearer", "basic", "raw"}
 CREDENTIAL_SOURCES: set[str] = set()
+MAX_CREDENTIAL_BYTES = 16_384
+
+_CREDENTIAL_ERRORS = {
+    "credential.missing": "credential source is missing",
+    "credential.unreadable": "credential source cannot be read",
+    "credential.not_regular_file": "credential source must be a regular file",
+    "credential.too_large": "credential exceeds the 16384-byte limit",
+    "credential.empty": "credential value is empty",
+    "credential.invalid_encoding": "credential file must contain UTF-8 text",
+    "credential.invalid_value": "credential must be a single HTTP header value without control characters",
+    "credential.resolution_failed": "credential broker could not resolve the source",
+}
 
 
 class CredentialResolutionError(RuntimeError):
     """Raised when a configured credential reference cannot be resolved."""
+
+    def __init__(self, message: str, *, code: str = "credential.resolution_failed") -> None:
+        super().__init__(message)
+        self.code = code if code in _CREDENTIAL_ERRORS else "credential.resolution_failed"
+
+
+def _credential_error(code: str) -> CredentialResolutionError:
+    if not isinstance(code, str) or code not in _CREDENTIAL_ERRORS:
+        code = "credential.resolution_failed"
+    return CredentialResolutionError(_CREDENTIAL_ERRORS[code], code=code)
 
 
 class CredentialBroker:
@@ -91,8 +114,8 @@ class EnvCredentialBroker(CredentialBroker):
     def resolve(self, credential: Mapping[str, Any]) -> str:
         env_name = str(credential.get("env") or "")
         value = os.environ.get(env_name)
-        if not value:
-            raise CredentialResolutionError(f"environment variable {env_name!r} is not set")
+        if value is None:
+            raise _credential_error("credential.missing")
         return value
 
     def metadata(self, credential: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -121,14 +144,27 @@ class FileCredentialBroker(CredentialBroker):
     def resolve(self, credential: Mapping[str, Any]) -> str:
         path = Path(str(credential.get("path") or ""))
         try:
-            value = path.read_text(encoding="utf-8").strip()
-        except FileNotFoundError as exc:
-            raise CredentialResolutionError(f"credential file does not exist: {path}") from exc
-        except OSError as exc:
-            raise CredentialResolutionError(f"credential file cannot be read: {path}: {exc}") from exc
-        if not value:
-            raise CredentialResolutionError(f"credential file is empty: {path}")
-        return value
+            # Nonblocking open prevents FIFOs from hanging a worker. Inspect the
+            # opened descriptor so atomic replacement cannot change what is read.
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0))
+            with os.fdopen(fd, "rb") as source:
+                info = os.fstat(source.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    raise _credential_error("credential.not_regular_file")
+                if info.st_size > MAX_CREDENTIAL_BYTES:
+                    raise _credential_error("credential.too_large")
+                raw = source.read(MAX_CREDENTIAL_BYTES + 1)
+            if len(raw) > MAX_CREDENTIAL_BYTES:
+                raise _credential_error("credential.too_large")
+            return raw.decode("utf-8").strip()
+        except FileNotFoundError:
+            raise _credential_error("credential.missing") from None
+        except IsADirectoryError:
+            raise _credential_error("credential.not_regular_file") from None
+        except OSError:
+            raise _credential_error("credential.unreadable") from None
+        except UnicodeError:
+            raise _credential_error("credential.invalid_encoding") from None
 
     def metadata(self, credential: Mapping[str, Any]) -> Mapping[str, Any]:
         return {"path": credential.get("path")}
@@ -271,9 +307,21 @@ def credential_header(credential: Mapping[str, Any]) -> tuple[str, str]:
 
     normalized = normalize_upstream_credential(credential)
     broker = get_credential_broker(str(normalized["type"]))
-    value = broker.resolve(normalized)
-    if "\r" in value or "\n" in value:
-        raise CredentialResolutionError("credential value must be a single line")
+    try:
+        value = broker.resolve(normalized)
+    except CredentialResolutionError as exc:
+        raise _credential_error(getattr(exc, "code", "credential.resolution_failed")) from None
+    except Exception:
+        # Plugins may include tokens or provider response bodies in exceptions.
+        raise _credential_error("credential.resolution_failed") from None
+    if not isinstance(value, str):
+        raise _credential_error("credential.invalid_value")
+    if len(value) > MAX_CREDENTIAL_BYTES or len(value.encode("utf-8", errors="surrogatepass")) > MAX_CREDENTIAL_BYTES:
+        raise _credential_error("credential.too_large")
+    if not value.strip():
+        raise _credential_error("credential.empty")
+    if any(ord(char) < 32 or ord(char) == 127 or ord(char) > 255 for char in value):
+        raise _credential_error("credential.invalid_value")
     return normalized["header"], _format_secret(value, scheme=normalized["scheme"])
 
 
@@ -321,7 +369,7 @@ def credential_status(credential: Mapping[str, Any] | None) -> dict[str, Any]:
     try:
         credential_header(credential or {})
     except CredentialResolutionError as exc:
-        return {**metadata, "configured": True, "available": False, "error": str(exc)}
+        return {**metadata, "configured": True, "available": False, "error": str(exc), "reason_code": exc.code}
     return {**metadata, "configured": True, "available": True}
 
 

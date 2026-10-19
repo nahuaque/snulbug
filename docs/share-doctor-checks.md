@@ -17,6 +17,12 @@ Built-ins currently cover:
 - `conformance`: generated fabric conformance pack checks
 - `tunnel`: provider-specific tunnel doctor checks
 - `ngrok`: desired/generated/deployed Traffic Policy drift inspection (cloud reads require an API credential)
+- `credentials`: used upstream credential sources, safe availability checks, file permissions, and transport hygiene
+
+The `credentials` check resolves sources only in live doctor runs. Saved safe
+results feed share status/report, readiness, and the console's Auth drawer;
+passive refreshes never call the brokers. See [production credential operations](credential-brokers.md#always-on-upstream-credentials)
+for file rotation, environment restart semantics, and availability limitations.
 
 The `ngrok` check uses the existing credential brokers and only issues bounded
 GET requests during live doctor runs. Ordinary status/console refreshes reuse

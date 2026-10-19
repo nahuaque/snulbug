@@ -2687,6 +2687,65 @@ def test_mcp_facade_projects_tools_list_by_active_task_lease(tmp_path):
     assert git_seen["calls"] == [{"method": "tools/list", "tool": None}]
 
 
+@pytest.mark.parametrize("facade", [False, True])
+def test_upstream_file_rotation_is_immediate_and_fails_closed_without_client_token_fallback(tmp_path, facade):
+    server, seen = start_mcp_upstream({"read_file": "Read a file"})
+    policy = write_policy(tmp_path, "continue")
+    path = tmp_path / "service-token"
+    path.write_text("first-service-token\n")
+    path.chmod(0o600)
+    credential = {"id": "service", "type": "file", "path": str(path)}
+    url = f"http://127.0.0.1:{server.server_port}/mcp"
+    options = (
+        {"upstreams": [{"name": "files", "url": url, "credential": credential}]}
+        if facade
+        else {"upstream_credential": credential}
+    )
+    record_log = tmp_path / "records.jsonl"
+    audit_log = tmp_path / "audit.jsonl"
+    app = create_proxy_application(
+        None if facade else url,
+        policy,
+        record_out=record_log,
+        event_sinks=audit_event_sinks(audit_log),
+        tool_pinning=False,
+        schema_validation=False,
+        **options,
+    )
+    tool = "files.read_file" if facade else "read_file"
+    body = json.dumps(
+        {"jsonrpc": "2.0", "id": "rotate", "method": "tools/call", "params": {"name": tool, "arguments": {}}}
+    ).encode()
+    try:
+        first = run_asgi(app, body=body, headers=[(b"authorization", b"Bearer client-token")])
+        assert first[0]["status"] == 200
+        replacement = tmp_path / "replacement"
+        replacement.write_text("next-service-token\n")
+        replacement.chmod(0o600)
+        replacement.replace(path)
+        second = run_asgi(app, body=body, headers=[(b"authorization", b"Bearer client-token")])
+        assert second[0]["status"] == 200
+        assert [headers["authorization"] for headers in seen["headers"]] == [
+            "Bearer first-service-token",
+            "Bearer next-service-token",
+        ]
+        count = len(seen["calls"])
+        path.unlink()
+        failed = run_asgi(app, body=body, headers=[(b"authorization", b"Bearer client-token")])
+        assert failed[0]["status"] == 502
+        assert len(seen["calls"]) == count
+    finally:
+        server.shutdown()
+        server.server_close()
+    audits = [json.loads(line) for line in audit_log.read_text().splitlines()]
+    assert audits[-1]["explanation"]["reason_code"] == "upstream.credentials_unavailable"
+    assert audits[-1]["explanation"]["execution"] == "not_forwarded"
+    assert all(
+        secret not in record_log.read_text() + audit_log.read_text()
+        for secret in ("first-service-token", "next-service-token", "client-token")
+    )
+
+
 def test_mcp_facade_injects_upstream_credential_header(tmp_path, monkeypatch):
     files_server, files_seen = start_mcp_upstream({"read_file": "Read a file"})
     policy = write_policy(tmp_path, "continue")

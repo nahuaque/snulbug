@@ -24,6 +24,7 @@ def share_status_renderable(result: Mapping[str, Any]) -> Group:
     return Group(
         _overview_panel(result),
         _health_table(result),
+        upstream_credentials_table(_mapping(result.get("upstream_credentials"))),
         _policy_table(result),
         _traffic_table(result),
         _tools_table(result),
@@ -116,6 +117,36 @@ def _policy_table(result: Mapping[str, Any]) -> Table:
     table.add_row("Replay log", _artifact_text(record_log))
     table.add_row("Audit log", _artifact_text(audit_log))
     table.add_row("Share contract", _contract_text(contract))
+    return table
+
+
+def upstream_credentials_table(credentials: Mapping[str, Any]) -> Table:
+    table = Table(title="Upstream Credentials (Last Doctor Check)", box=box.SIMPLE_HEAVY, expand=True)
+    table.caption = Text(
+        f"State: {credentials.get('state') or 'unchecked'}; last checked: {credentials.get('checked_at') or '-'}"
+    )
+    table.add_column("Reference", style="bold")
+    table.add_column("Source", overflow="fold")
+    table.add_column("State")
+    table.add_column("Upstreams", overflow="fold")
+    table.add_column("Rotation / Detail", overflow="fold")
+    for item in _sequence(credentials.get("items")):
+        item = _mapping(item)
+        table.add_row(
+            _value(item.get("id")),
+            Text(f"{item.get('type')}: {item.get('env') or item.get('path') or '-'}"),
+            _value(item.get("state")),
+            Text(", ".join(str(_mapping(upstream).get("name")) for upstream in _sequence(item.get("upstreams")))),
+            Text(
+                "\n".join(
+                    str(detail)
+                    for detail in [item.get("error"), *_sequence(item.get("warnings")), item.get("rotation")]
+                    if detail
+                )
+            ),
+        )
+    if not credentials.get("items"):
+        table.add_row("-", "No upstream credential references", _value(credentials.get("state")), "-", "-")
     return table
 
 

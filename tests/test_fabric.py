@@ -200,7 +200,8 @@ def test_fabric_doctor_fails_when_upstream_credential_is_missing(tmp_path, monke
     checks = {check["id"]: check for check in result["checks"]}
     assert result["ok"] is False
     assert checks["upstream.files.auth_available"]["status"] == "fail"
-    assert "FILES_MCP_TOKEN" in checks["upstream.files.auth_available"]["message"]
+    assert checks["upstream.files.auth_available"]["details"]["env"] == "FILES_MCP_TOKEN"
+    assert checks["upstream.files.auth_available"]["details"]["reason_code"] == "credential.missing"
 
 
 def test_fabric_doctor_fails_when_required_manifest_is_missing(tmp_path):

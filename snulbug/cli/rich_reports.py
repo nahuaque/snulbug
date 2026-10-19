@@ -10,6 +10,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from .rich_share import upstream_credentials_table
+
 
 def write_share_report_rich(result: Mapping[str, Any], *, stream: TextIO | None = None) -> None:
     console = _console(stream)
@@ -83,6 +85,7 @@ def share_report_renderable(result: Mapping[str, Any]) -> Group:
     )
     return Group(
         overview,
+        upstream_credentials_table(_mapping(status.get("upstream_credentials"))),
         _failure_explanations_table(_mapping(traffic.get("inspection")).get("failures")),
         _tool_risk_table(tool_risks),
         _findings_panel(findings),

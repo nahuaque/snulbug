@@ -41,12 +41,12 @@ FABRIC_CONFORMANCE_SCHEMA = "snulbug.fabric-conformance-pack.v1"
 FABRIC_CONFORMANCE_VERSION = 1
 
 
-def fabric_status(config: str | Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
+def fabric_status(config: str | Path = DEFAULT_CONFIG_PATH, *, check_credentials: bool = True) -> dict[str, Any]:
     """Summarize the declared MCP fabric without probing network endpoints."""
 
     fabric = load_mcp_fabric_config(config)
     proxy = _mapping(fabric.get("proxy"))
-    upstreams = [_upstream_status(upstream) for upstream in _upstreams(proxy)]
+    upstreams = [_upstream_status(upstream, check_credentials=check_credentials) for upstream in _upstreams(proxy)]
     summary = _fabric_summary(fabric, proxy, upstreams)
     recommendations = _fabric_recommendations(fabric, upstreams)
     return {
@@ -59,7 +59,7 @@ def fabric_status(config: str | Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
         "probe_gateway": fabric["probe_gateway"],
         "probe_upstreams": fabric["probe_upstreams"],
         "timeout": fabric["timeout"],
-        "credentials": _credentials_status(fabric),
+        "credentials": _credentials_status(fabric, check_credentials=check_credentials),
         "proxy": _proxy_status(proxy),
         "discovery": _discovery_status(proxy),
         "upstreams": upstreams,
@@ -372,13 +372,14 @@ def doctor_fabric(
     timeout: float | None = None,
     probe_gateway: bool | None = None,
     probe_upstreams: bool | None = None,
+    check_credentials: bool = True,
 ) -> dict[str, Any]:
     """Run static and active checks against a declared MCP fabric."""
 
     checks: list[dict[str, Any]] = []
     probes: dict[str, Any] = {}
     try:
-        status = fabric_status(config)
+        status = fabric_status(config, check_credentials=check_credentials)
         fabric = load_mcp_fabric_config(config)
     except Exception as exc:
         _add_check(checks, "config.loaded", False, f"failed to load fabric config: {exc}")
@@ -437,7 +438,8 @@ def doctor_fabric(
     )
 
     for upstream in upstreams:
-        _run_credential_checks(checks, upstream)
+        if check_credentials:
+            _run_credential_checks(checks, upstream)
         _run_manifest_checks(checks, upstream, require_manifest=bool(fabric["require_manifests"]))
 
     if do_probe_gateway and fabric.get("gateway_url"):
@@ -1952,7 +1954,7 @@ def _topology_discovery(proxy: Mapping[str, Any]) -> dict[str, Any]:
     return _drop_empty({"summary": discovery.get("summary"), "providers": providers})
 
 
-def _upstream_status(upstream: Mapping[str, Any]) -> dict[str, Any]:
+def _upstream_status(upstream: Mapping[str, Any], *, check_credentials: bool = True) -> dict[str, Any]:
     status: dict[str, Any] = {
         "name": upstream.get("name"),
         "transport": upstream.get("transport"),
@@ -1972,7 +1974,8 @@ def _upstream_status(upstream: Mapping[str, Any]) -> dict[str, Any]:
         status["args"] = list(upstream["args"])
     if upstream.get("bridge_args"):
         status["bridge_args"] = list(upstream["bridge_args"])
-    auth = credential_status(_mapping(upstream.get("credential")))
+    credential = _mapping(upstream.get("credential"))
+    auth = credential_status(credential) if check_credentials else credential_metadata(credential)
     if auth:
         status["auth"] = auth
     manifest = _manifest_status(upstream)
@@ -2154,9 +2157,10 @@ def _fabric_recommendations(fabric: Mapping[str, Any], upstreams: Sequence[Mappi
     return recommendations
 
 
-def _credentials_status(fabric: Mapping[str, Any]) -> dict[str, Any]:
+def _credentials_status(fabric: Mapping[str, Any], *, check_credentials: bool = True) -> dict[str, Any]:
     credentials = _mapping(fabric.get("credentials"))
-    items = [credential_status(credential) for credential in credentials.values() if isinstance(credential, Mapping)]
+    inspect = credential_status if check_credentials else credential_metadata
+    items = [inspect(credential) for credential in credentials.values() if isinstance(credential, Mapping)]
     return {
         "count": len(items),
         "available_count": sum(1 for item in items if item.get("available") is True),

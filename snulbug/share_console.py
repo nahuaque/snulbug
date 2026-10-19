@@ -3157,6 +3157,17 @@ def _share_readiness_gate(
         f"auth mode is {auth_mode}" if auth_mode and auth_mode != "none" else "no client auth mode is configured",
         details={"mode": auth_mode, "client_header_names": provider_auth.get("client_header_names")},
     )
+    credentials = _mapping(status.get("upstream_credentials"))
+    if _mapping(credentials.get("summary")).get("count") or credentials.get("state") == "config_error":
+        credential_state = credentials.get("state")
+        _add_readiness_check(
+            checks,
+            "auth.upstream_credentials",
+            "fail" if credentials.get("ok") is False else "pass" if credential_state == "available" else "warn",
+            "auth",
+            f"Upstream credential sources: {credential_state or 'unchecked'}; run doctor to recheck",
+            details={"checks": credentials.get("checks", [])},
+        )
     lease_required = provider_auth.get("lease_required", session.get("lease_required"))
     active_lease_count = int(leases.get("active_count") or 0)
     active_invite_count = _active_invite_count(invitations, leases)
@@ -5098,6 +5109,11 @@ def _console_html() -> str:
       min-width: 0;
       overflow-wrap: anywhere;
     }
+    .upstream-credentials, .upstream-credentials .details-body,
+    .upstream-credentials .detail-grid > div {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
     .ngrok-drift-check {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
@@ -5758,7 +5774,9 @@ def _console_html() -> str:
       renderInvites(status.invitations || {});
       renderShareTabs(readiness, status.invitations || {});
       renderEffectiveAccess(snapshot.effective_access || {});
-      renderAuthVisibility(snapshot.auth_visibility || {}, snapshot.share_auth || {});
+      renderAuthVisibility(
+        snapshot.auth_visibility || {}, snapshot.share_auth || {}, status.upstream_credentials || {}
+      );
       renderToolSchemaVisibility(snapshot.tool_schema_visibility || {});
       renderHealth(state.liveHealthStatus || status);
       renderToolRisk(status);
@@ -7392,7 +7410,7 @@ def _console_html() -> str:
       return JSON.stringify(value);
     }
 
-    function renderAuthVisibility(payload, shareAuth) {
+    function renderAuthVisibility(payload, shareAuth, credentials) {
       const summary = payload.summary || {};
       const current = payload.current || {};
       const scopeMatch = payload.scope_match || {};
@@ -7501,8 +7519,36 @@ def _console_html() -> str:
         </table>
       </div>` : "";
       const panelHtml =
-        shareAuthHtml + currentHtml + configHtml + runtimeHtml + denialsHtml + actorsHtml + eventsHtml;
+        shareAuthHtml + upstreamCredentialsHtml(credentials) + currentHtml + configHtml +
+        runtimeHtml + denialsHtml + actorsHtml + eventsHtml;
       $("authVisibility").innerHTML = `<div class="stack">${panelHtml}</div>`;
+    }
+
+    function upstreamCredentialsHtml(credentials) {
+      const items = credentials.items || [];
+      if (!items.length) return "";
+      const checked = credentials.checked_at ? `Last checked ${shortTime(credentials.checked_at)}` : "Not checked";
+      return `<details class="compact-details upstream-credentials" data-state-key="upstream-credentials">
+        <summary>Upstream credentials ${pill(credentials.state || "unchecked")}</summary>
+        <div class="details-body stack">
+          <div class="actions"><button type="button" onclick="runDoctor()">Run doctor</button>
+            <span class="muted">${esc(checked)}</span></div>
+          ${items.map((item) => `<div>
+            <h2>${esc(item.id)} ${pill(item.state || "unchecked")}</h2>
+            <div class="detail-grid">
+              ${detailRow("Source", `${item.type || "plugin"}: ${item.env || item.path || item.id}`)}
+              ${detailRow("Upstreams", listText((item.upstreams || []).map((upstream) => upstream.name)))}
+              ${detailRow("Header", `${item.header || "Authorization"} · ${item.scheme || "bearer"}`)}
+              ${detailRow("File mode", item.file_mode)}
+              ${detailRow("Rotation", item.rotation)}
+              ${detailRow("Availability", item.error || (item.checked
+                ? "Source resolved in the checking process; upstream acceptance is not verified."
+                : "Run doctor in the service environment."))}
+            </div>
+            ${(item.warnings || []).map((warning) => `<p class="muted">${esc(warning)}</p>`).join("")}
+          </div>`).join("")}
+        </div>
+      </details>`;
     }
 
     function dpopSummary(dpop, config) {

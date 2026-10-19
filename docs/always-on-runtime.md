@@ -139,6 +139,14 @@ setting an env variable does not replace a literal ngrok authtoken placeholder.
 Environment variables are still visible to sufficiently privileged local
 processes. Treat service logs and container inspection access as sensitive.
 
+For upstream service tokens, prefer the existing
+[credential broker references](credential-brokers.md#always-on-upstream-credentials).
+File sources support atomic replacement without a restart; environment-backed
+sources require a service restart to pick up supervisor environment changes.
+Live share doctor checks availability and hygiene, and status/report plus the
+console's Auth drawer reuse its secret-free diagnostics. Run checks in the
+service environment: local availability is not proof of upstream acceptance.
+
 ## Linux: systemd
 
 This example assumes an existing `snulbug` user/group, an installation at

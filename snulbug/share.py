@@ -19,6 +19,7 @@ from urllib.parse import SplitResult, urlencode, urlsplit
 
 from .bundle import validate_bundle
 from .config import default_event_sink_configs
+from .credential_health import ShareCredentialsDoctorCheck, cached_upstream_credentials
 from .fabric_members import DEFAULT_FABRIC_MEMBER_REGISTRY_KEY, register_fabric_member
 from .gateway_templates import GatewayTemplate, render_gateway_toml
 from .inspection import format_mcp_inspection_report, inspect_mcp_log
@@ -495,6 +496,15 @@ def share_status(
         else {}
     )
     contract = _share_contract_status(share_dir, manifest, session_model) if include_contract else {}
+    from .config import load_mcp_proxy_config
+
+    try:
+        credential_config = load_mcp_proxy_config(_share_config_path(share_dir, manifest, session_model))
+        upstream_credentials = cached_upstream_credentials(
+            _mapping(_mapping(manifest.get("health")).get("upstream_credentials")), credential_config
+        )
+    except (OSError, ValueError):
+        upstream_credentials = {"state": "config_error", "ok": False, "checked": False, "summary": {}, "items": []}
     findings = _share_findings(
         gateway=gateway,
         upstreams=upstreams,
@@ -521,6 +531,7 @@ def share_status(
         "upstreams": upstreams,
         "tunnel_doctor": tunnel,
         "ngrok": ngrok,
+        "upstream_credentials": upstream_credentials,
         "policy": policy,
         "members": members,
         "invitations": invitations,
@@ -1916,6 +1927,7 @@ class ShareFabricDoctorCheck(ShareDoctorCheck):
                 timeout=context.timeout,
                 probe_gateway=False,
                 probe_upstreams=False,
+                check_credentials=False,
             )
             _extend_component_checks(checks, fabric.get("checks", []), component="fabric", prefix="fabric")
             recommendations.extend(str(item) for item in _sequence(fabric.get("recommendations")))
@@ -2009,6 +2021,7 @@ for _share_doctor_check in (
     ShareConformanceDoctorCheck(),
     ShareTunnelDoctorCheck(),
     ShareNgrokDoctorCheck(),
+    ShareCredentialsDoctorCheck(),
 ):
     register_share_doctor_check(_share_doctor_check, replace=True)
 
@@ -2088,6 +2101,7 @@ def doctor_mcp_share(
         "cloudflare": artifacts.get("cloudflare"),
         "tailscale": artifacts.get("tailscale"),
         "ngrok": artifacts.get("ngrok"),
+        "upstream_credentials": artifacts.get("upstream_credentials"),
         "fabric": artifacts.get("fabric"),
         "mcp_spec": artifacts.get("mcp_spec"),
         "conformance": artifacts.get("conformance"),
@@ -2101,6 +2115,7 @@ def doctor_mcp_share(
             "last_checked_at": _now_iso(),
             "last_summary": result.get("summary"),
             "ngrok": artifacts.get("ngrok"),
+            "upstream_credentials": artifacts.get("upstream_credentials"),
             "share_doctor": {
                 "ok": result.get("ok"),
                 "summary": result.get("summary"),
@@ -7823,6 +7838,24 @@ def _share_report_lines(result: Mapping[str, Any], *, title: str) -> list[str]:
                 )
     else:
         lines.append("- None configured")
+    credentials = _mapping(result.get("upstream_credentials"))
+    lines.extend(
+        [
+            "",
+            "## Upstream Credentials",
+            "",
+            f"- State: `{credentials.get('state') or 'unchecked'}`",
+            f"- Last checked: `{credentials.get('checked_at') or '-'}`",
+        ]
+    )
+    for item in _sequence(credentials.get("items")):
+        item = _mapping(item)
+        lines.append(
+            f"- `{item.get('id')}` source=`{item.get('type')}` state=`{item.get('state')}`: "
+            f"{item.get('error') or item.get('rotation') or ''}"
+        )
+        lines.append(f"  Reference: `{item.get('env') or item.get('path') or item.get('id')}`")
+        lines.extend(f"  {warning}" for warning in _sequence(item.get("warnings")))
     lines.extend(["", "## Members", ""])
     attachments = [item for item in _sequence(members.get("attachments")) if isinstance(item, Mapping)]
     if attachments:

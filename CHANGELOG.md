@@ -9,6 +9,7 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 - Moved ngrok/SSH tunnel management into the share runtime: `share run` supervises tunnels with or without the web console, bounded crash-restart backoff, explicit stop/start controls, and graceful gateway/tunnel shutdown. Added `--no-tunnel` and always-on deployment recipes.
 - Added read-only ngrok policy drift checks to share doctor, readiness, reports, and the console: compare current config, generated policy, and deployed Cloud Endpoint policy without exposing deployed secrets or applying cloud changes. Includes OAuth-aware edge baselines and stale-result invalidation.
 - Added evidence-based request failure explanations to existing audit logs, live decisions, and session reports: distinguish admission gates, upstream credentials/connectivity, HTTP/MCP errors, partial catalogs, and response checks while preserving Lua decisions and unknown execution outcomes. Removed raw forwarding exceptions from client errors and facade health evidence; no tool-call retries.
+- Hardened upstream credential operations: bounded regular-file/header reads, secret-free broker failures, and live share doctor availability/hygiene checks surfaced in readiness, status, reports, and the Auth drawer. Documented atomic file rotation and environment restart semantics; passive refreshes reuse saved diagnostics without resolving secrets.
 
 ## [0.2.3] - 2026-10-18
 
