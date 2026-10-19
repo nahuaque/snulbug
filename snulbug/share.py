@@ -24,6 +24,7 @@ from .gateway_templates import GatewayTemplate, render_gateway_toml
 from .inspection import format_mcp_inspection_report, inspect_mcp_log
 from .leases import LEASE_RENEWAL_HEADER, LEASE_RENEWAL_METHOD, create_lease, lease_token_for_renewal
 from .mcp_tasks import task_support_summary
+from .ngrok_drift import ShareNgrokDoctorCheck, cached_ngrok_inspection
 from .presets import DEFAULT_ALLOWED_PATHS, DEFAULT_ALLOWED_TOOLS, McpPolicyOptions, generate_mcp_preset
 from .quickstart import create_mcp_quickstart
 from .redaction import SECRET_REPLACEMENT, build_audit_event
@@ -483,6 +484,16 @@ def share_status(
     )
     amendments = _share_amendment_status(session_model)
     tunnel = _share_tunnel_status(manifest, session_model)
+    ngrok = (
+        cached_ngrok_inspection(
+            _mapping(_mapping(manifest.get("health")).get("ngrok")),
+            directory=share_dir,
+            config_path=_resolve_share_path(share_dir, str(files.get("config") or "snulbug.toml")),
+            public_url=str(_mapping(manifest.get("client")).get("url") or ""),
+        )
+        if _mapping(manifest.get("session")).get("provider") == "ngrok"
+        else {}
+    )
     contract = _share_contract_status(share_dir, manifest, session_model) if include_contract else {}
     findings = _share_findings(
         gateway=gateway,
@@ -509,6 +520,7 @@ def share_status(
         "gateway": gateway,
         "upstreams": upstreams,
         "tunnel_doctor": tunnel,
+        "ngrok": ngrok,
         "policy": policy,
         "members": members,
         "invitations": invitations,
@@ -1996,6 +2008,7 @@ for _share_doctor_check in (
     ShareMcpSpecDoctorCheck(),
     ShareConformanceDoctorCheck(),
     ShareTunnelDoctorCheck(),
+    ShareNgrokDoctorCheck(),
 ):
     register_share_doctor_check(_share_doctor_check, replace=True)
 
@@ -2074,6 +2087,7 @@ def doctor_mcp_share(
         "policy": artifacts.get("policy"),
         "cloudflare": artifacts.get("cloudflare"),
         "tailscale": artifacts.get("tailscale"),
+        "ngrok": artifacts.get("ngrok"),
         "fabric": artifacts.get("fabric"),
         "mcp_spec": artifacts.get("mcp_spec"),
         "conformance": artifacts.get("conformance"),
@@ -2086,6 +2100,7 @@ def doctor_mcp_share(
         health={
             "last_checked_at": _now_iso(),
             "last_summary": result.get("summary"),
+            "ngrok": artifacts.get("ngrok"),
             "share_doctor": {
                 "ok": result.get("ok"),
                 "summary": result.get("summary"),
@@ -7830,6 +7845,14 @@ def _share_report_lines(result: Mapping[str, Any], *, title: str) -> list[str]:
             f"- Configured: `{_yes_no_unknown(tunnel.get('configured'))}`",
             f"- Last doctor checked: `{tunnel.get('last_checked_at') or '-'}`",
             f"- Last doctor ok: `{_yes_no_unknown(tunnel.get('ok'))}`",
+            f"- ngrok policy inspection: `{_mapping(result.get('ngrok')).get('state') or 'not checked'}`"
+            if session.get("provider") == "ngrok"
+            else "",
+            *[
+                f"- `{check.get('id')}` {check.get('status')}: {check.get('message')}"
+                for check in _sequence(_mapping(result.get("ngrok")).get("checks"))
+                if isinstance(check, Mapping)
+            ],
             "",
             "## Policy",
             "",

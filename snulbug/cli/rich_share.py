@@ -46,6 +46,11 @@ def _overview_panel(result: Mapping[str, Any]) -> Panel:
     _add_kv(grid, "Share", result.get("directory"))
     _add_kv(grid, "State", _state_text(result.get("state")))
     _add_kv(grid, "Provider", session.get("provider") or "-")
+    if session.get("provider") == "ngrok":
+        inspection = _mapping(result.get("ngrok"))
+        state = str(inspection.get("state") or "not checked")
+        style = "green" if inspection.get("ok") is True else ("red" if inspection.get("ok") is False else "yellow")
+        _add_kv(grid, "ngrok policy drift", Text(state, style=style))
     _add_kv(grid, "Public URL", tunnel.get("public_url") or client.get("url") or "-")
     _add_kv(grid, "Local gateway", gateway.get("url") or "-")
     _add_kv(grid, "Gateway", _health_text(gateway.get("reachable"), checked=gateway.get("checked")))

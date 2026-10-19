@@ -16,6 +16,12 @@ Built-ins currently cover:
 - `mcp-spec`: MCP 2025-11-25 public-share readiness checks
 - `conformance`: generated fabric conformance pack checks
 - `tunnel`: provider-specific tunnel doctor checks
+- `ngrok`: desired/generated/deployed Traffic Policy drift inspection (cloud reads require an API credential)
+
+The `ngrok` check uses the existing credential brokers and only issues bounded
+GET requests during live doctor runs. Ordinary status/console refreshes reuse
+saved, secret-safe results. See the [ngrok walkthrough](ngrok-end-to-end.md#check-for-configuration-drift)
+for configuration, structural comparison limits, and manual remediation.
 
 The `mcp-spec` check is not a formal MCP certification suite. It tracks the
 share-facing obligations that matter before handing out a public or tunneled MCP

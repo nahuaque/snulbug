@@ -7,6 +7,7 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 ## [Unreleased]
 
 - Moved ngrok/SSH tunnel management into the share runtime: `share run` supervises tunnels with or without the web console, bounded crash-restart backoff, explicit stop/start controls, and graceful gateway/tunnel shutdown. Added `--no-tunnel` and always-on deployment recipes.
+- Added read-only ngrok policy drift checks to share doctor, readiness, reports, and the console: compare current config, generated policy, and deployed Cloud Endpoint policy without exposing deployed secrets or applying cloud changes. Includes OAuth-aware edge baselines and stale-result invalidation.
 
 ## [0.2.3] - 2026-10-18
 

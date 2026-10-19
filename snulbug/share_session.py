@@ -116,6 +116,7 @@ def build_share_session_model(
             "last_checked_at": health.get("last_checked_at"),
             "share_doctor": health.get("share_doctor"),
             "tunnel_doctor": health.get("tunnel_doctor"),
+            "ngrok": health.get("ngrok"),
         },
         "amendments": {
             "last": _mapping(manifest.get("amendments")).get("last"),

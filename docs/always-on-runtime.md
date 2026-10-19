@@ -34,6 +34,10 @@ The runtime supervises processes, not public reachability: a running ngrok or
 SSH process does not prove that forwarding, DNS, TLS, authentication, or cloud
 policy is correct. Use existing share doctor and health checks, including the
 public URL checks, rather than treating a PID as readiness.
+For ngrok, [doctor's policy drift inspection](ngrok-end-to-end.md#check-for-configuration-drift)
+compares local configuration with the deployed Cloud Endpoint through optional,
+read-only API access. Supply its API credential to the service account to enable
+the same inspection from the console; it is separate from the agent authtoken.
 
 ## Runtime settings
 

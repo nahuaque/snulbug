@@ -258,6 +258,63 @@ snulbug mcp share report .snulbug/shares/ngrok-demo \
 The report summarizes what was exposed, which requests were allowed or blocked,
 the active lease, upstream health, and next commands.
 
+### Check for configuration drift
+
+The existing `share doctor` also compares the current snulbug configuration,
+generated `tunnel/ngrok-traffic-policy.yml`, and deployed Cloud Endpoint policy.
+Install the YAML parser with `uv tool install 'snulbug[discovery]'` (or
+`uv sync --extra discovery` in the source checkout).
+
+For cloud inspection, supply `NGROK_API_KEY` to the doctor process or to the
+`share run` service that hosts the console. This is an ngrok **API key**, not
+the agent authtoken. Keep it in your service's secret environment, not source
+control, command arguments, or generated client snippets. No key is needed
+for the local policy comparison.
+
+Optionally select a Cloud Endpoint by ID and/or use the existing credential
+broker configuration in the share's `snulbug.toml`:
+
+```toml
+[mcp.ngrok]
+endpoint_id = "ep_REPLACE_WITH_YOUR_ENDPOINT_ID"
+
+[mcp.ngrok.api_credential]
+type = "env"
+env = "NGROK_API_KEY"
+```
+
+Omit `endpoint_id` to find a unique active endpoint matching the public origin.
+For a file credential instead, use `type = "file"` and `path = "ngrok-api-key"`;
+relative paths resolve beside `snulbug.toml`. Protect that file with mode `0600`.
+Existing credential broker plugins can also supply the reference.
+
+Run the doctor command above, or **Run doctor** in the console. The Tunnel
+Provider panel shows the saved ngrok drift result, changed field paths, and a
+desired policy baseline for manual review. The session report includes the
+same check results. Changing local inputs invalidates the saved inspection.
+Console refresh and ordinary health checks never poll the ngrok cloud API.
+
+Inspection checks the endpoint's public origin, Cloud Endpoint type, public
+binding, internal forwarding target, MCP path, HTTP mounts, and coarse edge
+guards. OAuth baselines allow protected-resource metadata and leave token
+challenges to snulbug, including DPoP. Rules and expression order matter;
+rule names, whitespace, comments, and mapping key order do not. This is a
+structural baseline comparison, not a proof that custom CEL expressions are
+semantically equivalent. Intentional custom policy differences still need review.
+
+Missing credentials, unavailable YAML support, and disabled cloud checks are
+reported as unchecked, never as a deployed-policy match. `--no-live-checks`
+disables this cloud inspection and does not resolve the API credential.
+An inaccessible API or ambiguous endpoint selection cannot produce a pass.
+Cloud results are point-in-time evidence: rerun doctor after dashboard changes.
+
+The integration only makes bounded HTTPS GET requests to the
+[ngrok Endpoints API](https://ngrok.com/docs/api-reference/endpoints/get).
+It does not create, update, or delete endpoints. Reports contain digests and
+safe field paths, never deployed policy values or API keys. Review your custom
+rules before copying the desired baseline to the generated file and attaching
+it to the Cloud Endpoint in ngrok; snulbug never applies it automatically.
+
 Send SIGTERM or press Ctrl-C in the `share run` terminal to stop the gateway.
 Uvicorn drains requests and streams up to the configured deadline, cancels
 remaining work, then the runtime stops managed ngrok. If you chose the manual

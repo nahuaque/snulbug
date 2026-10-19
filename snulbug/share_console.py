@@ -1144,6 +1144,7 @@ def _tunnel_provider_visibility(
         "auth": _provider_auth_visibility(status, config),
         "local_console": _provider_local_console_visibility(provider, provider_console),
         "doctor": _provider_doctor_visibility(tunnel),
+        "drift": _mapping(status.get("ngrok")),
         "commands": _provider_command_rows(_mapping(status.get("commands"))),
     }
 
@@ -3112,6 +3113,26 @@ def _share_readiness_gate(
         },
     )
     auth_mode = provider_auth.get("mode")
+    if tunnel_provider.get("provider") == "ngrok":
+        drift = _mapping(tunnel_provider.get("drift"))
+        _add_readiness_check(
+            checks,
+            "tunnel.ngrok_policy",
+            "fail" if drift.get("ok") is False else ("pass" if drift.get("ok") is True else "warn"),
+            "tunnel",
+            "ngrok generated and deployed policies match the desired baseline"
+            if drift.get("ok") is True
+            else (
+                "ngrok policy inspection found failing checks"
+                if drift.get("ok") is False
+                else "ngrok deployed policy has not been verified; run doctor with an ngrok API credential"
+            ),
+            details={
+                "state": drift.get("state"),
+                "desired_digest": drift.get("desired_digest"),
+                "checks": drift.get("checks", []),
+            },
+        )
     _add_readiness_check(
         checks,
         "auth.configured",
@@ -4551,17 +4572,17 @@ def _console_html() -> str:
       border: 1px solid var(--line);
       background: #fff;
     }
-    .ok, .pass, .reachable, .approved, .ready, .connected, .used {
+    .ok, .pass, .reachable, .approved, .ready, .connected, .used, .matched {
       color: var(--green);
       border-color: #a7d8bf;
       background: #f0fbf5;
     }
-    .fail, .blocked, .denied, .unreachable, .misconfigured, .inactive {
+    .fail, .blocked, .denied, .unreachable, .misconfigured, .inactive, .drifted, .unavailable {
       color: var(--red);
       border-color: #efb3b8;
       background: #fff5f5;
     }
-    .warn, .pending, .unknown, .confirmed, .not-checked, .review, .skip, .not-used, .seen {
+    .warn, .pending, .unknown, .confirmed, .not-checked, .review, .skip, .not-used, .seen, .unchecked, .stale {
       color: var(--yellow);
       border-color: #ecd598;
       background: #fffaf0;
@@ -5048,6 +5069,29 @@ def _console_html() -> str:
       max-height: 520px;
       border: 1px solid var(--line);
     }
+    .ngrok-drift, .ngrok-drift .details-body, .ngrok-drift details {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .ngrok-drift .detail-grid > div {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .ngrok-drift-check {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 6px 10px;
+      align-items: start;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .ngrok-drift-check > div {
+      grid-column: 1 / -1;
+    }
+    .ngrok-drift .console-output {
+      max-height: 360px;
+      overflow: auto;
+    }
     @media (max-width: 980px) {
       .metrics {
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -5378,6 +5422,7 @@ def _console_html() -> str:
     };
     const scrollPreserveSelectors = [
       ".policy-source",
+      ".ngrok-drift .console-output",
       "#reportOutput",
       "#doctorChecks",
       "#amendPreview",
@@ -7798,7 +7843,44 @@ def _console_html() -> str:
       const processHtml = providerProcessHtml(process);
       const doctorHtml = providerDoctorHtml(doctor);
       const commandsHtml = providerCommandsTable(commands);
-      $("tunnelProvider").innerHTML = `<div class="stack">${overview}${processHtml}${doctorHtml}${commandsHtml}</div>`;
+      const driftHtml = ngrokDriftHtml(payload.drift, provider);
+      $("tunnelProvider").innerHTML = '<div class="stack">' +
+        overview + processHtml + doctorHtml + driftHtml + commandsHtml + "</div>";
+    }
+
+    function ngrokDriftHtml(drift, provider) {
+      if (provider !== "ngrok") return "";
+      const inspection = drift || {};
+      const rows = (inspection.checks || []).map((check) =>
+        `<div class="ngrok-drift-check"><strong>${esc(check.id)}</strong>${pill(check.status)}
+          <div>${esc(check.message)}</div></div>`
+      ).join("");
+      const differences = ["local", "deployed"].map((stage) => {
+        const comparison = inspection[stage] || {};
+        const changes = (comparison.differences || []).map((item) =>
+          `<li><code>${esc(item.path)}</code> ${esc(item.change)}</li>`
+        ).join("");
+        return changes ? `<div><strong>${esc(stage)}</strong><ul>${changes}</ul></div>` : "";
+      }).join("");
+      const baseline = inspection.desired_policy ? `<details class="compact-details"
+          data-state-key="ngrok-desired-policy">
+        <summary>Desired Traffic Policy baseline</summary>
+        <div class="details-body"><pre class="console-output">${esc(inspection.desired_policy)}</pre></div>
+      </details>` : "";
+      return `<details class="compact-details ngrok-drift" data-state-key="ngrok-drift">
+        <summary>ngrok policy drift ${pill(inspection.state || "not checked")}</summary>
+        <div class="details-body stack">
+          <div class="detail-grid">
+            ${detailRow("Last inspected", shortDateTime(inspection.checked_at))}
+            ${detailRow("Cloud inspected", inspection.cloud_checked ? "yes" : "no")}
+            ${detailRow("Desired digest", inspection.desired_digest)}
+          </div>
+          ${rows}
+          ${differences}${baseline}
+          <ul class="recommendations">${(inspection.recommendations || []).map((item) =>
+            `<li>${esc(item)}</li>`).join("")}</ul>
+        </div>
+      </details>`;
     }
 
     function providerProcessHtml(process) {
