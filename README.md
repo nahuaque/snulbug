@@ -131,7 +131,12 @@ snulbug mcp share run .snulbug/shares/share-...
 Inside a generated share directory, `snulbug mcp share run` is enough;
 it reads `.snulbug/share/session.json`, reconciles the active config,
 policy, lease, and log paths, and starts the local share console before
-starting the gateway. Pass `--no-console` when you only want the proxy.
+starting the gateway. Pass `--no-console` to disable the local web UI.
+
+For ngrok and SSH shares, `share run` also starts and supervises the generated
+tunnel independently of the console. Use `--no-tunnel` for an externally managed
+agent. See [always-on deployment](docs/always-on-runtime.md) for crash recovery,
+graceful shutdown, and systemd, launchd, and container recipes.
 
 3. Check what is happening:
 

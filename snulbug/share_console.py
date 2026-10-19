@@ -7,9 +7,6 @@ import json
 import os
 import re
 import secrets
-import shlex
-import shutil
-import subprocess
 import threading
 from collections import deque
 from collections.abc import Mapping, Sequence
@@ -18,7 +15,7 @@ from datetime import datetime, timezone
 from errno import ECONNABORTED, ECONNRESET, EPIPE
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from time import monotonic, sleep
+from time import monotonic
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -46,6 +43,7 @@ from .share import (
     share_report,
     share_status,
 )
+from .share_runtime import ShareRuntime
 from .share_session import load_share_session_model, share_session_model_path, write_share_session_model
 from .simulator import normalize_request
 
@@ -71,7 +69,6 @@ TUNNEL_PROVIDER_LABELS = {
 DEFAULT_DECISION_TIMELINE_LIMIT = 20
 DEFAULT_AUTH_VISIBILITY_LIMIT = 50
 DEFAULT_PROVIDER_CONSOLE_PROBE_TTL_SECONDS = 15.0
-MAX_TUNNEL_LOG_TAIL_BYTES = 8192
 MAX_POLICY_SOURCE_BYTES = 256 * 1024
 MAX_POLICY_MANIFEST_BYTES = 64 * 1024
 MAX_EFFECTIVE_ACCESS_TARGETS = 8
@@ -283,15 +280,14 @@ class ShareConsoleServer:
     timeout: float = 1.0
     live_checks: bool = False
     setup_only: bool = False
+    runtime: ShareRuntime | None = field(default=None, repr=False)
     console_secret: str = field(default_factory=lambda: secrets.token_urlsafe(18), repr=False)
     _server: ThreadingHTTPServer | None = field(default=None, init=False, repr=False)
     _thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _run_requested: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _initial_health_share: str | None = field(default=None, init=False, repr=False)
-    _tunnel_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
-    _tunnel_process: Any | None = field(default=None, init=False, repr=False)
-    _tunnel_log_file: Any | None = field(default=None, init=False, repr=False)
-    _tunnel_last_returncode: int | None = field(default=None, init=False, repr=False)
+    _runtime_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _owns_runtime: bool = field(default=False, init=False, repr=False)
 
     @property
     def url(self) -> str:
@@ -336,7 +332,8 @@ class ShareConsoleServer:
         self._server.serve_forever()
 
     def stop(self) -> None:
-        self.stop_tunnel_process()
+        if self._owns_runtime and self.runtime is not None:
+            self.runtime.close()
         if self._server is None:
             return
         self._server.shutdown()
@@ -697,112 +694,34 @@ class ShareConsoleServer:
         )
         return self._with_tunnel_process(_with_console_invite_setups(self.directory, snapshot))
 
+    def attach_runtime(self, runtime: ShareRuntime) -> None:
+        with self._runtime_lock:
+            if self._owns_runtime and self.runtime is not None and self.runtime is not runtime:
+                self.runtime.close()
+            self.runtime = runtime
+            self._owns_runtime = False
+
+    def _tunnel_runtime(self) -> ShareRuntime:
+        with self._runtime_lock:
+            if self.runtime is None:
+                self.runtime = ShareRuntime(self.directory)
+                self._owns_runtime = True
+                config = self.directory / "snulbug.toml"
+                if config.is_file():
+                    self.runtime.configure(config)
+            return self.runtime
+
     def tunnel_process_status(self) -> dict[str, Any]:
-        with self._tunnel_lock:
-            self._cleanup_finished_tunnel_locked()
-            return _console_tunnel_process_status(
-                self.directory,
-                process=self._tunnel_process,
-                last_returncode=self._tunnel_last_returncode,
-            )
+        status = self._tunnel_runtime().status()
+        if status.get("provider") == "ngrok":
+            status["ngrok_local_api"] = _cached_ngrok_local_api_status(status)
+        return status
 
     def start_tunnel_process(self) -> dict[str, Any]:
-        with self._tunnel_lock:
-            self._cleanup_finished_tunnel_locked()
-            if self._tunnel_process is not None and self._tunnel_process.poll() is None:
-                return {
-                    "ok": True,
-                    "message": "tunnel process is already running",
-                    "process": _console_tunnel_process_status(
-                        self.directory,
-                        process=self._tunnel_process,
-                        last_returncode=self._tunnel_last_returncode,
-                    ),
-                }
-            plan = _console_tunnel_start_plan(self.directory)
-            if not plan.get("manageable"):
-                return {"ok": False, "error": plan.get("error") or "tunnel provider is not manageable", "process": plan}
-            command_argv = [str(item) for item in _sequence(plan.get("command_argv"))]
-            if not command_argv:
-                plan["error"] = "managed tunnel command is missing"
-                return {"ok": False, "error": plan["error"], "process": plan}
-            executable_name = command_argv[0]
-            executable = shutil.which(executable_name)
-            if not executable:
-                plan["error"] = f"{executable_name} executable not found on PATH"
-                return {"ok": False, "error": plan["error"], "process": plan}
-            provider = str(plan.get("provider") or "")
-            if provider == "ngrok" and _ngrok_agent_config_has_placeholder(Path(str(plan.get("agent_config")))):
-                plan["error"] = (
-                    "ngrok agent config still contains YOUR_NGROK_AUTHTOKEN; replace it or merge the endpoint "
-                    "into your existing ngrok config before starting the managed tunnel"
-                )
-                return {"ok": False, "error": plan["error"], "process": plan}
-            if provider == "ssh" and _ssh_tunnel_command_has_placeholder(command_argv):
-                plan["error"] = "SSH tunnel command still contains YOUR_SSH_USER@YOUR_SSH_HOST"
-                return {"ok": False, "error": plan["error"], "process": plan}
-            log_path = Path(str(plan["log_path"]))
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_file = log_path.open("ab")
-            argv = [executable, *command_argv[1:]]
-            process = subprocess.Popen(  # noqa: S603 - command is fixed; config path comes from the share directory.
-                argv,
-                cwd=str(self.directory),
-                stdin=subprocess.DEVNULL,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-            )
-            self._tunnel_process = process
-            self._tunnel_log_file = log_file
-            self._tunnel_last_returncode = None
-            sleep(0.15)
-            status = _console_tunnel_process_status(
-                self.directory,
-                process=process,
-                last_returncode=self._tunnel_last_returncode,
-            )
-            ok = bool(status.get("running") or status.get("state") == "running")
-            return _drop_empty(
-                {
-                    "ok": ok,
-                    "error": status.get("error") if not ok else None,
-                    "process": status,
-                }
-            )
+        return self._tunnel_runtime().start()
 
     def stop_tunnel_process(self) -> dict[str, Any]:
-        with self._tunnel_lock:
-            process = self._tunnel_process
-            if process is None:
-                self._close_tunnel_log_locked()
-                return {
-                    "ok": True,
-                    "message": "tunnel process was not running",
-                    "process": _console_tunnel_process_status(
-                        self.directory,
-                        process=None,
-                        last_returncode=self._tunnel_last_returncode,
-                    ),
-                }
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
-            self._tunnel_process = None
-            self._tunnel_last_returncode = None
-            self._close_tunnel_log_locked()
-            return {
-                "ok": True,
-                "message": "tunnel process stopped",
-                "process": _console_tunnel_process_status(
-                    self.directory,
-                    process=None,
-                    last_returncode=self._tunnel_last_returncode,
-                ),
-            }
+        return self._tunnel_runtime().stop()
 
     def _with_tunnel_process(self, snapshot: Mapping[str, Any]) -> dict[str, Any]:
         result = dict(snapshot)
@@ -811,20 +730,6 @@ class ShareConsoleServer:
             provider["process"] = self.tunnel_process_status()
             result["tunnel_provider"] = provider
         return result
-
-    def _cleanup_finished_tunnel_locked(self) -> None:
-        if self._tunnel_process is not None and self._tunnel_process.poll() is not None:
-            self._tunnel_last_returncode = self._tunnel_process.poll()
-            self._tunnel_process = None
-            self._close_tunnel_log_locked()
-
-    def _close_tunnel_log_locked(self) -> None:
-        if self._tunnel_log_file is None:
-            return
-        try:
-            self._tunnel_log_file.close()
-        finally:
-            self._tunnel_log_file = None
 
     def _has_console_secret(self, handler: BaseHTTPRequestHandler) -> bool:
         supplied = handler.headers.get(CONSOLE_SECRET_HEADER, "")
@@ -859,307 +764,6 @@ def _with_console_invite_setups(directory: str | Path, snapshot: Mapping[str, An
         "summary": invitations.get("summary", {}),
     }
     return payload
-
-
-def _console_tunnel_process_status(
-    directory: str | Path,
-    *,
-    process: Any | None,
-    last_returncode: int | None = None,
-) -> dict[str, Any]:
-    plan = _console_tunnel_start_plan(directory)
-    if process is None:
-        log_status = _console_tunnel_log_status(plan, returncode=last_returncode)
-        return {**plan, **log_status, "state": "stopped", "running": False}
-    return_code = process.poll()
-    if return_code is None:
-        log_status = _console_tunnel_log_status(plan)
-        return {**plan, **log_status, "state": "running", "running": True, "pid": getattr(process, "pid", None)}
-    return {
-        **plan,
-        **_console_tunnel_log_status(plan, returncode=return_code),
-        "state": "exited",
-        "running": False,
-        "returncode": return_code,
-    }
-
-
-def _console_tunnel_log_status(
-    plan: Mapping[str, Any],
-    *,
-    returncode: int | None = None,
-) -> dict[str, Any]:
-    log_path = plan.get("log_path")
-    if not log_path:
-        return {}
-    raw_tail = _read_text_tail(Path(str(log_path)), MAX_TUNNEL_LOG_TAIL_BYTES)
-    diagnosis = (
-        _diagnose_tunnel_process(
-            str(plan.get("provider") or "generic"),
-            raw_tail,
-            returncode=returncode,
-        )
-        if returncode is not None
-        else {}
-    )
-    return _drop_empty(
-        {
-            "log_tail": _redact_tunnel_log_tail(raw_tail),
-            "diagnosis": diagnosis,
-            "error": diagnosis.get("message") if diagnosis else None,
-        }
-    )
-
-
-def _read_text_tail(path: Path, max_bytes: int) -> str | None:
-    try:
-        with path.open("rb") as handle:
-            handle.seek(0, os.SEEK_END)
-            size = handle.tell()
-            handle.seek(max(0, size - max_bytes), os.SEEK_SET)
-            data = handle.read(max_bytes)
-    except OSError:
-        return None
-    if not data:
-        return None
-    return data.decode("utf-8", errors="replace").strip()
-
-
-def _redact_tunnel_log_tail(value: str | None) -> str | None:
-    if not value:
-        return value
-    redacted = POLICY_BEARER_PATTERN.sub("Bearer " + SECRET_REPLACEMENT, value)
-    for pattern in POLICY_STANDALONE_SECRET_PATTERNS:
-        redacted = pattern.sub(SECRET_REPLACEMENT, redacted)
-    return re.sub(
-        r"(?im)(\b(?:ngrok_)?authtoken\b\s*[:=]\s*)(\S+)",
-        r"\1" + SECRET_REPLACEMENT,
-        redacted,
-    )
-
-
-def _diagnose_tunnel_process(
-    provider: str,
-    log_tail: str | None,
-    *,
-    returncode: int | None,
-) -> dict[str, str]:
-    if provider == "ngrok":
-        return _diagnose_ngrok_process(log_tail, returncode=returncode)
-    if returncode is not None and returncode != 0:
-        return {
-            "code": "tunnel.process_exited",
-            "message": f"Tunnel process exited with status {returncode}.",
-            "recommendation": (
-                "Open the recent tunnel log below and restart the tunnel after fixing the reported error."
-            ),
-        }
-    return {}
-
-
-def _diagnose_ngrok_process(log_tail: str | None, *, returncode: int | None) -> dict[str, str]:
-    log = (log_tail or "").lower()
-    if "err_ngrok_334" in log or "already online" in log:
-        return {
-            "code": "ngrok.endpoint_already_online",
-            "message": "The configured ngrok endpoint is already online in another session.",
-            "recommendation": (
-                "Stop the existing ngrok endpoint/session, choose a different endpoint URL, or start ngrok "
-                "with pooling only if you intentionally want load balancing."
-            ),
-        }
-    if "err_ngrok_3200" in log or ("endpoint" in log and "offline" in log):
-        return {
-            "code": "ngrok.endpoint_offline",
-            "message": "The ngrok cloud endpoint is offline or not connected to this local agent.",
-            "recommendation": (
-                "Start the generated ngrok agent from this panel, then make sure the ngrok Cloud Endpoint "
-                "Traffic Policy forwards to the generated internal URL."
-            ),
-        }
-    if "authtoken" in log or "authentication failed" in log or "authorization failed" in log:
-        return {
-            "code": "ngrok.auth_required",
-            "message": "ngrok rejected the agent config or account authentication.",
-            "recommendation": (
-                "Run ngrok login or replace YOUR_NGROK_AUTHTOKEN in the generated agent config before "
-                "starting the managed tunnel."
-            ),
-        }
-    if "failed to start tunnel" in log:
-        return {
-            "code": "ngrok.start_failed",
-            "message": "ngrok failed to start the managed tunnel.",
-            "recommendation": "Review the recent tunnel log, fix the ngrok configuration, then start the tunnel again.",
-        }
-    if returncode is not None and returncode != 0:
-        return {
-            "code": "ngrok.agent_exited",
-            "message": f"ngrok exited with status {returncode}.",
-            "recommendation": "Review the recent tunnel log, fix the ngrok configuration, then start the tunnel again.",
-        }
-    return {}
-
-
-def _console_tunnel_start_plan(directory: str | Path) -> dict[str, Any]:
-    share_dir = Path(directory)
-    provider, bridge, manifest = _console_tunnel_metadata(share_dir)
-    if provider == "ngrok":
-        return _console_ngrok_tunnel_start_plan(share_dir, bridge=bridge, manifest=manifest)
-    if provider == "ssh":
-        return _console_ssh_tunnel_start_plan(share_dir, bridge=bridge)
-    return {
-        "provider": provider or "generic",
-        "manageable": False,
-        "supported": False,
-        "error": "managed tunnel start/stop is currently available for ngrok and ssh shares",
-    }
-
-
-def _console_ngrok_tunnel_start_plan(
-    share_dir: Path,
-    *,
-    bridge: Mapping[str, Any],
-    manifest: Mapping[str, Any] | None,
-) -> dict[str, Any]:
-    agent_config = _console_ngrok_agent_config_path(share_dir, bridge=bridge, manifest=manifest)
-    traffic_policy = _console_ngrok_traffic_policy_path(share_dir, bridge=bridge, manifest=manifest)
-    command_argv = ["ngrok", "start", "--config", str(agent_config), "--all"]
-    log_path = share_dir / ".snulbug" / "share" / "ngrok-agent.log"
-    exists = agent_config.is_file()
-    policy_exists = traffic_policy.is_file()
-    public_url = _console_tunnel_public_url(bridge=bridge, manifest=manifest)
-    internal_url = bridge.get("internal_url") or bridge.get("ngrok_internal_url")
-    return _drop_empty(
-        {
-            "provider": "ngrok",
-            "manageable": exists,
-            "supported": True,
-            "agent_config": str(agent_config),
-            "agent_config_exists": exists,
-            "traffic_policy": str(traffic_policy),
-            "traffic_policy_exists": policy_exists,
-            "public_url": public_url,
-            "internal_url": internal_url,
-            "ngrok_local_api": _cached_ngrok_local_api_status(
-                {
-                    "provider": "ngrok",
-                    "public_url": public_url,
-                    "internal_url": internal_url,
-                }
-            ),
-            "command_argv": command_argv,
-            "command": _shell_command(command_argv),
-            "log_path": str(log_path),
-            "error": None if exists else f"ngrok agent config not found: {agent_config}",
-        }
-    )
-
-
-def _console_ssh_tunnel_start_plan(share_dir: Path, *, bridge: Mapping[str, Any]) -> dict[str, Any]:
-    command_argv = [str(item) for item in _sequence(bridge.get("command_argv"))]
-    if not command_argv:
-        return {
-            "provider": "ssh",
-            "manageable": False,
-            "supported": True,
-            "error": "SSH tunnel command is missing from the share metadata; regenerate the share",
-        }
-    log_path = share_dir / ".snulbug" / "share" / "ssh-tunnel.log"
-    return _drop_empty(
-        {
-            "provider": "ssh",
-            "manageable": True,
-            "supported": True,
-            "ssh_target": bridge.get("ssh_target"),
-            "remote_bind": bridge.get("remote_bind"),
-            "remote_port": bridge.get("remote_port"),
-            "client_url": bridge.get("client_url"),
-            "command_argv": command_argv,
-            "command": _shell_command(command_argv),
-            "log_path": str(log_path),
-        }
-    )
-
-
-def _console_tunnel_metadata(share_dir: Path) -> tuple[str, Mapping[str, Any], Mapping[str, Any] | None]:
-    manifest: Mapping[str, Any] | None = None
-    try:
-        manifest = load_mcp_share(share_dir)
-    except Exception:
-        manifest = None
-    tunnel = _mapping(manifest.get("tunnel")) if manifest is not None else {}
-    bridge = _mapping(tunnel.get("bridge"))
-    provider = str(tunnel.get("provider") or "").strip().lower()
-    try:
-        session_model = load_share_session_model(share_dir)
-    except Exception:
-        session_model = {}
-    session_tunnel = _mapping(session_model.get("tunnel"))
-    if not provider:
-        provider = str(session_tunnel.get("provider") or "").strip().lower()
-    if not bridge:
-        bridge = _mapping(session_tunnel.get("bridge"))
-    return provider, bridge, manifest
-
-
-def _console_ngrok_agent_config_path(
-    share_dir: Path,
-    *,
-    bridge: Mapping[str, Any],
-    manifest: Mapping[str, Any] | None,
-) -> Path:
-    tunnel = _mapping(manifest.get("tunnel")) if manifest is not None else {}
-    traffic_policy = _mapping(tunnel.get("traffic_policy"))
-    value = traffic_policy.get("agent_config") or bridge.get("agent_config") or "ngrok-agent.yml"
-    path = Path(str(value))
-    if path.is_absolute():
-        return path
-    if path.parent == Path("."):
-        return share_dir / "tunnel" / path
-    return _resolve_console_path(share_dir, path)
-
-
-def _console_ngrok_traffic_policy_path(
-    share_dir: Path,
-    *,
-    bridge: Mapping[str, Any],
-    manifest: Mapping[str, Any] | None,
-) -> Path:
-    tunnel = _mapping(manifest.get("tunnel")) if manifest is not None else {}
-    traffic_policy = _mapping(tunnel.get("traffic_policy"))
-    value = traffic_policy.get("path") or bridge.get("traffic_policy") or "ngrok-traffic-policy.yml"
-    path = Path(str(value))
-    if path.is_absolute():
-        return path
-    if path.parent == Path("."):
-        return share_dir / "tunnel" / path
-    return _resolve_console_path(share_dir, path)
-
-
-def _console_tunnel_public_url(
-    *,
-    bridge: Mapping[str, Any],
-    manifest: Mapping[str, Any] | None,
-) -> str | None:
-    tunnel = _mapping(manifest.get("tunnel")) if manifest is not None else {}
-    value = tunnel.get("public_url") or bridge.get("public_url") or bridge.get("client_url")
-    return str(value) if value else None
-
-
-def _ngrok_agent_config_has_placeholder(path: Path) -> bool:
-    try:
-        return "YOUR_NGROK_AUTHTOKEN" in path.read_text(encoding="utf-8")
-    except OSError:
-        return False
-
-
-def _ssh_tunnel_command_has_placeholder(command_argv: Sequence[str]) -> bool:
-    return any("YOUR_SSH_USER@YOUR_SSH_HOST" in str(item) for item in command_argv)
-
-
-def _shell_command(argv: Sequence[str]) -> str:
-    return " ".join(shlex.quote(str(part)) for part in argv)
 
 
 def _cleanup_console_stale_invites(directory: str | Path) -> None:
@@ -8206,6 +7810,7 @@ def _console_html() -> str:
         </div>`;
       }
       const running = process.running === true;
+      const desiredRunning = process.desired_state === "running";
       const state = process.state || "stopped";
       const manageable = process.manageable !== false;
       const diagnosis = process.diagnosis || {};
@@ -8222,6 +7827,11 @@ def _console_html() -> str:
       </details>` : "";
       const ngrokApiHtml = ngrokLocalApiHtml(process.ngrok_local_api);
       const processDetails = [
+        detailRow("Desired state", process.desired_state || "stopped"),
+        detailRow("Crash restarts", `${process.restart_attempts || 0} / ${process.restart_max_attempts ?? "-"}`),
+        process.retry_in_seconds != null
+          ? detailRow("Next retry", `${Math.ceil(process.retry_in_seconds)}s`)
+          : "",
         process.public_url
           ? detailRowHtml("Public endpoint", externalLink(process.public_url, process.public_url))
           : "",
@@ -8254,7 +7864,7 @@ def _console_html() -> str:
               type="button"
               class="danger"
               onclick="stopTunnel()"
-              ${running ? "" : "disabled"}
+              ${running || desiredRunning ? "" : "disabled"}
             >Stop tunnel</button>
           </div>
         </div>

@@ -72,6 +72,12 @@ The share writes the important files here:
 `mcp-client.json` contains the bearer token and lease token for the generated
 session. Treat it as secret-bearing material.
 
+Before running the share, replace `YOUR_NGROK_AUTHTOKEN` in
+`tunnel/ngrok-agent.yml` with the agent credential for your account, or complete
+the generated config's instructions for using your existing ngrok v3 config.
+Authenticating a different ngrok config does not fill in this placeholder.
+Protect the generated share directory and agent config; they contain secrets.
+
 ### Optional: Share a Webapp on the Same Tunnel
 
 To expose an app on port 3000, add this flag to the `share create` command in
@@ -122,19 +128,25 @@ Terminal 2:
 snulbug mcp share run .snulbug/shares/ngrok-demo
 ```
 
-Leave this process running. Successful requests print decision lines such as
+This starts the gateway, the managed ngrok internal Agent Endpoint, and the
+local share console at `http://127.0.0.1:8765`. ngrok uses the existing generated
+`tunnel/ngrok-agent.yml`; no second agent command is needed. Leave this process
+running. Successful requests print decision lines such as
 `snulbug decision=...`.
 
-## 5. Start the ngrok internal Agent Endpoint
+For headless operation, append `--no-console`. This disables only the UI;
+ngrok still starts and receives bounded crash supervision. The console's
+**Start tunnel** and **Stop tunnel** controls operate on the same managed
+process. Stopping it intentionally keeps it stopped until an explicit start.
+See [Always-on share runtime](always-on-runtime.md)
+for retry settings, shutdown ordering, and OS supervisor recipes. Neither the
+share console nor ngrok's local inspection UI should be exposed publicly.
 
-Terminal 3:
+## 5. Inspect the ngrok internal Agent Endpoint
 
-```bash
-ngrok start --config .snulbug/shares/ngrok-demo/tunnel/ngrok-agent.yml --all
-```
-
-The local ngrok status should show the private internal endpoint, not the public
-origin:
+Use the share console's tunnel-provider panel and the local ngrok inspection
+UI at `http://127.0.0.1:4040`. The local ngrok status should show the private
+internal endpoint, not the public origin:
 
 ```text
 Forwarding  https://snulbug-mcp.internal -> http://127.0.0.1:8080
@@ -142,7 +154,31 @@ Forwarding  https://snulbug-mcp.internal -> http://127.0.0.1:8080
 
 That is expected. The public URL is the Cloud Endpoint managed in the ngrok
 dashboard. The local agent only connects the private `.internal` endpoint to
-the local snulbug gateway.
+the local snulbug gateway. A running agent is not proof of public reachability
+or a correctly attached Traffic Policy; complete the doctor and public checks
+below.
+
+### Optional: Start ngrok manually
+
+If you prefer to manage the agent separately, replace the command in step 4
+with:
+
+```bash
+snulbug mcp share run .snulbug/shares/ngrok-demo --no-tunnel
+```
+
+`--no-tunnel` disables automatic startup, not the console. Its **Start tunnel**
+button can still start a managed agent explicitly, so do not use it while your
+external agent owns the endpoint.
+
+Terminal 3:
+
+```bash
+ngrok start --config .snulbug/shares/ngrok-demo/tunnel/ngrok-agent.yml --all
+```
+
+Do not run this command alongside the automatically managed agent. Stop the
+external agent separately when finished; snulbug does not supervise it.
 
 ## 6. Attach the Traffic Policy
 
@@ -222,7 +258,19 @@ snulbug mcp share report .snulbug/shares/ngrok-demo \
 The report summarizes what was exposed, which requests were allowed or blocked,
 the active lease, upstream health, and next commands.
 
+Send SIGTERM or press Ctrl-C in the `share run` terminal to stop the gateway.
+Uvicorn drains requests and streams up to the configured deadline, cancels
+remaining work, then the runtime stops managed ngrok. If you chose the manual
+path, stop that ngrok process separately. See [MCP share sessions](mcp-share.md)
+for lease revocation and closeout reporting.
+
 ## Troubleshooting
+
+If managed ngrok does not start, check the service account's `PATH`, the agent
+config's authtoken placeholder, and whether another ngrok process already owns
+the endpoint. After the bounded crash retry budget is exhausted, fix the cause
+and use **Start tunnel** in the console or restart `share run`. The runtime
+never retries MCP tool calls during restart or shutdown.
 
 Bare `HTTP/2 401` with `content-length: 0` usually means ngrok's Traffic Policy
 blocked the request before snulbug saw it. Check that `Authorization` is present

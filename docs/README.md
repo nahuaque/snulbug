@@ -29,6 +29,7 @@ share create -> share run -> share status -> share requests approve -> share pol
 ## Sharing, Tunnels, And Remote Dev
 
 - [End-to-end ngrok MCP gateway](ngrok-end-to-end.md)
+- [Always-on share runtime and deployment](always-on-runtime.md)
 - [Tunnel provider plugins](tunnel-providers.md)
 - [Credential broker plugins](credential-brokers.md)
 - [Discovery provider plugins](discovery-providers.md)

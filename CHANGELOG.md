@@ -6,6 +6,8 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 
 ## [Unreleased]
 
+- Moved ngrok/SSH tunnel management into the share runtime: `share run` supervises tunnels with or without the web console, bounded crash-restart backoff, explicit stop/start controls, and graceful gateway/tunnel shutdown. Added `--no-tunnel` and always-on deployment recipes.
+
 ## [0.2.3] - 2026-10-18
 
 Add Pocket ID setup through the existing OAuth provider and lease machinery.

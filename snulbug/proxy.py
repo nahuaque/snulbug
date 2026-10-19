@@ -3398,6 +3398,7 @@ def run_proxy(
     fabric_control_state_provider: Any = None,
     confirm: bool = False,
     policy_backoff_config: Mapping[str, Any] | PolicyBackoffConfig | None = None,
+    share_runtime: Any = None,
 ) -> None:
     """Run the reverse proxy with uvicorn."""
 
@@ -3478,7 +3479,40 @@ def run_proxy(
         confirm=confirm,
         policy_backoff_config=policy_backoff_config,
     )
-    uvicorn.run(app, host=host, port=port, access_log=False)
+    if share_runtime is not None:
+        proxy_app = app
+
+        async def managed_app(scope: Scope, receive: Receive, send: Send) -> None:
+            await share_runtime.serve(proxy_app, scope, receive, send)
+
+        class ShareServer(uvicorn.Server):
+            async def shutdown(self, sockets: Any = None) -> None:
+                share_runtime.begin_shutdown()
+                await super().shutdown(sockets=sockets)
+
+        server = ShareServer(
+            uvicorn.Config(
+                managed_app,
+                host=host,
+                port=port,
+                access_log=False,
+                timeout_graceful_shutdown=share_runtime.config.graceful_shutdown_timeout,
+            )
+        )
+        try:
+            server.run()
+            if not server.started:
+                raise RuntimeError("share gateway failed to start")
+        finally:
+            share_runtime.close()
+        return
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        access_log=False,
+        timeout_graceful_shutdown=30.0,
+    )
 
 
 def proxy_config_run_kwargs(
@@ -3584,22 +3618,24 @@ def run_mcp_proxy_config(
     fabric_reload_interval: float = 2.0,
     fabric_reload_overrides: Mapping[str, Any] | None = None,
     fabric_control_state_provider: Any = None,
+    share_runtime: Any = None,
 ) -> None:
     """Run an MCP proxy from normalized config."""
 
     proxy_runner = runner or run_proxy
-    proxy_runner(
-        **proxy_config_run_kwargs(
-            proxy_config,
-            fabric_config,
-            topology_audit=topology_audit,
-            share_contract=share_contract,
-            fabric_reload_config=fabric_reload_config,
-            fabric_reload_interval=fabric_reload_interval,
-            fabric_reload_overrides=fabric_reload_overrides,
-            fabric_control_state_provider=fabric_control_state_provider,
-        )
+    kwargs = proxy_config_run_kwargs(
+        proxy_config,
+        fabric_config,
+        topology_audit=topology_audit,
+        share_contract=share_contract,
+        fabric_reload_config=fabric_reload_config,
+        fabric_reload_interval=fabric_reload_interval,
+        fabric_reload_overrides=fabric_reload_overrides,
+        fabric_control_state_provider=fabric_control_state_provider,
     )
+    if share_runtime is not None:
+        kwargs["share_runtime"] = share_runtime
+    proxy_runner(**kwargs)
 
 
 def _proxy_app(

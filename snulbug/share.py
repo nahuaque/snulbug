@@ -8104,6 +8104,7 @@ def run_mcp_share(
     *,
     dry_run: bool = False,
     require_contract: str | Path | None = None,
+    runtime: Any = None,
 ) -> dict[str, Any] | None:
     """Run the proxy for a generated MCP share session."""
 
@@ -8146,25 +8147,31 @@ def run_mcp_share(
 
     from .config import load_mcp_fabric_config, load_mcp_proxy_config
     from .proxy import run_mcp_proxy_config
+    from .share_runtime import ShareRuntime
 
     proxy_config = load_mcp_proxy_config(config_path)
     proxy_config = _reconcile_proxy_config_with_share_session(proxy_config, resolved_paths)
     fabric_config = load_mcp_fabric_config(config_path)
     fabric_config["proxy"] = proxy_config
-    runtime = {
+    runtime_metadata = {
         "started_at": _now_iso(),
         "config": str(config_path),
         "source": context["source"],
         "resolved_paths": {key: str(value) for key, value in resolved_paths.items() if isinstance(value, Path)},
     }
     if contract_metadata is not None:
-        runtime["contract"] = contract_metadata
+        runtime_metadata["contract"] = contract_metadata
     if manifest is not None:
-        _update_share_manifest(share_dir, state="running", runtime=runtime)
-        _update_share_session_runtime(share_dir, session_model, runtime=runtime)
+        _update_share_manifest(share_dir, state="running", runtime=runtime_metadata)
+        _update_share_session_runtime(share_dir, session_model, runtime=runtime_metadata)
     else:
-        _update_share_session_runtime(share_dir, session_model, runtime=runtime)
-    run_mcp_proxy_config(proxy_config, fabric_config, share_contract=contract)
+        _update_share_session_runtime(share_dir, session_model, runtime=runtime_metadata)
+    share_runtime = runtime or ShareRuntime(share_dir)
+    try:
+        share_runtime.configure(config_path)
+        run_mcp_proxy_config(proxy_config, fabric_config, share_contract=contract, share_runtime=share_runtime)
+    finally:
+        share_runtime.close()
     return None
 
 

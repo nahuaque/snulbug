@@ -33,9 +33,22 @@ export SNULBUG_SHARE_TOKEN=...
 snulbug mcp share run .snulbug/shares/share-...
 ```
 
-`share run` starts the local share console automatically at
-`http://127.0.0.1:8765` before starting the proxy. Use `--no-console` to disable
-it, or `--console-port 0` to let the OS choose an available local port.
+`share run` starts the proxy and automatically starts and supervises the
+managed tunnel for ngrok and SSH shares. The local share console starts at
+`http://127.0.0.1:8765`. Use `--no-console` to disable only the UI; managed
+tunnel startup and supervision still run. Use `--console-port 0` to let the OS
+choose an available local console port. Other providers, including the default
+Holepunch peer bridge, remain externally managed.
+
+Use `--no-tunnel` to disable automatic tunnel startup without disabling the
+console. The console's **Start tunnel** button can still start a managed tunnel
+explicitly. **Stop tunnel** keeps it stopped until an explicit start;
+supervision does not undo an operator stop.
+
+See [Always-on share runtime](always-on-runtime.md) for optional `[mcp.runtime]`
+settings, bounded crash restarts, graceful shutdown, and systemd, launchd, and
+container recipes. Keep the console local; automatic tunnel startup does not
+expose its administration UI publicly.
 
 Check live state:
 
@@ -261,10 +274,24 @@ snulbug mcp share run
 `share run` starts the snulbug proxy from the canonical session model when
 `.snulbug/share/session.json` is present. It reconciles the active config,
 policy, lease, replay log, and audit log paths before starting the gateway. The
-generated `SHARE.md` still includes the lower-level provider command when the
-selected tunnel or peer bridge needs a second process. For the default
+generated `SHARE.md` still includes the lower-level provider commands and uses
+the same generated files. For ngrok and SSH, the runtime owns the managed
+provider process independently of the console; do not start a duplicate agent.
+For other providers, run the tunnel or peer bridge separately. For the default
 Holepunch peer bridge, that provider command is a Hypertele command from the
 generated `tunnel/` directory.
+
+For a headless managed share:
+
+```bash
+snulbug mcp share run .snulbug/shares/share-... --no-console
+```
+
+Use `--no-tunnel` when a provider process is already running outside snulbug.
+Managed process liveness is not proof that the public URL is reachable or its
+cloud policy is correct. Use the existing doctor and health results to check
+the full path. After bounded crash retries are exhausted, fix the cause and
+explicitly start the tunnel in the console or restart the whole service.
 
 Before sharing `mcp-client.json`, verify the session:
 
@@ -668,7 +695,9 @@ snulbug mcp share create \
 ```
 
 For public tunnel providers, expose the snulbug proxy, not the upstream MCP
-server, and run the generated doctor command before sharing the client config.
+server or share console, and run the generated doctor command before sharing
+the client config. ngrok and SSH agents start automatically with `share run`;
+other providers still use their externally managed setup commands.
 Pass `--hostname` only when you have a reserved tunnel hostname; otherwise copy
 the exact forwarding URL printed by the tunnel provider and pass it to
 `snulbug mcp share doctor --url`.
@@ -787,9 +816,15 @@ snulbug mcp share create \
   --allow-tool safe_read_file \
   --ttl 30m
 snulbug mcp share run .snulbug/shares/share-...
-ssh -N -T -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o BatchMode=yes \
-  -R 127.0.0.1:18080:127.0.0.1:8080 dev@example.com
 ```
+
+`share run` starts and supervises the generated reverse SSH tunnel, including
+with `--no-console`. Configure non-interactive SSH credentials and verify the
+remote host key for the account running the service first. The existing
+console start/stop controls operate on that same managed process.
+
+To run SSH separately instead, start the gateway with `--no-tunnel`, then run
+the generated `tunnel/ssh-tunnel.sh` command in another terminal or supervisor.
 
 From the SSH host, point the MCP client at:
 
@@ -817,5 +852,9 @@ from the share replay log during closeout:
 snulbug mcp share close .snulbug/shares/share-... --learn --force
 ```
 
-Then stop the proxy and provider process. Delete the share directory when you no
-longer need the local audit artifacts.
+Then stop `share run` with SIGTERM or SIGINT, or stop its OS service. Uvicorn
+drains in-flight requests and streams up to the configured deadline, cancels
+remaining work, then the runtime stops the managed tunnel. Stop any externally
+managed provider process separately. Runtime restarts do not retry MCP tool
+calls. Delete the share directory when you no longer need the local audit
+artifacts.

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import snulbug.share_console as share_console
+import snulbug.share_runtime as share_runtime
 from snulbug import (
     ShareConsoleServer,
     append_record,
@@ -1609,9 +1610,9 @@ def test_share_console_can_start_and_stop_ngrok_agent(tmp_path, monkeypatch):
         def kill(self):
             self.returncode = -9
 
-    monkeypatch.setattr(share_console.shutil, "which", lambda name: "/usr/local/bin/ngrok" if name == "ngrok" else None)
-    monkeypatch.setattr(share_console.subprocess, "Popen", FakeProcess)
-    monkeypatch.setattr(share_console, "sleep", lambda seconds: None)
+    monkeypatch.setattr(share_runtime.shutil, "which", lambda name: "/usr/local/bin/ngrok" if name == "ngrok" else None)
+    monkeypatch.setattr(share_runtime.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(share_runtime, "sleep", lambda seconds: None)
 
     server = ShareConsoleServer(directory=tmp_path, port=0)
     server.start()
@@ -1631,6 +1632,41 @@ def test_share_console_can_start_and_stop_ngrok_agent(tmp_path, monkeypatch):
     assert stop["process"]["state"] == "stopped"
     assert FakeProcess.instances[0].terminated is True
     assert FakeProcess.instances[0].argv == ["/usr/local/bin/ngrok", "start", "--config", str(agent_config), "--all"]
+
+
+def test_share_console_controls_but_does_not_own_injected_runtime(tmp_path):
+    calls = []
+
+    class FakeRuntime:
+        def status(self):
+            return {"state": "backoff", "desired_state": "running", "running": False}
+
+        def start(self):
+            calls.append("start")
+            return {"ok": True, "process": self.status()}
+
+        def stop(self):
+            calls.append("stop")
+            return {"ok": True, "process": {"state": "stopped"}}
+
+        def close(self):
+            pytest.fail("closing the web console must not close the shared runtime")
+
+    runtime = FakeRuntime()
+    server = ShareConsoleServer(directory=tmp_path, port=0, runtime=runtime)
+    server.start()
+    try:
+        status = read_json(f"{server.url}/api/tunnel/status", headers=console_headers(server))
+        started = post_json(f"{server.url}/api/tunnel/start", {}, headers=console_headers(server))
+        stopped = post_json(f"{server.url}/api/tunnel/stop", {}, headers=console_headers(server))
+    finally:
+        server.stop()
+
+    assert status["state"] == "backoff"
+    assert started["ok"] is True
+    assert stopped["ok"] is True
+    assert calls == ["start", "stop"]
+    assert server.runtime is runtime
 
 
 def test_share_console_ngrok_process_status_includes_generated_artifacts(tmp_path):
@@ -1757,9 +1793,9 @@ def test_share_console_ngrok_failed_start_surfaces_endpoint_diagnosis(tmp_path, 
         def kill(self):
             self.returncode = -9
 
-    monkeypatch.setattr(share_console.shutil, "which", lambda name: "/usr/local/bin/ngrok" if name == "ngrok" else None)
-    monkeypatch.setattr(share_console.subprocess, "Popen", FakeProcess)
-    monkeypatch.setattr(share_console, "sleep", lambda seconds: None)
+    monkeypatch.setattr(share_runtime.shutil, "which", lambda name: "/usr/local/bin/ngrok" if name == "ngrok" else None)
+    monkeypatch.setattr(share_runtime.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(share_runtime, "sleep", lambda seconds: None)
 
     server = ShareConsoleServer(directory=tmp_path, port=0)
     try:
@@ -1769,7 +1805,7 @@ def test_share_console_ngrok_failed_start_surfaces_endpoint_diagnosis(tmp_path, 
         server.stop()
 
     assert start["ok"] is False
-    assert start["process"]["state"] == "exited"
+    assert start["process"]["state"] == "backoff"
     assert start["process"]["returncode"] == 1
     assert start["process"]["diagnosis"]["code"] == "ngrok.endpoint_already_online"
     assert "Stop the existing ngrok endpoint" in start["process"]["diagnosis"]["recommendation"]
@@ -1812,9 +1848,9 @@ def test_share_console_can_start_and_stop_ssh_tunnel(tmp_path, monkeypatch):
         def kill(self):
             self.returncode = -9
 
-    monkeypatch.setattr(share_console.shutil, "which", lambda name: "/usr/bin/ssh" if name == "ssh" else None)
-    monkeypatch.setattr(share_console.subprocess, "Popen", FakeProcess)
-    monkeypatch.setattr(share_console, "sleep", lambda seconds: None)
+    monkeypatch.setattr(share_runtime.shutil, "which", lambda name: "/usr/bin/ssh" if name == "ssh" else None)
+    monkeypatch.setattr(share_runtime.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(share_runtime, "sleep", lambda seconds: None)
 
     server = ShareConsoleServer(directory=tmp_path, port=0)
     server.start()
@@ -1958,10 +1994,13 @@ def test_share_run_setup_console_runs_selected_share(tmp_path, monkeypatch):
         def wait_for_gateway_start(self, timeout=None):
             return True
 
+        def attach_runtime(self, runtime):
+            self.runtime = runtime
+
         def stop(self):
             calls.append(("stop", self.directory))
 
-    def fake_run_mcp_share(directory):
+    def fake_run_mcp_share(directory, **kwargs):
         calls.append(("run", Path(directory)))
 
     monkeypatch.chdir(tmp_path)
@@ -1981,6 +2020,45 @@ def test_share_run_console_respects_no_console(tmp_path):
     args = share_run_args(no_console=True)
 
     assert _start_share_run_console(tmp_path, args) is None
+
+
+@pytest.mark.parametrize("same_directory", [True, False])
+def test_setup_handoff_reuses_or_closes_preexisting_runtime(tmp_path, monkeypatch, same_directory):
+    old_directory = tmp_path if same_directory else tmp_path / "previous"
+    old_runtime = share_runtime.ShareRuntime(old_directory)
+    runs = []
+
+    class FakeSetupServer:
+        def __init__(self, directory, **kwargs):
+            self.directory = Path(directory)
+            self.runtime = old_runtime
+            self.url = "http://127.0.0.1:0"
+
+        def start(self):
+            pass
+
+        def wait_for_gateway_start(self, timeout=None):
+            return True
+
+        def attach_runtime(self, runtime):
+            self.runtime = runtime
+
+        def stop(self):
+            pass
+
+    def fake_run(directory, **kwargs):
+        runtime = kwargs["runtime"]
+        runs.append(runtime)
+        assert (runtime is old_runtime) is same_directory
+        assert old_runtime._closed is (not same_directory)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(share_console, "ShareConsoleServer", FakeSetupServer)
+    monkeypatch.setattr("snulbug.share.run_mcp_share", fake_run)
+    assert _run_share_setup_console(share_run_args(console_port=0)) == 0
+    assert len(runs) == 1
+    assert old_runtime._closed is True
+    assert runs[0]._closed is True
 
 
 def console_headers(server: ShareConsoleServer) -> dict[str, str]:

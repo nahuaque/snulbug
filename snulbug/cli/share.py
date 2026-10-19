@@ -559,17 +559,24 @@ def handle_mcp_share_command(args: argparse.Namespace, parser: argparse.Argument
                 directory = Path.cwd()
             if directory is None:
                 return _run_share_setup_console(args)
-            console_server = _start_share_run_console(directory, args)
+            from ..share_runtime import ShareRuntime
+
+            runtime = None if args.dry_run else ShareRuntime(directory, tunnel_autostart=args.tunnel)
+            console_server = None
             try:
+                console_server = _start_share_run_console(directory, args, runtime=runtime)
                 result = run_mcp_share(
                     directory,
                     dry_run=args.dry_run,
                     require_contract=args.require_contract,
+                    runtime=runtime,
                 )
                 if result is not None:
                     write_json_output(result, compact=args.compact)
             finally:
                 _stop_share_run_console(console_server)
+                if runtime is not None:
+                    runtime.close()
             return 0
 
         if command == "config":
@@ -1288,6 +1295,12 @@ def _add_share_run_args(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="do not start the local share web console while the proxy runs",
     )
+    parser.add_argument(
+        "--tunnel",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="automatically start and supervise managed ngrok/SSH tunnels (default: enabled; independent of console)",
+    )
     parser.add_argument("--console-host", default="127.0.0.1", help="local share console bind host")
     parser.add_argument("--console-port", type=int, default=8765, help="local share console bind port")
     parser.add_argument(
@@ -1996,7 +2009,7 @@ def _share_run_console_directory(args: argparse.Namespace, directory: Path | Non
     return None
 
 
-def _start_share_run_console(directory: Path | None, args: argparse.Namespace) -> Any:
+def _start_share_run_console(directory: Path | None, args: argparse.Namespace, *, runtime: Any = None) -> Any:
     console_dir = _share_run_console_directory(args, directory)
     if console_dir is None:
         return None
@@ -2012,6 +2025,7 @@ def _start_share_run_console(directory: Path | None, args: argparse.Namespace) -
         port=port,
         timeout=timeout,
         live_checks=live_checks,
+        runtime=runtime,
     )
     try:
         server.start()
@@ -2025,6 +2039,7 @@ def _start_share_run_console(directory: Path | None, args: argparse.Namespace) -
             port=0,
             timeout=timeout,
             live_checks=live_checks,
+            runtime=runtime,
         )
         try:
             server.start()
@@ -2083,12 +2098,23 @@ def _run_share_setup_console(args: argparse.Namespace) -> int:
     print(f"snulbug share setup wizard: {server.url}", flush=True)
     if getattr(server, "console_secret", None):
         print(f"snulbug share console secret: {server.console_secret}", flush=True)
+    runtime = None
     try:
         while not server.wait_for_gateway_start(timeout=0.25):
             continue
         from ..share import run_mcp_share
+        from ..share_runtime import ShareRuntime
 
-        run_mcp_share(server.directory)
+        runtime = getattr(server, "runtime", None)
+        if runtime is not None and runtime.directory != Path(server.directory).resolve():
+            runtime.close()
+            runtime = None
+        if runtime is None:
+            runtime = ShareRuntime(server.directory, tunnel_autostart=getattr(args, "tunnel", None))
+        else:
+            runtime.tunnel_autostart = getattr(args, "tunnel", None)
+        server.attach_runtime(runtime)
+        run_mcp_share(server.directory, runtime=runtime)
         return 0
     except KeyboardInterrupt:
         return 0
@@ -2097,6 +2123,8 @@ def _run_share_setup_console(args: argparse.Namespace) -> int:
         return 1
     finally:
         server.stop()
+        if runtime is not None:
+            runtime.close()
 
 
 def _run_proxy_from_share_args(args: argparse.Namespace) -> int:
@@ -2109,7 +2137,10 @@ def _run_proxy_from_share_args(args: argparse.Namespace) -> int:
     )
     from ..proxy import run_mcp_proxy_config, run_proxy
     from ..share import load_share_contract
+    from ..share_runtime import ShareRuntime
 
+    runtime = None
+    console_server = None
     try:
         overrides = {
             "upstream": args.upstream,
@@ -2140,19 +2171,25 @@ def _run_proxy_from_share_args(args: argparse.Namespace) -> int:
             proxy_config = normalize_mcp_proxy_config(overrides)
             fabric_config = normalize_mcp_fabric_config({}, proxy_config=proxy_config)
         share_contract = load_share_contract(args.require_contract) if args.require_contract is not None else None
-        console_server = _start_share_run_console(None, args)
+        if args.config is not None:
+            runtime = ShareRuntime(args.config.parent, tunnel_autostart=getattr(args, "tunnel", None))
+            runtime.configure(args.config)
+        console_server = _start_share_run_console(None, args, runtime=runtime)
         try:
             run_mcp_proxy_config(
                 proxy_config,
                 fabric_config,
                 runner=run_proxy,
                 share_contract=share_contract,
+                share_runtime=runtime,
                 fabric_reload_config=args.config if args.reload_fabric else None,
                 fabric_reload_interval=args.fabric_reload_interval or 2.0,
                 fabric_reload_overrides=overrides if args.reload_fabric else None,
             )
         finally:
             _stop_share_run_console(console_server)
+            if runtime is not None:
+                runtime.close()
     except Exception as exc:
         sys.stderr.write(f"snulbug share run failed: {exc}\n")
         return 1
