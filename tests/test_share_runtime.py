@@ -142,7 +142,7 @@ def test_headless_share_run_owns_agent_until_sigterm(tmp_path, autostart, crash_
             returncode = process.wait(timeout=10)
             assert returncode in (0, -signal.SIGTERM), log_path.read_text(encoding="utf-8")
             if autostart:
-                assert (tmp_path / "terminated").read_text() == str(signal.SIGTERM)
+                assert int((tmp_path / "terminated").read_text()) == signal.SIGTERM
                 assert (tmp_path / "exited").read_text() == str(agent["pid"])
                 # Check before fallback cleanup: the runtime must stop AND reap its child.
                 assert not pid_exists(agent["pid"]), "share exited with an orphaned fake ngrok agent"
