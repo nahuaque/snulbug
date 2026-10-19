@@ -18,6 +18,13 @@ Built-ins currently cover:
 - `tunnel`: provider-specific tunnel doctor checks
 - `ngrok`: desired/generated/deployed Traffic Policy drift inspection (cloud reads require an API credential)
 - `credentials`: used upstream credential sources, safe availability checks, file permissions, and transport hygiene
+- `http-mounts`: explicit application/public auth ownership, method/header contracts, and optional backend health checks
+
+The `http-mounts` check fails undeclared auth ownership, requests review of
+explicitly public mounts, and probes only a configured safe health path during
+live doctor runs. MCP auth/leases do not protect these mounts. See
+[HTTP mount contracts](mcp-proxy.md#mount-contracts-and-readiness) for enforced
+settings, historical health results, and application-auth limitations.
 
 The `credentials` check resolves sources only in live doctor runs. Saved safe
 results feed share status/report, readiness, and the console's Auth drawer;

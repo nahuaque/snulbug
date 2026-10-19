@@ -119,11 +119,19 @@ other prefixes. Add mounts to the share's `snulbug.toml`:
 prefix = "/app"
 upstream = "http://127.0.0.1:3000"
 strip_prefix = true
+auth = "upstream"
+methods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+forward_authorization = true
+forward_cookies = true
+timeout = 30.0
+health_path = "/healthz"
+health_status = 200
 
 [[mcp.proxy.http_routes]]
 prefix = "/api"
 upstream = "http://127.0.0.1:4000"
 strip_prefix = false
+auth = "upstream"
 ```
 
 With prefix stripping (the default), `/app/notes?q=1` forwards to
@@ -135,11 +143,70 @@ matching prefix wins. The MCP prefix, `/.well-known`, and `/snulbug` are reserve
 
 These requests bypass the MCP middleware, including its authentication, task
 leases, Lua policies, body/response limits, redaction, and replay/audit logs.
-Each HTTP backend owns authentication and request validation. Application
-`Authorization` and cookies pass through; snulbug lease and internal headers
-are removed. Responses preserve status, content encoding, duplicate cookies,
+Declare `auth = "upstream"` when the backend owns authentication and request
+validation, or `auth = "public"` for intentionally unauthenticated content.
+This declares the owner, **not proof that login or authorization works**.
+Snulbug does not add OIDC, validate application sessions, or apply its MCP
+bearer/lease requirements to either kind of mount. Pocket ID/OIDC login and
+application authorization still belong in the mounted app.
+
+Upstream-authenticated mounts forward application `Authorization` and cookies
+by default. Public mounts strip both by default, including response
+`Set-Cookie`; explicitly override `forward_authorization` and/or
+`forward_cookies` only when needed. These controls cover those headers, not
+credentials embedded in bodies, query strings, or other custom headers.
+Snulbug lease, DPoP, and internal headers are always removed. Responses preserve
+status, content encoding, permitted duplicate cookies,
 and end-to-end headers. Uploads and responses stream with backpressure and
-disconnect cleanup; the proxy timeout applies to upstream inactivity.
+disconnect cleanup; `timeout` applies per mount to upstream inactivity and
+otherwise inherits the proxy timeout. It is not a total stream lifetime.
+
+### Mount contracts and readiness
+
+The same normalized declarations drive routing, share doctor/status/report,
+the console's **Tunnel Provider -> HTTP mount contracts** drawer, and signed
+share-contract bindings. There is no parallel HTTP policy engine or HTTP CLI.
+
+- `auth` must be explicitly `upstream` or `public` for doctor readiness.
+  Existing mounts without this declaration keep their forwarding behavior,
+  but doctor and share readiness fail until ownership is declared. The absence
+  of a declaration does not activate gateway authentication.
+- `methods` is a nonempty list of permitted standard methods. The default is
+  GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS. TRACE, CONNECT, and custom
+  methods are unsupported. A disallowed method receives plain HTTP 405 with
+  `Allow`, before reading the body or contacting a backend; a narrower mount's
+  rejection cannot fall back to a broader mount. HEAD is not implicitly allowed
+  when only GET is declared.
+- `forward_authorization` controls the request Authorization header.
+  `forward_cookies` controls request Cookie and response Set-Cookie headers.
+  These settings do not remove the need for backend auth or CSRF protection.
+- Optional `health_path` is an absolute, unescaped path at the **upstream
+  origin**, independent of prefix stripping and the upstream base path. Use a
+  safe, unauthenticated readiness endpoint such as `/healthz`; never a path
+  that performs a mutation. Optional `health_status` is the exact expected 2xx
+  code (default 200).
+
+Live `share doctor` performs one backend GET per configured health endpoint.
+It sends no client/OAuth/lease credentials or cookies, ignores ambient proxy
+configuration, follows no redirects, and closes after inspecting status without
+reading or retaining the response body. Its timeout is capped by both the
+doctor timeout and mount inactivity timeout. A login redirect or 401 is not a
+healthy result. A successful health response does not prove application auth
+or public tunnel routing; it only checks the configured backend endpoint.
+
+Offline doctor never probes. Status, reports, and console refreshes reuse
+historical health results; changes to mount settings invalidate them. Missing
+health configuration or an unchecked health endpoint requires review, a failed
+health result blocks readiness, and an explicitly public mount always requires
+exposure review. Editing a mount also invalidates the corresponding readiness
+review and changes the signed share-contract binding, without making volatile
+probe timestamps part of that binding.
+
+This slice does not add upload/response size budgets, retries, OAuth termination,
+WebSockets, HTTP replay, or MCP audit events for mounted traffic. Revoking an MCP
+invite, expiring a lease, or pausing MCP sharing does **not** revoke access to
+mounted applications. Stop the tunnel/gateway or revoke access in the app when
+you need to stop HTTP exposure. Avoid mounting any snulbug/provider admin console.
 
 Configure web applications to generate assets, redirects, and cookies for their
 public prefix (for example `/app/`), using their base URL/root-path setting or
@@ -164,7 +231,9 @@ snulbug mcp share run .snulbug/shares/shared-demo
 ```
 
 `--http-route` is repeatable and also available on `share quickstart`. CLI-created
-routes strip their prefix; change that field in TOML when needed. The generated
+routes strip their prefix. Before running doctor or handing out the URL, edit
+each generated route to declare `auth` and its other contract settings; the
+short flag deliberately does not guess application auth ownership. The generated
 ngrok Traffic Policy permits only the MCP endpoint and registered HTTP prefixes,
 and applies its bearer/method/JSON guards only to MCP. Attach the policy to the
 public Cloud Endpoint as described in the [ngrok walkthrough](ngrok-end-to-end.md).

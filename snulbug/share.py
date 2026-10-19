@@ -22,6 +22,7 @@ from .config import default_event_sink_configs
 from .credential_health import ShareCredentialsDoctorCheck, cached_upstream_credentials
 from .fabric_members import DEFAULT_FABRIC_MEMBER_REGISTRY_KEY, register_fabric_member
 from .gateway_templates import GatewayTemplate, render_gateway_toml
+from .http_mounts import ShareHttpMountsDoctorCheck, cached_http_mounts, http_mount_contracts
 from .inspection import format_mcp_inspection_report, inspect_mcp_log
 from .leases import LEASE_RENEWAL_HEADER, LEASE_RENEWAL_METHOD, create_lease, lease_token_for_renewal
 from .mcp_tasks import task_support_summary
@@ -499,12 +500,16 @@ def share_status(
     from .config import load_mcp_proxy_config
 
     try:
-        credential_config = load_mcp_proxy_config(_share_config_path(share_dir, manifest, session_model))
+        operational_config = load_mcp_proxy_config(_share_config_path(share_dir, manifest, session_model))
         upstream_credentials = cached_upstream_credentials(
-            _mapping(_mapping(manifest.get("health")).get("upstream_credentials")), credential_config
+            _mapping(_mapping(manifest.get("health")).get("upstream_credentials")), operational_config
+        )
+        http_mounts = cached_http_mounts(
+            _mapping(_mapping(manifest.get("health")).get("http_mounts")), operational_config
         )
     except (OSError, ValueError):
         upstream_credentials = {"state": "config_error", "ok": False, "checked": False, "summary": {}, "items": []}
+        http_mounts = {"state": "config_error", "ok": False, "summary": {}, "items": []}
     findings = _share_findings(
         gateway=gateway,
         upstreams=upstreams,
@@ -532,6 +537,7 @@ def share_status(
         "tunnel_doctor": tunnel,
         "ngrok": ngrok,
         "upstream_credentials": upstream_credentials,
+        "http_mounts": http_mounts,
         "policy": policy,
         "members": members,
         "invitations": invitations,
@@ -2022,6 +2028,7 @@ for _share_doctor_check in (
     ShareTunnelDoctorCheck(),
     ShareNgrokDoctorCheck(),
     ShareCredentialsDoctorCheck(),
+    ShareHttpMountsDoctorCheck(),
 ):
     register_share_doctor_check(_share_doctor_check, replace=True)
 
@@ -2102,6 +2109,7 @@ def doctor_mcp_share(
         "tailscale": artifacts.get("tailscale"),
         "ngrok": artifacts.get("ngrok"),
         "upstream_credentials": artifacts.get("upstream_credentials"),
+        "http_mounts": artifacts.get("http_mounts"),
         "fabric": artifacts.get("fabric"),
         "mcp_spec": artifacts.get("mcp_spec"),
         "conformance": artifacts.get("conformance"),
@@ -2116,6 +2124,7 @@ def doctor_mcp_share(
             "last_summary": result.get("summary"),
             "ngrok": artifacts.get("ngrok"),
             "upstream_credentials": artifacts.get("upstream_credentials"),
+            "http_mounts": artifacts.get("http_mounts"),
             "share_doctor": {
                 "ok": result.get("ok"),
                 "summary": result.get("summary"),
@@ -6106,6 +6115,7 @@ def _share_contract_payload(
             "cloudflare_access": proxy_summary.get("cloudflare_access"),
             "tailscale": proxy_summary.get("tailscale"),
             "upstream_auth": proxy_summary.get("upstream_auth"),
+            "http_mounts": proxy_summary.get("http_mounts"),
             "policy": _share_contract_policy(status.get("policy")),
             "lease": _share_contract_lease(status.get("lease"), status.get("leases"), session=session),
             "upstreams": _share_contract_upstreams(status.get("upstreams")),
@@ -6343,6 +6353,7 @@ def _share_contract_proxy_summary(share_dir: Path, manifest: Mapping[str, Any]) 
                 "cloudflare_access": _share_contract_cloudflare_config(proxy_config),
                 "tailscale": _share_contract_tailscale_config(proxy_config),
                 "upstream_auth": _share_contract_upstream_auth(proxy_config, credential_metadata=credential_metadata),
+                "http_mounts": http_mount_contracts(proxy_config),
             }
         )
     except Exception as exc:
@@ -7838,6 +7849,17 @@ def _share_report_lines(result: Mapping[str, Any], *, title: str) -> list[str]:
                 )
     else:
         lines.append("- None configured")
+    mounts = _mapping(result.get("http_mounts"))
+    if mounts.get("items"):
+        lines.extend(["", "## HTTP Mount Contracts", ""])
+        for mount in _sequence(mounts.get("items")):
+            mount = _mapping(mount)
+            lines.append(
+                f"- `{mount.get('prefix')}` -> `{mount.get('upstream')}` auth=`{mount.get('auth')}` "
+                f"methods=`{', '.join(mount.get('methods', []))}` "
+                f"Authorization=`{mount.get('forward_authorization')}` cookies=`{mount.get('forward_cookies')}` "
+                f"timeout=`{mount.get('timeout')}` health=`{_mapping(mount.get('health')).get('ok')}`"
+            )
     credentials = _mapping(result.get("upstream_credentials"))
     lines.extend(
         [

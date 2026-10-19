@@ -25,6 +25,7 @@ def share_status_renderable(result: Mapping[str, Any]) -> Group:
         _overview_panel(result),
         _health_table(result),
         upstream_credentials_table(_mapping(result.get("upstream_credentials"))),
+        http_mounts_table(_mapping(result.get("http_mounts"))),
         _policy_table(result),
         _traffic_table(result),
         _tools_table(result),
@@ -147,6 +148,24 @@ def upstream_credentials_table(credentials: Mapping[str, Any]) -> Table:
         )
     if not credentials.get("items"):
         table.add_row("-", "No upstream credential references", _value(credentials.get("state")), "-", "-")
+    return table
+
+
+def http_mounts_table(mounts: Mapping[str, Any]) -> Table:
+    table = Table(title="HTTP Mount Contracts", box=box.SIMPLE_HEAVY, expand=True)
+    for label in ("Prefix / Backend", "Auth Owner", "Methods", "Header Forwarding", "Health"):
+        table.add_column(label, overflow="fold")
+    for mount in _sequence(mounts.get("items")):
+        health = _mapping(mount.get("health"))
+        table.add_row(
+            Text(f"{mount.get('prefix')}\n{mount.get('upstream')}"),
+            _value(mount.get("auth")),
+            Text(", ".join(mount.get("methods", []))),
+            Text(f"Authorization: {mount.get('forward_authorization')}; cookies: {mount.get('forward_cookies')}"),
+            Text(("pass" if health.get("ok") else "fail") if health.get("checked") else "not checked"),
+        )
+    if not mounts.get("items"):
+        table.add_row("None configured", "-", "-", "-", "-")
     return table
 
 

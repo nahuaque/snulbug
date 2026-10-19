@@ -1193,7 +1193,10 @@ def _add_http_route_arg(parser: argparse.ArgumentParser) -> None:
         type=parse_http_route,
         default=[],
         metavar="PREFIX=URL",
-        help="HTTP backend outside MCP auth/policy, e.g. /app=http://127.0.0.1:3000; strips prefix; repeatable",
+        help=(
+            "HTTP backend outside MCP auth/policy, e.g. /app=http://127.0.0.1:3000; "
+            "repeatable; declare auth ownership in TOML before sharing"
+        ),
     )
 
 

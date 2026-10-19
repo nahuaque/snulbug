@@ -99,7 +99,9 @@ curl -i "${NGROK_PUBLIC_ORIGIN}/app/"
 The route strips `/app` before forwarding, so the app receives `/`. Configure
 its public base path as `/app/` for asset links and redirects. App traffic
 bypasses all MCP authentication/policy/recording; the app owns its authentication.
-See [shared HTTP routes](mcp-proxy.md#shared-http-routes) for multiple backends
+Declare each mount's `auth` owner in generated TOML before doctor/readiness;
+MCP authentication and leases do not protect these routes. See
+[shared HTTP routes](mcp-proxy.md#shared-http-routes) for multiple backends
 and preserving prefixes. Existing shares need both a TOML route and an updated
 Cloud Endpoint Traffic Policy; changing TOML alone leaves ngrok's old deny rule
 in effect.

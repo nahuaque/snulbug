@@ -682,7 +682,11 @@ Shares can also mount HTTP applications on the same tunnel. Add repeatable
 `--http-route /app=http://127.0.0.1:3000` flags to `share create`; MCP stays at
 `/mcp`, while the app route bypasses MCP auth/policy and uses the backend's own
 authentication. Generated ngrok policies permit these prefixes and scope MCP
-checks to `/mcp`. See [shared HTTP routes](mcp-proxy.md#shared-http-routes).
+checks to `/mcp`. Declare `auth = "upstream"` or `auth = "public"` in each
+generated route before doctor/readiness can pass. Method/header contracts and
+optional backend health checks appear in the existing status/report and
+provider drawer; public mounts require exposure review. See
+[shared HTTP routes](mcp-proxy.md#shared-http-routes).
 
 The share command also works with existing tunnel providers:
 

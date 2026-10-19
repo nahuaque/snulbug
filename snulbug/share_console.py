@@ -1146,6 +1146,7 @@ def _tunnel_provider_visibility(
         "local_console": _provider_local_console_visibility(provider, provider_console),
         "doctor": _provider_doctor_visibility(tunnel),
         "drift": _mapping(status.get("ngrok")),
+        "http_mounts": _mapping(status.get("http_mounts")),
         "commands": _provider_command_rows(_mapping(status.get("commands"))),
     }
 
@@ -3129,6 +3130,16 @@ def _share_readiness_gate(
         },
     )
     auth_mode = provider_auth.get("mode")
+    mounts = _mapping(status.get("http_mounts"))
+    if _mapping(mounts.get("summary")).get("count") or mounts.get("state") == "config_error":
+        _add_readiness_check(
+            checks,
+            "http_mounts.contracts",
+            "fail" if mounts.get("ok") is False else "pass" if mounts.get("state") == "ready" else "warn",
+            "http-mounts",
+            f"HTTP mount contracts: {mounts.get('state') or 'unchecked'}",
+            details={"checks": mounts.get("checks", [])},
+        )
     if tunnel_provider.get("provider") == "ngrok":
         drift = _mapping(tunnel_provider.get("drift"))
         _add_readiness_check(
@@ -3910,6 +3921,13 @@ def _share_readiness_attestation(
                 "required_scopes": auth_config.get("required_scopes"),
                 "denials": _mapping(auth_visibility.get("denials")).get("total"),
             },
+            "http_mounts": {
+                "input_digest": _mapping(status.get("http_mounts")).get("input_digest"),
+                "contracts": [
+                    {key: value for key, value in _mapping(mount).items() if key != "health"}
+                    for mount in _sequence(_mapping(status.get("http_mounts")).get("items"))
+                ],
+            },
             "leases": {
                 "required": _mapping(tunnel_provider.get("auth")).get("lease_required", session.get("lease_required")),
                 "active_count": leases.get("active_count"),
@@ -3985,6 +4003,7 @@ def _share_readiness_digest_payload(payload: Mapping[str, Any]) -> dict[str, Any
             "summary": _readiness_summary(checks),
             "session": payload.get("session"),
             "auth": auth,
+            "http_mounts": payload.get("http_mounts"),
             "leases": leases,
             "policy": payload.get("policy"),
             "contract": payload.get("contract"),
@@ -5111,6 +5130,10 @@ def _console_html() -> str:
     }
     .upstream-credentials, .upstream-credentials .details-body,
     .upstream-credentials .detail-grid > div {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .http-mounts, .http-mounts .details-body, .http-mounts .detail-grid > div {
       min-width: 0;
       overflow-wrap: anywhere;
     }
@@ -6453,6 +6476,9 @@ def _console_html() -> str:
       const id = String(check.id || "");
       const component = String(check.component || "");
       const value = `${component}.${id}`;
+      if (value.includes("http_mounts") || value.includes("http-mounts")) {
+        return { href: "#providerSection", label: "Review HTTP mounts" };
+      }
       if (value.includes("capability_requests")) return { href: "#requestsSection", label: "Review requests" };
       if (value.includes("lease")) return { href: "#leasesSection", label: "Review leases" };
       if (value.includes("auth")) return { href: "#authSection", label: "Review auth" };
@@ -7939,7 +7965,37 @@ def _console_html() -> str:
       const commandsHtml = providerCommandsTable(commands);
       const driftHtml = ngrokDriftHtml(payload.drift, provider);
       $("tunnelProvider").innerHTML = '<div class="stack">' +
-        overview + processHtml + doctorHtml + driftHtml + commandsHtml + "</div>";
+        overview + httpMountsHtml(payload.http_mounts || {}) + processHtml +
+        doctorHtml + driftHtml + commandsHtml + "</div>";
+    }
+
+    function httpMountsHtml(mounts) {
+      if (!(mounts.items || []).length) return "";
+      const checks = (mounts.checks || []).filter((check) => check.status === "fail" || check.status === "warn");
+      return `<details class="compact-details http-mounts" data-state-key="http-mounts">
+        <summary>HTTP mount contracts ${pill(mounts.state || "unchecked")}</summary>
+        <div class="details-body stack">
+          <div><button type="button" onclick="runDoctor()">Run doctor</button></div>
+          ${mounts.items.map((mount) => `<div>
+            <h2>${esc(mount.prefix)} ${pill(mount.auth)}</h2>
+            <div class="detail-grid">
+              ${detailRow("Upstream", mount.upstream)}
+              ${detailRow("Auth owner", mount.auth === "public" ? "Public; no authentication required" : mount.auth)}
+              ${detailRow("MCP guards", "Not applied")}
+              ${detailRow("Methods", listText(mount.methods))}
+              ${detailRow("Authorization", mount.forward_authorization ? "Forwarded" : "Stripped")}
+              ${detailRow("Cookies", mount.forward_cookies ? "Forwarded" : "Stripped in both directions")}
+              ${detailRow("Prefix", mount.strip_prefix ? "Stripped" : "Preserved")}
+              ${detailRow("Inactivity timeout", `${mount.timeout}s`)}
+              ${detailRow("Backend health", mount.health_path || "Not configured")}
+              ${detailRow("Health result", (mount.health || {}).checked
+                ? `${(mount.health || {}).ok ? "pass" : "fail"} · HTTP ${(mount.health || {}).status || "-"}`
+                : "Not checked")}
+            </div>
+          </div>`).join("")}
+          ${checks.map((check) => `<p>${pill(check.status)} ${esc(check.message)}</p>`).join("")}
+        </div>
+      </details>`;
     }
 
     function ngrokDriftHtml(drift, provider) {

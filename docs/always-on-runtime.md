@@ -147,6 +147,13 @@ Live share doctor checks availability and hygiene, and status/report plus the
 console's Auth drawer reuse its secret-free diagnostics. Run checks in the
 service environment: local availability is not proof of upstream acceptance.
 
+If the same tunnel exposes a web app or API, declare its
+[HTTP mount contract](mcp-proxy.md#mount-contracts-and-readiness): explicit
+auth ownership, methods, credential-header forwarding, and an optional safe
+backend health endpoint. MCP lease revocation does not stop application access.
+Use the existing share doctor and provider drawer to review both kinds of
+exposure; application OIDC/session auth remains the app's responsibility.
+
 ## Linux: systemd
 
 This example assumes an existing `snulbug` user/group, an installation at

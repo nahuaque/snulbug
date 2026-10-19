@@ -460,3 +460,106 @@ def test_ambiguous_paths_cannot_bypass_route_boundaries(tmp_path, path, raw_path
 
     asyncio.run(run())
     assert sent[0]["status"] == 400
+
+
+@pytest.mark.parametrize("facade", [False, True])
+@pytest.mark.parametrize("forward", [False, True])
+def test_public_mount_contract_controls_credentials_in_both_directions(tmp_path, web_backend, facade, forward):
+    backend, seen, _ = web_backend
+    route = {"prefix": "/app", "upstream": backend, "auth": "public"}
+    if forward:
+        route.update(forward_authorization=True, forward_cookies=True)
+    app = gateway(tmp_path, backend, facade=facade, http_routes=[route])
+    response = request(
+        app, "GET", "/app/", headers={"authorization": "Bearer private-value", "cookie": "session=private-value"}
+    )
+    assert response.status_code == 200
+    assert bool(seen[0]["headers"].get("authorization")) is forward
+    assert bool(seen[0]["headers"].get("cookie")) is forward
+    assert bool(response.headers.get_list("set-cookie")) is forward
+
+
+def test_upstream_auth_contract_preserves_application_sessions_not_mcp_guards(tmp_path, web_backend):
+    backend, seen, _ = web_backend
+    app = gateway(tmp_path, backend, http_routes=[{"prefix": "/app", "upstream": backend, "auth": "upstream"}])
+    response = request(app, "GET", "/app/", headers={"authorization": "Basic app-value", "cookie": "session=app-value"})
+    assert response.status_code == 200
+    assert seen[0]["headers"]["authorization"] == "Basic app-value"
+    assert seen[0]["headers"]["cookie"] == "session=app-value"
+    assert len(response.headers.get_list("set-cookie")) == 2
+
+
+def test_mount_method_contract_denies_before_reading_or_forwarding_and_never_falls_back(tmp_path, web_backend):
+    backend, seen, _ = web_backend
+    app = gateway(
+        tmp_path,
+        backend,
+        http_routes=[
+            {"prefix": "/app", "upstream": backend, "auth": "upstream"},
+            {"prefix": "/app/private", "upstream": backend, "auth": "upstream", "methods": ["GET", "HEAD"]},
+        ],
+    )
+    response = request(app, "POST", "/app/private/file", content=b"must not reach the backend")
+    assert response.status_code == 405
+    assert response.headers["allow"] == "GET, HEAD"
+    assert seen == []
+    assert request(app, "GET", "/app/private/file").status_code == 200
+    assert request(app, "TRACE", "/app/").status_code == 405
+
+
+def test_per_mount_timeout_overrides_proxy_timeout(tmp_path, monkeypatch):
+    observed = []
+    original = httpx.AsyncClient
+
+    async def backend(request):
+        observed.append(request.extensions["timeout"])
+        return httpx.Response(204, stream=httpx.ByteStream(b""))
+
+    def client(**kwargs):
+        kwargs.setdefault("transport", httpx.MockTransport(backend))
+        return original(**kwargs)
+
+    monkeypatch.setattr("snulbug.http_routes.httpx.AsyncClient", client)
+    app = gateway(
+        tmp_path,
+        "http://backend.test",
+        timeout=60,
+        http_routes=[{"prefix": "/app", "upstream": "http://backend.test", "auth": "upstream", "timeout": 2.5}],
+    )
+    assert request(app, "GET", "/app/").status_code == 204
+    assert set(observed[0].values()) == {2.5}
+
+
+@pytest.mark.parametrize(
+    "contract",
+    [
+        {"auth": "oauth"},
+        {"auth": []},
+        {"forward_authorization": "false"},
+        {"forward_cookies": 1},
+        {"methods": []},
+        {"methods": "GET"},
+        {"methods": ["get"]},
+        {"methods": ["GET", "GET"]},
+        {"methods": ["CONNECT"]},
+        {"methods": ["TRACE"]},
+        {"methods": [True]},
+        {"timeout": 0},
+        {"timeout": -1},
+        {"timeout": True},
+        {"timeout": "30"},
+        {"timeout": float("inf")},
+        {"timeout": float("nan")},
+        {"health_path": "http://other.test/health"},
+        {"health_path": "/health?token=secret"},
+        {"health_path": "/../admin"},
+        {"health_path": "//other.test"},
+        {"health_path": "/he%61lth"},
+        {"health_status": 200},
+        {"health_path": "/health", "health_status": 302},
+        {"health_path": "/health", "health_status": True},
+    ],
+)
+def test_invalid_mount_contracts_are_rejected(contract):
+    with pytest.raises(ValueError):
+        normalize_http_routes([{"prefix": "/app", "upstream": "http://backend.test", **contract}])
