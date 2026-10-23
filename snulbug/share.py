@@ -7858,6 +7858,8 @@ def _share_report_lines(result: Mapping[str, Any], *, title: str) -> list[str]:
                 f"- `{mount.get('prefix')}` -> `{mount.get('upstream')}` auth=`{mount.get('auth')}` "
                 f"methods=`{', '.join(mount.get('methods', []))}` "
                 f"Authorization=`{mount.get('forward_authorization')}` cookies=`{mount.get('forward_cookies')}` "
+                f"public_origin=`{mount.get('public_origin') or 'local request'}` "
+                f"Host=`{'public' if mount.get('preserve_host') else 'upstream'}` "
                 f"timeout=`{mount.get('timeout')}` health=`{_mapping(mount.get('health')).get('ok')}`"
             )
     credentials = _mapping(result.get("upstream_credentials"))

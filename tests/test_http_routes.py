@@ -424,9 +424,10 @@ def test_share_create_cli_writes_routes_and_ngrok_guards(tmp_path, capsys):
     expressions = [
         json.loads(line.removeprefix("      - ")) for line in text.splitlines() if line.startswith('      - "')
     ]
-    assert 'req.url.path.startsWith("/app/")' in expressions[0]
-    assert 'req.url.path == "/app"' in expressions[0]
-    assert 'req.url.path.startsWith("/api/")' in expressions[0]
+    path_guard = next(expression for expression in expressions if expression.startswith("!(req.url.path"))
+    assert 'req.url.path.startsWith("/app/")' in path_guard
+    assert 'req.url.path == "/app"' in path_guard
+    assert 'req.url.path.startsWith("/api/")' in path_guard
     assert expressions.count('req.url.path == "/mcp"') == 4
     assert "!hasReqHeader('Authorization')" in expressions
     assert "type: forward-internal" in text
@@ -445,6 +446,121 @@ def test_websocket_routes_fail_explicitly_without_entering_mcp(tmp_path):
     asyncio.run(run())
     assert sent[0]["type"] == "websocket.close"
     assert sent[0]["code"] == 1008
+
+
+@pytest.mark.parametrize("preserve", [False, True])
+@pytest.mark.parametrize("facade", [False, True])
+def test_public_origin_survives_internal_hops_and_replaces_spoofed_headers(tmp_path, web_backend, preserve, facade):
+    backend, seen, _ = web_backend
+    app = gateway(
+        tmp_path,
+        backend,
+        facade=facade,
+        tunnel_public_url="https://Share.Example:8443/mcp",
+        http_routes=[{"prefix": "/app", "upstream": backend, "preserve_host": preserve}],
+    )
+    headers = [
+        ("host", "snulbug-mcp.internal"),
+        ("x-snulbug-original-host", "share.example:8443"),
+        ("x-snulbug-original-proto", "https"),
+        ("x-forwarded-host", "evil.test"),
+        ("x-forwarded-host", "another.test"),
+        ("x-forwarded-proto", "http"),
+        ("x-forwarded-port", "80"),
+        ("x-forwarded-prefix", "/evil"),
+        ("forwarded", "host=evil.test;proto=http"),
+    ]
+    assert request(app, "GET", "/app/notes", headers=headers).status_code == 200
+    incoming = seen[0]["headers"]
+    assert incoming["host"] == ("share.example:8443" if preserve else backend.removeprefix("http://"))
+    assert incoming.get_all("x-forwarded-host") == ["share.example:8443"]
+    assert incoming.get_all("x-forwarded-proto") == ["https"]
+    assert incoming.get_all("x-forwarded-port") == ["8443"]
+    assert incoming.get_all("x-forwarded-prefix") == ["/app"]
+    for key in ("forwarded", "x-snulbug-original-host", "x-snulbug-original-proto"):
+        assert incoming.get(key) is None
+    # Local access intentionally advertises the same canonical public origin.
+    assert request(app, "GET", "/app/notes").status_code == 200
+    assert seen[1]["headers"]["x-forwarded-host"] == "share.example:8443"
+
+
+def test_mismatched_captured_host_never_reaches_http_backend(tmp_path, web_backend):
+    backend, seen, _ = web_backend
+    app = gateway(tmp_path, backend, tunnel_public_url="https://share.example/mcp")
+    response = request(
+        app,
+        "POST",
+        "/app/",
+        content=b"private-body",
+        headers={
+            "x-snulbug-original-host": "evil.test",
+            "x-snulbug-original-proto": "https",
+        },
+    )
+    assert response.status_code == 400
+    assert not seen
+    assert "evil.test" not in response.text
+
+
+@pytest.mark.parametrize("strip", [True, False])
+def test_public_redirect_uses_public_scheme_host_and_prefix_without_changing_tls_target(tmp_path, monkeypatch, strip):
+    original = httpx.AsyncClient
+    upstream_requests = []
+
+    class RedirectBody(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b""
+
+    async def backend(req):
+        upstream_requests.append(req)
+        assert req.url.host == "backend.test"
+        assert req.url.scheme == "https"
+        assert req.headers["host"] == "share.example"
+        assert req.headers["x-forwarded-prefix"] == "/app"
+        assert req.url.path == ("/login" if strip else "/app/login")
+        origin = req.headers["x-forwarded-proto"] + "://" + req.headers["x-forwarded-host"]
+        return httpx.Response(
+            302, headers={"location": origin + req.headers["x-forwarded-prefix"] + "/account"}, stream=RedirectBody()
+        )
+
+    def client(**kwargs):
+        if "transport" not in kwargs:
+            assert kwargs["follow_redirects"] is False
+            assert kwargs["trust_env"] is False
+            assert kwargs.get("verify", True) is True
+            kwargs["transport"] = httpx.MockTransport(backend)
+        return original(**kwargs)
+
+    monkeypatch.setattr("snulbug.http_routes.httpx.AsyncClient", client)
+    app = gateway(
+        tmp_path,
+        "https://backend.test",
+        tunnel_public_url="https://share.example/mcp",
+        http_routes=[
+            {
+                "prefix": "/app",
+                "upstream": "https://backend.test",
+                "preserve_host": True,
+                "strip_prefix": strip,
+            }
+        ],
+    )
+    response = request(app, "GET", "/app/login")
+    assert response.status_code == 302
+    assert response.headers["location"] == "https://share.example/app/account"
+    assert len(upstream_requests) == 1
+
+
+def test_preserving_host_needs_an_explicit_public_origin_at_api_and_config_boundaries(tmp_path):
+    route = {"prefix": "/app", "upstream": "http://localhost:3000", "preserve_host": True}
+    with pytest.raises(ValueError, match="preserve_host requires"):
+        gateway(tmp_path, route["upstream"], http_routes=[route])
+    from snulbug.config import normalize_mcp_proxy_config
+
+    with pytest.raises(ValueError, match="preserve_host requires"):
+        normalize_mcp_proxy_config({"http_routes": [route]})
+    with pytest.raises(ValueError, match="must be a boolean"):
+        normalize_http_routes([{**route, "preserve_host": "true"}])
 
 
 @pytest.mark.parametrize("path,raw_path", [("/app/../mcp", b"/app/%2e%2e/mcp"), ("/app/x", b"/%61pp/x")])

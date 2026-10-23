@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 
 from .http_routes import http_route_contract
+from .public_origin import public_origin
 from .share_doctor import ShareDoctorCheck, ShareDoctorCheckResult, ShareDoctorContext
 
 
@@ -31,7 +32,9 @@ class ShareHttpMountsDoctorCheck(ShareDoctorCheck):
 def http_mount_contracts(proxy: Mapping[str, Any]) -> list[dict[str, Any]]:
     return sorted(
         [
-            http_route_contract(route, timeout=float(proxy.get("timeout", 30.0)))
+            http_route_contract(
+                route, timeout=float(proxy.get("timeout", 30.0)), public_url=proxy.get("tunnel_public_url")
+            )
             for route in proxy.get("http_routes", [])
         ],
         key=lambda route: route["prefix"],
@@ -60,6 +63,13 @@ def inspect_http_mounts(proxy: Mapping[str, Any], *, live_checks: bool = False, 
             )
 
         declared = contract["auth"] != "undeclared"
+        origin_message = (
+            f"{prefix}: public origin is {contract['public_origin']}; Host uses "
+            + ("the public authority" if contract["preserve_host"] else "the upstream authority")
+            if contract["public_origin"]
+            else f"{prefix}: public origin is not configured; forwarded URLs use the local request origin"
+        )
+        check("origin", "pass" if contract["public_origin"] else "warn", origin_message)
         check(
             "auth",
             "pass" if declared else "fail",
@@ -130,7 +140,14 @@ def _probe_health(contract: Mapping[str, Any], *, timeout: float) -> dict[str, A
     }
     try:
         with httpx.Client(timeout=min(timeout, contract["timeout"]), trust_env=False, follow_redirects=False) as client:
-            with client.stream("GET", target, headers={"accept": "*/*"}) as response:
+            origin = public_origin(contract["public_origin"])
+            headers = {"accept": "*/*"}
+            if origin:
+                headers.update({name.decode(): value.decode() for name, value in origin.headers()})
+                headers["x-forwarded-prefix"] = contract["prefix"]
+                if contract["preserve_host"]:
+                    headers["host"] = origin.authority
+            with client.stream("GET", target, headers=headers) as response:
                 result["status"] = response.status_code
                 result["ok"] = response.status_code == contract["health_status"]
                 result["message"] = (

@@ -106,6 +106,33 @@ and preserving prefixes. Existing shares need both a TOML route and an updated
 Cloud Endpoint Traffic Policy; changing TOML alone leaves ngrok's old deny rule
 in effect.
 
+### Public Links and Redirects
+
+The generated share sets `mcp.proxy.tunnel_public_url` to the exact public MCP
+URL. Snulbug derives the public origin from that URL, not from the internal
+Agent Endpoint or caller-supplied forwarding headers. Mounted apps receive the
+public host, scheme, and port through `X-Forwarded-*`, plus their mount prefix.
+This also applies to local requests through snulbug while the public URL is set.
+
+For apps that need the literal public Host header, add `preserve_host = true`
+to that existing `[[mcp.proxy.http_routes]]` table. Leave it false (the default)
+when the backend expects its own internal host. Configure the app to trust
+snulbug as its immediate proxy and serve its public base path, such as `/app`.
+See [public-origin forwarding](mcp-proxy.md#public-origin-and-host-preservation).
+
+The generated Cloud Endpoint policy captures the original host/scheme before
+forwarding, rejects authorities/schemes different from the configured public
+origin with HTTP 421, and replaces caller-supplied origin/audit headers.
+Snulbug validates captured pairs and rejects invalid or mismatched values with
+HTTP 400. These checks do not authenticate the forwarding agent or replace
+application/MCP authentication.
+
+Changing the public URL requires updating TOML and the generated Cloud Endpoint
+policy and reattaching that policy in ngrok. Existing policies from older
+versions do not gain capture rules automatically; use share doctor's desired
+baseline and drift checks to review and update them. Do not recreate the share
+just to update its tunnel policy or discard its invites and evidence.
+
 ## 3. Export the generated client headers
 
 The generated share requires both bearer auth and an `x-snulbug-lease` header

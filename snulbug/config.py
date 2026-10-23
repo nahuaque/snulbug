@@ -15,6 +15,7 @@ from .policy_backoff import (
     DEFAULT_POLICY_BACKOFF_KEY_FIELDS,
     DEFAULT_POLICY_BACKOFF_REASON_CODES,
 )
+from .public_origin import public_origin
 from .tool_catalog import CATALOG_PROJECTION_MODES
 from .upstream_transports import get_upstream_transport
 
@@ -249,6 +250,8 @@ lease_file = "leases.json"
 lease_required = true
 lease_header = "x-snulbug-lease"
 tunnel_provider = "auto"
+# Canonical public origin for forwarded host/protocol/port; MCP path is excluded.
+# HTTP mounts can opt into preserve_host = true to send the public Host as well.
 tunnel_public_url = ""
 cloudflare_access_profile = ""
 tailscale_profile = ""
@@ -598,6 +601,7 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
         raise ValueError("mcp.proxy.tunnel_public_url must be a string")
     if normalized.get("tunnel_public_url") == "":
         normalized["tunnel_public_url"] = None
+    origin = public_origin(normalized.get("tunnel_public_url"))
     for field in ("policy", "record_out", "lease_file"):
         value = normalized.get(field)
         if value is not None and not isinstance(value, str | Path):
@@ -676,6 +680,8 @@ def normalize_mcp_proxy_config(config: Mapping[str, Any], *, base_dir: str | Pat
     normalized["http_routes"] = normalize_http_routes(
         normalized.get("http_routes", []), mcp_path=normalized["streamable_http_endpoint_path"]
     )
+    if origin is None and any(route.get("preserve_host") for route in normalized["http_routes"]):
+        raise ValueError("HTTP route preserve_host requires mcp.proxy.tunnel_public_url")
     normalized["streamable_http_allowed_origins"] = _normalize_string_list(
         normalized.get("streamable_http_allowed_origins", []),
         field="streamable_http_allowed_origins",

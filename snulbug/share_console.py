@@ -7980,6 +7980,8 @@ def _console_html() -> str:
             <h2>${esc(mount.prefix)} ${pill(mount.auth)}</h2>
             <div class="detail-grid">
               ${detailRow("Upstream", mount.upstream)}
+              ${detailRow("Public origin", mount.public_origin || "Local request origin")}
+              ${detailRow("Host header", mount.preserve_host ? "Public authority" : "Upstream authority")}
               ${detailRow("Auth owner", mount.auth === "public" ? "Public; no authentication required" : mount.auth)}
               ${detailRow("MCP guards", "Not applied")}
               ${detailRow("Methods", listText(mount.methods))}

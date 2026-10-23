@@ -161,7 +161,11 @@ def http_mounts_table(mounts: Mapping[str, Any]) -> Table:
             Text(f"{mount.get('prefix')}\n{mount.get('upstream')}"),
             _value(mount.get("auth")),
             Text(", ".join(mount.get("methods", []))),
-            Text(f"Authorization: {mount.get('forward_authorization')}; cookies: {mount.get('forward_cookies')}"),
+            Text(
+                f"Authorization: {mount.get('forward_authorization')}; cookies: {mount.get('forward_cookies')}\n"
+                f"Origin: {mount.get('public_origin') or 'local request'}\n"
+                f"Host: {'public' if mount.get('preserve_host') else 'upstream'}"
+            ),
             Text(("pass" if health.get("ok") else "fail") if health.get("checked") else "not checked"),
         )
     if not mounts.get("items"):

@@ -96,6 +96,7 @@ from .mcp_stream import AUTH_EXPIRY_SCOPE_KEY, STREAM_SCOPE_KEY, McpStreamError,
 from .mcp_tasks import mcp_task_request_metadata
 from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
 from .policy_backoff import PolicyBackoffConfig
+from .public_origin import PublicOriginMiddleware
 from .recorder import append_record, build_request_record, record_audit_event
 from .request_explanations import (
     upstream_failure,
@@ -3371,9 +3372,14 @@ def create_proxy_application(
         )
     if http_routes:
         app = HttpRoutesMiddleware(
-            app, http_routes, mcp_path=streamable_http_config.endpoint_path, timeout=timeout, lease_header=lease_header
+            app,
+            http_routes,
+            mcp_path=streamable_http_config.endpoint_path,
+            timeout=timeout,
+            lease_header=lease_header,
+            public_url=tunnel_public_url,
         )
-    return app
+    return PublicOriginMiddleware(app, public_url=tunnel_public_url)
 
 
 def run_proxy(

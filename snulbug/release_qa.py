@@ -48,6 +48,7 @@ OPERATIONS_MODULES = (
     "request_explanations",
     "http_routes",
     "http_mounts",
+    "public_origin",
 )
 OPERATIONS_TESTS = (
     "test_operations_smoke.py",
@@ -58,6 +59,7 @@ OPERATIONS_TESTS = (
     "test_request_explanations.py",
     "test_http_routes.py",
     "test_http_mounts.py",
+    "test_public_origin.py",
 )
 
 

@@ -157,6 +157,74 @@ def test_tunnel_init_ngrok_rejects_non_internal_agent_endpoint(tmp_path):
         )
 
 
+def test_ngrok_captures_then_replaces_origin_headers_before_forwarding():
+    from snulbug.ngrok_drift import parse_traffic_policy
+
+    policy = parse_traffic_policy(
+        tunnel_module._ngrok_traffic_policy(
+            "https://Share.Example:8443/mcp",
+            internal_url="https://snulbug-mcp.internal",
+        )
+    )
+    rules = policy["on_http_request"]
+    assert rules[0]["actions"][0] == {
+        "type": "set-vars",
+        "config": {
+            "vars": [
+                {"snulbug_original_host": "${req.host}"},
+                {"snulbug_original_proto": "${req.url.scheme}"},
+            ]
+        },
+    }
+    guard = rules[1]
+    assert json.dumps(r"(?i)^share\.example:8443$") in guard["expressions"][0]
+    assert "!req.host.matches(" in guard["expressions"][0]
+    assert "!req.url.authority.matches(" in guard["expressions"][0]
+    assert 'req.url.scheme != "https"' in guard["expressions"][0]
+    assert guard["actions"][0]["config"]["status_code"] == 421
+    actions = rules[2]["actions"]
+    assert actions[0]["type"] == "remove-headers"
+    assert {
+        "forwarded",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "x-snulbug-original-host",
+        "x-snulbug-original-proto",
+    } <= set(actions[0]["config"]["headers"])
+    assert actions[1]["type"] == "add-headers"
+    assert actions[1]["config"]["headers"]["x-snulbug-original-host"] == "${vars.snulbug_original_host}"
+    assert actions[1]["config"]["headers"]["x-snulbug-original-proto"] == "${vars.snulbug_original_proto}"
+    assert rules[-1]["actions"][0]["type"] == "forward-internal"
+
+
+@pytest.mark.parametrize(
+    "authority,allowed",
+    [
+        ("share.example", True),
+        ("Share.Example:443", True),
+        ("share.example:80", False),
+        ("share.example:8443", False),
+        ("share.example.evil.test", False),
+        ("shareXexample", False),
+    ],
+)
+def test_ngrok_origin_pattern_matches_one_exact_public_authority(authority, allowed):
+    import re
+
+    from snulbug.ngrok_drift import parse_traffic_policy
+
+    policy = parse_traffic_policy(
+        tunnel_module._ngrok_traffic_policy(
+            "https://share.example/mcp",
+            internal_url="https://snulbug-mcp.internal",
+        )
+    )
+    expression = policy["on_http_request"][1]["expressions"][0]
+    assert expression.startswith("!req.host.matches(")
+    pattern, _ = json.JSONDecoder().raw_decode(expression[len("!req.host.matches(") :])
+    assert (re.fullmatch(pattern, authority) is not None) is allowed
+
+
 def test_tunnel_init_cloudflare_writes_generated_files(tmp_path):
     output_dir = tmp_path / "cloudflare"
 

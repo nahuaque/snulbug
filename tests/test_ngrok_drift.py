@@ -118,7 +118,13 @@ def test_cloud_drift_is_actionable_but_never_contains_deployed_values(context, m
     elif change == "extra":
         policy["on_http_response"] = [{"actions": [{"type": "deny"}]}]
     else:
-        policy["on_http_request"][0]["actions"][0]["config"]["headers"]["private-secret-key"] = "deployed-secret-value"
+        headers = next(
+            action["config"]["headers"]
+            for rule in policy["on_http_request"]
+            for action in rule["actions"]
+            if action["type"] == "add-headers"
+        )
+        headers["private-secret-key"] = "deployed-secret-value"
     mock_api(
         monkeypatch,
         lambda _: httpx.Response(200, json={"endpoints": [endpoint(context, traffic_policy=json.dumps(policy))]}),
@@ -254,9 +260,11 @@ def test_oauth_baseline_allows_metadata_and_preserves_gateway_challenges(mode):
     )
     rules = policy["on_http_request"]
     assert not any(rule.get("actions", [{}])[0].get("config", {}).get("status_code") == 401 for rule in rules)
-    assert "/.well-known/oauth-protected-resource" in rules[1]["expressions"][0]
-    assert "/app" in rules[1]["expressions"][0]
-    assert all(rule["expressions"][0] == 'req.url.path == "/mcp"' for rule in rules[2:-1])
+    path_guard = next(rule for rule in rules if rule.get("expressions", [""])[0].startswith("!(req.url.path"))
+    assert "/.well-known/oauth-protected-resource" in path_guard["expressions"][0]
+    assert "/app" in path_guard["expressions"][0]
+    guards = [rule for rule in rules if rule.get("expressions", [""])[0] == 'req.url.path == "/mcp"']
+    assert len(guards) == 2
 
 
 def test_file_credential_uses_existing_broker_and_cannot_override_authorization_scheme(context, monkeypatch):

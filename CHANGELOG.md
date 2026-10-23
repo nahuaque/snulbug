@@ -6,6 +6,8 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 
 ## [Unreleased]
 
+- Preserve the configured public origin across ngrok/internal forwarding and HTTP mounts: canonical forwarding headers, optional per-mount `preserve_host`, validated edge capture headers, and origin-aware mount health, contracts, readiness, reports, and console diagnostics. Existing ngrok policies must be reviewed and reattached; no cloud changes are applied automatically.
+
 ## [0.2.4] - 2026-10-19
 
 Operational hardening for always-on shares and shared HTTP/MCP gateways.

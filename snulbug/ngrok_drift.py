@@ -36,6 +36,11 @@ _SAFE_KEYS = _PHASES | {
     "x-snulbug-traffic-policy",
     "x-snulbug-public-url",
     "x-snulbug-edge-client-ip",
+    "x-snulbug-original-host",
+    "x-snulbug-original-proto",
+    "vars",
+    "snulbug_original_host",
+    "snulbug_original_proto",
 }
 
 

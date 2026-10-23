@@ -123,6 +123,7 @@ auth = "upstream"
 methods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 forward_authorization = true
 forward_cookies = true
+preserve_host = false
 timeout = 30.0
 health_path = "/healthz"
 health_status = 200
@@ -213,6 +214,69 @@ public prefix (for example `/app/`), using their base URL/root-path setting or
 the forwarded host, protocol, and prefix headers. Snulbug does not rewrite HTML,
 redirect locations, or cookie paths. Use `strip_prefix = false` for an app that
 already serves its prefix. WebSocket upgrades are not supported by these HTTP mounts.
+
+### Public origin and Host preservation
+
+The share's existing `mcp.proxy.tunnel_public_url` is the single source of truth
+for the external scheme, authority, and port. Its MCP path is not part of the
+origin: `https://share.example.com/mcp` yields `https://share.example.com`, and
+the `/app` mount separately supplies `X-Forwarded-Prefix: /app`.
+
+```toml
+[mcp.proxy]
+tunnel_public_url = "https://share.example.com/mcp"
+
+[[mcp.proxy.http_routes]]
+prefix = "/app"
+upstream = "http://127.0.0.1:3000"
+auth = "upstream"
+preserve_host = true
+```
+
+Merge these values into existing tables rather than adding duplicate mounts.
+The app receives `Host: share.example.com`, `X-Forwarded-Host: share.example.com`,
+`X-Forwarded-Proto: https`, `X-Forwarded-Port: 443`, and
+`X-Forwarded-Prefix: /app`. Explicit non-default public ports are retained.
+The connection destination, HTTPS SNI, and certificate verification still use
+the configured upstream URL. Client Origin/Referer headers are not rewritten.
+
+`preserve_host` defaults to `false`: Host remains the backend authority for apps
+that use internal virtual hosts, while the canonical forwarding headers still
+advertise the public URL. MCP upstreams also retain their backend Host and
+receive canonical host/protocol/port forwarding metadata. This does not change
+OAuth resource/audience or DPoP checks, or pass client OAuth credentials upstream.
+
+Caller-supplied forwarding/original-origin headers do not select the public
+origin. Generated ngrok Cloud Endpoint policies capture and check the original
+public authority/scheme before forwarding, replacing caller-supplied capture
+and audit headers. Snulbug rejects duplicate, incomplete, malformed, or
+mismatched capture pairs with HTTP 400, then removes them before dispatch.
+Those headers are consistency checks, not proof that a request came from ngrok.
+Direct local requests without capture headers are supported and intentionally
+advertise the same configured public origin. No extra trusted-header opt-in is
+needed. Only one canonical origin is supported; aliases/wildcards are not
+automatically trusted.
+
+Without `tunnel_public_url`, HTTP mounts retain local-request forwarding
+behavior and doctor warns that the external origin is unknown. `preserve_host =
+true` requires an explicit public URL. Invalid public URLs, including credentials,
+query strings, fragments, malformed authorities, and control characters, fail
+configuration validation.
+
+Configure the app/framework to trust forwarding headers only from snulbug's
+immediate backend connection, with its public host in any allowed-host list.
+Prefix stripping does not automatically configure an application's root path;
+set the app's `/app` base path or use its supported forwarded-prefix integration.
+Host preservation alone does not implement CSRF protection or application auth.
+
+Doctor/status/report and the console's HTTP mount contracts show the effective
+public origin and Host mode. Backend health checks use the same origin/Host
+contract without client credentials. Changing the public origin or Host mode
+invalidates cached health and readiness review and changes signed mount bindings.
+After upgrading an existing ngrok share, review the desired policy in share
+doctor, update the generated Cloud Endpoint policy file, and reattach it in ngrok.
+Restart the gateway after config changes. This feature does not rewrite a live
+Cloud Endpoint or regenerate existing shares automatically.
 
 Restart `share run` after editing mounts. The router works with proxy and facade
 MCP modes and any tunnel that forwards the gateway origin. For generated ngrok

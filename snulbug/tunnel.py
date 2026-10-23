@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import re
 import shlex
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -10,6 +11,7 @@ from typing import Any
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from .config import DEFAULT_CONFIG_PATH, DEFAULT_MCP_PROXY_CONFIG, load_mcp_proxy_config
+from .public_origin import INGRESS_HEADERS_SCOPE_KEY, public_origin
 from .quickstart import create_mcp_quickstart
 
 DEFAULT_MCP_PATH = "/mcp"
@@ -181,6 +183,7 @@ class NgrokTunnelProvider(TunnelProvider):
                 "restrict HTTP methods",
                 "require JSON content type on POST",
                 "add snulbug/ngrok audit headers",
+                "capture and validate the original public host and scheme before forwarding",
                 "forward allowed traffic to the ngrok internal Agent Endpoint",
             ],
         }
@@ -760,7 +763,7 @@ def build_tunnel_audit_metadata(
     """Extract provider-aware tunnel audit metadata from an ASGI HTTP scope."""
 
     config = config or TunnelAuditConfig()
-    headers = _scope_headers(scope)
+    headers = _scope_headers({"headers": scope.get(INGRESS_HEADERS_SCOPE_KEY, scope.get("headers", []))})
     host = headers.get("host")
     forwarded_host = headers.get("x-forwarded-host") or headers.get("x-original-host")
     public_url = config.public_url or _public_url_from_headers(scope, headers)
@@ -1411,6 +1414,11 @@ def _ngrok_readme_notes(plan: Mapping[str, Any]) -> str:
         f"{checks}\n\n"
         "Snulbug remains the MCP-aware authorization, lease, recording, audit, and "
         "response-policy boundary behind ngrok.\n\n"
+        "The Cloud Endpoint captures the original public host and scheme before forwarding, "
+        "replacing caller-supplied origin/audit headers. Keep its exact public origin aligned with "
+        "`mcp.proxy.tunnel_public_url`. Snulbug uses that configured origin for forwarded URL headers; "
+        "HTTP mounts can also set `preserve_host = true` for apps that need the public Host header. "
+        "Changing the public URL requires updating and reattaching the generated policy.\n\n"
         f"{route_notes}"
     )
 
@@ -1600,6 +1608,17 @@ def _ngrok_traffic_policy(
 ) -> str:
     mcp_path = urlsplit(public_endpoint).path or DEFAULT_MCP_PATH
     public_url = _normalize_url(public_endpoint, mcp_path)
+    origin = public_origin(public_url)
+    assert origin is not None
+    authority_pattern = "(?i)^" + re.escape(origin.authority)
+    if origin.port == (443 if origin.scheme == "https" else 80):
+        authority_pattern += f"(?::{origin.port})?"
+    authority_pattern += "$"
+    origin_mismatch = (
+        f"!req.host.matches({json.dumps(authority_pattern)}) || "
+        f"!req.url.authority.matches({json.dumps(authority_pattern)}) || "
+        f"req.url.scheme != {json.dumps(origin.scheme)}"
+    )
     allowed_paths = [f"req.url.path == {json.dumps(mcp_path)}"]
     oauth = auth_mode in {"oauth-resource", "enterprise-managed"}
     if oauth:
@@ -1653,8 +1672,39 @@ def _ngrok_traffic_policy(
         "# This is a coarse ngrok edge guard; snulbug still performs MCP-aware\n"
         "# authorization, replay recording, auditing, and response policy behind it.\n"
         "on_http_request:\n"
+        "  - name: Capture the original public origin\n"
+        "    actions:\n"
+        "      - type: set-vars\n"
+        "        config:\n"
+        "          vars:\n"
+        '            - snulbug_original_host: "${req.host}"\n'
+        '            - snulbug_original_proto: "${req.url.scheme}"\n'
+        "  - name: Require the configured public origin\n"
+        "    expressions:\n"
+        f"      - {_yaml_string(origin_mismatch)}\n"
+        "    actions:\n"
+        "      - type: deny\n"
+        "        config:\n"
+        "          status_code: 421\n"
         "  - name: Add snulbug tunnel audit headers\n"
         "    actions:\n"
+        "      - type: remove-headers\n"
+        "        config:\n"
+        "          headers:\n"
+        "            - forwarded\n"
+        "            - x-forwarded-host\n"
+        "            - x-forwarded-proto\n"
+        "            - x-forwarded-port\n"
+        "            - x-forwarded-prefix\n"
+        "            - x-forwarded-for\n"
+        "            - x-original-host\n"
+        "            - x-original-proto\n"
+        "            - x-snulbug-original-host\n"
+        "            - x-snulbug-original-proto\n"
+        "            - x-snulbug-tunnel-provider\n"
+        "            - x-snulbug-traffic-policy\n"
+        "            - x-snulbug-public-url\n"
+        "            - x-snulbug-edge-client-ip\n"
         "      - type: add-headers\n"
         "        config:\n"
         "          headers:\n"
@@ -1662,6 +1712,8 @@ def _ngrok_traffic_policy(
         '            x-snulbug-traffic-policy: "ngrok-mcp-v1"\n'
         f"            x-snulbug-public-url: {_yaml_string(public_url)}\n"
         '            x-snulbug-edge-client-ip: "${conn.client_ip}"\n'
+        '            x-snulbug-original-host: "${vars.snulbug_original_host}"\n'
+        '            x-snulbug-original-proto: "${vars.snulbug_original_proto}"\n'
         f"  - name: {path_rule_name}\n"
         "    expressions:\n"
         f"      - {_yaml_string(expressions['non_mcp_path'])}\n"

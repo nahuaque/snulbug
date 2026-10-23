@@ -16,7 +16,11 @@ from snulbug.share_doctor import ShareDoctorContext
 
 
 def config(**contract):
-    return {"timeout": 30.0, "http_routes": [{"prefix": "/app", "upstream": "https://app.test/base", **contract}]}
+    return {
+        "timeout": 30.0,
+        "tunnel_public_url": "https://share.test/mcp",
+        "http_routes": [{"prefix": "/app", "upstream": "https://app.test/base", **contract}],
+    }
 
 
 def mock_health(monkeypatch, status=200, *, error=None):
@@ -51,8 +55,9 @@ def test_undeclared_auth_is_not_silently_assumed_to_be_mcp_protected():
     result = inspect_http_mounts(config())
     assert result["state"] == "blocked"
     assert result["ok"] is False
-    assert result["checks"][0]["status"] == "fail"
-    assert "MCP authentication does not protect" in result["checks"][0]["message"]
+    auth = next(check for check in result["checks"] if check["id"].endswith(".auth"))
+    assert auth["status"] == "fail"
+    assert "MCP authentication does not protect" in auth["message"]
 
 
 def test_public_mount_uses_safe_defaults_but_still_requires_exposure_review():
@@ -180,6 +185,8 @@ def test_share_workflow_reuses_diagnostics_and_binds_mount_changes(context, monk
     assert "HTTP Mount Contracts" in output.getvalue()
     first = share_contract(context.share_dir, live_checks=False, sign=True, secret="contract-secret")["contract"]
     assert first["http_mounts"][0]["auth"] == "upstream"
+    assert first["http_mounts"][0]["public_origin"]
+    assert first["http_mounts"][0]["preserve_host"] is False
     assert "health" not in first["http_mounts"][0]
     assert all(
         secret not in json.dumps(result["http_mounts"]) + report
@@ -204,6 +211,7 @@ def test_share_workflow_reuses_diagnostics_and_binds_mount_changes(context, monk
         ('methods = ["GET", "HEAD"]', 'methods = ["GET", "HEAD", "POST"]'),
         ('health_path = "/ready"', 'health_path = "/ready"\nforward_authorization = false'),
         ('health_path = "/ready"', 'health_path = "/ready"\ntimeout = 10.0'),
+        ('health_path = "/ready"', 'health_path = "/ready"\npreserve_host = true'),
     ],
 )
 def test_required_share_contract_rejects_changed_http_mounts_before_startup(context, before, after):
@@ -230,3 +238,28 @@ def test_health_timestamps_do_not_change_readiness_review_digest(context, monkey
     manifest_path.write_text(json.dumps(manifest))
     second = build_share_console_snapshot(context.share_dir)
     assert first["readiness_gate"]["review_digest"] == second["readiness_gate"]["review_digest"]
+
+
+@pytest.mark.parametrize("preserve", [False, True])
+def test_health_uses_the_mounts_public_origin_and_host_contract(monkeypatch, preserve):
+    requests = mock_health(monkeypatch)
+    proxy = config(auth="upstream", health_path="/ready", preserve_host=preserve)
+    result = inspect_http_mounts(proxy, live_checks=True)
+    assert result["items"][0]["public_origin"] == "https://share.test"
+    assert requests[0].headers["host"] == ("share.test" if preserve else "app.test")
+    assert requests[0].headers["x-forwarded-host"] == "share.test"
+    assert requests[0].headers["x-forwarded-proto"] == "https"
+    assert requests[0].headers["x-forwarded-prefix"] == "/app"
+
+
+def test_unconfigured_public_origin_requires_review_and_origin_change_invalidates_health(monkeypatch):
+    mock_health(monkeypatch)
+    proxy = config(auth="upstream", health_path="/ready")
+    saved = inspect_http_mounts(proxy, live_checks=True)
+    changed = {**proxy, "tunnel_public_url": "https://other.test/mcp"}
+    current = cached_http_mounts(saved, changed)
+    assert current["stale"] is True
+    assert current["items"][0]["health"]["checked"] is False
+    assert current["items"][0]["public_origin"] == "https://other.test"
+    no_origin = inspect_http_mounts({**proxy, "tunnel_public_url": None})
+    assert any(check["status"] == "warn" and check["id"].endswith(".origin") for check in no_origin["checks"])

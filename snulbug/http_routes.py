@@ -10,6 +10,8 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
+from .public_origin import public_origin
+
 if TYPE_CHECKING:
     from .middleware import ASGIApp, Receive, Scope, Send
 
@@ -33,6 +35,7 @@ HTTP_ROUTE_FIELDS = {
     "methods",
     "forward_authorization",
     "forward_cookies",
+    "preserve_host",
     "timeout",
     "health_path",
     "health_status",
@@ -109,7 +112,7 @@ def _normalize_contract(route: Mapping[str, Any]) -> dict[str, Any]:
     contract = {key: value for key, value in route.items() if key not in {"prefix", "upstream", "strip_prefix"}}
     if "auth" in contract and (not isinstance(contract["auth"], str) or contract["auth"] not in {"public", "upstream"}):
         raise ValueError("HTTP route auth must be 'public' or 'upstream'; MCP auth does not protect HTTP mounts")
-    for key in ("forward_authorization", "forward_cookies"):
+    for key in ("forward_authorization", "forward_cookies", "preserve_host"):
         if key in contract and not isinstance(contract[key], bool):
             raise ValueError(f"HTTP route {key} must be a boolean")
     if "methods" in contract:
@@ -156,9 +159,14 @@ def _normalize_contract(route: Mapping[str, Any]) -> dict[str, Any]:
     return contract
 
 
-def http_route_contract(route: Mapping[str, Any], *, timeout: float = 30.0) -> dict[str, Any]:
+def http_route_contract(
+    route: Mapping[str, Any], *, timeout: float = 30.0, public_url: str | None = None
+) -> dict[str, Any]:
     """One effective contract for routing, inspection, and signed share bindings."""
 
+    origin = public_origin(public_url)
+    if route.get("preserve_host") and origin is None:
+        raise ValueError("HTTP route preserve_host requires mcp.proxy.tunnel_public_url")
     return {
         "prefix": route["prefix"],
         "upstream": route["upstream"],
@@ -167,6 +175,8 @@ def http_route_contract(route: Mapping[str, Any], *, timeout: float = 30.0) -> d
         "methods": sorted(route.get("methods", DEFAULT_HTTP_METHODS)),
         "forward_authorization": route.get("forward_authorization", route.get("auth") != "public"),
         "forward_cookies": route.get("forward_cookies", route.get("auth") != "public"),
+        "preserve_host": route.get("preserve_host", False),
+        "public_origin": origin.url if origin else None,
         "timeout": route.get("timeout", timeout),
         "health_path": route.get("health_path"),
         "health_status": route.get("health_status", 200),
@@ -196,12 +206,16 @@ class HttpRoutesMiddleware:
         mcp_path: str = "/mcp",
         timeout: float = 30.0,
         lease_header: str = "x-snulbug-lease",
+        public_url: str | None = None,
     ) -> None:
         self.app = app
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("HTTP route timeout must be positive and finite")
         self.routes = sorted(
-            [http_route_contract(route, timeout=timeout) for route in normalize_http_routes(routes, mcp_path=mcp_path)],
+            [
+                http_route_contract(route, timeout=timeout, public_url=public_url)
+                for route in normalize_http_routes(routes, mcp_path=mcp_path)
+            ],
             key=lambda r: -len(r["prefix"]),
         )
         self.timeout = timeout
@@ -312,9 +326,15 @@ class HttpRoutesMiddleware:
                 or (name == b"cookie" and not route["forward_cookies"])
             ):
                 headers.append((name, value))
-        if original_host:
+        origin = public_origin(route["public_origin"])
+        if origin:
+            headers.extend(origin.headers())
+            if route["preserve_host"]:
+                headers.append((b"host", origin.authority.encode("ascii")))
+        elif original_host:
             headers.append((b"x-forwarded-host", original_host))
-        headers.append((b"x-forwarded-proto", scope.get("scheme", "http").encode("ascii")))
+        if not origin:
+            headers.append((b"x-forwarded-proto", scope.get("scheme", "http").encode("ascii")))
         headers.append((b"x-forwarded-prefix", route["prefix"].encode("ascii")))
         if scope.get("client"):
             headers.append((b"x-forwarded-for", scope["client"][0].encode("ascii")))
