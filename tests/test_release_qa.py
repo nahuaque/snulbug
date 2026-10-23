@@ -151,6 +151,7 @@ def make_distributions(root, *, missing=None, cache=False):
         "docs/credential-brokers.md",
         "docs/mcp-proxy.md",
         "docs/upgrading-to-0.2.4.md",
+        "docs/upgrading-to-0.2.5.md",
         "tests/test_share_console.py",
         "tests/fixtures/stdio_subscriptions.py",
         *modules,
@@ -190,6 +191,7 @@ def test_release_qa_accepts_complete_distributions(tmp_path):
         "snulbug/http_mounts.py",
         "tests/test_operations_smoke.py",
         "docs/upgrading-to-0.2.4.md",
+        "docs/upgrading-to-0.2.5.md",
     ],
 )
 def test_release_qa_rejects_missing_protocol_artifacts(tmp_path, missing):

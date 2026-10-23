@@ -6,7 +6,20 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 
 ## [Unreleased]
 
-- Preserve the configured public origin across ngrok/internal forwarding and HTTP mounts: canonical forwarding headers, optional per-mount `preserve_host`, validated edge capture headers, and origin-aware mount health, contracts, readiness, reports, and console diagnostics. Existing ngrok policies must be reviewed and reattached; no cloud changes are applied automatically.
+## [0.2.5] - 2026-10-23
+
+Public-origin preservation for shared MCP and HTTP gateways.
+Read the [0.2.5 upgrade notes](docs/upgrading-to-0.2.5.md) before deploying an
+existing ngrok share or a share with required signed HTTP mount contracts.
+
+- Forward canonical public host, scheme, and port from the configured share URL across internal hops. HTTP mounts can opt into `preserve_host = true`; backend Host remains the default and upstream TLS verification is unchanged.
+- Generate ngrok policies that capture and validate the original public authority/scheme before forwarding and replace caller-supplied origin/audit headers. Reject invalid capture pairs at the gateway and unsafe public URLs at config load; keep observed ingress headers for audit provenance, not forwarding authority.
+- Include effective origin and Host mode in mount health checks, doctor, status, reports, the web console, readiness reviews, and signed mount contracts. Existing ngrok policies need manual review and reattachment; no cloud changes or share regeneration are applied automatically.
+- Add regression coverage for spoofed/duplicate headers, redirects, prefixes, ports, IPv6, MCP forwarding, health/cache invalidation, and contract drift, including installed-wheel packaging checks.
+
+No change to the default MCP protocol or preview limitations. Application auth,
+proxy trust, base paths, and CSRF defenses remain the mounted app's responsibility;
+this release does not rewrite HTML, redirect locations, or cookie paths.
 
 ## [0.2.4] - 2026-10-19
 

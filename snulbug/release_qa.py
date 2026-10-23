@@ -425,6 +425,7 @@ def _inspect_sdist(path: Path, *, version: str) -> tuple[bool, str | None, dict[
         f"{prefix}docs/credential-brokers.md",
         f"{prefix}docs/mcp-proxy.md",
         f"{prefix}docs/upgrading-to-0.2.4.md",
+        f"{prefix}docs/upgrading-to-0.2.5.md",
         *(f"{prefix}snulbug/{module}.py" for module in OPERATIONS_MODULES),
         *(f"{prefix}tests/{name}" for name in OPERATIONS_TESTS),
         *(f"{prefix}snulbug/{module}.py" for module in PROTOCOL_MODULES),
