@@ -6,6 +6,20 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-10-24
+
+Trusted internal lease selection and gateway credential-boundary hardening.
+
+- Add trusted, request-local Python/ASGI lease-ID selection for embedding gateways, reusing identity bindings, expiry/revocation checks, policy previews, and atomic call budgets. Reject conflicting selections without recovering or injecting lease credentials.
+- Consume lease credential headers at the upstream boundary, including custom header names, facade transport plugins, and streamed HTTP requests. Include configured custom lease-header names in replay/audit redaction.
+- Validate supplied selections on facade discovery without consuming calls, and reject lease denials on bodyless HTTP stream opens before forwarding.
+
+Upgrade note: public clients continue to send their existing lease headers, but
+upstream applications no longer receive them. Keep lease enforcement at the
+gateway; embedding hosts must independently authorize any internally selected
+lease reference. No change to renewal/expiry configuration or MCP protocol defaults.
+See the [trusted selection integration guide](docs/mcp-proxy.md#trusted-internal-lease-selection).
+
 ## [0.2.5] - 2026-10-23
 
 Public-origin preservation for shared MCP and HTTP gateways.

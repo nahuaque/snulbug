@@ -24,6 +24,7 @@ LEASE_HEADER = "x-snulbug-lease"
 LEASE_TOKEN_PREFIX = "sbl_"
 LEASE_RENEWAL_METHOD = "snulbug/lease/renew"
 LEASE_RENEWAL_HEADER = "x-snulbug-renewal"
+TRUSTED_LEASE_SCOPE_KEY = "snulbug.trusted_lease"
 _STORE_LOCK = threading.RLock()
 
 
@@ -89,6 +90,35 @@ class LeasePolicyConfig:
     lease_file: Path | None = None
     required: bool = False
     header: str = LEASE_HEADER
+
+
+@dataclass(frozen=True)
+class TrustedLeaseSelection:
+    """An exact lease reference selected by trusted, in-process gateway code."""
+
+    lease_id: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.lease_id, str)
+            or not self.lease_id
+            or len(self.lease_id) > 256
+            or any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in self.lease_id)
+        ):
+            raise ValueError("lease_id must be a non-empty, bounded lease reference without whitespace")
+
+
+def select_mcp_lease(scope: Scope, *, lease_id: str) -> Scope:
+    """Copy a request scope with a trusted selection; does not authorize or consume it.
+
+    Call only after the hosting gateway authorizes the selection. Never populate
+    this context from an unvalidated public header, query parameter, or body.
+    """
+
+    selection = TrustedLeaseSelection(lease_id)
+    if TRUSTED_LEASE_SCOPE_KEY in scope and scope[TRUSTED_LEASE_SCOPE_KEY] != selection:
+        raise ValueError("request already has a different or invalid trusted lease selection")
+    return {**scope, TRUSTED_LEASE_SCOPE_KEY: selection}
 
 
 @_lease_transaction
@@ -411,36 +441,14 @@ def preview_mcp_lease_catalog(
     if config.lease_file is None:
         return metadata
 
-    token = _header_value(scope, config.header)
-    if token is None:
-        metadata["skipped"] = "missing_header"
-        if config.required:
+    _store, lease = _resolve_presented_lease(scope, config=config, metadata=metadata)
+    metadata["catalog_checked"] = metadata["checked"]
+    if lease is None:
+        if config.required and not metadata.get("blocked"):
             metadata["reason_code"] = "lease.missing"
             metadata["blocked"] = True
+        if metadata.get("blocked"):
             metadata["allowed"] = False
-        return metadata
-
-    metadata["checked"] = True
-    metadata["catalog_checked"] = True
-    try:
-        store = _load_store(config.lease_file, create_missing=False)
-    except FileNotFoundError:
-        metadata["reason_code"] = "lease.store_missing"
-        metadata["blocked"] = True
-        metadata["allowed"] = False
-        return metadata
-    except ValueError as exc:
-        metadata["reason_code"] = "lease.store_invalid"
-        metadata["error"] = str(exc)
-        metadata["blocked"] = True
-        metadata["allowed"] = False
-        return metadata
-
-    lease = _find_lease(store, token)
-    if lease is None:
-        metadata["reason_code"] = "lease.invalid"
-        metadata["blocked"] = True
-        metadata["allowed"] = False
         return metadata
 
     invite_metadata = _lease_invite_metadata(lease.get("invite"))
@@ -502,33 +510,12 @@ def _evaluate_locked_lease_policy(
     if config.lease_file is None:
         return True, metadata
 
-    token = _header_value(scope, config.header)
-    if token is None:
-        metadata["skipped"] = "missing_header"
-        if config.required and method == "tools/call":
+    store, lease = _resolve_presented_lease(scope, config=config, metadata=metadata)
+    if lease is None:
+        if config.required and method == "tools/call" and not metadata.get("blocked"):
             metadata["reason_code"] = "lease.missing"
             metadata["blocked"] = True
-            return False, metadata
-        return True, metadata
-
-    metadata["checked"] = True
-    try:
-        store = _load_store(config.lease_file, create_missing=False)
-    except FileNotFoundError:
-        metadata["reason_code"] = "lease.store_missing"
-        metadata["blocked"] = True
-        return False, metadata
-    except ValueError as exc:
-        metadata["reason_code"] = "lease.store_invalid"
-        metadata["error"] = str(exc)
-        metadata["blocked"] = True
-        return False, metadata
-
-    lease = _find_lease(store, token)
-    if lease is None:
-        metadata["reason_code"] = "lease.invalid"
-        metadata["blocked"] = True
-        return False, metadata
+        return not metadata.get("blocked", False), metadata
 
     invite_metadata = _lease_invite_metadata(lease.get("invite"))
     metadata.update(
@@ -543,7 +530,7 @@ def _evaluate_locked_lease_policy(
             **_lease_auth_metadata(lease, auth_context),
         }
     )
-    params = request.get("params")
+    params = request.get("params") if isinstance(request, Mapping) else None
     params = params if isinstance(params, Mapping) else {}
     tool = params.get("name")
     if isinstance(tool, str):
@@ -564,6 +551,55 @@ def _evaluate_locked_lease_policy(
     metadata["use_count"] = int(lease.get("use_count") or 0)
     metadata["last_used_at"] = lease.get("last_used_at")
     return True, metadata
+
+
+def _resolve_presented_lease(
+    scope: Scope,
+    *,
+    config: LeasePolicyConfig,
+    metadata: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Resolve references inside the caller's existing consumption transaction."""
+
+    trusted = scope.get(TRUSTED_LEASE_SCOPE_KEY)
+    target = config.header.lower().encode("latin-1")
+    values = [value.decode("latin-1").strip() for name, value in scope.get("headers", []) if name.lower() == target]
+    reason = None
+    if TRUSTED_LEASE_SCOPE_KEY in scope and not isinstance(trusted, TrustedLeaseSelection):
+        reason = "lease.selection_invalid"
+    elif len(values) > 1:
+        reason = "lease.selection_conflict"
+    elif values and not values[0]:
+        reason = "lease.invalid"
+    elif not values and trusted is None:
+        metadata["skipped"] = "missing_header"
+        return None, None
+    metadata["checked"] = True
+    metadata["selection"] = "trusted" if trusted is not None else "header"
+    store = None
+    lease = None
+    if reason is None:
+        try:
+            store = _load_store(config.lease_file, create_missing=False)
+        except FileNotFoundError:
+            reason = "lease.store_missing"
+        except ValueError as exc:
+            reason = "lease.store_invalid"
+            metadata["error"] = str(exc)
+        else:
+            if trusted is not None:
+                matches = [item for item in _leases(store) if item.get("id") == trusted.lease_id]
+                lease = matches[0] if len(matches) == 1 else None
+            else:
+                lease = _find_lease(store, values[0])
+            if lease is None:
+                reason = "lease.invalid"
+            elif trusted is not None and values and _find_lease(store, values[0]) is not lease:
+                reason = "lease.selection_conflict"
+    if reason is not None:
+        metadata.update(reason_code=reason, blocked=True)
+        return None, None
+    return store, lease
 
 
 def preview_mcp_lease_coverage(
@@ -981,15 +1017,6 @@ def _string_list(value: Any) -> list[str]:
 
 def _drop_empty(value: Mapping[str, Any]) -> dict[str, Any]:
     return {str(key): item for key, item in value.items() if item not in (None, [], {}, "")}
-
-
-def _header_value(scope: Scope, name: str) -> str | None:
-    target = name.lower().encode("latin-1")
-    for raw_name, raw_value in scope.get("headers", []):
-        if raw_name.lower() == target:
-            value = raw_value.decode("latin-1").strip()
-            return value or None
-    return None
 
 
 def _tool_allowed(tool: str, allow_tools: Any) -> bool:
