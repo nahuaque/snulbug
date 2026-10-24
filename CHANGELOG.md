@@ -13,6 +13,7 @@ Trusted internal lease selection and gateway credential-boundary hardening.
 - Add trusted, request-local Python/ASGI lease-ID selection for embedding gateways, reusing identity bindings, expiry/revocation checks, policy previews, and atomic call budgets. Reject conflicting selections without recovering or injecting lease credentials.
 - Consume lease credential headers at the upstream boundary, including custom header names, facade transport plugins, and streamed HTTP requests. Include configured custom lease-header names in replay/audit redaction.
 - Validate supplied selections on facade discovery without consuming calls, and reject lease denials on bodyless HTTP stream opens before forwarding.
+- Require certifi 2026.10.19 or later and update the lockfile to remove compromised emSign CA trust roots ([GHSA-6q48-6c7w-9gw2](https://github.com/advisories/GHSA-6q48-6c7w-9gw2)).
 
 Upgrade note: public clients continue to send their existing lease headers, but
 upstream applications no longer receive them. Keep lease enforcement at the

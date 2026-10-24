@@ -35,6 +35,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
+    "certifi>=2026.10.19",
     "httpx>=0.28,<1",
     "jsonschema>=4.23,<5",
     "lupa>=2.5",
