@@ -33,8 +33,10 @@ from .fabric import annotate_topology_audit, build_fabric_audit_metadata
 from .fabric_control import summarize_fabric_control_state
 from .http_routes import HttpRoutesMiddleware
 from .leases import (
+    LEASE_HEADER,
     LEASE_RENEWAL_HEADER,
     LEASE_RENEWAL_METHOD,
+    TRUSTED_LEASE_SCOPE_KEY,
     LeasePolicyConfig,
     enforce_mcp_lease_policy,
     mcp_lease_error_response,
@@ -98,6 +100,7 @@ from .middleware import ASGIApp, LuaConfig, LuaMiddleware, Receive, Scope, Send
 from .policy_backoff import PolicyBackoffConfig
 from .public_origin import PublicOriginMiddleware
 from .recorder import append_record, build_request_record, record_audit_event
+from .redaction import RedactionConfig, redact_secrets
 from .request_explanations import (
     upstream_failure,
     upstream_failure_message,
@@ -303,8 +306,10 @@ class ReverseProxyApp:
             scope,
             config=self.lease_policy,
         )
-        if not lease_allowed and isinstance(request, Mapping):
-            response = mcp_lease_error_response(request, lease_metadata)
+        if not lease_allowed:
+            response = mcp_lease_error_response(request or {}, lease_metadata)
+            if request is None:
+                response["status"] = 403
             _set_proxy_metadata(
                 scope,
                 {
@@ -429,6 +434,7 @@ class ReverseProxyApp:
                     self._target(scope),
                     credential=self.upstream_credential,
                     timeout=self.config.timeout,
+                    lease_header=self.lease_policy.header,
                 )
             else:
                 response = await asyncio.to_thread(self._forward, scope, body)
@@ -515,7 +521,7 @@ class ReverseProxyApp:
         connection = self._connection()
         try:
             target = self._target(scope)
-            headers = _request_headers(scope.get("headers", []), self._upstream)
+            headers = _request_headers(scope.get("headers", []), self._upstream, lease_header=self.lease_policy.header)
             request = _jsonrpc_request(body)
             if is_modern_request(request):
                 headers = modern_request_headers(headers, request)
@@ -1054,6 +1060,18 @@ class McpFacadeProxyApp:
                     message="facade mode requires one JSON-RPC request",
                 )
                 return
+
+            # Tool execution is charged later, after route admission. Discovery
+            # and other methods validate a supplied selection without charging it.
+            if request.get("method") != "tools/call":
+                lease_allowed, lease_metadata = enforce_mcp_lease_policy(request, scope, config=self.lease_policy)
+                _set_proxy_metadata(
+                    scope,
+                    {"lease": lease_metadata, "access": _composed_access_metadata(scope, lease=lease_metadata)},
+                )
+                if not lease_allowed:
+                    await _send_response(send, **mcp_lease_error_response(request, lease_metadata))
+                    return
 
             progress_allowed, progress_request_metadata = enforce_mcp_progress_request_policy(
                 request,
@@ -1864,6 +1882,8 @@ class McpFacadeProxyApp:
         body: bytes,
         request: Mapping[str, Any],
     ) -> dict[str, Any]:
+        scope = {**scope, "headers": _strip_lease_headers(scope.get("headers", []), self.lease_policy.header)}
+        scope.pop(TRUSTED_LEASE_SCOPE_KEY, None)
         transport = get_upstream_transport(upstream.transport)
         if is_modern_request(request) and transport.http_target(upstream) is None and upstream.transport != "stdio":
             return _json_response(
@@ -1887,6 +1907,7 @@ class McpFacadeProxyApp:
                         _exact_target(routes.parsed[upstream.name]),
                         credential=upstream.credential,
                         timeout=self.timeout,
+                        lease_header=self.lease_policy.header,
                     )
                     if scope.get(STREAM_SCOPE_KEY) is not None
                     else asyncio.to_thread(self._forward_http, routes, upstream, scope, body)
@@ -1912,7 +1933,9 @@ class McpFacadeProxyApp:
         parsed = routes.parsed[upstream.name]
         connection = _connection(parsed, self.timeout)
         try:
-            headers = _request_headers(scope.get("headers", []), parsed, content_length=len(body))
+            headers = _request_headers(
+                scope.get("headers", []), parsed, content_length=len(body), lease_header=self.lease_policy.header
+            )
             request = _jsonrpc_request(body)
             if is_modern_request(request):
                 headers = modern_request_headers(headers, request)
@@ -2007,6 +2030,7 @@ class ProxyRecorderMiddleware:
         policy: str | Path,
         record_out: str | Path | None = None,
         redact_records: bool = True,
+        lease_header: str = LEASE_HEADER,
         tunnel_audit: TunnelAuditConfig | None = None,
         topology_audit: Mapping[str, Any] | None = None,
         event_dispatcher: Any = None,
@@ -2015,6 +2039,8 @@ class ProxyRecorderMiddleware:
         self.policy = policy
         self.record_out = Path(record_out) if record_out is not None else None
         self.redact_records = redact_records
+        self.redaction_config = RedactionConfig()
+        self.redaction_config.secret_keys.add(lease_header.lower())
         self.tunnel_audit = tunnel_audit or TunnelAuditConfig()
         self.topology_audit = dict(topology_audit or {})
         self.event_dispatcher = event_dispatcher
@@ -2047,12 +2073,13 @@ class ProxyRecorderMiddleware:
             metadata=metadata,
             redact=self.redact_records
             or any(name.lower() == LEASE_RENEWAL_HEADER.encode() for name, _value in scope.get("headers", [])),
+            redaction_config=self.redaction_config,
         )
         # Renewal is an audited control operation, not a replayable Lua decision.
         if self.record_out is not None and "lease_renewal" not in metadata:
             append_record(self.record_out, record)
         if self.event_dispatcher is not None:
-            audit_event = record_audit_event(record)
+            audit_event = redact_secrets(record_audit_event(record), self.redaction_config)
             self.event_dispatcher.emit(decision_console_event(record, audit_event=audit_event))
 
     def _enabled(self) -> bool:
@@ -3354,6 +3381,7 @@ def create_proxy_application(
             policy=policy,
             record_out=record_out,
             redact_records=redact_records,
+            lease_header=lease_header,
             tunnel_audit=TunnelAuditConfig(provider=tunnel_provider, public_url=tunnel_public_url),
             topology_audit=topology_audit,
             event_dispatcher=event_dispatcher,
@@ -4445,9 +4473,10 @@ def _request_headers(
     upstream: SplitResult,
     *,
     content_length: int | None = None,
+    lease_header: str = LEASE_HEADER,
 ) -> dict[str, str]:
     headers: dict[str, str] = {}
-    for name, value in raw_headers:
+    for name, value in _strip_lease_headers(raw_headers, lease_header):
         lower_name = name.lower()
         if lower_name in HOP_BY_HOP_HEADERS or lower_name in {b"host", b"content-length", b"x-snulbug-renewal"}:
             continue
@@ -4456,6 +4485,11 @@ def _request_headers(
     if content_length is not None:
         headers["Content-Length"] = str(content_length)
     return headers
+
+
+def _strip_lease_headers(raw_headers: list[tuple[bytes, bytes]], header: str) -> list[tuple[bytes, bytes]]:
+    sensitive = {LEASE_HEADER.encode("ascii"), header.lower().encode("latin-1"), LEASE_RENEWAL_HEADER.encode("ascii")}
+    return [(name, value) for name, value in raw_headers if name.lower() not in sensitive]
 
 
 def _strip_cloudflare_access_credentials(raw_headers: Any) -> list[tuple[bytes, bytes]]:
@@ -4835,9 +4869,18 @@ def _headers_to_mapping(headers: list[tuple[bytes, bytes]]) -> dict[str, str | l
     return result
 
 
-async def _forward_stream_http(scope: Scope, body: bytes, parsed: Any, target: str, *, credential: Any, timeout: float):
+async def _forward_stream_http(
+    scope: Scope,
+    body: bytes,
+    parsed: Any,
+    target: str,
+    *,
+    credential: Any,
+    timeout: float,
+    lease_header: str = LEASE_HEADER,
+):
     request = _jsonrpc_request(body)
-    headers = _request_headers(scope.get("headers", []), parsed, content_length=len(body))
+    headers = _request_headers(scope.get("headers", []), parsed, content_length=len(body), lease_header=lease_header)
     headers = modern_request_headers(headers, request)
     headers = apply_credential_header(headers, credential)
     return await scope[STREAM_SCOPE_KEY].forward_http(

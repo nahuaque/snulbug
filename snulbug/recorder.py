@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .redaction import build_audit_event, redact_secrets
+from .redaction import RedactionConfig, build_audit_event, redact_secrets
 from .simulator import simulate_policy
 
 RECORD_TYPE = "snulbug.request_record"
@@ -60,6 +60,7 @@ def build_request_record(
     metadata: Mapping[str, Any] | None = None,
     recorded_at: str | None = None,
     redact: bool = False,
+    redaction_config: RedactionConfig | None = None,
 ) -> dict[str, Any]:
     """Build a replayable request record from an already executed policy result."""
 
@@ -80,7 +81,7 @@ def build_request_record(
     if metadata is not None:
         record["metadata"] = dict(metadata)
     if redact:
-        record = redact_secrets(record)
+        record = redact_secrets(record, redaction_config)
         record["redacted"] = True
     return record
 

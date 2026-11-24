@@ -1,6 +1,6 @@
 """Local-dev MCP policy proxy and programmable Lua ASGI policy layer."""
 
-__version__ = "0.2.5"
+__version__ = "0.2.6"
 
 from .auth_providers import (
     AuthProvider,
@@ -201,13 +201,16 @@ from .inspection import format_mcp_inspection_report, inspect_mcp_log
 from .lab import format_mcp_auth_lab_report, run_mcp_auth_lab, run_mcp_lab
 from .learn import amend_mcp_policy, learn_mcp_policy
 from .leases import (
+    TRUSTED_LEASE_SCOPE_KEY,
     LeasePolicyConfig,
+    TrustedLeaseSelection,
     cleanup_inactive_leases,
     create_lease,
     list_leases,
     reactivate_lease,
     renew_lease,
     revoke_lease,
+    select_mcp_lease,
 )
 from .manifests import load_manifest, manifest_digest, sign_upstream_manifest, verify_upstream_manifest, write_manifest
 from .mcp_auth import (
@@ -500,6 +503,8 @@ __all__ = [
     "LuaMiddleware",
     "LuaRuntimeError",
     "LeasePolicyConfig",
+    "TrustedLeaseSelection",
+    "TRUSTED_LEASE_SCOPE_KEY",
     "LIFECYCLE_STATES",
     "MemoryFabricRuntimeStateStore",
     "MemoryStateStore",
@@ -764,6 +769,7 @@ __all__ = [
     "render_gateway_toml",
     "replay_record_log",
     "revoke_lease",
+    "select_mcp_lease",
     "revoke_mcp_share_invite",
     "revoke_mcp_share_lease",
     "run_mcp_auth_lab",

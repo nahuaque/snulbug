@@ -996,6 +996,13 @@ Send the returned `x-snulbug-lease` header with MCP requests. The proxy hot-load
 the JSON file on each call, so new leases and revocations do not require a proxy
 restart.
 
+The lease credential terminates at snulbug. The default and configured lease
+headers are stripped before upstream HTTP forwarding, including streaming and
+facade transports; upstream applications do not receive the client's lease token.
+An embedding gateway can instead select an exact lease reference through the
+[trusted Python/ASGI selection API](#trusted-internal-lease-selection), without
+recovering a credential or injecting a synthetic header.
+
 Create an invite when you want snulbug to package the share URL, bearer header,
 lease header, and downstream client snippets together:
 
@@ -1644,3 +1651,66 @@ application = create_proxy_application(
 
 You can run that ASGI app with Uvicorn, Hypercorn, Daphne, or another ASGI
 server.
+
+### Trusted Internal Lease Selection
+
+A hosting gateway that already authenticates a caller and authorizes a task can
+pass its exact lease ID in request-local ASGI context. Configure the existing
+lease store and policy normally:
+
+```python
+from snulbug import create_proxy_application, select_mcp_lease
+
+proxy = create_proxy_application(
+    "http://127.0.0.1:9000",
+    "policy.snulbug/policy.lua",
+    lease_file="leases.json",
+    lease_required=True,
+)
+
+
+def with_task_selection(proxy, resolve_authorized_lease):
+    async def application(scope, receive, send):
+        if scope["type"] == "http":
+            # The host authenticates the caller and authorizes this exact task.
+            lease_id = await resolve_authorized_lease(scope)
+            if lease_id is not None:
+                scope = select_mcp_lease(scope, lease_id=lease_id)
+        await proxy(scope, receive, send)
+
+    return application
+```
+
+`resolve_authorized_lease` belongs to the hosting application. It must return only
+an authorized reference, not an arbitrary caller-selected ID. Public headers,
+query parameters, request bodies, Lua context, and replay logs never populate
+trusted selection automatically. Do not copy any of them into this context
+without independent authentication and authorization. This is an in-process
+integration boundary, not protection against malicious Python code in the host.
+
+`select_mcp_lease(scope, lease_id=...)` returns a shallow scope copy containing a
+frozen `TrustedLeaseSelection` at `TRUSTED_LEASE_SCOPE_KEY`. A trusted ASGI
+integration can also set that typed value directly; strings and JSON mappings at
+the key fail closed. Selecting a different ID on an already selected scope raises
+`ValueError`. No global or session selection is retained.
+
+Selection is **not approval**. Snulbug resolves the exact ID from its configured
+store and runs the same identity bindings, expiry, revocation, tool/argument
+restrictions, and call-budget checks as header-based requests. Existing OAuth and
+Lua checks remain in force. Discovery and Lua/catalog previews do not consume
+calls; final `tools/call` admission consumes once under the existing store lock.
+No new lease, credential recovery, renewal, or TTL extension is performed.
+
+If a lease header is also supplied, it must validate to the selected lease.
+Different or invalid credentials and duplicate headers are rejected, even when
+leases are optional. An unknown ID never falls back to another available lease.
+Denials use `lease.selection_conflict`, `lease.selection_invalid`, or the existing
+lease reason codes. Lease audit metadata identifies `selection = "trusted"` or
+`"header"` and retains the lease/task/invite references without a plaintext token.
+
+The original scope headers remain available inside snulbug for preview and audit
+redaction, including configured custom lease-header names, but are filtered at
+the outbound boundary. Facade transport plugins
+receive a scope without the lease credential headers or trusted selection object.
+Business task selection and grant/revision permissions remain the host's concern;
+snulbug continues to own lease enforcement and accounting.
